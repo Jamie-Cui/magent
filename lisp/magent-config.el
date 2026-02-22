@@ -131,7 +131,7 @@ Should match one of the registered agent names."
   :group 'magent)
 
 (defcustom magent-load-custom-agents t
-  "Whether to load custom agents from .opencode/agent/*.md files."
+  "Whether to load custom agents from .magent/agent/*.md files."
   :type 'boolean
   :group 'magent)
 

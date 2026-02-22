@@ -6,7 +6,7 @@ An Emacs Lisp implementation of [OpenCode](https://github.com/anomalyco/magent) 
 
 - **Multi-agent system** with specialized agents (build, plan, explore, general)
 - **Permission-based tool access** with fine-grained control per agent
-- **Custom agent support** via `.opencode/agent/*.md` files
+- **Custom agent support** via `.magent/agent/*.md` files
 - **Direct API integration** with Anthropic Claude and OpenAI GPT models
 - **File operations**: read, write, grep, glob
 - **Shell command execution** via bash tool
@@ -77,7 +77,7 @@ Customize with `M-x customize-group RET magent RET`:
 | `magent-enable-tools` | `(read write grep glob bash)` | Enabled tools |
 | `magent-max-history` | `100` | Max messages in history |
 | `magent-default-agent` | `"build"` | Default agent for new sessions |
-| `magent-load-custom-agents` | `t` | Load custom agents from `.opencode/agent/*.md` |
+| `magent-load-custom-agents` | `t` | Load custom agents from `.magent/agent/*.md` |
 | `magent-enable-logging` | `t` | Enable API request/response logging |
 
 ## Usage
@@ -157,9 +157,9 @@ Permission actions:
 
 ### Custom Agents
 
-Create custom agents by adding markdown files to `.opencode/agent/`:
+Create custom agents by adding markdown files to `.magent/agent/`:
 
-**Example: `.opencode/agent/reviewer.md`**
+**Example: `.magent/agent/reviewer.md`**
 
 ```markdown
 ---

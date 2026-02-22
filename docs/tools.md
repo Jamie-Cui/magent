@@ -91,7 +91,7 @@ Write content to a file, creating parent directories if needed.
 - Writing documentation
 - Creating test files
 
-**Permissions:** Often restricted by agents (e.g., plan agent can only write to `.opencode/plan/*.md`)
+**Permissions:** Often restricted by agents (e.g., plan agent can only write to `.magent/plan/*.md`)
 
 ---
 

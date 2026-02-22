@@ -8,8 +8,8 @@
 
 ;;; Commentary:
 
-;; Load custom agents from .opencode/agent/*.md files.
-;; Compatible with opencode's agent file format (YAML frontmatter + markdown).
+;; Load custom agents from .magent/agent/*.md files.
+;; Compatible with Magent's agent file format (YAML frontmatter + markdown).
 
 ;;; Code:
 
@@ -32,7 +32,7 @@
 (defun magent-agent-file--agent-dir (&optional directory)
   "Get the agent directory for DIRECTORY or project root."
   (let* ((root (or directory (magent-agent-file--project-root)))
-         (agent-dir (expand-file-name ".opencode/agent" root)))
+         (agent-dir (expand-file-name ".magent/agent" root)))
     agent-dir))
 
 (defun magent-agent-file--list-files (&optional directory)

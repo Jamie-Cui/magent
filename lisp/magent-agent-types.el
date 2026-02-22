@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Built-in agent definitions matching opencode's native agents.
+;; Built-in agent definitions for Magent.
 ;; Includes: build, plan, general, explore, compaction, title, summary
 
 ;;; Code:
@@ -127,11 +127,11 @@ Your output must be:
    :mode 'primary
    :native t
    :permission (magent-permission-merge
-               (magent-permission-defaults)
-               (magent-permission-from-config
-                '((edit
-                   ("*" deny)
-                   (".opencode/plan/*.md" allow)))))))
+                (magent-permission-defaults)
+                (magent-permission-from-config
+                 '((edit
+                    ("*" deny)
+                    (".magent/plan/*.md" allow)))))))
 
 (defun magent-agent-types--general ()
   "Create the general agent (multi-step subagent)."
@@ -142,10 +142,10 @@ Your output must be:
    :native t
    :hidden t
    :permission (magent-permission-merge
-               (magent-permission-defaults)
-               (magent-permission-from-config
-                '((todoread deny)
-                  (todowrite deny))))))
+                (magent-permission-defaults)
+                (magent-permission-from-config
+                 '((todoread deny)
+                   (todowrite deny))))))
 
 (defun magent-agent-types--explore ()
   "Create the explore agent (codebase exploration specialist)."
@@ -156,17 +156,17 @@ Your output must be:
    :native t
    :prompt magent-agent--prompt-explore
    :permission (magent-permission-merge
-               (magent-permission-defaults)
-               (magent-permission-from-config
-                '(("*" deny)
-                  (grep allow)
-                  (glob allow)
-                  (list allow)
-                  (bash allow)
-                  (webfetch allow)
-                  (websearch allow)
-                  (codesearch allow)
-                  (read allow))))))
+                (magent-permission-defaults)
+                (magent-permission-from-config
+                 '(("*" deny)
+                   (grep allow)
+                   (glob allow)
+                   (list allow)
+                   (bash allow)
+                   (webfetch allow)
+                   (websearch allow)
+                   (codesearch allow)
+                   (read allow))))))
 
 (defun magent-agent-types--compaction ()
   "Create the compaction agent (session summarization)."

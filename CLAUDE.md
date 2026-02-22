@@ -28,7 +28,7 @@ Magent is an Emacs Lisp AI coding agent that integrates with Anthropic Claude an
    - `magent-agent-registry.el`: Central registry for agent lookup/registration
    - `magent-agent-info.el`: `cl-defstruct` defining agent properties (name, mode, permissions, temperature, model, prompt)
    - `magent-agent-types.el`: Built-in agents: `build` (default), `plan`, `explore`, `general`, `compaction`, `title`, `summary`
-   - `magent-agent-file.el`: Loads custom agents from `.opencode/agent/*.md` files (YAML frontmatter + markdown)
+   - `magent-agent-file.el`: Loads custom agents from `.magent/agent/*.md` files (YAML frontmatter + markdown)
 
 3. **Permission System** (`magent-permission.el`): Rule-based tool access control per agent. Supports `allow`, `deny`, `ask` with file-pattern matching (e.g., deny `*.env` files).
 
@@ -56,11 +56,11 @@ All config via `customize-group RET magent`:
 - `magent-provider`: `'anthropic`, `'openai`, or `'openai-compatible`
 - `magent-api-key`: Direct key or use env vars `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`
 - `magent-enable-tools`: List of enabled tool symbols
-- `magent-load-custom-agents`: Load from `.opencode/agent/*.md`
+- `magent-load-custom-agents`: Load from `.magent/agent/*.md`
 
 ### Custom Agents
 
-Create `.opencode/agent/myagent.md`:
+Create `.magent/agent/myagent.md`:
 ```markdown
 ---
 description: My custom agent

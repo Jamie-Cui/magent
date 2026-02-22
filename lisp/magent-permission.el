@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; Permission system for controlling tool access per agent.
-;; Based on opencode's PermissionNext system with rule-based access control.
+;; Rule-based access control for Magent agents.
 
 ;;; Code:
 
@@ -131,10 +131,10 @@ RULES is an alist of (pattern . permission)."
             (when (string-match-p (wildcard-to-regexp pattern) filename)
               (throw 'found permission))))
 
-           ;; Exact match
-           ((string-equal pattern file)
-            (throw 'found permission)))))
-      magent-permission-allow)) ; Default if no match
+          ;; Exact match
+          ((string-equal pattern file)
+           (throw 'found permission)))))
+    magent-permission-allow)) ; Default if no match
 
 ;;; Permission checking
 

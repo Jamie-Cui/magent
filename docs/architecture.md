@@ -145,7 +145,7 @@ Implements the core agent execution loop with tool calling.
 
 #### Custom Agents (`magent-agent-file.el`)
 
-Loads custom agents from `.opencode/agent/*.md` files.
+Loads custom agents from `.magent/agent/*.md` files.
 
 **File Format:**
 ```markdown
@@ -340,7 +340,7 @@ The API layer normalizes these to internal format:
    - Agent registry initialized with built-in agents
 
 2. **Custom Agent Discovery**
-   - Scan `.opencode/agent/*.md` files
+   - Scan `.magent/agent/*.md` files
    - Parse YAML frontmatter
    - Extract agent configuration
 
@@ -415,7 +415,7 @@ The API layer normalizes these to internal format:
 
 The architecture provides several extension points:
 
-1. **Custom Agents**: Add `.opencode/agent/*.md` files
+1. **Custom Agents**: Add `.magent/agent/*.md` files
 2. **New Tools**: Extend `magent-tools.el` with new capabilities
 3. **New Providers**: Add provider support in `magent-api.el`
 4. **Permission Rules**: Define custom permission schemes

@@ -30,7 +30,7 @@ User-facing agents that can be selected for interactive sessions.
 2. **plan**
    - Planning and architecture design
    - Read-only access to most files
-   - Can only edit `.opencode/plan/*.md` files
+   - Can only edit `.magent/plan/*.md` files
    - Focused on organizing work before implementation
    - Temperature: 0.7
 
@@ -179,7 +179,7 @@ The default permission set (used by build agent):
 (
  (* . allow)  ; Allow most tools
  (edit . ((\"*\" . deny)  ; Deny all edits except...
-          (\".opencode/plan/*.md\" . allow)))  ; ...plan files
+          (\".magent/plan/*.md\" . allow)))  ; ...plan files
 )
 ```
 
@@ -268,11 +268,11 @@ Agent assignment persists with the session:
 
 ## Custom Agents
 
-Users can create custom agents by adding markdown files to `.opencode/agent/`.
+Users can create custom agents by adding markdown files to `.magent/agent/`.
 
 ### File Format
 
-**Path:** `.opencode/agent/myagent.md`
+**Path:** `.magent/agent/myagent.md`
 
 ```markdown
 ---
@@ -500,7 +500,7 @@ Test permission resolution:
 
 ### Custom Agent Not Loading
 
-1. Check file location: `.opencode/agent/*.md`
+1. Check file location: `.magent/agent/*.md`
 2. Verify YAML syntax in frontmatter
 3. Check `magent-load-custom-agents` is `t`
 4. Look for errors in `*Messages*` buffer
