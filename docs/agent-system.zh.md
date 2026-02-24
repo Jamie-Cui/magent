@@ -250,13 +250,13 @@ M-x magent-select-agent
 
 ### 3. 执行
 
-智能体通过智能体循环处理用户提示：
+智能体通过 gptel 处理用户提示：
 
 1. 获取智能体的系统提示
-2. 根据智能体权限过滤工具
-3. 使用智能体的模型/温度调用 LLM
-4. 执行允许的工具
-5. 迭代直到完成（最多 10 次）
+2. 根据智能体权限将工具过滤为 `gptel-tool` 列表
+3. 应用每个智能体的 gptel 覆盖（模型、温度）
+4. 调用 `gptel-request` — gptel 管理工具调用循环
+5. 回调接收最终响应或错误
 
 ### 4. 会话持久化
 
@@ -510,10 +510,9 @@ Ensure good code coverage.
 
 优先顺序：
 1. 智能体特定的模型覆盖
-2. 全局 `magent-model` 设置
-3. 提供者默认值
+2. gptel 默认值（`gptel-model`）
 
-检查有效模型：
+检查智能体的模型覆盖：
 ```elisp
-(magent-agent-info-model-string agent-info)
+(magent-agent-info-model agent-info)
 ```

@@ -7,7 +7,7 @@ An Emacs Lisp implementation of [OpenCode](https://github.com/anomalyco/magent) 
 - **Multi-agent system** with specialized agents (build, plan, explore, general)
 - **Permission-based tool access** with fine-grained control per agent
 - **Custom agent support** via `.magent/agent/*.md` files
-- **Direct API integration** with Anthropic Claude and OpenAI GPT models
+- **LLM integration via gptel** supporting Anthropic Claude, OpenAI GPT, and compatible APIs
 - **File operations**: read, write, grep, glob
 - **Shell command execution** via bash tool
 - **Session management** with conversation history and persistence
@@ -30,7 +30,6 @@ Add the project to your Emacs load path:
 (use-package magent
   :load-path "/path/to/magent/lisp"
   :config
-  (setq magent-api-key "your-api-key-here")
   (global-magent-mode 1))
 ```
 
@@ -38,47 +37,30 @@ Add the project to your Emacs load path:
 
 ### Quick Start
 
-Set your API key (required):
+Magent delegates all LLM communication to [gptel](https://github.com/karthink/gptel). Configure your provider, model, and API key through gptel:
 
 ```elisp
-(setq magent-api-key "sk-ant-...")
+;; gptel handles provider/model/key configuration
+(setq gptel-model 'claude-sonnet-4-20250514)
+(setq gptel-api-key "sk-ant-...")  ; or use ANTHROPIC_API_KEY env var
 ```
 
-Or use environment variables:
-- `ANTHROPIC_API_KEY` for Anthropic
-- `OPENAI_API_KEY` for OpenAI
+See [gptel documentation](https://github.com/karthink/gptel#configuration) for full provider setup (Anthropic, OpenAI, Ollama, etc.).
 
-Choose your provider:
-
-```elisp
-(setq magent-provider 'anthropic)  ; or 'openai or 'openai-compatible
-```
-
-Set the model:
-
-```elisp
-(setq magent-model "claude-sonnet-4-20250514")
-```
-
-### All Configuration Options
+### Magent-Specific Options
 
 Customize with `M-x customize-group RET magent RET`:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `magent-provider` | `anthropic` | LLM provider (`anthropic`, `openai`, `openai-compatible`) |
-| `magent-api-key` | `nil` | API key (or use env var) |
-| `magent-base-url` | `nil` | Base URL for OpenAI-compatible APIs |
-| `magent-model` | `claude-sonnet-4-20250514` | Model identifier |
-| `magent-max-tokens` | `8192` | Maximum tokens for responses |
-| `magent-temperature` | `0.7` | Temperature (0.0-1.0) |
+| `magent-system-prompt` | (built-in) | Default system prompt for agents |
 | `magent-buffer-name` | `"*magent*"` | Output buffer name |
 | `magent-auto-scroll` | `t` | Auto-scroll output buffer |
 | `magent-enable-tools` | `(read write grep glob bash)` | Enabled tools |
 | `magent-max-history` | `100` | Max messages in history |
 | `magent-default-agent` | `"build"` | Default agent for new sessions |
 | `magent-load-custom-agents` | `t` | Load custom agents from `.magent/agent/*.md` |
-| `magent-enable-logging` | `t` | Enable API request/response logging |
+| `magent-enable-logging` | `t` | Enable logging to `*magent-log*` buffer |
 
 ## Usage
 
@@ -215,7 +197,7 @@ Tool availability is controlled by:
 1. **Entry Point** (`magent.el`): Defines `magent-mode` minor mode with keybindings. Initializes the agent registry and loads custom agents.
 
 2. **Agent System**: Multi-agent architecture with permission-based tool access:
-   - `magent-agent.el`: Main agent loop processing prompts and managing iterations
+   - `magent-agent.el`: Builds gptel prompts, applies per-agent overrides, calls `gptel-request`
    - `magent-agent-registry.el`: Central registry for agent lookup/registration
    - `magent-agent-info.el`: Agent configuration data structures
    - `magent-agent-types.el`: Built-in agent definitions
@@ -223,9 +205,9 @@ Tool availability is controlled by:
 
 3. **Permission System** (`magent-permission.el`): Rule-based tool access control per agent with file-pattern matching.
 
-4. **API Layer** (`magent-api.el`): HTTP client supporting Anthropic and OpenAI formats with streaming support.
+4. **LLM Integration** (via gptel): All LLM communication, message formatting, and tool-calling loops are handled by [gptel](https://github.com/karthink/gptel).
 
-5. **Tools** (`magent-tools.el`): Tool implementations filtered per agent based on permission rules.
+5. **Tools** (`magent-tools.el`): Tool implementations registered as `gptel-tool` structs, filtered per agent based on permission rules.
 
 6. **Session** (`magent-session.el`): Conversation history management with per-session agent assignment and persistence.
 
@@ -235,17 +217,16 @@ Tool availability is controlled by:
 lisp/
 ├── magent.el                  # Main entry point and mode definition
 ├── magent-config.el           # Configuration (customize group)
-├── magent-api.el              # HTTP API client for LLM providers
 ├── magent-session.el          # Session & message history
-├── magent-tools.el            # Tool implementations
-├── magent-agent.el            # Agent logic & tool calling
+├── magent-tools.el            # Tool implementations (gptel-tool structs)
+├── magent-agent.el            # Agent logic (gptel integration)
 ├── magent-agent-registry.el   # Agent registration system
 ├── magent-agent-info.el       # Agent data structures
 ├── magent-agent-types.el      # Built-in agent definitions
 ├── magent-agent-file.el       # Custom agent file loader
-├── magent-agent-fix.el        # Agent fix utilities
 ├── magent-permission.el       # Permission system
-└── magent-ui.el               # Minibuffer UI & display
+├── magent-ui.el               # Minibuffer UI & display
+└── magent-pkg.el              # Package descriptor
 ```
 
 ### Key Data Structures
@@ -281,7 +262,7 @@ Sessions are automatically saved to `~/.emacs.d/magent-sessions/` (configurable)
 
 ### Enable Logging
 
-View API requests and responses:
+View request/response logs:
 
 ```elisp
 (setq magent-enable-logging t)
@@ -297,8 +278,10 @@ M-x magent-show-current-agent ; Show current session's agent
 
 ### Verify API Key
 
+API keys are managed by gptel. Check with:
+
 ```elisp
-(magent-get-api-key)  ; Should return your API key
+gptel-api-key  ; Should return your API key
 ```
 
 ## License

@@ -31,20 +31,18 @@
 
 **适合阅读者：** 想要创建自定义智能体、理解权限工作原理或修改智能体行为的人。
 
-### [API 集成](api-integration.zh.md)
-LLM 提供商集成指南。
+### [LLM 集成](api-integration.zh.md)
+通过 gptel 的 LLM 提供商集成指南。
 
 **内容：**
-- 支持的提供商（Anthropic、OpenAI、兼容 API）
-- 配置和身份验证
-- 消息格式转换
-- 工具定义格式
-- 流式支持
-- 错误处理和速率限制
+- 支持的提供商（Anthropic、OpenAI、Ollama 等，通过 gptel）
+- 通过 gptel 进行配置
+- 每个智能体的模型/温度覆盖
+- Magent 如何使用 gptel（请求流程、工具注册、回调）
+- 日志记录和调试
 - 成本优化策略
-- 测试和调试
 
-**适合阅读者：** 正在进行 API 集成、排查连接问题或添加新提供商支持的人。
+**适合阅读者：** 正在配置 LLM 提供商、排查连接问题或理解 Magent 如何与 gptel 集成的人。
 
 ### [工具](tools.zh.md)
 可用工具的完整参考。
@@ -85,7 +83,7 @@ LLM 提供商集成指南。
 
 **常见任务：**
 - 创建自定义智能体 → [智能体系统 - 自定义智能体](agent-system.zh.md#自定义智能体)
-- 配置 API 访问 → [API 集成 - 配置](api-integration.zh.md#配置)
+- 配置 LLM 提供商 → [LLM 集成 - 配置](api-integration.zh.md#配置)
 - 管理对话历史 → [会话管理](session-management.zh.md)
 
 ### 对于开发者
@@ -93,12 +91,12 @@ LLM 提供商集成指南。
 **架构概览：**
 1. 从[架构](architecture.zh.md)开始了解全局
 2. 阅读[智能体系统](agent-system.zh.md)了解智能体循环
-3. 查看[API 集成](api-integration.zh.md)了解提供商细节
+3. 查看[LLM 集成](api-integration.zh.md)了解 gptel 集成细节
 
 **常见开发任务：**
 - 添加新工具 → [工具 - 扩展工具](tools.zh.md#扩展工具)
 - 添加内置智能体 → [智能体系统 - 智能体类型](agent-system.zh.md#智能体类型)
-- 支持新提供商 → [API 集成 - 提供商对比](api-integration.zh.md#提供商对比)
+- 支持新提供商 → 通过 gptel 后端配置（参见 [LLM 集成](api-integration.zh.md#配置)）
 
 ## 文档约定
 

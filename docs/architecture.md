@@ -4,7 +4,7 @@ This document describes the high-level architecture of Magent, an Emacs Lisp imp
 
 ## Overview
 
-Magent is a multi-agent AI coding assistant that integrates with LLM providers (Anthropic Claude, OpenAI GPT) to provide intelligent code assistance within Emacs. The system uses a modular architecture with clear separation of concerns across six main layers.
+Magent is a multi-agent AI coding assistant that integrates with LLM providers via [gptel](https://github.com/karthink/gptel) to provide intelligent code assistance within Emacs. The system uses a modular architecture with clear separation of concerns across five main layers.
 
 ## System Architecture
 
@@ -28,8 +28,8 @@ Magent is a multi-agent AI coding assistant that integrates with LLM providers (
 ┌─────────────────────────────────────────────────────────────┐
 │                      Agent Layer                             │
 │           (magent-agent.el, magent-agent-*.el)              │
-│  - Agent orchestration and loop (max 10 iterations)         │
-│  - Tool calling coordination                                │
+│  - Agent orchestration via gptel                            │
+│  - Per-agent gptel overrides (model, temperature)           │
 │  - Permission-based access control                          │
 │  - Built-in and custom agent management                     │
 └─────────────────────────────────────────────────────────────┘
@@ -48,15 +48,15 @@ Magent is a multi-agent AI coding assistant that integrates with LLM providers (
 │  - read_file, write_file                                    │
 │  - grep, glob                                               │
 │  - bash command execution                                   │
+│  - Registered as gptel-tool structs                         │
 └─────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────┐
-│                      API Layer                               │
-│                    (magent-api.el)                           │
+│                      LLM Layer (gptel)                       │
 │  - HTTP client for LLM providers                            │
 │  - Message format conversion                                │
+│  - Tool calling FSM (loop management)                       │
 │  - Streaming support                                        │
-│  - Request/response logging                                 │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -121,27 +121,25 @@ Defines the seven built-in agents:
 6. **title** (internal): Conversation title generation
 7. **summary** (internal): PR-style summaries
 
-#### Agent Loop (`magent-agent.el`)
+#### Agent Processing (`magent-agent.el`)
 
-Implements the core agent execution loop with tool calling.
+Integrates with gptel for LLM communication and tool calling.
 
-**Agent Loop Flow:**
+**Agent Processing Flow:**
 1. Accept user prompt
 2. Add user message to session
-3. Call LLM API with available tools
-4. If response contains tool uses:
-   - Execute each tool with permission check
-   - Add tool results to session
-   - Loop back to step 3 (max 10 iterations)
-5. If response contains only text:
-   - Add assistant message to session
-   - Call completion callback
+3. Build gptel prompt list from session history
+4. Apply per-agent gptel overrides (model, temperature, backend)
+5. Filter tools by agent permissions
+6. Call `gptel-request` with system prompt and available tools
+7. gptel's FSM manages the tool-calling loop internally
+8. Callback receives final string response or error
+9. Record response in session
 
 **Key Functions:**
 - `magent-agent-process`: Entry point for agent execution
-- `magent-agent--loop`: Main iteration loop
-- `magent-agent--get-tools`: Filter tools by agent permissions
-- `magent-agent--execute-tools`: Execute tool calls with checks
+- `magent-agent--make-callback`: Creates gptel callback handling all response types
+- `magent-tools-get-gptel-tools`: Filter tools by agent permissions
 
 #### Custom Agents (`magent-agent-file.el`)
 
@@ -255,51 +253,28 @@ Implements the tools that agents can use to interact with the system.
 
 **Tool Definitions:**
 
-Each tool provides a schema for the LLM:
+Each tool is registered as a `gptel-tool` struct via `gptel-make-tool`:
 - `name`: Tool identifier
 - `description`: What the tool does
-- `input_schema`: JSON schema for parameters
+- `args`: List of argument plists (name, type, description)
+- `function`: Emacs Lisp function to execute
+- `confirm`: Whether to require user confirmation (for write_file, bash)
 
-### 6. API Layer (`magent-api.el`)
+### 6. LLM Layer (gptel)
 
-HTTP client for communicating with LLM providers.
+All LLM communication is delegated to [gptel](https://github.com/karthink/gptel), an external Emacs package.
 
-**Supported Providers:**
-- Anthropic Claude (Messages API)
-- OpenAI GPT (Chat Completions API)
-- OpenAI-compatible APIs (custom base URL)
+**What gptel handles:**
+- HTTP communication with LLM providers (Anthropic, OpenAI, Ollama, etc.)
+- Message format conversion between providers
+- Tool calling FSM (the request/tool-execute/re-request loop)
+- Streaming support
 
-**Key Responsibilities:**
-- Convert between internal and provider-specific message formats
-- Handle tool definitions in provider format
-- Parse responses and extract content/tool uses
-- Support streaming responses
-- Request/response logging
-
-**Message Conversion:**
-
-Internal format uses consistent structure:
-```elisp
-((role . "user")
- (content . "text"))
-```
-
-Provider formats differ:
-- **Anthropic**: Structured content blocks with types
-- **OpenAI**: Simple string content
-
-**Tool Use Extraction:**
-
-Different providers have different tool calling formats:
-- **Anthropic**: `tool_use` content blocks
-- **OpenAI**: `tool_calls` array in message
-
-The API layer normalizes these to internal format:
-```elisp
-((id . "call_123")
- (name . "read_file")
- (input . ((path . "/foo/bar.el"))))
-```
+**What Magent handles on top of gptel:**
+- Per-agent model/temperature overrides via `magent-agent-info-apply-gptel-overrides`
+- Tool registration as `gptel-tool` structs with permission-based filtering
+- Session history conversion to gptel prompt list format
+- Callback handling for tool call display and error reporting
 
 ## Data Flow
 
@@ -314,24 +289,21 @@ The API layer normalizes these to internal format:
    - Session retrieves or assigns agent
 
 3. **Agent Processing**
-   - Agent loop begins
-   - Tools filtered by agent permissions
-   - API request created with messages + tools
+   - `magent-agent-process` builds gptel prompt list from session
+   - Tools filtered by agent permissions into `gptel-tool` list
+   - Per-agent gptel overrides applied (model, temperature)
+   - `gptel-request` called with system prompt and tools
 
-4. **LLM Response**
-   - API returns response (text or tool uses)
-   - Response parsed and normalized
+4. **gptel Tool-Calling Loop**
+   - gptel sends request to LLM provider
+   - If LLM returns tool calls, gptel executes them and re-requests
+   - This loop is managed entirely by gptel's FSM
+   - Magent's callback receives tool call notifications for UI display
 
-5. **Tool Execution** (if applicable)
-   - Each tool use checked against permissions
-   - Tools executed if allowed
-   - Results added to session
-   - Loop continues (max 10 iterations)
-
-6. **Completion**
-   - Final text response added to session
+5. **Completion**
+   - gptel callback receives final text response
+   - Response added to session
    - Output displayed to user
-   - Session persisted
 
 ### Custom Agent Loading Flow
 
@@ -381,19 +353,19 @@ The API layer normalizes these to internal format:
 - Persistence: Save and resume conversations
 - Agent consistency: Keep same agent throughout session
 
-### 4. Maximum Iteration Limit
+### 4. Delegation to gptel
 
-**Decision:** Limit agent loop to 10 iterations.
+**Decision:** Use gptel for all LLM communication instead of a custom HTTP client.
 
 **Rationale:**
-- Prevent infinite loops in tool calling
-- Control API costs
-- Force more efficient tool use
-- Match OpenCode behavior
+- Leverage gptel's mature provider support (Anthropic, OpenAI, Ollama, etc.)
+- gptel's FSM handles the tool-calling loop, reducing Magent's complexity
+- Per-agent overrides allow model/temperature customization without reimplementing provider logic
+- Users benefit from gptel's active development and provider additions
 
 ### 5. Synchronous Tool Execution
 
-**Decision:** Execute tools synchronously within agent loop.
+**Decision:** Execute tools synchronously within the gptel callback.
 
 **Rationale:**
 - Simplicity: Easier to reason about execution order
@@ -401,23 +373,13 @@ The API layer normalizes these to internal format:
 - Emacs threading: Limited async support in Emacs
 - Future: Can add async support if needed
 
-### 6. Provider Abstraction
-
-**Decision:** Support multiple LLM providers with unified interface.
-
-**Rationale:**
-- Flexibility: Users choose their preferred provider
-- Future-proofing: Easy to add new providers
-- Testing: Can switch providers for different tasks
-- Cost optimization: Use cheaper models when appropriate
-
 ## Extension Points
 
 The architecture provides several extension points:
 
 1. **Custom Agents**: Add `.magent/agent/*.md` files
-2. **New Tools**: Extend `magent-tools.el` with new capabilities
-3. **New Providers**: Add provider support in `magent-api.el`
+2. **New Tools**: Add `gptel-tool` structs in `magent-tools.el`
+3. **New Providers**: Configure via gptel backends (no Magent changes needed)
 4. **Permission Rules**: Define custom permission schemes
 5. **UI Extensions**: Build on `magent-ui.el` for rich displays
 
@@ -431,9 +393,9 @@ The architecture provides several extension points:
 
 ### API Calls
 
-- Each agent loop iteration = 1 API call
-- Tool-heavy tasks may use multiple iterations
-- Streaming reduces perceived latency
+- gptel manages the tool-calling loop (multiple API calls per request)
+- Tool-heavy tasks use more API calls automatically
+- Streaming support available through gptel
 
 ### File Operations
 

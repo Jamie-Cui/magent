@@ -4,13 +4,14 @@
 
 ## 概览
 
-工具是代理与文件系统交互和执行命令的主要机制。每个工具具有：
+工具是代理与文件系统交互和执行命令的主要机制。每个工具注册为 `gptel-tool` 结构，具有：
 
 - **名称 (Name)**: 在API调用中使用的唯一标识符
 - **描述 (Description)**: 工具的功能（显示给LLM）
-- **输入模式 (Input Schema)**: 定义参数的JSON模式
-- **实现 (Implementation)**: 执行工具的Emacs Lisp函数
-- **权限 (Permissions)**: 每个代理的访问控制
+- **参数 (Args)**: 定义参数的 plist 列表
+- **函数 (Function)**: 执行工具的Emacs Lisp函数
+- **确认 (Confirm)**: 是否需要用户确认（用于 write_file、bash）
+- **权限 (Permissions)**: 通过 Magent 权限系统实现的每个代理访问控制
 
 ## 可用工具
 
@@ -297,27 +298,40 @@ make clean && make                       # 重建项目
 
 ## 工具执行流程
 
-1. **代理请求**: LLM生成工具使用响应
-2. **权限检查**: 验证代理是否有权限使用工具
-3. **参数验证**: 确保存在必需参数
-4. **工具执行**: 调用Emacs Lisp实现
-5. **结果捕获**: 捕获错误，格式化输出
-6. **会话更新**: 将工具结果添加到对话历史
-7. **代理循环**: 继续下一次迭代
+1. **工具注册**: 在加载时将工具注册为 `gptel-tool` 结构
+2. **权限过滤**: `magent-tools-get-gptel-tools` 按代理过滤工具
+3. **gptel 请求**: 将过滤后的工具传递给 `gptel-request`
+4. **LLM 响应**: LLM 在响应中生成工具使用
+5. **gptel 执行**: gptel 调用工具的 `:function`，可选提示用户确认（`:confirm t`）
+6. **结果处理**: gptel 将工具结果发送回 LLM 并继续循环
+7. **回调**: Magent 的回调接收工具调用通知用于 UI 显示
 
-## 工具模式
+## 工具定义
 
-使用JSON模式为LLM定义工具：
+工具使用 `gptel-make-tool` 定义为 `gptel-tool` 结构：
 
 ```elisp
-((name . "read_file")
- (description . "Read the contents of a file. Use this to see the current state of a file before making changes.")
- (input_schema
-   (type . "object")
-   (properties . ((path . ((type . "string")
-                           (description . "Absolute or relative path to the file")))))
-   (required . (path))
-   (additionalProperties . :json-false)))
+(gptel-make-tool
+ :name "read_file"
+ :description "Read the contents of a file at the given path."
+ :args (list '(:name "path"
+               :type string
+               :description "Absolute or relative path to the file"))
+ :function #'magent-tools--read-file
+ :category "magent")
+```
+
+具有副作用的工具使用 `:confirm t`：
+
+```elisp
+(gptel-make-tool
+ :name "write_file"
+ :description "Write content to a file."
+ :args (list '(:name "path" :type string :description "File path")
+             '(:name "content" :type string :description "Content to write"))
+ :function #'magent-tools--write-file
+ :confirm t
+ :category "magent")
 ```
 
 ## 错误处理
@@ -499,15 +513,32 @@ tools:
     (error (format "Error in mytool: %s" (error-message-string err)))))
 ```
 
-2. **添加到定义**:
+2. **注册为 gptel-tool 结构**:
 ```elisp
-(push '((name . "mytool")
-        (description . "为LLM的描述")
-        (input_schema ...))
-      tools)
+(defvar magent-tools--mytool-tool
+  (gptel-make-tool
+   :name "mytool"
+   :description "为LLM的描述"
+   :args (list '(:name "param1" :type string :description "第一个参数")
+               '(:name "param2" :type string :description "第二个参数"))
+   :function #'magent-tools--mytool
+   :category "magent")
+  "gptel-tool struct for mytool.")
 ```
 
-3. **添加到分发器**:
+3. **添加到全局工具列表**:
+```elisp
+;; 添加到 magent-tools--all-gptel-tools
+(push magent-tools--mytool-tool magent-tools--all-gptel-tools)
+```
+
+4. **添加权限键映射**（用于过滤）:
+```elisp
+;; 添加到 magent-tools--name-to-permission-key
+(push '("mytool" . mytool) magent-tools--name-to-permission-key)
+```
+
+5. **可选添加到分发器**（用于直接使用）:
 ```elisp
 (pcase tool-name
   ("mytool"
@@ -515,7 +546,7 @@ tools:
                          (cdr (assq 'param2 input)))))
 ```
 
-4. **默认启用**:
+6. **默认启用**:
 ```elisp
 (setq magent-enable-tools '(read write grep glob bash mytool))
 ```

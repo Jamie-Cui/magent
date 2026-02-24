@@ -1,35 +1,25 @@
-# API 集成指南
+# LLM 集成指南
 
-本文档描述了 Magent 如何与大型语言模型 (LLM) 提供商集成，包括 Anthropic Claude、OpenAI GPT 和与 OpenAI 兼容的 API。
+本文档描述了 Magent 如何通过 [gptel](https://github.com/karthink/gptel) 与 LLM 提供商集成。
 
 ## 概述
 
-API 层 (`magent-api.el`) 为多个 LLM 提供商提供统一接口，同时处理提供商特定的消息格式、工具定义和响应解析。
+Magent 将所有 LLM 通信委托给 gptel，一个用于与大型语言模型交互的 Emacs 包。gptel 处理提供商特定的 API、消息格式化、工具调用循环和流式传输。Magent 在 gptel 之上构建，添加了每个智能体的配置覆盖、基于权限的工具过滤和会话管理。
 
 ## 支持的提供商
 
+gptel 支持的任何提供商都可以与 Magent 配合使用。常见选项：
+
 ### Anthropic Claude
-
-**提供商 ID：** `'anthropic`
-
-**API 端点：** `https://api.anthropic.com/v1/messages`
-
-**身份验证：** 通过 `x-api-key` 请求头的 API 密钥
 
 **环境变量：** `ANTHROPIC_API_KEY`
 
 **模型：**
-- `claude-opus-4-20250514` (最强大)
-- `claude-sonnet-4-20250514` (平衡、默认)
-- `claude-haiku-4-20250514` (最快)
+- `claude-opus-4-20250514`（最强大）
+- `claude-sonnet-4-20250514`（平衡、默认）
+- `claude-haiku-4-20250514`（最快）
 
 ### OpenAI
-
-**提供商 ID：** `'openai`
-
-**API 端点：** `https://api.openai.com/v1/chat/completions`
-
-**身份验证：** 通过 `Authorization` 请求头的承载令牌 (Bearer token)
 
 **环境变量：** `OPENAI_API_KEY`
 
@@ -38,316 +28,118 @@ API 层 (`magent-api.el`) 为多个 LLM 提供商提供统一接口，同时处�
 - `gpt-4`
 - `gpt-3.5-turbo`
 
-### OpenAI 兼容
+### 其他提供商
 
-**提供商 ID：** `'openai-compatible`
-
-**API 端点：** 通过 `magent-base-url` 配置
-
-**身份验证：** 通过 `Authorization` 请求头的承载令牌
-
-**使用场景：**
-- 本地 LLM (LM Studio、Ollama with OpenAI compatibility)
-- 替代提供商 (Azure OpenAI 等)
-- 自托管模型
+gptel 支持许多其他提供商，包括 Ollama（本地模型）、Azure OpenAI、Google Gemini 等。请参阅 [gptel 的 README](https://github.com/karthink/gptel#supported-llm-backends) 获取完整列表。
 
 ## 配置
 
 ### 基本设置
 
-```elisp
-;; Anthropic
-(setq magent-provider 'anthropic)
-(setq magent-api-key "sk-ant-...")
-(setq magent-model "claude-sonnet-4-20250514")
+所有提供商、模型和 API 密钥配置都通过 gptel 完成：
 
+```elisp
+;; Anthropic（默认 gptel 后端）
+(setq gptel-api-key "sk-ant-...")
+(setq gptel-model 'claude-sonnet-4-20250514)
+
+;; 或使用环境变量
+;; export ANTHROPIC_API_KEY="sk-ant-..."
+```
+
+对于非默认提供商，配置 gptel 后端：
+
+```elisp
 ;; OpenAI
-(setq magent-provider 'openai)
-(setq magent-api-key "sk-...")
-(setq magent-model "gpt-4-turbo")
+(setq gptel-backend
+      (gptel-make-openai "OpenAI"
+        :key "sk-..."
+        :models '(gpt-4-turbo gpt-4 gpt-3.5-turbo)))
 
-;; OpenAI 兼容
-(setq magent-provider 'openai-compatible)
-(setq magent-base-url "http://localhost:1234/v1")
-(setq magent-api-key "not-needed-for-local")
-(setq magent-model "local-model-name")
+;; 通过 Ollama 使用本地模型
+(setq gptel-backend
+      (gptel-make-ollama "Ollama"
+        :host "localhost:11434"
+        :models '(llama3 codellama)))
 ```
 
-### 环境变量
+请参阅 [gptel 配置文档](https://github.com/karthink/gptel#configuration) 获取完整的设置说明。
 
-除了直接设置 `magent-api-key`，还可以使用环境变量：
+### 每个智能体覆盖
 
-```bash
-# 在你的 shell 配置文件中
-export ANTHROPIC_API_KEY="sk-ant-..."
-export OPENAI_API_KEY="sk-..."
-```
-
-Magent 会自动检测并使用这些变量。
-
-### 验证
-
-检查凭证是否已配置：
+各个智能体可以覆盖默认的模型和温度：
 
 ```elisp
-M-x magent-api-set-credentials
+;; 在自定义智能体文件中 (.magent/agent/myagent.md)
+---
+model: claude-haiku-4-20250514
+temperature: 0.3
+---
 ```
 
 或以编程方式：
 
 ```elisp
-(magent-get-api-key)  ; 返回密钥或 nil
+(setf (magent-agent-info-model agent-info) "claude-haiku-4-20250514")
+(setf (magent-agent-info-temperature agent-info) 0.3)
 ```
 
-## 消息格式
+这些覆盖通过 `magent-agent-info-apply-gptel-overrides` 在请求期间临时应用，该函数在 `gptel-request` 调用期间设置相关的 gptel 变量。
 
-### 内部格式
+## Magent 如何使用 gptel
 
-Magent 使用一致的内部消息格式：
+### 请求流程
+
+```
+magent-agent-process
+    |
+从会话构建提示列表 (magent-session-to-gptel-prompt-list)
+    |
+从智能体获取系统提示 (或 magent-system-prompt)
+    |
+按智能体权限过滤工具 (magent-tools-get-gptel-tools)
+    |
+应用每个智能体的覆盖 (magent-agent-info-apply-gptel-overrides)
+    |
+gptel-request (提示列表, :system, :stream nil, :callback)
+    |
+gptel 处理 LLM 通信和工具调用循环
+    |
+回调接收：字符串响应、工具结果或错误
+```
+
+### 工具注册
+
+工具使用 `gptel-make-tool` 注册为 `gptel-tool` 结构：
 
 ```elisp
-;; 简单文本消息
-((role . "user")
- (content . "Hello, world!"))
-
-;; 结构化内容 (Anthropic 风格)
-((role . "assistant")
- (content . (((type . "text")
-              (text . "Response text"))
-             ((type . "tool_use")
-              (id . "call_123")
-              (name . "read_file")
-              (input . ((path . "/foo/bar.el")))))))
-
-;; 工具结果
-((role . "tool")
- (content . ((type . "tool_result")
-             (tool_use_id . "call_123")
-             (content . "File contents..."))))
+(gptel-make-tool
+ :name "read_file"
+ :description "Read the contents of a file at the given path."
+ :args (list '(:name "path"
+               :type string
+               :description "Absolute or relative path to the file"))
+ :function #'magent-tools--read-file
+ :category "magent")
 ```
 
-### 提供商特定转换
+修改系统的工具（`write_file`、`bash`）包含 `:confirm t`，以便 gptel 可以提示用户确认。
 
-#### Anthropic Messages API
+### 工具过滤
 
-**请求格式：**
-```json
-{
-  "model": "claude-sonnet-4-20250514",
-  "max_tokens": 8192,
-  "temperature": 0.7,
-  "messages": [
-    {
-      "role": "user",
-      "content": "Hello"
-    }
-  ],
-  "tools": [
-    {
-      "name": "read_file",
-      "description": "Read file contents",
-      "input_schema": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string",
-            "description": "File path"
-          }
-        },
-        "required": ["path"]
-      }
-    }
-  ]
-}
-```
+并非所有工具都对所有智能体可用。`magent-tools-get-gptel-tools` 通过以下方式过滤全局工具列表：
 
-**响应格式：**
-```json
-{
-  "id": "msg_123",
-  "type": "message",
-  "role": "assistant",
-  "content": [
-    {
-      "type": "text",
-      "text": "I'll read that file."
-    },
-    {
-      "type": "tool_use",
-      "id": "call_123",
-      "name": "read_file",
-      "input": {
-        "path": "/foo/bar.el"
-      }
-    }
-  ]
-}
-```
+1. **全局配置**：仅考虑 `magent-enable-tools` 中的工具
+2. **智能体权限**：仅考虑智能体权限规则允许的工具
 
-#### OpenAI Chat Completions API
+### 回调处理
 
-**请求格式：**
-```json
-{
-  "model": "gpt-4-turbo",
-  "max_tokens": 8192,
-  "temperature": 0.7,
-  "messages": [
-    {
-      "role": "user",
-      "content": "Hello"
-    }
-  ],
-  "tools": [
-    {
-      "type": "function",
-      "function": {
-        "name": "read_file",
-        "description": "Read file contents",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "path": {
-              "type": "string",
-              "description": "File path"
-            }
-          },
-          "required": ["path"]
-        }
-      }
-    }
-  ]
-}
-```
+`magent-agent--make-callback` 创建一个处理以下情况的 gptel 回调：
 
-**响应格式：**
-```json
-{
-  "id": "chatcmpl-123",
-  "object": "chat.completion",
-  "choices": [
-    {
-      "message": {
-        "role": "assistant",
-        "content": "I'll read that file.",
-        "tool_calls": [
-          {
-            "id": "call_123",
-            "type": "function",
-            "function": {
-              "name": "read_file",
-              "arguments": "{\"path\": \"/foo/bar.el\"}"
-            }
-          }
-        ]
-      }
-    }
-  ]
-}
-```
-
-## 工具定义
-
-### 内部工具模式 (Schema)
-
-工具使用以下结构定义：
-
-```elisp
-((name . "read_file")
- (description . "Read the contents of a file")
- (input_schema
-   (type . "object")
-   (properties . ((path . ((type . "string")
-                           (description . "File path")))))
-   (required . (path))
-   (additionalProperties . :json-false)))
-```
-
-### 提供商转换
-
-#### Anthropic
-
-直接使用 `input_schema` (原生格式)。
-
-#### OpenAI
-
-转换为函数调用格式：
-
-```elisp
-(defun magent-api--convert-tools (tools)
-  "Convert internal tool definitions to OpenAI format."
-  (mapcar (lambda (tool)
-            `((type . "function")
-              (function . ((name . ,(cdr (assq 'name tool)))
-                          (description . ,(cdr (assq 'description tool)))
-                          (parameters . ,(cdr (assq 'input_schema tool)))))))
-          tools))
-```
-
-## API 调用
-
-### 聊天完成
-
-主要 API 函数：
-
-```elisp
-(cl-defun magent-api-chat (messages
-                           &key tools stream model
-                                max-tokens temperature
-                                callback)
-  "Send chat completion request to LLM provider.")
-```
-
-**参数：**
-- `messages`: 消息对象列表
-- `tools`: 可用工具定义列表 (可选)
-- `stream`: 启用流式传输 (未完全实现)
-- `model`: 覆盖默认模型
-- `max-tokens`: 最大响应令牌数
-- `temperature`: 采样温度 (0.0-1.0)
-- `callback`: 用响应调用的函数
-
-**示例：**
-
-```elisp
-(magent-api-chat
- '(((role . "user") (content . "Hello")))
- :tools (magent-tools-get-definitions)
- :callback (lambda (response)
-             (message "Got: %s"
-                     (magent-api--extract-content response))))
-```
-
-### 响应处理
-
-响应被解析和规范化：
-
-```elisp
-;; 提取文本内容
-(magent-api--extract-content response)
-;; => "Response text"
-
-;; 提取工具使用
-(magent-api--extract-tool-uses response)
-;; => (((id . "call_123")
-;;      (name . "read_file")
-;;      (input . ((path . "/foo/bar.el")))))
-```
-
-### 错误处理
-
-检测并抛出 API 错误：
-
-```elisp
-(when (assq 'error response)
-  (error "API error: %s" (cdr (assq 'error response))))
-```
-
-常见错误场景：
-- 无效的 API 密钥 → 身份验证错误
-- 速率限制 → 429 状态码
-- 找不到模型 → 无效模型错误
-- 格式错误的请求 → 400 Bad Request
+- **字符串响应**：最终文本 -- 添加到会话，传递给 UI
+- **工具结果**：工具已执行，gptel 继续循环 -- 在 UI 中显示
+- **工具调用待处理**：等待用户确认 -- 记录
+- **中止/错误**：请求失败 -- 显示为错误
 
 ## 日志记录
 
@@ -363,93 +155,23 @@ Magent 使用一致的内部消息格式：
 M-x magent-view-log
 ```
 
-### 日志内容
-
-日志包括：
-- 请求时间戳
-- API 端点
-- 消息计数
-- 请求体 (JSON)
-- 响应体 (JSON)
-- 错误消息
-
-**示例日志：**
-
-```
-[14:32:15] [API] Sending request to: https://api.anthropic.com/v1/messages
-[14:32:15] [API] Messages count: 3
-[14:32:15] [API] Request body: {"model":"claude-sonnet-4-20250514",...}
-[14:32:17] [API] Response received: {"id":"msg_123",...}
-```
-
 ### 清除日志
 
 ```elisp
 M-x magent-clear-log
 ```
 
-## 流式传输支持
-
-### 当前状态
-
-基本的流式基础设施存在，但未完全与代理循环集成。
-
-### 流式 API
+Magent 将智能体活动记录到 `*magent-log*` 缓冲区。要进行更底层的 HTTP 调试，启用 Emacs URL 库调试模式：
 
 ```elisp
-(magent-api-chat messages
-  :stream t
-  :callback (lambda (chunk)
-              (insert chunk)))
-```
-
-### 流式传输工作原理
-
-1. **服务器发送事件 (SSE)**: 两个提供商都使用 SSE 进行流式传输
-2. **增量增量**: 在生成时接收部分响应
-3. **事件解析**: 从 SSE 流解析 `data:` 行
-4. **增量提取**: 从事件中提取文本增量
-
-### 未来增强
-
-完全流式支持需要：
-1. 增量更新的缓冲区管理
-2. 流式模式中的工具使用检测
-3. 工具参数的部分 JSON 解析
-4. 生成期间的 UI 更新
-
-## 速率限制
-
-### 提供商限制
-
-**Anthropic：**
-- 速率限制因计划等级而异
-- 包括请求/分钟和令牌/分钟限制
-- 返回带 retry-after 请求头的 429
-
-**OpenAI：**
-- 速率限制因模型和计划而异
-- 以请求/分钟和令牌/分钟衡量
-- 返回带 retry-after 请求头的 429
-
-### 处理速率限制
-
-目前，Magent 不实现自动重试逻辑。速率限制错误传播给用户。
-
-**未来增强：**
-```elisp
-;; 建议的重试逻辑
-(when (eq status 429)
-  (let ((retry-after (cdr (assq 'retry-after headers))))
-    (sleep-for (string-to-number retry-after))
-    (magent-api-chat ...)))  ; 重试请求
+(setq url-debug t)
 ```
 
 ## 成本优化
 
 ### 令牌用量
 
-通过日志监控令牌用量：
+通过会话上下文大小监控大致令牌用量：
 
 ```elisp
 (magent-session-get-context-size session)
@@ -458,173 +180,58 @@ M-x magent-clear-log
 
 ### 模型选择
 
-选择合适的模型：
-- **简单任务**: 使用更快/更便宜的模型 (Haiku, GPT-3.5)
-- **复杂任务**: 使用更强大的模型 (Opus, GPT-4)
-- **代码生成**: 平衡模型效果很好 (Sonnet, GPT-4-turbo)
+为每个智能体选择合适的模型：
+- **简单任务**：使用更快/更便宜的模型（Haiku、GPT-3.5）
+- **复杂任务**：使用更强大的模型（Opus、GPT-4）
+- **代码生成**：平衡模型效果很好（Sonnet、GPT-4-turbo）
 
-### 代理特定模型
+在自定义智能体文件中覆盖模型：
 
-按代理覆盖模型：
-
-```elisp
-;; 在自定义代理文件中
+```yaml
 ---
 model: claude-haiku-4-20250514
 ---
-```
-
-或以编程方式：
-
-```elisp
-(setf (magent-agent-info-model agent-info) "claude-haiku-4-20250514")
-```
-
-## 测试
-
-### 模拟响应
-
-用于在不调用 API 的情况下测试：
-
-```elisp
-;; 模拟 API 函数
-(cl-defun magent-api-chat (messages &rest _)
-  (funcall callback '((content . "Mock response"))))
-```
-
-### 本地模型
-
-用本地模型进行测试：
-
-```elisp
-(setq magent-provider 'openai-compatible)
-(setq magent-base-url "http://localhost:1234/v1")
-(setq magent-model "local-model")
-```
-
-### 调试模式
-
-启用详细日志：
-
-```elisp
-(setq magent-enable-logging t)
-(setq url-debug t)  ; Emacs url 库调试
 ```
 
 ## 故障排查
 
 ### 找不到 API 密钥
 
-```
-Error: API key not set
-```
-
-**解决方案：**
-```elisp
-(setq magent-api-key "your-key")
-;; 或
-(setenv "ANTHROPIC_API_KEY" "your-key")
-```
-
-### 连接超时
-
-```
-Error: Connection timeout
-```
-
-**解决方案：**
-```elisp
-(setq magent-api--request-timeout 180)  ; 增加超时
-```
-
-### 无效模型
-
-```
-Error: Model not found
-```
-
-**解决方案：** 验证模型名称与提供商的模型匹配：
-```elisp
-;; 检查当前模型
-magent-model
-
-;; 更新为有效模型
-(setq magent-model "claude-sonnet-4-20250514")
-```
-
-### SSL 证书问题
-
-```
-Error: Certificate verification failed
-```
-
-**解决方案：**
-```elisp
-;; 临时解决方案 (不建议用于生产)
-(setq tls-checktrust nil)
-```
-
-### 超过速率限制
-
-```
-Error: Rate limit exceeded (429)
-```
-
-**解决方案：** 等待并重试，或升级 API 计划等级。
-
-## 高级用法
-
-### 自定义请求头
-
-添加自定义请求头到请求：
+确保 gptel 有正确的 API 密钥：
 
 ```elisp
-;; 修改 magent-api--get-headers
-(defun magent-api--get-headers ()
-  `(,@(default-headers)
-    ("x-custom-header" . "value")))
+gptel-api-key  ; 检查当前密钥
+(setq gptel-api-key "your-key")
+;; 或设置 ANTHROPIC_API_KEY / OPENAI_API_KEY 环境变量
 ```
 
-### 请求拦截器
+### 错误的模型或提供商
 
-在发送前修改请求：
+检查 gptel 配置：
 
 ```elisp
-;; 挂钩到 url-request-data
-(advice-add 'magent-api-chat :before
-  (lambda (&rest _)
-    (message "Sending request...")))
+gptel-model    ; 当前模型
+gptel-backend  ; 当前后端/提供商
 ```
 
-### 响应转换器
+### 智能体使用错误的模型
 
-接收后转换响应：
+每个智能体的模型覆盖优先。检查智能体的模型字段：
 
 ```elisp
-(advice-add 'magent-api--parse-response :filter-return
-  (lambda (response)
-    ;; 添加自定义处理
-    response))
+(magent-agent-info-model (magent-agent-registry-get "myagent"))
 ```
 
-## 提供商比较
+优先顺序：
+1. 智能体特定的模型覆盖
+2. gptel 默认值（`gptel-model`）
 
-| 特性 | Anthropic | OpenAI | OpenAI 兼容 |
-|------|-----------|--------|------------|
-| 工具调用 | 原生 | 原生 | 因提供商而异 |
-| 流式传输 | 是 (SSE) | 是 (SSE) | 因提供商而异 |
-| 上下文窗口 | 最多 200K 令牌 | 最多 128K 令牌 | 因提供商而异 |
-| 响应格式 | 结构化块 | 简单内容 | 通常为 OpenAI 格式 |
-| 图像支持 | 是 | 是 | 因提供商而异 |
-| 函数调用 | tool_use 块 | tool_calls 数组 | 通常为 tool_calls |
+### 连接问题
 
-## 最佳实践
+要进行 HTTP 级别调试：
 
-1. **使用环境变量**: 将 API 密钥从代码中移出
-2. **启用日志**: 在开发期间监控请求
-3. **处理错误**: 在 API 调用中包装错误处理器
-4. **选择合适的模型**: 平衡成本和能力
-5. **监控令牌用量**: 通过日志跟踪成本
-6. **先在本地测试**: 用本地模型进行开发
-7. **实现重试**: 优雅地处理暂时性故障
-8. **尽可能缓存**: 减少冗余的 API 调用
+```elisp
+(setq url-debug t)
+```
+
+检查 gptel 自身的故障排查：`M-x gptel` 应该独立于 Magent 工作。

@@ -5,69 +5,60 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build Commands
 
 ```bash
-make compile    # Byte-compile all Elisp files
-make test       # Run tests (requires magent-tests.el)
-make clean      # Remove compiled .elc files
+make compile       # Byte-compile all Elisp files
+make test          # Compile then run all 63 ERT tests
+make test-only     # Run tests without recompiling
+make clean         # Remove compiled .elc files
 ```
 
-For single-file compilation:
+Single-file compilation:
 ```bash
-emacs -Q --batch -L lisp -f batch-byte-compile lisp/magent-foo.el
+emacs -Q --batch -L lisp -L ~/proj/gptel -f batch-byte-compile lisp/magent-foo.el
+```
+
+Run a single test by name:
+```bash
+emacs -Q --batch -L lisp -L test -L ~/proj/gptel -l test/run-tests.el --eval '(ert-run-tests-batch-and-exit "magent-test-name-pattern")'
+```
+
+The Makefile expects gptel source at `$HOME/proj/gptel` by default. Override with `GPTEL_DIR`:
+```bash
+make test GPTEL_DIR=/path/to/gptel
 ```
 
 ## Architecture
 
-Magent is an Emacs Lisp AI coding agent that integrates with Anthropic Claude and OpenAI models. The package uses a modular architecture with clear separation of concerns.
+Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and permission-based tool access. It delegates all LLM communication to **gptel** (the sole external dependency beyond Emacs 27.1+).
 
 ### Core Flow
 
-1. **Entry Point** (`magent.el`): Defines `magent-mode` minor mode with keybindings (`C-c o` prefix). Initializes the agent registry and loads custom agents on mode activation.
+1. **Entry point** (`magent.el`): `magent-mode` minor mode with `C-c o` keybinding prefix. Activating the mode initializes the agent registry and loads custom agents.
 
-2. **Agent System**: Multi-agent architecture with permission-based tool access:
-   - `magent-agent.el`: Main agent loop that processes prompts, handles tool calling, and manages iterations (max 10 per request)
-   - `magent-agent-registry.el`: Central registry for agent lookup/registration
-   - `magent-agent-info.el`: `cl-defstruct` defining agent properties (name, mode, permissions, temperature, model, prompt)
-   - `magent-agent-types.el`: Built-in agents: `build` (default), `plan`, `explore`, `general`, `compaction`, `title`, `summary`
-   - `magent-agent-file.el`: Loads custom agents from `.magent/agent/*.md` files (YAML frontmatter + markdown)
+2. **UI** (`magent-ui.el`): Minibuffer input, output buffer rendering (markdown, tool calls, errors), and logging. Commands like `magent-prompt`, `magent-prompt-region`, `magent-ask-at-point` feed into the agent system.
 
-3. **Permission System** (`magent-permission.el`): Rule-based tool access control per agent. Supports `allow`, `deny`, `ask` with file-pattern matching (e.g., deny `*.env` files).
+3. **Agent processing** (`magent-agent.el`): `magent-agent-process` builds a gptel prompt list from the session, applies per-agent overrides (model, temperature), filters tools by permissions, then calls `gptel-request`. gptel handles the LLM communication and tool-calling loop. The callback receives either a final string response or an error.
 
-4. **API Layer** (`magent-api.el`): HTTP client supporting Anthropic and OpenAI formats. Handles message conversion, tool definitions, and streaming. Uses `url-retrieve` for async requests.
+4. **Agent definitions**: Five files compose the agent system:
+   - `magent-agent-info.el`: `cl-defstruct` with fields: name, description, mode, native, hidden, temperature, top-p, color, model, prompt, options, steps, permission
+   - `magent-agent-types.el`: 7 built-in agents — `build` (default primary), `plan` (primary), `explore` (subagent), `general` (subagent), `compaction`, `title`, `summary` (all internal)
+   - `magent-agent-registry.el`: Hash-table registry with lookup, filtering by mode/visibility, and interactive selection
+   - `magent-agent-file.el`: Loads custom agents from `.magent/agent/*.md` (YAML frontmatter + markdown body as system prompt)
 
-5. **Tools** (`magent-tools.el`): Implements `read_file`, `write_file`, `grep`, `glob`, `bash`. Tools are filtered per-agent based on permission rules.
+5. **Permission system** (`magent-permission.el`): Rule-based access control per agent. Rules map tool names to `allow`/`deny`/`ask`, with optional nested file-pattern rules (glob syntax). Resolution order: exact tool match → nested file rules → wildcard (`*`) fallback → default deny.
 
-6. **Session** (`magent-session.el`): Manages conversation history with per-session agent assignment. Supports persistence to `~/.emacs.d/magent-sessions/`.
+6. **Tools** (`magent-tools.el`): Implements `read_file`, `write_file`, `grep`, `glob`, `bash` as `gptel-tool` structs. Tools are registered globally but filtered per-agent through the permission system.
 
-### Agent Modes
+7. **Session** (`magent-session.el`): Conversation state with messages list, assigned agent, and history trimming. Persists to `~/.emacs.d/magent-sessions/` as JSON. Converts to gptel prompt list format for API calls.
 
-- `primary`: User-facing agents (build, plan)
-- `subagent`: Internal agents called by primary agents (explore, general)
-- `all`: Can act as either
+### Key Design Decisions
 
-### Key Data Structures
-
-- `magent-agent-info`: Agent configuration struct with name, mode, permissions, prompt
-- `magent-session`: Conversation state with messages list and assigned agent
-- `magent-permission`: Rule-based access control (`(tool . allow/deny/ask)` or nested file patterns)
+- **No custom HTTP client**: All LLM communication goes through gptel. Provider, model, and API key configuration is managed by gptel (`gptel-backend`, `gptel-model`, `gptel-api-key`).
+- **Per-agent gptel overrides**: `magent-agent-info-apply-gptel-overrides` temporarily sets gptel variables (model, temperature, backend) for the duration of a request.
+- **Agent modes**: `primary` (user-facing), `subagent` (called internally), `all` (either role).
+- **Tool filtering**: Tools are defined once globally but each agent only sees tools allowed by its permission rules.
 
 ### Configuration
 
-All config via `customize-group RET magent`:
-- `magent-provider`: `'anthropic`, `'openai`, or `'openai-compatible`
-- `magent-api-key`: Direct key or use env vars `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`
-- `magent-enable-tools`: List of enabled tool symbols
-- `magent-load-custom-agents`: Load from `.magent/agent/*.md`
+Magent-specific settings via `customize-group RET magent`: `magent-system-prompt`, `magent-buffer-name`, `magent-enable-tools`, `magent-max-history`, `magent-default-agent`, `magent-load-custom-agents`, `magent-enable-logging`.
 
-### Custom Agents
-
-Create `.magent/agent/myagent.md`:
-```markdown
----
-description: My custom agent
-mode: primary
-hidden: false
-temperature: 0.5
----
-
-Your custom system prompt here.
-```
+LLM provider/model/key settings are managed entirely by gptel — configure via `gptel-backend`, `gptel-model`, and `gptel-api-key` (or env vars `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`).

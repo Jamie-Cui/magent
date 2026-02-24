@@ -53,14 +53,38 @@ FORMAT-STRING and ARGS are passed to `format'."
     buffer))
 
 (defun magent-ui-display-buffer ()
-  "Display the Magent output buffer."
+  "Display the Magent output buffer.
+If the buffer is empty but the session has history, render all
+past messages so the user can see the full conversation."
   (let ((buffer (magent-ui-get-buffer)))
-    (display-buffer buffer
-                    '((display-buffer-reuse-window
-                       display-buffer-in-direction)
-                      (direction . bottom)
-                      (window-height . 0.3))))
-  (select-window (get-buffer-window magent-buffer-name)))
+    (when (zerop (buffer-size buffer))
+      (magent-ui-render-history))
+    (pop-to-buffer buffer)))
+
+(defun magent-ui-render-history ()
+  "Render all session messages into the output buffer.
+Clears the buffer first, then inserts each message from the
+current session in chronological order."
+  (let ((session (magent-session-get))
+        (buffer (magent-ui-get-buffer)))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (dolist (msg (magent-session-get-messages session))
+          (let ((role (cdr (assq 'role msg)))
+                (content (cdr (assq 'content msg))))
+            (pcase role
+              ('user
+               (when (stringp content)
+                 (goto-char (point-max))
+                 (insert (propertize (format "\n❯ %s\n" content)
+                                     'face '(bold font-lock-keyword-face)))))
+              ('assistant
+               (when (stringp content)
+                 (goto-char (point-max))
+                 (insert (propertize "\n🤖 " 'face 'font-lock-string-face))
+                 (insert (magent-ui--render-markdown content))
+                 (insert "\n"))))))))))
 
 (defun magent-ui-clear-buffer ()
   "Clear the Magent output buffer."
@@ -195,7 +219,6 @@ Handles code blocks, bold, and inline code."
   (interactive)
   (let ((input (read-string "Ask magent: ")))
     (when (not (string-blank-p input))
-      (magent-ui-clear-buffer)
       (magent-ui-display-buffer)
       (magent-ui-insert-user-message input)
       (magent-ui-process input))))
@@ -205,7 +228,6 @@ Handles code blocks, bold, and inline code."
   "Send region from BEGIN to END to Magent agent."
   (interactive "r")
   (let ((input (buffer-substring begin end)))
-    (magent-ui-clear-buffer)
     (magent-ui-display-buffer)
     (magent-ui-insert-user-message (format "[Region] %s" input))
     (magent-ui-process input)))
@@ -217,7 +239,6 @@ Handles code blocks, bold, and inline code."
   (let ((symbol (thing-at-point 'symbol)))
     (when symbol
       (let ((input (format "Explain this code: %s" symbol)))
-        (magent-ui-clear-buffer)
         (magent-ui-display-buffer)
         (magent-ui-insert-user-message input)
         (magent-ui-process input)))))

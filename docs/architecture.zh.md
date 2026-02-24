@@ -4,7 +4,7 @@
 
 ## 概述
 
-Magent 是一个多智能体 AI 编程助手，与 LLM 提供商（Anthropic Claude、OpenAI GPT）集成，在 Emacs 中提供智能代码协助。该系统采用模块化架构，在六个主要层之间明确分离关注点。
+Magent 是一个多智能体 AI 编程助手，通过 [gptel](https://github.com/karthink/gptel) 与 LLM 提供商集成，在 Emacs 中提供智能代码协助。该系统采用模块化架构，在五个主要层之间明确分离关注点。
 
 ## 系统架构
 
@@ -28,8 +28,8 @@ Magent 是一个多智能体 AI 编程助手，与 LLM 提供商（Anthropic Cla
 ┌─────────────────────────────────────────────────────────────┐
 │                      Agent Layer                             │
 │           (magent-agent.el, magent-agent-*.el)              │
-│  - Agent orchestration and loop (max 10 iterations)         │
-│  - Tool calling coordination                                │
+│  - Agent orchestration via gptel                            │
+│  - Per-agent gptel overrides (model, temperature)           │
 │  - Permission-based access control                          │
 │  - Built-in and custom agent management                     │
 └─────────────────────────────────────────────────────────────┘
@@ -48,15 +48,15 @@ Magent 是一个多智能体 AI 编程助手，与 LLM 提供商（Anthropic Cla
 │  - read_file, write_file                                    │
 │  - grep, glob                                               │
 │  - bash command execution                                   │
+│  - Registered as gptel-tool structs                         │
 └─────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────┐
-│                      API Layer                               │
-│                    (magent-api.el)                           │
+│                      LLM Layer (gptel)                       │
 │  - HTTP client for LLM providers                            │
 │  - Message format conversion                                │
+│  - Tool calling FSM (loop management)                       │
 │  - Streaming support                                        │
-│  - Request/response logging                                 │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -121,27 +121,25 @@ Magent 是一个多智能体 AI 编程助手，与 LLM 提供商（Anthropic Cla
 6. **title** (internal): 对话标题生成
 7. **summary** (internal): PR 风格摘要
 
-#### 智能体循环 (`magent-agent.el`)
+#### 智能体处理 (`magent-agent.el`)
 
-实现具有工具调用的核心智能体执行循环。
+通过 gptel 实现 LLM 通信和工具调用。
 
-**智能体循环流程：**
+**智能体处理流程：**
 1. 接受用户提示
 2. 将用户消息添加到会话
-3. 使用可用工具调用 LLM API
-4. 如果响应包含工具使用：
-   - 使用权限检查执行每个工具
-   - 将工具结果添加到会话
-   - 循环回到步骤 3（最多 10 次迭代）
-5. 如果响应仅包含文本：
-   - 将助手消息添加到会话
-   - 调用完成回调
+3. 从会话历史构建 gptel 提示列表
+4. 应用每个智能体的 gptel 覆盖（模型、温度、后端）
+5. 按智能体权限过滤工具
+6. 使用系统提示和可用工具调用 `gptel-request`
+7. gptel 的 FSM 在内部管理工具调用循环
+8. 回调接收最终字符串响应或错误
+9. 将响应记录在会话中
 
 **主要函数：**
 - `magent-agent-process`: 智能体执行的入口点
-- `magent-agent--loop`: 主迭代循环
-- `magent-agent--get-tools`: 按智能体权限过滤工具
-- `magent-agent--execute-tools`: 执行带检查的工具调用
+- `magent-agent--make-callback`: 创建处理所有响应类型的 gptel 回调
+- `magent-tools-get-gptel-tools`: 按智能体权限过滤工具
 
 #### 自定义智能体 (`magent-agent-file.el`)
 
@@ -255,51 +253,28 @@ Your custom system prompt here.
 
 **工具定义：**
 
-每个工具为 LLM 提供一个模式：
+每个工具通过 `gptel-make-tool` 注册为 `gptel-tool` 结构：
 - `name`: 工具标识符
 - `description`: 工具的功能
-- `input_schema`: 参数的 JSON 模式
+- `args`: 参数 plist 列表（name、type、description）
+- `function`: 执行的 Emacs Lisp 函数
+- `confirm`: 是否需要用户确认（用于 write_file、bash）
 
-### 6. API 层 (`magent-api.el`)
+### 6. LLM 层 (gptel)
 
-与 LLM 提供商通信的 HTTP 客户端。
+所有 LLM 通信都委托给 [gptel](https://github.com/karthink/gptel)，一个外部 Emacs 包。
 
-**支持的提供商：**
-- Anthropic Claude（Messages API）
-- OpenAI GPT（Chat Completions API）
-- OpenAI 兼容 API（自定义基础 URL）
+**gptel 负责：**
+- 与 LLM 提供商的 HTTP 通信（Anthropic、OpenAI、Ollama 等）
+- 提供商之间的消息格式转换
+- 工具调用 FSM（请求/工具执行/重新请求循环）
+- 流式传输支持
 
-**主要职责：**
-- 在内部和提供商特定的消息格式之间转换
-- 处理提供商格式中的工具定义
-- 解析响应并提取内容/工具使用
-- 支持流式响应
-- 请求/响应日志记录
-
-**消息转换：**
-
-内部格式使用一致的结构：
-```elisp
-((role . "user")
- (content . "text"))
-```
-
-提供商格式有所不同：
-- **Anthropic**: 具有类型的结构化内容块
-- **OpenAI**: 简单的字符串内容
-
-**工具使用提取：**
-
-不同的提供商有不同的工具调用格式：
-- **Anthropic**: `tool_use` 内容块
-- **OpenAI**: 消息中的 `tool_calls` 数组
-
-API 层将这些规范化为内部格式：
-```elisp
-((id . "call_123")
- (name . "read_file")
- (input . ((path . "/foo/bar.el"))))
-```
+**Magent 在 gptel 之上负责：**
+- 通过 `magent-agent-info-apply-gptel-overrides` 实现每个智能体的模型/温度覆盖
+- 使用基于权限的过滤将工具注册为 `gptel-tool` 结构
+- 将会话历史转换为 gptel 提示列表格式
+- 回调处理，用于工具调用显示和错误报告
 
 ## 数据流
 
@@ -314,24 +289,21 @@ API 层将这些规范化为内部格式：
    - 会话检索或分配智能体
 
 3. **智能体处理**
-   - 智能体循环开始
-   - 工具按智能体权限过滤
-   - 使用消息 + 工具创建 API 请求
+   - `magent-agent-process` 从会话构建 gptel 提示列表
+   - 工具按智能体权限过滤为 `gptel-tool` 列表
+   - 应用每个智能体的 gptel 覆盖（模型、温度）
+   - 使用系统提示和工具调用 `gptel-request`
 
-4. **LLM 响应**
-   - API 返回响应（文本或工具使用）
-   - 响应被解析和规范化
+4. **gptel 工具调用循环**
+   - gptel 向 LLM 提供商发送请求
+   - 如果 LLM 返回工具调用，gptel 执行它们并重新请求
+   - 此循环完全由 gptel 的 FSM 管理
+   - Magent 的回调接收工具调用通知用于 UI 显示
 
-5. **工具执行**（如适用）
-   - 每个工具使用都检查权限
-   - 如果允许，执行工具
-   - 结果添加到会话
-   - 循环继续（最多 10 次迭代）
-
-6. **完成**
-   - 最终文本响应添加到会话
+5. **完成**
+   - gptel 回调接收最终文本响应
+   - 响应添加到会话
    - 输出显示给用户
-   - 会话被持久化
 
 ### 自定义智能体加载流程
 
@@ -381,19 +353,19 @@ API 层将这些规范化为内部格式：
 - 持久性：保存和恢复对话
 - 智能体一致性：在整个会话中保持相同的智能体
 
-### 4. 最大迭代限制
+### 4. 委托给 gptel
 
-**决策：** 限制智能体循环为 10 次迭代。
+**决策：** 使用 gptel 进行所有 LLM 通信，而不是自定义 HTTP 客户端。
 
 **理由：**
-- 防止工具调用中的无限循环
-- 控制 API 成本
-- 强制更高效的工具使用
-- 与 OpenCode 行为相匹配
+- 利用 gptel 成熟的提供商支持（Anthropic、OpenAI、Ollama 等）
+- gptel 的 FSM 处理工具调用循环，降低 Magent 的复杂性
+- 每个智能体的覆盖允许模型/温度自定义，无需重新实现提供商逻辑
+- 用户受益于 gptel 的积极开发和提供商添加
 
 ### 5. 同步工具执行
 
-**决策：** 在智能体循环中同步执行工具。
+**决策：** 在 gptel 回调中同步执行工具。
 
 **理由：**
 - 简单性：更容易推理执行顺序
@@ -401,23 +373,13 @@ API 层将这些规范化为内部格式：
 - Emacs 线程：Emacs 中的异步支持有限
 - 未来：如果需要，可以添加异步支持
 
-### 6. 提供商抽象
-
-**决策：** 支持具有统一接口的多个 LLM 提供商。
-
-**理由：**
-- 灵活性：用户选择其首选提供商
-- 面向未来：易于添加新提供商
-- 测试：可以为不同任务切换提供商
-- 成本优化：在适当时使用更便宜的模型
-
 ## 扩展点
 
 该架构提供了几个扩展点：
 
 1. **自定义智能体**: 添加 `.magent/agent/*.md` 文件
-2. **新工具**: 在 `magent-tools.el` 中扩展新功能
-3. **新提供商**: 在 `magent-api.el` 中添加提供商支持
+2. **新工具**: 在 `magent-tools.el` 中添加 `gptel-tool` 结构
+3. **新提供商**: 通过 gptel 后端配置（无需修改 Magent）
 4. **权限规则**: 定义自定义权限方案
 5. **UI 扩展**: 在 `magent-ui.el` 上构建丰富的显示
 
@@ -431,9 +393,9 @@ API 层将这些规范化为内部格式：
 
 ### API 调用
 
-- 每个智能体循环迭代 = 1 个 API 调用
-- 工具密集型任务可能使用多个迭代
-- 流式处理减少了感知延迟
+- gptel 管理工具调用循环（每次请求多个 API 调用）
+- 工具密集型任务会自动使用更多 API 调用
+- 通过 gptel 支持流式传输
 
 ### 文件操作
 

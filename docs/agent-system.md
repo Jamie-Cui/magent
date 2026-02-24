@@ -250,13 +250,13 @@ M-x magent-select-agent
 
 ### 3. Execution
 
-Agent processes user prompts through the agent loop:
+Agent processes user prompts through gptel:
 
 1. Get agent's system prompt
-2. Filter tools by agent permissions
-3. Call LLM with agent's model/temperature
-4. Execute permitted tools
-5. Iterate until completion (max 10 times)
+2. Filter tools by agent permissions into `gptel-tool` list
+3. Apply per-agent gptel overrides (model, temperature)
+4. Call `gptel-request` — gptel manages the tool-calling loop
+5. Callback receives final response or error
 
 ### 4. Session Persistence
 
@@ -510,10 +510,9 @@ Test permission resolution:
 
 Priority order:
 1. Agent-specific model override
-2. Global `magent-model` setting
-3. Provider default
+2. gptel default (`gptel-model`)
 
-Check effective model:
+Check agent's model override:
 ```elisp
-(magent-agent-info-model-string agent-info)
+(magent-agent-info-model agent-info)
 ```

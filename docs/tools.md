@@ -4,13 +4,14 @@ This document describes the tools available to Magent agents for interacting wit
 
 ## Overview
 
-Tools are the primary mechanism by which agents interact with the file system and execute commands. Each tool has:
+Tools are the primary mechanism by which agents interact with the file system and execute commands. Each tool is registered as a `gptel-tool` struct and has:
 
 - **Name**: Unique identifier used in API calls
 - **Description**: What the tool does (shown to LLM)
-- **Input Schema**: JSON schema defining parameters
-- **Implementation**: Emacs Lisp function that executes the tool
-- **Permissions**: Per-agent access control
+- **Args**: List of argument plists defining parameters
+- **Function**: Emacs Lisp function that executes the tool
+- **Confirm**: Whether user confirmation is required (for write_file, bash)
+- **Permissions**: Per-agent access control via Magent's permission system
 
 ## Available Tools
 
@@ -297,27 +298,40 @@ make clean && make                       # Rebuild project
 
 ## Tool Execution Flow
 
-1. **Agent Request**: LLM generates tool use in response
-2. **Permission Check**: Verify agent has permission for tool
-3. **Parameter Validation**: Ensure required parameters present
-4. **Tool Execution**: Call Emacs Lisp implementation
-5. **Result Capture**: Catch errors, format output
-6. **Session Update**: Add tool result to conversation history
-7. **Agent Loop**: Continue with next iteration
+1. **Tool Registration**: Tools registered as `gptel-tool` structs at load time
+2. **Permission Filtering**: `magent-tools-get-gptel-tools` filters tools per agent
+3. **gptel Request**: Filtered tools passed to `gptel-request`
+4. **LLM Response**: LLM generates tool use in response
+5. **gptel Execution**: gptel calls the tool's `:function`, optionally prompting for confirmation (`:confirm t`)
+6. **Result Handling**: gptel sends tool results back to LLM and continues the loop
+7. **Callback**: Magent's callback receives tool call notifications for UI display
 
-## Tool Schemas
+## Tool Definitions
 
-Tools are defined with JSON schemas for the LLM:
+Tools are defined as `gptel-tool` structs using `gptel-make-tool`:
 
 ```elisp
-((name . "read_file")
- (description . "Read the contents of a file. Use this to see the current state of a file before making changes.")
- (input_schema
-   (type . "object")
-   (properties . ((path . ((type . "string")
-                           (description . "Absolute or relative path to the file")))))
-   (required . (path))
-   (additionalProperties . :json-false)))
+(gptel-make-tool
+ :name "read_file"
+ :description "Read the contents of a file at the given path."
+ :args (list '(:name "path"
+               :type string
+               :description "Absolute or relative path to the file"))
+ :function #'magent-tools--read-file
+ :category "magent")
+```
+
+Tools with side effects use `:confirm t`:
+
+```elisp
+(gptel-make-tool
+ :name "write_file"
+ :description "Write content to a file."
+ :args (list '(:name "path" :type string :description "File path")
+             '(:name "content" :type string :description "Content to write"))
+ :function #'magent-tools--write-file
+ :confirm t
+ :category "magent")
 ```
 
 ## Error Handling
@@ -490,7 +504,7 @@ tools:
 
 ### Adding New Tools
 
-1. **Implement function** in `magent-tools.el`:
+1. **Implement the function** in `magent-tools.el`:
 ```elisp
 (defun magent-tools--mytool (param1 param2)
   "Description of what this tool does."
@@ -499,15 +513,32 @@ tools:
     (error (format "Error in mytool: %s" (error-message-string err)))))
 ```
 
-2. **Add to definitions**:
+2. **Register as a gptel-tool struct**:
 ```elisp
-(push '((name . "mytool")
-        (description . "Description for LLM")
-        (input_schema ...))
-      tools)
+(defvar magent-tools--mytool-tool
+  (gptel-make-tool
+   :name "mytool"
+   :description "Description for LLM"
+   :args (list '(:name "param1" :type string :description "First parameter")
+               '(:name "param2" :type string :description "Second parameter"))
+   :function #'magent-tools--mytool
+   :category "magent")
+  "gptel-tool struct for mytool.")
 ```
 
-3. **Add to dispatcher**:
+3. **Add to the global tool list**:
+```elisp
+;; Add to magent-tools--all-gptel-tools
+(push magent-tools--mytool-tool magent-tools--all-gptel-tools)
+```
+
+4. **Add permission key mapping** (for filtering):
+```elisp
+;; Add to magent-tools--name-to-permission-key
+(push '("mytool" . mytool) magent-tools--name-to-permission-key)
+```
+
+5. **Optionally add to dispatcher** (for direct use):
 ```elisp
 (pcase tool-name
   ("mytool"
@@ -515,7 +546,7 @@ tools:
                          (cdr (assq 'param2 input)))))
 ```
 
-4. **Enable by default**:
+6. **Enable by default**:
 ```elisp
 (setq magent-enable-tools '(read write grep glob bash mytool))
 ```

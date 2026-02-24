@@ -31,20 +31,18 @@ Deep dive into the multi-agent architecture.
 
 **Read this if:** You want to create custom agents, understand how permissions work, or modify agent behavior.
 
-### [API Integration](api-integration.md)
-Guide to LLM provider integration.
+### [LLM Integration](api-integration.md)
+Guide to LLM provider integration via gptel.
 
 **Contents:**
-- Supported providers (Anthropic, OpenAI, compatible APIs)
-- Configuration and authentication
-- Message format conversion
-- Tool definition formats
-- Streaming support
-- Error handling and rate limiting
+- Supported providers (Anthropic, OpenAI, Ollama, and more via gptel)
+- Configuration through gptel
+- Per-agent model/temperature overrides
+- How Magent uses gptel (request flow, tool registration, callbacks)
+- Logging and debugging
 - Cost optimization strategies
-- Testing and debugging
 
-**Read this if:** You're working with API integration, troubleshooting connection issues, or adding support for new providers.
+**Read this if:** You're configuring LLM providers, troubleshooting connection issues, or understanding how Magent integrates with gptel.
 
 ### [Tools](tools.md)
 Complete reference for available tools.
@@ -85,7 +83,7 @@ Guide to conversation state and history management.
 
 **Common Tasks:**
 - Creating custom agents → [Agent System - Custom Agents](agent-system.md#custom-agents)
-- Configuring API access → [API Integration - Configuration](api-integration.md#configuration)
+- Configuring LLM providers → [LLM Integration - Configuration](api-integration.md#configuration)
 - Managing conversation history → [Session Management](session-management.md)
 
 ### For Developers
@@ -93,12 +91,12 @@ Guide to conversation state and history management.
 **Architecture Overview:**
 1. Start with [Architecture](architecture.md) for the big picture
 2. Read [Agent System](agent-system.md) for the agent loop
-3. Review [API Integration](api-integration.md) for provider details
+3. Review [LLM Integration](api-integration.md) for gptel integration details
 
 **Common Development Tasks:**
 - Adding a new tool → [Tools - Extending Tools](tools.md#extending-tools)
 - Adding a built-in agent → [Agent System - Agent Types](agent-system.md#agent-types)
-- Supporting a new provider → [API Integration - Provider Comparison](api-integration.md#provider-comparison)
+- Supporting a new provider → Configure via gptel backends (see [LLM Integration](api-integration.md#configuration))
 
 ## Document Conventions
 
