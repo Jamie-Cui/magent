@@ -1,76 +1,27 @@
-;;; magent-config.el --- Configuration for OpenCode  -*- lexical-binding: t; -*-
+;;; magent-config.el --- Configuration for Magent  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 
 ;; Author: Jamie Cui <jamie.cui@outlook.com>
 ;; Keywords: tools, ai
-;; Package-Requires: ((emacs "27.1"))
+;; Package-Requires: ((emacs "27.1") (gptel "0.9.8"))
 
 ;;; Commentary:
 
-;; Configuration module for OpenCode using Emacs customize groups.
+;; Configuration module for Magent using Emacs customize groups.
+;; LLM provider, model, and API key settings are managed by gptel.
+;; See `gptel-backend', `gptel-model', and `gptel-api-key'.
 
 ;;; Code:
 
 (defgroup magent nil
-  "OpenCode AI coding agent for Emacs."
+  "Magent AI coding agent for Emacs."
   :prefix "magent-"
   :group 'tools
   :link '(url-link :tag "GitHub" "https://github.com/jamie-cui/magent"))
 
-(defcustom magent-provider 'anthropic
-  "LLM provider to use for AI requests.
-Supported providers: 'anthropic, 'openai, 'openai-compatible."
-  :type '(choice (const :tag "Anthropic" anthropic)
-                 (const :tag "OpenAI" openai)
-                 (const :tag "OpenAI Compatible" openai-compatible))
-  :set (lambda (sym val)
-         (set-default sym val)
-         (when (fboundp 'magent-api-set-credentials)
-           (magent-api-set-credentials)))
-  :initialize 'custom-initialize-default
-  :group 'magent)
-
-(defcustom magent-api-key nil
-  "API key for the LLM provider.
-For Anthropic: Get from https://console.anthropic.com/
-For OpenAI: Get from https://platform.openai.com/api-keys"
-  :type '(string :tag "API Key")
-  :set (lambda (sym val)
-         (set-default sym val)
-         (when (fboundp 'magent-api-set-credentials)
-           (magent-api-set-credentials)))
-  :initialize 'custom-initialize-default
-  :group 'magent)
-
-(defcustom magent-base-url nil
-  "Base URL for OpenAI-compatible API.
-Only used when `magent-provider' is set to 'openai-compatible."
-  :type '(string :tag "Base URL")
-  :group 'magent)
-
-(defcustom magent-model "claude-sonnet-4-20250514"
-  "Model identifier to use for AI requests.
-Examples:
-- Anthropic: claude-sonnet-4-20250514, claude-3-5-sonnet-20241022
-- OpenAI: gpt-4o, gpt-4o-mini, o1"
-  :type 'string
-  :group 'magent)
-
-(defcustom magent-max-tokens 8192
-  "Maximum tokens for AI responses."
-  :type 'integer
-  :group 'magent)
-
-(defcustom magent-temperature 0.7
-  "Temperature for AI response generation (0.0 to 1.0).
-Lower values make responses more focused and deterministic.
-Higher values make responses more creative and varied."
-  :type 'number
-  :group 'magent)
-
 (defcustom magent-system-prompt
-  "You are OpenCode, an AI coding agent that helps users with software development tasks.
+  "You are Magent, an AI coding agent that helps users with software development tasks.
 
 You have access to tools for reading files, editing files, searching code, and running commands. Use these tools to accomplish the user's goals.
 
@@ -86,7 +37,7 @@ If you're unsure about something, ask the user for clarification."
   :group 'magent)
 
 (defcustom magent-buffer-name "*magent*"
-  "Name of the buffer used for OpenCode output."
+  "Name of the buffer used for Magent output."
   :type 'string
   :group 'magent)
 
@@ -134,17 +85,6 @@ Should match one of the registered agent names."
   "Whether to load custom agents from .magent/agent/*.md files."
   :type 'boolean
   :group 'magent)
-
-;;;###autoload
-(defun magent-get-api-key ()
-  "Get the API key for current provider.
-First checks `magent-api-key', then falls back to environment variable."
-  (or magent-api-key
-      (let ((env-var (pcase magent-provider
-                       ('anthropic "ANTHROPIC_API_KEY")
-                       ('openai "OPENAI_API_KEY")
-                       ('openai-compatible "OPENAI_API_KEY"))))
-        (when env-var (getenv env-var)))))
 
 (provide 'magent-config)
 ;;; magent-config.el ends here

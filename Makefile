@@ -1,9 +1,9 @@
 EMACS = emacs
-LOADPATH = -L lisp -L test
+GPTEL_DIR ?= $(HOME)/proj/gptel
+LOADPATH = -L lisp -L test -L $(GPTEL_DIR)
 
 SRCS = lisp/magent.el \
        lisp/magent-config.el \
-       lisp/magent-api.el \
        lisp/magent-session.el \
        lisp/magent-tools.el \
        lisp/magent-agent.el \

@@ -1,4 +1,4 @@
-;;; magent-ui.el --- User interface for OpenCode  -*- lexical-binding: t; -*-
+;;; magent-ui.el --- User interface for Magent  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; User interface for OpenCode including minibuffer commands and output buffer.
+;; User interface for Magent including minibuffer commands and output buffer.
 
 ;;; Code:
 
@@ -19,7 +19,7 @@
 ;;; Buffer management
 
 (defvar-local magent-ui--output-buffer nil
-  "The buffer used for OpenCode output.")
+  "The buffer used for Magent output.")
 
 (defvar magent-log-buffer-name "*magent-log*"
   "Name of the buffer used for Magent logging.")
@@ -45,7 +45,7 @@ FORMAT-STRING and ARGS are passed to `format'."
       (recenter -1))))
 
 (defun magent-ui-get-buffer ()
-  "Get or create the OpenCode output buffer."
+  "Get or create the Magent output buffer."
   (let ((buffer (get-buffer-create magent-buffer-name)))
     (with-current-buffer buffer
       (unless (derived-mode-p 'magent-output-mode)
@@ -53,17 +53,17 @@ FORMAT-STRING and ARGS are passed to `format'."
     buffer))
 
 (defun magent-ui-display-buffer ()
-  "Display the OpenCode output buffer."
+  "Display the Magent output buffer."
   (let ((buffer (magent-ui-get-buffer)))
     (display-buffer buffer
-                   '((display-buffer-reuse-window
-                      display-buffer-in-direction)
-                     (direction . bottom)
-                     (window-height . 0.3))))
+                    '((display-buffer-reuse-window
+                       display-buffer-in-direction)
+                      (direction . bottom)
+                      (window-height . 0.3))))
   (select-window (get-buffer-window magent-buffer-name)))
 
 (defun magent-ui-clear-buffer ()
-  "Clear the OpenCode output buffer."
+  "Clear the Magent output buffer."
   (interactive)
   (with-current-buffer (magent-ui-get-buffer)
     (let ((inhibit-read-only t))
@@ -71,8 +71,8 @@ FORMAT-STRING and ARGS are passed to `format'."
 
 ;;; Output mode
 
-(define-derived-mode magent-output-mode fundamental-mode "OpenCode"
-  "Major mode for OpenCode output."
+(define-derived-mode magent-output-mode fundamental-mode "Magent"
+  "Major mode for Magent output."
   (setq buffer-read-only t)
   (visual-line-mode 1)
   (setq-local display-fill-column-indicator-column nil))
@@ -99,7 +99,7 @@ FORMAT-STRING and ARGS are passed to `format'."
     (let ((inhibit-read-only t))
       (goto-char (point-max))
       (insert (propertize (format "\n❯ %s\n" text)
-                         'face '(bold font-lock-keyword-face)))
+                          'face '(bold font-lock-keyword-face)))
       (when magent-auto-scroll
         (goto-char (point-max))
         (recenter -1)))))
@@ -122,13 +122,13 @@ FORMAT-STRING and ARGS are passed to `format'."
     (let ((inhibit-read-only t))
       (goto-char (point-max))
       (insert (propertize (format "\n🔧 %s" tool-name)
-                         'face 'font-lock-builtin-face))
+                          'face 'font-lock-builtin-face))
       (insert (propertize (format " %s\n"
-                                 (if (stringp input)
-                                     input
-                                   (truncate-string-to-width
-                                    (json-encode input) 100 nil nil "...")))
-                         'face 'font-lock-comment-face))
+                                  (if (stringp input)
+                                      input
+                                    (truncate-string-to-width
+                                     (json-encode input) 100 nil nil "...")))
+                          'face 'font-lock-comment-face))
       (when magent-auto-scroll
         (goto-char (point-max))
         (recenter -1)))))
@@ -139,7 +139,7 @@ FORMAT-STRING and ARGS are passed to `format'."
     (let ((inhibit-read-only t))
       (goto-char (point-max))
       (insert (propertize (format "\n⚠ Error: %s\n" error-text)
-                         'face '(bold font-lock-warning-face)))
+                          'face '(bold font-lock-warning-face)))
       (when magent-auto-scroll
         (goto-char (point-max))
         (recenter -1)))))
@@ -168,32 +168,32 @@ Handles code blocks, bold, and inline code."
                     (let ((lang (match-string 1 match))
                           (code (match-string 2 match)))
                       (propertize code
-                                 'face 'font-lock-constant-face
-                                 'display `(margin left-margin ,(concat " " lang "\n")))))
+                                  'face 'font-lock-constant-face
+                                  'display `(margin left-margin ,(concat " " lang "\n")))))
                   result t t))
     ;; Inline code
     (setq result (replace-regexp-in-string
                   "`\\([^`]+\\)`"
                   (lambda (match)
                     (propertize (match-string 1 match)
-                               'face 'font-lock-constant-face))
+                                'face 'font-lock-constant-face))
                   result t t))
     ;; Bold
     (setq result (replace-regexp-in-string
                   "\\*\\*\\([^*]+\\)\\*\\*"
                   (lambda (match)
                     (propertize (match-string 1 match)
-                               'face 'bold))
+                                'face 'bold))
                   result t t))
     result))
 
 ;;; Minibuffer interface
 
 ;;;###autoload
-(defun magent-prompt ()
-  "Prompt for input and send to OpenCode agent."
+(defun magent ()
+  "Prompt for input and send to Magent agent."
   (interactive)
-  (let ((input (read-string "OpenCode: ")))
+  (let ((input (read-string "Ask magent: ")))
     (when (not (string-blank-p input))
       (magent-ui-clear-buffer)
       (magent-ui-display-buffer)
@@ -202,7 +202,7 @@ Handles code blocks, bold, and inline code."
 
 ;;;###autoload
 (defun magent-prompt-region (begin end)
-  "Send region from BEGIN to END to OpenCode agent."
+  "Send region from BEGIN to END to Magent agent."
   (interactive "r")
   (let ((input (buffer-substring begin end)))
     (magent-ui-clear-buffer)
@@ -230,9 +230,9 @@ Handles code blocks, bold, and inline code."
 (defun magent-ui-process (input)
   "Process INPUT through the agent."
   (when magent-ui--processing
-    (error "Already processing a request"))
+    (error "Magent: Already processing a request"))
   (setq magent-ui--processing t)
-  (message "OpenCode: Processing...")
+  (message "Magent: Processing...")
 
   (condition-case err
       (progn
@@ -250,7 +250,7 @@ Handles code blocks, bold, and inline code."
     (error
      (magent-ui-insert-error (error-message-string err))
      (setq magent-ui--processing nil)
-     (message "OpenCode: Error"))))
+     (message "Magent: Error"))))
 
 (defun magent-ui--finish-processing (response)
   "Finish processing with RESPONSE."
@@ -262,8 +262,12 @@ Handles code blocks, bold, and inline code."
         (goto-char (point-max))
         (when (looking-back "▌" 1)
           (delete-char -1)))))
-  (magent-ui-insert-assistant-message response)
-  (message "OpenCode: Done"))
+  (if response
+      (progn
+        (magent-ui-insert-assistant-message response)
+        (message "Magent: Done"))
+    (magent-ui-insert-error "Request failed or was aborted")
+    (message "Magent: Failed")))
 
 ;;; Session management commands
 
@@ -273,14 +277,14 @@ Handles code blocks, bold, and inline code."
   (interactive)
   (magent-session-reset)
   (magent-ui-clear-buffer)
-  (message "OpenCode: Session cleared"))
+  (message "Magent: Session cleared"))
 
 ;;;###autoload
 (defun magent-show-session ()
   "Show the current session summary."
   (interactive)
   (let ((session (magent-session-get)))
-    (with-output-to-temp-buffer "*OpenCode Session*"
+    (with-output-to-temp-buffer "*Magent Session*"
       (princ (magent-session-summarize session)))))
 
 ;;;###autoload
@@ -315,7 +319,7 @@ Handles code blocks, bold, and inline code."
       (let* ((agent-info (magent-agent-registry-get selected))
              (session (magent-session-get)))
         (magent-session-set-agent session agent-info)
-        (message "OpenCode: Agent set to %s" selected)))))
+        (message "Magent: Agent set to %s" selected)))))
 
 ;;;###autoload
 (defun magent-show-current-agent ()
@@ -324,10 +328,10 @@ Handles code blocks, bold, and inline code."
   (let* ((session (magent-session-get))
          (agent (magent-session-get-agent session)))
     (if agent
-        (message "OpenCode: Current agent is %s (%s)"
+        (message "Magent: Current agent is %s (%s)"
                  (magent-agent-info-name agent)
                  (or (magent-agent-info-description agent) "no description"))
-      (message "OpenCode: No agent selected (will use default)"))))
+      (message "Magent: No agent selected (will use default)"))))
 
 (provide 'magent-ui)
 ;;; magent-ui.el ends here

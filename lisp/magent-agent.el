@@ -1,178 +1,112 @@
-;;; magent-agent.el --- Agent logic and tool calling for OpenCode  -*- lexical-binding: t; -*-
+;;; magent-agent.el --- Agent logic using gptel  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 
 ;; Author: Jamie Cui <jamie.cui@outlook.com>
 ;; Keywords: tools, ai
-;; Package-Requires: ((emacs "27.1"))
+;; Package-Requires: ((emacs "27.1") (gptel "0.9.8"))
+
+;;; Commentary:
+
+;; Agent logic for Magent.  Uses gptel for LLM communication and tool calling.
+;; The agent loop (tool calls, re-requests) is managed entirely by gptel's FSM.
 
 ;;; Code:
 
 (require 'cl-lib)
+(require 'gptel)
 (require 'magent-tools)
 (require 'magent-session)
-(require 'magent-api)
 (require 'magent-agent-registry)
 (require 'magent-agent-info)
 (require 'magent-permission)
 
+;; Forward declarations for UI functions used in the callback
+(declare-function magent-ui-insert-tool-call "magent-ui")
+(declare-function magent-ui-insert-error "magent-ui")
+(declare-function magent-log "magent-ui")
+
 ;;; Agent execution
 
 (defun magent-agent-process (user-prompt &optional callback agent-info)
-  "Process USER-PROMPT through the AI agent with tool calling.
-Calls CALLBACK with the final response when complete.
-AGENT-INFO is the agent to use (defaults to current session's agent)."
-  (let ((session (magent-session-get))
-        ;; Get agent from session or use default
-        (agent (or agent-info
-                   (magent-session-get-agent session)
-                   (magent-agent-registry-get-default))))
+  "Process USER-PROMPT through the AI agent using gptel.
+CALLBACK is called with the final string response when complete.
+AGENT-INFO is the agent to use (defaults to session agent or registry default).
+
+The tool calling loop is managed by gptel's FSM.  Magent's role is to:
+  1. Build the prompt list from session history
+  2. Set up per-agent gptel overrides (backend, model, temperature, tools)
+  3. Call `gptel-request' with the correct system prompt and tools
+  4. Record the final response in the session via the callback"
+  (let* ((session (magent-session-get))
+         (agent (or agent-info
+                    (magent-session-get-agent session)
+                    (magent-agent-registry-get-default))))
     ;; Store agent in session
     (magent-session-set-agent session agent)
     ;; Add user message to session
     (magent-session-add-message session 'user user-prompt)
+    ;; Build prompt list from full session history
+    (let* ((prompt-list (magent-session-to-gptel-prompt-list session))
+           (system-msg (or (magent-agent-info-prompt agent)
+                           magent-system-prompt))
+           (tools (magent-tools-get-gptel-tools agent)))
+      ;; Apply per-agent gptel variable overrides, then fire the request
+      (magent-agent-info-apply-gptel-overrides
+       agent
+       (lambda ()
+         (let ((gptel-tools tools)
+               (gptel-use-tools (if tools t nil)))
+           (gptel-request
+             prompt-list
+             :system system-msg
+             :stream nil
+             :callback (magent-agent--make-callback session callback))))))))
 
-    ;; Start the agent loop with agent context
-    (magent-agent--loop session agent callback)))
+(defun magent-agent--make-callback (session final-callback)
+  "Return a gptel callback that handles all response types.
+SESSION is the magent session to record the final response.
+FINAL-CALLBACK is called with the response string (or nil on error)."
+  (lambda (response info)
+    (cond
+     ;; Final string response — the normal completion path
+     ((stringp response)
+      (magent-session-add-message session 'assistant response)
+      (when final-callback
+        (funcall final-callback response)))
 
-(defun magent-agent--loop (session agent callback &optional iteration)
-  "Main agent loop for handling tool calls.
-SESSION is the current session.
-AGENT is the agent info structure.
-CALLBACK is called with final response.
-ITERATION tracks loop depth to prevent infinite loops."
-  (let ((iter (or iteration 0))
-        (max-iterations 10))
-    (when (>= iter max-iterations)
-      (error "Agent exceeded maximum iterations (%d)" max-iterations))
+     ;; Tool results (tools have run, FSM is continuing)
+     ((and (consp response) (eq (car response) 'tool-result))
+      (dolist (entry (cdr response))
+        (let* ((tool (car entry))
+               (args (cadr entry)))
+          (when (fboundp 'magent-ui-insert-tool-call)
+            (magent-ui-insert-tool-call (gptel-tool-name tool) args)))))
 
-    (let ((messages (magent-session-get-messages session))
-          ;; Get tools filtered by agent permissions
-          (tools (magent-agent--get-tools agent)))
-      ;; Make API request with agent's model and temperature
-      (magent-api-chat
-       messages
-       :tools tools
-       :stream nil
-       :model (magent-agent-info-model-string agent)
-       :temperature (or (magent-agent-info-temperature agent)
-                        magent-temperature)
-       :callback (lambda (response)
-                   (magent-agent--handle-response
-                    session agent response callback iter))))))
+     ;; Tool calls pending user confirmation
+     ((and (consp response) (eq (car response) 'tool-call))
+      ;; gptel handles the confirmation UI; we just log
+      (when (fboundp 'magent-log)
+        (dolist (pending (cdr response))
+          (magent-log "Awaiting confirmation for tool: %s"
+                      (gptel-tool-name (car pending))))))
 
-(defun magent-agent--get-tools (agent-info)
-  "Get tool definitions for AGENT-INFO, filtered by permissions."
-  (let* ((permission (magent-agent-info-permission agent-info))
-         (all-tools (magent-tools-get-definitions))
-         (filtered-tools nil))
-    (dolist (tool all-tools)
-      (let ((tool-name (cdr (assq 'name tool))))
-        (when (magent-permission-allow-p permission tool-name)
-          (push tool filtered-tools))))
-    (nreverse filtered-tools)))
+     ;; Reasoning block (extended thinking) — ignore
+     ((and (consp response) (eq (car response) 'reasoning))
+      nil)
 
-(defun magent-agent--handle-response (session agent response callback iteration)
-  "Handle API RESPONSE, executing tools or calling CALLBACK."
-  (let ((tool-uses (magent-api--extract-tool-uses response)))
-    (if tool-uses
-        ;; Execute tools and continue loop
-        (magent-agent--execute-tools session agent tool-uses response callback iteration)
-      ;; No tools, done - add assistant message and call callback
-      (let ((content (magent-api--extract-content response)))
-        (magent-session-add-message session 'assistant content)
-        (when callback
-          (funcall callback content))))))
+     ;; Abort
+     ((eq response 'abort)
+      (when final-callback
+        (funcall final-callback nil)))
 
-(defun magent-agent--execute-tools (session agent tool-uses response callback iteration)
-  "Execute TOOL-USES and continue agent loop."
-  (let ((assistant-msg `((role . "assistant")
-                         (content . ,(cdr (assq 'content response))))))
-    ;; Add assistant message with tool uses to session
-    (magent-session-add-message session 'assistant
-                                 (cdr (assq 'content response)))
-
-    ;; Execute each tool with permission check
-    (dolist (tool-use tool-uses)
-      (let* ((tool-id (cdr (assq 'id tool-use)))
-             (tool-name (cdr (assq 'name tool-use)))
-             (tool-input (cdr (assq 'input tool-use)))
-             (permission (magent-agent-info-permission agent)))
-        ;; Check permission before executing
-        (if (magent-permission-allow-p permission tool-name)
-            (let ((result (magent-tools-execute tool-name tool-input)))
-              (magent-session-add-tool-result session tool-id result))
-          ;; Permission denied
-          (magent-session-add-tool-result session tool-id
-                                          (format "Permission denied: tool '%s' not allowed" tool-name))))))
-
-    ;; Continue the loop
-    (magent-agent--loop session agent callback (1+ iteration))))
-
-;;; Streaming support
-
-(defun magent-agent-process-stream (user-prompt callback &optional agent-info)
-  "Process USER-PROMPT with streaming response.
-CALLBACK is called with each content chunk.
-AGENT-INFO is the agent to use (defaults to default agent)."
-  (let ((session (magent-session-get))
-        (agent (or agent-info
-                   (magent-agent-registry-get-default))))
-    (magent-session-set-agent session agent)
-    (magent-session-add-message session 'user user-prompt)
-
-    (let ((messages (magent-session-get-messages session))
-          (tools (magent-agent--get-tools agent)))
-      (magent-api-chat
-       messages
-       :tools tools
-       :stream t
-       :model (magent-agent-info-model-string agent)
-       :callback (lambda (chunk)
-                   (funcall callback chunk))))))
-
-;;; Tool use formatting
-
-(defun magent-agent--format-tool-use (tool-use)
-  "Format a tool use for display."
-  (let ((name (cdr (assq 'name tool-use)))
-        (input (cdr (assq 'input tool-use))))
-    (format "🔧 Using: %s\n   Args: %s"
-            name
-            (if (stringp input)
-                input
-              (json-encode input)))))
-
-(defun magent-agent--format-tool-result (result)
-  "Format a tool result for display."
-  (let ((truncated (if (> (length result) 500)
-                      (concat (substring result 0 500) "...")
-                    result)))
-    (format "   Result: %s" truncated)))
-
-;;; Context injection
-
-(defun magent-agent--inject-context (session)
-  "Inject relevant context into the session.
-This adds information about the current project."
-  (when magent-project-root-function
-    (let* ((root (funcall magent-project-root-function))
-           (files (magent-session-get-project-files session root)))
-      (when files
-        (let ((context-msg
-               (format "Current project files:\n%s"
-                       (string-join (take 20 files) "\n"))))
-          ;; This could be added as a system message or context
-          context-msg)))))
-
-;;; Error handling
-
-(defun magent-agent--handle-error (err session callback)
-  "Handle an error during agent execution."
-  (let ((error-msg (format "Error: %s" (error-message-string err))))
-    (magent-session-add-message session 'assistant error-msg)
-    (when callback
-      (funcall callback error-msg))))
+     ;; nil / error
+     ((null response)
+      (let ((status (plist-get info :status)))
+        (when (fboundp 'magent-ui-insert-error)
+          (magent-ui-insert-error (or status "Request failed")))
+        (when final-callback
+          (funcall final-callback nil)))))))
 
 ;;; Agent selection helpers
 

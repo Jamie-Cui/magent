@@ -52,12 +52,13 @@ Examples:
    (cons 'doom_loop magent-permission-ask)
    (cons 'external_directory magent-permission-ask)
    ;; File read restrictions (mirror .gitignore for .env)
+   ;; More specific patterns must come before less specific ones.
    (cons 'read
          (list
           (cons '* magent-permission-allow)
+          (cons "*.env.example" magent-permission-allow)
           (cons "*.env" magent-permission-deny)
-          (cons "*.env.*" magent-permission-deny)
-          (cons "*.env.example" magent-permission-allow)))))
+          (cons "*.env.*" magent-permission-deny)))))
 
 ;;; Permission resolution
 
@@ -80,11 +81,7 @@ FILE is optional file path to check."
      ((null rules)
       magent-permission-allow)
 
-     ;; Check for wildcard
-     ((let ((wildcard (assq '* rules)))
-        (and wildcard (cdr wildcard))))
-
-     ;; Check tool-specific rule
+     ;; Check tool-specific rule first (takes priority over wildcard)
      ((assq tool rules)
       (let ((tool-rule (assq tool rules)))
         (if (consp (cdr tool-rule))
@@ -99,7 +96,7 @@ FILE is optional file path to check."
           ;; Simple allow/deny/ask for tool
           (cdr tool-rule))))
 
-     ;; No specific rule, check wildcard
+     ;; Fall back to wildcard
      ((assq '* rules)
       (cdr (assq '* rules)))
 
@@ -108,33 +105,32 @@ FILE is optional file path to check."
 
 (defun magent-permission--check-file-rules (rules file)
   "Check if FILE matches any rule in RULES.
-RULES is an alist of (pattern . permission)."
+RULES is an alist of (pattern . permission).
+Specific patterns are checked first; the wildcard \\='* or \"*\" is used as fallback."
   (let ((filename (file-name-nondirectory file))
-        (basename (file-name-base file)))
+        (wildcard-permission nil))
     (catch 'found
       (dolist (rule rules)
         (let ((pattern (car rule))
               (permission (cdr rule)))
           (cond
-           ;; Wildcard
-           ((eq pattern '*)
-            (throw 'found permission))
+           ;; Save wildcard for fallback (symbol '* or string "*")
+           ((or (eq pattern '*) (equal pattern "*"))
+            (setq wildcard-permission permission))
 
-           ;; Glob pattern like "*.el"
-           ((string-match-p "^\\*" pattern)
-            (let ((ext (substring pattern 1))) ; Remove leading *
-              (when (string-suffix-p ext filename)
-                (throw 'found permission))))
-
-           ;; Pattern with wildcards like "*.env.*"
-           ((string-match-p "\\*" pattern)
-            (when (string-match-p (wildcard-to-regexp pattern) filename)
-              (throw 'found permission))))
-
-          ;; Exact match
-          ((string-equal pattern file)
-           (throw 'found permission)))))
-    magent-permission-allow)) ; Default if no match
+           ;; String pattern
+           ((stringp pattern)
+            (cond
+             ;; Glob pattern like "*.env" or "*.el"
+             ((string-match-p "\\*" pattern)
+              (when (string-match-p (wildcard-to-regexp pattern) filename)
+                (throw 'found permission)))
+             ;; Exact filename match
+             ((or (string-equal pattern file)
+                  (string-equal pattern filename))
+              (throw 'found permission)))))))
+      ;; No specific match — use wildcard if present, else allow
+      (or wildcard-permission magent-permission-allow))))
 
 ;;; Permission checking
 
@@ -158,25 +154,31 @@ Returns t if ask, nil otherwise."
 (defun magent-permission-merge (&rest rulesets)
   "Merge multiple RULESETS.
 Later rules override earlier ones for same keys.
-Returns merged alist."
+Returns merged alist.  Each ruleset can be an alist, a `magent-permission'
+struct, or a bare symbol (allow/deny/ask)."
   (let ((result nil))
-    (dolist (ruleset (nreverse rulesets))
-      (dolist (rule (if (magent-permission-p ruleset)
-                        (magent-permission-rules ruleset)
-                      ruleset))
-        (let ((key (car rule))
-              (value (cdr rule)))
-          (if (and (consp value) (not (memq value '(allow deny ask))))
-              ;; Nested rules - merge recursively
+    (dolist (ruleset rulesets)
+      (let ((rules (cond
+                    ((magent-permission-p ruleset)
+                     (magent-permission-rules ruleset))
+                    ((memq ruleset '(allow deny ask))
+                     ;; Bare symbol — treat as wildcard rule
+                     (list (cons '* ruleset)))
+                    (t ruleset))))
+        (dolist (rule rules)
+          (let ((key (car rule))
+                (value (cdr rule)))
+            (if (and (consp value) (not (memq (car value) '(allow deny ask))))
+                ;; Nested rules - merge recursively
+                (let ((existing (assq key result)))
+                  (if existing
+                      (setcdr existing (magent-permission-merge (cdr existing) value))
+                    (push (cons key value) result)))
+              ;; Simple rule - just set/override
               (let ((existing (assq key result)))
                 (if existing
-                    (setcdr existing (magent-permission-merge (cdr existing) value))
-                  (push (cons key value) result)))
-            ;; Simple rule - just set/override
-            (let ((existing (assq key result)))
-              (if existing
-                  (setcdr existing value)
-                (push (cons key value) result)))))))
+                    (setcdr existing value)
+                  (push (cons key value) result))))))))
     result))
 
 (defun magent-permission-from-config (config)

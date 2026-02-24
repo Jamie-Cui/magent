@@ -26,7 +26,7 @@
 
 (ert-deftest magent-agent-registry-test-reinit ()
   "Test registry reinitialization."
-  (magent-agent-registry-init)
+  (magent-agent-registry-reinit)
   (let ((count1 (magent-agent-registry-count)))
     (magent-agent-registry-reinit)
     (should (= count1 (magent-agent-registry-count)))))

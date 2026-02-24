@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'magent-config)
 
 ;;; Session state structure
 
@@ -39,7 +40,7 @@
   "Reset the current session, clearing all messages."
   (interactive)
   (setq magent--current-session nil)
-  (message "OpenCode session cleared."))
+  (message "Magent session cleared."))
 
 (defun magent-session-get-id (session)
   "Get or generate a unique ID for SESSION."
@@ -158,7 +159,7 @@ Returns a condensed version of the conversation."
     (when messages
       (with-temp-buffer
         (insert "Session Summary:\n\n")
-        (dolist (msg (take-last messages 20))
+        (dolist (msg (last messages 20))
           (let ((role (cdr (assq 'role msg)))
                 (content (cdr (assq 'content msg))))
             (insert (format "[%s] " (upcase (symbol-name role))))
@@ -166,11 +167,41 @@ Returns a condensed version of the conversation."
                 (insert (truncate-string-to-width content 80 nil nil "..."))
               ;; Handle structured content
               (let ((text-parts (cl-loop for block in content
-                                        when (equal (cdr (assq 'type block)) "text")
-                                        collect (cdr (assq 'text block))))
+                                         when (equal (cdr (assq 'type block)) "text")
+                                         collect (cdr (assq 'text block)))))
                 (insert (string-join text-parts " "))))
             (insert "\n\n")))
-        (buffer-string))))))
+        (buffer-string)))))
+
+;;; gptel prompt list conversion
+
+(defun magent-session-to-gptel-prompt-list (session)
+  "Convert SESSION messages to a gptel-request prompt list.
+Returns a list in gptel's advanced format:
+  ((prompt . \"user msg\") (response . \"assistant msg\") ...)
+Tool result messages are skipped; gptel handles tool round-trips
+internally within each request."
+  (let ((messages (magent-session-get-messages session)))
+    (delq nil
+          (mapcar
+           (lambda (msg)
+             (let ((role (cdr (assq 'role msg)))
+                   (content (cdr (assq 'content msg))))
+               (pcase role
+                 ('user
+                  (cons 'prompt
+                        (if (stringp content) content
+                          (mapconcat
+                           (lambda (b) (or (cdr (assq 'text b)) ""))
+                           content ""))))
+                 ('assistant
+                  (cons 'response
+                        (if (stringp content) content
+                          (mapconcat
+                           (lambda (b) (or (cdr (assq 'text b)) ""))
+                           content ""))))
+                 (_ nil))))
+           messages))))
 
 (provide 'magent-session)
 ;;; magent-session.el ends here

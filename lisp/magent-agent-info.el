@@ -14,13 +14,14 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'gptel)
 
 ;;; Agent info structure
 
 (cl-defstruct (magent-agent-info
+               (:constructor nil)
                (:constructor magent-agent-info-create)
-               (:copier nil)
-               (:constructor nil))
+               (:copier nil))
   "Structure representing an agent's configuration.
 
 Fields:
@@ -63,16 +64,35 @@ Fields:
     (or (eq info-mode 'all)
         (eq info-mode mode))))
 
-;;; Agent model specification
+;;; gptel override support
 
-(defun magent-agent-info-model-string (info)
-  "Get the model identifier string for INFO.
-Returns either the agent's model or the default from config."
-  (let ((model (magent-agent-info-model info)))
-    (if model
-        (format "%s/%s" (car model) (cdr model))
-      (when (bound-and-true-p magent-model)
-        magent-model))))
+(defun magent-agent-info-apply-gptel-overrides (info body-thunk)
+  "Apply per-agent gptel variable overrides and call BODY-THUNK.
+INFO is a magent-agent-info struct.  BODY-THUNK is a zero-argument
+function called with the overrides in effect.
+
+The agent's MODEL field can be:
+- nil: use global `gptel-backend' and `gptel-model'
+- A gptel backend object: use it with global `gptel-model'
+- A cons (BACKEND . MODEL-SYMBOL): use both overrides
+
+The agent's TEMPERATURE field, if non-nil, overrides `gptel-temperature'."
+  (let* ((model-field (magent-agent-info-model info))
+         (gptel-backend (cond
+                         ((and (consp model-field)
+                               (gptel-backend-p (car model-field)))
+                          (car model-field))
+                         ((gptel-backend-p model-field)
+                          model-field)
+                         (t gptel-backend)))
+         (gptel-model (cond
+                       ((and (consp model-field)
+                             (symbolp (cdr model-field)))
+                        (cdr model-field))
+                       (t gptel-model)))
+         (gptel-temperature (or (magent-agent-info-temperature info)
+                                gptel-temperature)))
+    (funcall body-thunk)))
 
 ;;; Agent display
 

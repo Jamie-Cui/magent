@@ -66,23 +66,28 @@
     (should (magent-agent-info-mode-p all-agent 'primary))
     (should (magent-agent-info-mode-p all-agent 'subagent))))
 
-;;; Model tests
+;;; gptel override tests
 
-(ert-deftest magent-agent-info-test-model-string ()
-  "Test model string generation."
-  (let ((agent-with-model (magent-agent-info-create
-                           :name "test"
-                           :mode 'primary
-                           :model '("anthropic" . "claude-3-opus")))
-        (agent-without-model (magent-agent-info-create
-                              :name "test2"
-                              :mode 'primary)))
-    (should (string= "anthropic/claude-3-opus"
-                     (magent-agent-info-model-string agent-with-model)))
-    ;; Without model, should return nil or default from config
-    (let ((magent-model "default-model"))
-      (should (string= "default-model"
-                       (magent-agent-info-model-string agent-without-model))))))
+(ert-deftest magent-agent-info-test-apply-gptel-overrides ()
+  "Test gptel variable overrides."
+  (let ((agent-with-temp (magent-agent-info-create
+                          :name "test"
+                          :mode 'primary
+                          :temperature 0.5))
+        (agent-no-overrides (magent-agent-info-create
+                             :name "test2"
+                             :mode 'primary)))
+    ;; Temperature override should take effect
+    (magent-agent-info-apply-gptel-overrides
+     agent-with-temp
+     (lambda ()
+       (should (= 0.5 gptel-temperature))))
+    ;; Without overrides, gptel-temperature should keep its value
+    (let ((gptel-temperature 1.0))
+      (magent-agent-info-apply-gptel-overrides
+       agent-no-overrides
+       (lambda ()
+         (should (= 1.0 gptel-temperature)))))))
 
 ;;; Display tests
 

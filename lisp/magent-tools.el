@@ -1,21 +1,23 @@
-;;; magent-tools.el --- Tool implementations for OpenCode  -*- lexical-binding: t; -*-
+;;; magent-tools.el --- Tool implementations for Magent  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 
 ;; Author: Jamie Cui <jamie.cui@outlook.com>
 ;; Keywords: tools, ai
-;; Package-Requires: ((emacs "27.1"))
+;; Package-Requires: ((emacs "27.1") (gptel "0.9.8"))
 
 ;;; Commentary:
 
-;; Tool implementations that the AI agent can use to interact with files and the system.
+;; Tool implementations that the AI agent can use to interact with files
+;; and the system.  Tools are registered as gptel-tool structs for use
+;; with gptel's tool calling system.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'magent-config)
 
-;;; Tool definitions
+;;; Tool implementations
 
 (defun magent-tools--read-file (path)
   "Read contents of file at PATH.
@@ -47,8 +49,8 @@ If CASE-SENSITIVE is nil, performs case-insensitive search.
 Returns matching lines with file paths."
   (let* ((case-fold-search (not case-sensitive))
          (default-directory (if (file-directory-p path)
-                               path
-                               (file-name-directory path)))
+                                path
+                              (file-name-directory path)))
          (matches ()))
     (condition-case err
         (progn
@@ -61,7 +63,7 @@ Returns matching lines with file paths."
                   (goto-char (point-min))
                   (while (re-search-forward pattern nil t)
                     (let* ((line (buffer-substring (line-beginning-position)
-                                                  (line-end-position)))
+                                                   (line-end-position)))
                            (line-num (line-number-at-pos)))
                       (push (format "%s:%d:%s" file line-num (string-trim line))
                             matches)))))))
@@ -86,88 +88,13 @@ Returns command output (stdout + stderr)."
   (condition-case err
       (let* ((timeout (or timeout 30))
              (output (with-timeout (timeout (error "Command timed out"))
-                      (shell-command-to-string command))))
+                       (shell-command-to-string command))))
         (if (string-blank-p output)
             "Command completed with no output"
           (string-trim-right output)))
     (error (format "Error executing command: %s" (error-message-string err)))))
 
-;;; Tool schemas for AI
-
-(defun magent-tools-get-definitions ()
-  "Return tool definitions in the format expected by the API."
-  (let ((tools nil))
-    (when (memq 'read magent-enable-tools)
-      (push '((name . "read_file")
-              (description . "Read the contents of a file. Use this to see the current state of a file before making changes.")
-              (input_schema type-object
-                           (properties path)
-                           (required path)
-                           (additionalProperties . :json-false)))
-            tools))
-    (when (memq 'write magent-enable-tools)
-      (push '((name . "write_file")
-              (description . "Write content to a file. Creates parent directories if they don't exist.")
-              (input_schema type-object
-                           (properties path content)
-                           (required path content)
-                           (additionalProperties . :json-false)))
-            tools))
-    (when (memq 'grep magent-enable-tools)
-      (push '((name . "grep")
-              (description . "Search for a pattern in files under a directory. Uses regex matching.")
-              (input_schema type-object
-                           (properties pattern path case-sensitive)
-                           (required pattern path)
-                           (additionalProperties . :json-false)))
-            tools))
-    (when (memq 'glob magent-enable-tools)
-      (push '((name . "glob")
-              (description . "Find files matching a pattern. Supports * (any characters) and ** (recursive).")
-              (input_schema type-object
-                           (properties pattern path)
-                           (required pattern path)
-                           (additionalProperties . :json-false)))
-            tools))
-    (when (memq 'bash magent-enable-tools)
-      (push '((name . "bash")
-              (description . "Execute a shell command. Use for running tests, builds, git operations, etc.")
-              (input_schema type-object
-                           (properties command timeout)
-                           (required command)
-                           (additionalProperties . :json-false)))
-            tools))
-    (nreverse tools)))
-
-;; Tool property definitions
-(defvar magent-tools--schema-type-object
-  '((type . "object")))
-
-(defvar magent-tools--prop-path
-  '((path (type . "string") (description . "Absolute or relative path to the file"))))
-
-(defvar magent-tools--prop-content
-  '((content (type . "string") (description . "Content to write to the file"))))
-
-(defvar magent-tools--prop-pattern
-  '((pattern (type . "string") (description . "Regex pattern to search for"))))
-
-(defvar magent-tools--prop-search-path
-  '((path (type . "string") (description . "Directory to search in"))))
-
-(defvar magent-tools--prop-case-sensitive
-  '((case_sensitive (type . "boolean") (description . "Whether search is case-sensitive") (default . :json-false))))
-
-(defvar magent-tools--prop-glob-pattern
-  '((pattern (type . "string") (description . "Glob pattern, e.g. *.el or **/*.ts"))))
-
-(defvar magent-tools--prop-command
-  '((command (type . "string") (description . "Shell command to execute"))))
-
-(defvar magent-tools--prop-timeout
-  '((timeout (type . "integer") (description . "Timeout in seconds") (default . 30))))
-
-;;; Tool execution dispatcher
+;;; Tool execution dispatcher (retained for direct use)
 
 (defun magent-tools-execute (tool-name input)
   "Execute TOOL with INPUT (parsed JSON object).
@@ -192,6 +119,121 @@ Returns the result as a string."
            (_
             (format "Unknown tool: %s" tool-name)))))
     result))
+
+;;; gptel-tool registrations
+
+(require 'gptel)
+
+(defvar magent-tools--read-file-tool
+  (gptel-make-tool
+   :name "read_file"
+   :description "Read the contents of a file at the given path. Use this to inspect file contents before making changes."
+   :args (list '(:name "path"
+                 :type string
+                 :description "Absolute or relative path to the file"))
+   :function #'magent-tools--read-file
+   :category "magent")
+  "gptel-tool struct for read_file.")
+
+(defvar magent-tools--write-file-tool
+  (gptel-make-tool
+   :name "write_file"
+   :description "Write content to a file. Creates parent directories if they don't exist."
+   :args (list '(:name "path"
+                 :type string
+                 :description "Absolute or relative path to the file")
+               '(:name "content"
+                 :type string
+                 :description "The full content to write to the file"))
+   :function #'magent-tools--write-file
+   :confirm t
+   :category "magent")
+  "gptel-tool struct for write_file.")
+
+(defvar magent-tools--grep-tool
+  (gptel-make-tool
+   :name "grep"
+   :description "Search for a regex pattern in files under a directory. Returns matching lines with file paths and line numbers."
+   :args (list '(:name "pattern"
+                 :type string
+                 :description "Regex pattern to search for")
+               '(:name "path"
+                 :type string
+                 :description "Directory or file path to search in")
+               '(:name "case_sensitive"
+                 :type boolean
+                 :description "Whether the search is case-sensitive"
+                 :optional t))
+   :function (lambda (pattern path &optional case-sensitive)
+               (magent-tools--grep pattern path case-sensitive))
+   :category "magent")
+  "gptel-tool struct for grep.")
+
+(defvar magent-tools--glob-tool
+  (gptel-make-tool
+   :name "glob"
+   :description "Find files matching a glob pattern. Supports * and ** wildcards."
+   :args (list '(:name "pattern"
+                 :type string
+                 :description "Glob pattern, e.g. *.el or **/*.ts")
+               '(:name "path"
+                 :type string
+                 :description "Root directory to search in"))
+   :function #'magent-tools--glob
+   :category "magent")
+  "gptel-tool struct for glob.")
+
+(defvar magent-tools--bash-tool
+  (gptel-make-tool
+   :name "bash"
+   :description "Execute a shell command. Use for running tests, builds, git operations, etc."
+   :args (list '(:name "command"
+                 :type string
+                 :description "Shell command to execute")
+               '(:name "timeout"
+                 :type integer
+                 :description "Timeout in seconds, defaults to 30"
+                 :optional t))
+   :function (lambda (command &optional timeout)
+               (magent-tools--bash command timeout))
+   :confirm t
+   :category "magent")
+  "gptel-tool struct for bash.")
+
+;;; Tool filtering by agent permissions
+
+(defvar magent-tools--name-to-permission-key
+  '(("read_file"  . read)
+    ("write_file" . write)
+    ("grep"       . grep)
+    ("glob"       . glob)
+    ("bash"       . bash))
+  "Maps gptel tool names to magent permission key symbols.")
+
+(defvar magent-tools--all-gptel-tools
+  (list magent-tools--read-file-tool
+        magent-tools--write-file-tool
+        magent-tools--grep-tool
+        magent-tools--glob-tool
+        magent-tools--bash-tool)
+  "All magent tools as gptel-tool structs.")
+
+(defun magent-tools-get-gptel-tools (agent-info)
+  "Return a list of gptel-tool structs allowed for AGENT-INFO.
+Filters by both `magent-enable-tools' global config and agent permissions."
+  (let ((permission (and agent-info
+                         (magent-agent-info-permission agent-info))))
+    (cl-remove-if-not
+     (lambda (tool)
+       (let* ((tool-name (gptel-tool-name tool))
+              (perm-key (cdr (assoc tool-name magent-tools--name-to-permission-key))))
+         (and
+          ;; Globally enabled
+          (or (null perm-key) (memq perm-key magent-enable-tools))
+          ;; Agent permission allows it
+          (or (null permission)
+              (magent-permission-allow-p permission perm-key)))))
+     magent-tools--all-gptel-tools)))
 
 (provide 'magent-tools)
 ;;; magent-tools.el ends here

@@ -28,12 +28,12 @@
 
 ;;; Commentary:
 
-;; magent.el is an Emacs Lisp implementation of OpenCode, an open-source
-;; AI coding agent.  It provides intelligent code assistance by integrating
-;; with Large Language Models (LLMs) like Anthropic's Claude and OpenAI's GPT.
+;; magent.el is an Emacs Lisp AI coding agent built on gptel.
+;; It provides intelligent code assistance by integrating with LLMs
+;; via gptel's multi-provider backend system.
 ;;
 ;; Features:
-;; - Direct API integration with Anthropic and OpenAI
+;; - LLM integration via gptel (Anthropic, OpenAI, Ollama, Gemini, etc.)
 ;; - File operations (read, write, grep, glob)
 ;; - Shell command execution
 ;; - Session management with conversation history
@@ -52,7 +52,7 @@
 ;;   M-x customize-group RET magent RET
 ;;
 ;; Usage:
-;;   M-x magent-prompt         - Send a prompt to the AI
+;;   M-x magent                - Send a prompt to the AI
 ;;   M-x magent-prompt-region  - Send the selected region to the AI
 ;;   M-x magent-ask-at-point   - Ask about the symbol at point
 ;;   M-x magent-clear-session  - Clear the current session
@@ -78,7 +78,6 @@
 
 ;; Required modules
 (require 'magent-config)
-(require 'magent-api)
 (require 'magent-session)
 (require 'magent-tools)
 (require 'magent-agent)
@@ -92,15 +91,15 @@
 
 ;;;###autoload
 (define-minor-mode magent-mode
-  "Minor mode for OpenCode AI coding agent.
-When enabled, OpenCode commands are available.
+  "Minor mode for Magent AI coding agent.
+When enabled, Magent commands are available.
 
 \\{magent-mode-map}"
   :init-value nil
-  :lighter " OpenCode"
+  :lighter " Magent"
   :keymap (let ((map (make-sparse-keymap)))
             ;; Keybindings
-            (define-key map (kbd "C-c o p") #'magent-prompt)
+            (define-key map (kbd "C-c o p") #'magent)
             (define-key map (kbd "C-c o r") #'magent-prompt-region)
             (define-key map (kbd "C-c o a") #'magent-ask-at-point)
             (define-key map (kbd "C-c o c") #'magent-clear-session)
@@ -119,17 +118,13 @@ When enabled, OpenCode commands are available.
         ;; Load custom agents if enabled
         (when magent-load-custom-agents
           (magent-agent-file-load-all))
-        (magent-api-set-credentials)
-        (message "OpenCode mode enabled"))
-    (message "OpenCode mode disabled")))
+        (message "Magent mode enabled"))
+    (message "Magent mode disabled")))
 
 ;;;###autoload
 (define-globalized-minor-mode global-magent-mode magent-mode
   (lambda () (magent-mode 1))
   :group 'magent)
-
-;; Auto-enable on load
-(add-hook 'after-init-hook #'magent-api-set-credentials)
 
 (provide 'magent)
 
