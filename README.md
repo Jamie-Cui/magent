@@ -307,8 +307,7 @@ This project is licensed under the GNU General Public License v3.0 - see the [LI
 
 ## Credits
 
-- **Original OpenCode**: https://github.com/anomalyco/magent
-- **Author**: Jamie Cui <jamie.cui@outlook.com>
+- **Original OpenCode**: https://github.com/anomalyco/opencode
 
 ## Contributing
 
@@ -319,5 +318,5 @@ Contributions are welcome! Please ensure:
 
 ## Links
 
-- **Project Repository**: https://github.com/anomalyco/magent
+- **Project Repository**: https://github.com/jamie-cui/magent
 - **OpenCode Website**: https://magent.ai

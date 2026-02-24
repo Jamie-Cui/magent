@@ -7,7 +7,7 @@
 ;; Keywords: tools, ai, copilot
 ;; Package-Version: 0.1.0
 ;; Package-Requires: ((emacs "27.1"))
-;; URL: https://github.com/anomalyco/magent
+;; URL: https://github.com/jamie-cui/magent
 
 ;; This file is not part of GNU Emacs.
 
@@ -91,7 +91,7 @@
 ;;; Initialization
 
 ;;;###autoload
-(defun magent-mode ()
+(define-minor-mode magent-mode
   "Minor mode for OpenCode AI coding agent.
 When enabled, OpenCode commands are available.
 

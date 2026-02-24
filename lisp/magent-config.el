@@ -16,7 +16,7 @@
   "OpenCode AI coding agent for Emacs."
   :prefix "magent-"
   :group 'tools
-  :link '(url-link :tag "GitHub" "https://github.com/anomalyco/magent"))
+  :link '(url-link :tag "GitHub" "https://github.com/jamie-cui/magent"))
 
 (defcustom magent-provider 'anthropic
   "LLM provider to use for AI requests.

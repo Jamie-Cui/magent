@@ -1,1 +1,12 @@
 .agent-shell
+
+# Byte-compiled Emacs Lisp files
+*.elc
+
+# Package autoloads
+*-autoloads.el
+
+# Backup files
+*~
+\#*\#
+.\#*
