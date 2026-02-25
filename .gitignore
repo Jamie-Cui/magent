@@ -1,7 +1,5 @@
 .agent-shell
 
-node_modules/*
-
 # Byte-compiled Emacs Lisp files
 *.elc
 
@@ -12,3 +10,7 @@ node_modules/*
 *~
 \#*\#
 .\#*
+
+/package-lock.json
+/package.json
+/node_modules/

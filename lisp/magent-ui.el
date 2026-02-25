@@ -214,7 +214,7 @@ Handles code blocks, bold, and inline code."
 ;;; Minibuffer interface
 
 ;;;###autoload
-(defun magent ()
+(defun magent-prompt ()
   "Prompt for input and send to Magent agent."
   (interactive)
   (let ((input (read-string "Ask magent: ")))
