@@ -87,7 +87,9 @@ Handles both streaming and non-streaming modes.  When streaming,
 gptel calls this callback repeatedly with string chunks, then
 with t to signal completion."
   (let ((streamed-text "")
-        (streaming-started nil))
+        (accumulated-text "")
+        (streaming-started nil)
+        (reasoning-count 0))
     (lambda (response info)
       (cond
        ;; Streaming: text chunk (string while streaming is enabled)
@@ -101,10 +103,19 @@ with t to signal completion."
 
        ;; Streaming: completion signal (response is t)
        ((and magent-enable-streaming (eq response t))
+        (when (> reasoning-count 0)
+          (magent-log "INFO reasoning block received (x%d)" reasoning-count)
+          (setq reasoning-count 0))
         (magent-log "INFO streaming complete (%d chars)" (length streamed-text))
-        (magent-session-add-message session 'assistant streamed-text)
-        (when final-callback
-          (funcall final-callback streamed-text)))
+        (setq accumulated-text (concat accumulated-text streamed-text))
+        ;; Only finalize if no tool calls are pending.  When tools are
+        ;; involved gptel sends `t' after the text chunk but before
+        ;; `(tool-call ...)'; finalizing here would swallow the tool
+        ;; round-trip and leave the second-pass response unreachable.
+        (unless (plist-get info :tool-pending)
+          (magent-session-add-message session 'assistant accumulated-text)
+          (when final-callback
+            (funcall final-callback accumulated-text))))
 
        ;; Non-streaming: final string response
        ((stringp response)
@@ -143,9 +154,9 @@ with t to signal completion."
                          (format "%s" (plist-get info :tool-use)) 200 nil nil "...")))
           (gptel--accept-tool-calls pending nil)))
 
-       ;; Reasoning block (extended thinking) — ignore
+       ;; Reasoning block (extended thinking) — count and log once on completion
        ((and (consp response) (eq (car response) 'reasoning))
-        (magent-log "INFO reasoning block received"))
+        (cl-incf reasoning-count))
 
        ;; Abort
        ((eq response 'abort)

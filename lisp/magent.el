@@ -85,6 +85,9 @@
 
 ;;; Initialization
 
+(defvar magent--initialized nil
+  "Non-nil if magent has already been initialized (registry and custom agents loaded).")
+
 ;;;###autoload
 (define-minor-mode magent-mode
   "Minor mode for Magent AI coding agent.
@@ -107,15 +110,15 @@ When enabled, Magent commands are available.
             (define-key map (kbd "C-c o i") #'magent-show-current-agent)
             (define-key map (kbd "C-c o v") #'magent-list-agents)
             map)
-  (if magent-mode
-      (progn
-        ;; Initialize agent registry
-        (magent-agent-registry-init)
-        ;; Load custom agents if enabled
-        (when magent-load-custom-agents
-          (magent-agent-file-load-all))
-        (magent-log "INFO magent mode enabled"))
-    (magent-log "INFO magent mode disabled")))
+  (when magent-mode
+    (unless magent--initialized
+      ;; Initialize agent registry
+      (magent-agent-registry-init)
+      ;; Load custom agents if enabled
+      (when magent-load-custom-agents
+        (magent-agent-file-load-all))
+      (setq magent--initialized t)
+      (magent-log "INFO magent mode enabled"))))
 
 ;;;###autoload
 (define-globalized-minor-mode global-magent-mode magent-mode

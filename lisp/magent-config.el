@@ -115,7 +115,7 @@ Should match one of the registered agent names."
   :type 'string
   :group 'magent)
 
-(defcustom magent-loading-indicator "▌"
+(defcustom magent-loading-indicator " [Loading] "
   "Character displayed as a loading indicator during processing."
   :type 'string
   :group 'magent)
