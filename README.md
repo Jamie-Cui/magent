@@ -1,6 +1,6 @@
-# Magent - OpenCode Emacs Lisp Implementation
+# Magent - AI Coding Agent for Emacs
 
-An Emacs Lisp implementation of [OpenCode](https://github.com/anomalyco/magent) - an open-source AI coding agent with multi-agent architecture and permission-based tool access.
+An Emacs Lisp AI coding agent with multi-agent architecture, permission-based tool access, and LLM integration via [gptel](https://github.com/karthink/gptel).
 
 ## Features
 
@@ -290,7 +290,7 @@ This project is licensed under the GNU General Public License v3.0 - see the [LI
 
 ## Credits
 
-- **Original OpenCode**: https://github.com/anomalyco/opencode
+- **Inspired by**: [OpenCode](https://github.com/anomalyco/opencode)
 
 ## Contributing
 
@@ -302,4 +302,3 @@ Contributions are welcome! Please ensure:
 ## Links
 
 - **Project Repository**: https://github.com/jamie-cui/magent
-- **OpenCode Website**: https://magent.ai

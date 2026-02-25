@@ -1,6 +1,6 @@
 # Magent 架构
 
-本文档描述 Magent 的高级架构，Magent 是 OpenCode 的 Emacs Lisp 实现。
+本文档描述 Magent 的高级架构，Magent 是一个 Emacs AI 编程智能体。
 
 ## 概述
 
@@ -291,7 +291,6 @@ Your custom system prompt here.
 - 不同的任务受益于不同的权限（例如，规划不需要文件编辑）
 - 专门的提示改进了特定于任务的性能
 - 用户可以为其工作流创建自定义智能体
-- 与 OpenCode 的久经考验的架构相匹配
 
 ### 2. 基于权限的访问控制
 

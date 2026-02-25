@@ -24,6 +24,8 @@
 ;; Forward declarations for UI functions used in the callback
 (declare-function magent-ui-insert-tool-call "magent-ui")
 (declare-function magent-ui-insert-error "magent-ui")
+(declare-function magent-ui-insert-streaming "magent-ui")
+(declare-function magent-ui-start-streaming "magent-ui")
 (declare-function magent-log "magent-ui")
 
 ;;; Agent execution
@@ -60,50 +62,72 @@ The tool calling loop is managed by gptel's FSM.  Magent's role is to:
            (gptel-request
              prompt-list
              :system system-msg
-             :stream nil
+             :stream magent-enable-streaming
              :callback (magent-agent--make-callback session callback))))))))
 
 (defun magent-agent--make-callback (session final-callback)
   "Return a gptel callback that handles all response types.
 SESSION is the magent session to record the final response.
-FINAL-CALLBACK is called with the response string (or nil on error)."
-  (lambda (response info)
-    (cond
-     ;; Final string response — the normal completion path
-     ((stringp response)
-      (magent-session-add-message session 'assistant response)
-      (when final-callback
-        (funcall final-callback response)))
+FINAL-CALLBACK is called with the response string (or nil on error).
 
-     ;; Tool results (tools have run, FSM is continuing)
-     ((and (consp response) (eq (car response) 'tool-result))
-      (dolist (entry (cdr response))
-        (let* ((tool (car entry))
-               (args (cadr entry)))
-          (magent-ui-insert-tool-call (gptel-tool-name tool) args))))
+Handles both streaming and non-streaming modes.  When streaming,
+gptel calls this callback repeatedly with string chunks, then
+with t to signal completion."
+  (let ((streamed-text "")
+        (streaming-started nil))
+    (lambda (response info)
+      (cond
+       ;; Streaming: text chunk (string while streaming is enabled)
+       ((and magent-enable-streaming (stringp response))
+        (unless streaming-started
+          (setq streaming-started t)
+          (magent-ui-start-streaming))
+        (setq streamed-text (concat streamed-text response))
+        (magent-ui-insert-streaming response))
 
-     ;; Tool calls pending user confirmation
-     ((and (consp response) (eq (car response) 'tool-call))
-      ;; gptel handles the confirmation UI; we just log
-      (dolist (pending (cdr response))
-        (magent-log "Awaiting confirmation for tool: %s"
-                    (gptel-tool-name (car pending)))))
-
-     ;; Reasoning block (extended thinking) — ignore
-     ((and (consp response) (eq (car response) 'reasoning))
-      nil)
-
-     ;; Abort
-     ((eq response 'abort)
-      (when final-callback
-        (funcall final-callback nil)))
-
-     ;; nil / error
-     ((null response)
-      (let ((status (plist-get info :status)))
-        (magent-ui-insert-error (or status "Request failed"))
+       ;; Streaming: completion signal (response is t)
+       ((and magent-enable-streaming (eq response t))
+        (magent-session-add-message session 'assistant streamed-text)
         (when final-callback
-          (funcall final-callback nil)))))))
+          (funcall final-callback streamed-text)))
+
+       ;; Non-streaming: final string response
+       ((stringp response)
+        (magent-session-add-message session 'assistant response)
+        (when final-callback
+          (funcall final-callback response)))
+
+       ;; Tool results (tools have run, FSM is continuing)
+       ((and (consp response) (eq (car response) 'tool-result))
+        ;; Reset streaming state for the next text segment
+        (setq streamed-text "")
+        (setq streaming-started nil)
+        (dolist (entry (cdr response))
+          (let* ((tool (car entry))
+                 (args (cadr entry)))
+            (magent-ui-insert-tool-call (gptel-tool-name tool) args))))
+
+       ;; Tool calls pending user confirmation
+       ((and (consp response) (eq (car response) 'tool-call))
+        (dolist (pending (cdr response))
+          (magent-log "Awaiting confirmation for tool: %s"
+                      (gptel-tool-name (car pending)))))
+
+       ;; Reasoning block (extended thinking) — ignore
+       ((and (consp response) (eq (car response) 'reasoning))
+        nil)
+
+       ;; Abort
+       ((eq response 'abort)
+        (when final-callback
+          (funcall final-callback nil)))
+
+       ;; nil / error
+       ((null response)
+        (let ((status (plist-get info :status)))
+          (magent-ui-insert-error (or status "Request failed"))
+          (when final-callback
+            (funcall final-callback nil))))))))
 
 ;;; Agent selection helpers
 

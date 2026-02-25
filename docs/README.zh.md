@@ -1,6 +1,6 @@
 # Magent 文档
 
-本目录包含 Magent 的完整设计文档，Magent 是 OpenCode 的 Emacs Lisp 实现。
+本目录包含 Magent 的完整设计文档，Magent 是一个 Emacs AI 编程智能体。
 
 ## 文档索引
 

@@ -1,4 +1,4 @@
-;;; magent-session.el --- Session management for OpenCode  -*- lexical-binding: t; -*-
+;;; magent-session.el --- Session management for Magent  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 

@@ -46,14 +46,23 @@ If you're unsure about something, ask the user for clarification."
   :type 'boolean
   :group 'magent)
 
-(defcustom magent-enable-tools '(read write grep glob bash)
+(defcustom magent-enable-streaming t
+  "Enable streaming responses from the LLM.
+When non-nil, responses are displayed incrementally as they arrive."
+  :type 'boolean
+  :group 'magent)
+
+(defcustom magent-enable-tools '(read write edit grep glob bash emacs_eval delegate)
   "List of enabled tools.
-Available tools: read, write, grep, glob, bash."
+Available tools: read, write, edit, grep, glob, bash, emacs_eval, delegate."
   :type '(set (const :tag "Read files" read)
               (const :tag "Write files" write)
+              (const :tag "Edit files" edit)
               (const :tag "Search content (grep)" grep)
               (const :tag "Find files (glob)" glob)
-              (const :tag "Run shell commands" bash))
+              (const :tag "Run shell commands" bash)
+              (const :tag "Evaluate Emacs Lisp" emacs_eval)
+              (const :tag "Delegate to subagents" delegate))
   :group 'magent)
 
 (defcustom magent-project-root-function nil
@@ -120,6 +129,13 @@ Should match one of the registered agent names."
   (expand-file-name "magent-sessions" user-emacs-directory)
   "Directory where session files are stored."
   :type 'directory
+  :group 'magent)
+
+(defcustom magent-grep-program (or (executable-find "rg") "rg")
+  "Path to the grep program.
+Magent uses ripgrep (rg) for fast, recursive code search.
+If rg is not found, grep tool calls will fail with an informative error."
+  :type 'string
   :group 'magent)
 
 (provide 'magent-config)

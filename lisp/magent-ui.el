@@ -151,6 +151,22 @@ current session in chronological order."
                           (insert (propertize (format "\n%s%s\n" magent-error-prompt error-text)
                                               'face '(bold font-lock-warning-face)))))
 
+(defun magent-ui-start-streaming ()
+  "Prepare the output buffer for a streaming response.
+Removes the loading indicator and inserts the assistant prompt prefix."
+  ;; Remove loading indicator
+  (with-current-buffer (magent-ui-get-buffer)
+    (let ((inhibit-read-only t))
+      (save-excursion
+        (goto-char (point-max))
+        (when (looking-back (regexp-quote magent-loading-indicator)
+                            (length magent-loading-indicator))
+          (delete-char (- (length magent-loading-indicator)))))))
+  ;; Insert assistant prompt prefix
+  (magent-ui--with-insert (magent-ui-get-buffer)
+    (insert (propertize (concat "\n" magent-assistant-prompt)
+                        'face 'font-lock-string-face))))
+
 (defun magent-ui-insert-streaming (text)
   "Insert streaming TEXT into output buffer."
   (magent-ui--with-insert (magent-ui-get-buffer)
@@ -251,23 +267,36 @@ Handles code blocks, bold, and inline code."
      (setq magent-ui--processing nil)
      (message "Magent: Error"))))
 
-(defun magent-ui--finish-processing (response)
-  "Finish processing with RESPONSE."
-  (setq magent-ui--processing nil)
-  ;; Remove loading indicator
+(defun magent-ui--remove-loading-indicator ()
+  "Remove the loading indicator from the end of the output buffer."
   (with-current-buffer (magent-ui-get-buffer)
     (let ((inhibit-read-only t))
       (save-excursion
         (goto-char (point-max))
         (when (looking-back (regexp-quote magent-loading-indicator)
-                           (length magent-loading-indicator))
-          (delete-char (- (length magent-loading-indicator)))))))
-  (if response
-      (progn
-        (magent-ui-insert-assistant-message response)
-        (message "Magent: Done"))
+                            (length magent-loading-indicator))
+          (delete-char (- (length magent-loading-indicator))))))))
+
+(defun magent-ui--finish-processing (response)
+  "Finish processing with RESPONSE.
+Handles both streaming and non-streaming completion."
+  (setq magent-ui--processing nil)
+  (cond
+   ;; Streaming mode: text was already inserted incrementally
+   ((and magent-enable-streaming (stringp response) (> (length response) 0))
+    (magent-ui--with-insert (magent-ui-get-buffer)
+      (insert "\n"))
+    (message "Magent: Done"))
+   ;; Non-streaming: insert the full response
+   (response
+    (magent-ui--remove-loading-indicator)
+    (magent-ui-insert-assistant-message response)
+    (message "Magent: Done"))
+   ;; Failure
+   (t
+    (magent-ui--remove-loading-indicator)
     (magent-ui-insert-error "Request failed or was aborted")
-    (message "Magent: Failed")))
+    (message "Magent: Failed"))))
 
 ;;; Session management commands
 

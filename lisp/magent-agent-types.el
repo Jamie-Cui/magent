@@ -1,4 +1,4 @@
-;;; magent-agent-types.el --- Built-in agent definitions for OpenCode  -*- lexical-binding: t; -*-
+;;; magent-agent-types.el --- Built-in agent definitions for Magent  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 
@@ -144,8 +144,7 @@ Your output must be:
    :permission (magent-permission-merge
                 (magent-permission-defaults)
                 (magent-permission-from-config
-                 '((todoread . deny)
-                   (todowrite . deny))))))
+                 '((delegate . deny))))))
 
 (defun magent-agent-types--explore ()
   "Create the explore agent (codebase exploration specialist)."
@@ -155,18 +154,11 @@ Your output must be:
    :mode 'subagent
    :native t
    :prompt magent-agent--prompt-explore
-   :permission (magent-permission-merge
-                (magent-permission-defaults)
-                (magent-permission-from-config
-                 '(("*" . deny)
-                   (grep . allow)
-                   (glob . allow)
-                   (list . allow)
-                   (bash . allow)
-                   (webfetch . allow)
-                   (websearch . allow)
-                   (codesearch . allow)
-                   (read . allow))))))
+   :permission (list (cons '* magent-permission-deny)
+                     (cons 'grep magent-permission-allow)
+                     (cons 'glob magent-permission-allow)
+                     (cons 'read magent-permission-allow)
+                     (cons 'bash magent-permission-allow))))
 
 (defun magent-agent-types--compaction ()
   "Create the compaction agent (session summarization)."
@@ -178,7 +170,7 @@ Your output must be:
    :hidden t
    :prompt magent-agent--prompt-compaction
    :permission (magent-permission-from-config
-                '(("*" . deny)))))
+                '((* . deny)))))
 
 (defun magent-agent-types--title ()
   "Create the title agent (generates conversation titles)."
@@ -190,7 +182,7 @@ Your output must be:
    :hidden t
    :prompt magent-agent--prompt-title
    :permission (magent-permission-from-config
-                '(("*" . deny)))))
+                '((* . deny)))))
 
 (defun magent-agent-types--summary ()
   "Create the summary agent (generates pull-request style summaries)."
@@ -202,7 +194,7 @@ Your output must be:
    :hidden t
    :prompt magent-agent--prompt-summary
    :permission (magent-permission-from-config
-                '(("*" . deny)))))
+                '((* . deny)))))
 
 ;;; Agent registry initialization
 

@@ -1,4 +1,4 @@
-;;; magent-agent-file.el --- Agent file loader for OpenCode  -*- lexical-binding: t; -*-
+;;; magent-agent-file.el --- Agent file loader for Magent  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 
@@ -118,14 +118,13 @@ TOOLS-CONFIG is a plist like (:bash t :read nil)."
     (dolist (tool all-tools)
       (push (cons tool 'allow) rules))
     ;; Apply restrictions from config
-    (when (plistp tools-config)
-      (dolist (key (plist-keys tools-config))
-        (let ((value (plist-get tools-config key))
-              (tool-name (intern (downcase (substring (symbol-name key) 1)))))
-          ;; If tool is explicitly disabled, deny it
-          (when (eq value nil)
-            (setq rules (assq-delete-all tool-name rules))
-            (push (cons tool-name 'deny) rules)))))
+    (when (and tools-config (plistp tools-config))
+      (cl-loop for (key value) on tools-config by #'cddr
+               do (let ((tool-name (intern (downcase (substring (symbol-name key) 1)))))
+                    ;; If tool is explicitly disabled, deny it
+                    (when (eq value nil)
+                      (setq rules (assq-delete-all tool-name rules))
+                      (push (cons tool-name 'deny) rules)))))
     (nreverse rules)))
 
 ;;; Loading agents from files

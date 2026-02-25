@@ -1,4 +1,4 @@
-;;; magent-agent-info.el --- Agent info structure for OpenCode  -*- lexical-binding: t; -*-
+;;; magent-agent-info.el --- Agent info structure for Magent  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 
@@ -8,8 +8,7 @@
 
 ;;; Commentary:
 
-;; Agent info structure and schema definitions for OpenCode agents.
-;; Mirrors the Agent.Info type from the TypeScript implementation.
+;; Agent info structure and schema definitions for Magent agents.
 
 ;;; Code:
 

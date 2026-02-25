@@ -1,6 +1,6 @@
 # Magent Architecture
 
-This document describes the high-level architecture of Magent, an Emacs Lisp implementation of OpenCode.
+This document describes the high-level architecture of Magent, an Emacs Lisp AI coding agent for Emacs.
 
 ## Overview
 
@@ -291,7 +291,6 @@ All LLM communication is delegated to [gptel](https://github.com/karthink/gptel)
 - Different tasks benefit from different permissions (e.g., planning doesn't need file edits)
 - Specialized prompts improve task-specific performance
 - Users can create custom agents for their workflows
-- Matches OpenCode's proven architecture
 
 ### 2. Permission-Based Access Control
 

@@ -1,4 +1,4 @@
-;;; magent-agent-registry.el --- Agent registry for OpenCode  -*- lexical-binding: t; -*-
+;;; magent-agent-registry.el --- Agent registry for Magent  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 

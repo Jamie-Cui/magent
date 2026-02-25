@@ -1,6 +1,6 @@
 # Magent Documentation
 
-This directory contains comprehensive design documentation for Magent, an Emacs Lisp implementation of OpenCode.
+This directory contains comprehensive design documentation for Magent, an Emacs Lisp AI coding agent for Emacs.
 
 ## Documentation Index
 

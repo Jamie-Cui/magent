@@ -1,4 +1,4 @@
-;;; magent.el --- OpenCode AI coding agent for Emacs  -*- lexical-binding: t; -*-
+;;; magent.el --- Magent AI coding agent for Emacs  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 
@@ -34,8 +34,9 @@
 ;;
 ;; Features:
 ;; - LLM integration via gptel (Anthropic, OpenAI, Ollama, Gemini, etc.)
-;; - File operations (read, write, grep, glob)
+;; - File operations (read, write, edit, grep, glob)
 ;; - Shell command execution
+;; - Streaming responses
 ;; - Session management with conversation history
 ;; - Minibuffer interface for quick prompts
 ;; - Agent system with specialized agents and permission control
@@ -47,7 +48,8 @@
 ;; - Agent selection per session
 ;;
 ;; Configuration:
-;; Customize the `magent' group to set your API key, model, and other options.
+;; LLM provider, model, and API key are managed by gptel.
+;; Magent-specific settings are in the `magent' customize group.
 ;;
 ;;   M-x customize-group RET magent RET
 ;;
@@ -61,17 +63,11 @@
 ;;   M-x magent-show-current-agent - Show current session's agent
 ;;
 ;; Setup:
-;; 1. Set your API key:
-;;    (setq magent-api-key "your-api-key-here")
-;;    or set the ANTHROPIC_API_KEY or OPENAI_API_KEY environment variable.
+;; 1. Configure gptel with your provider and API key:
+;;    (setq gptel-backend (gptel-make-anthropic "Claude" :key 'gptel-api-key-from-auth-source))
+;;    or set the ANTHROPIC_API_KEY / OPENAI_API_KEY environment variable.
 ;;
-;; 2. Choose your provider:
-;;    (setq magent-provider 'anthropic)  ; or 'openai or 'openai-compatible
-;;
-;; 3. Optionally set a custom model:
-;;    (setq magent-model "claude-sonnet-4-20250514")
-;;
-;; 4. Enable globally:
+;; 2. Enable globally:
 ;;    (global-magent-mode 1)
 
 ;;; Code:

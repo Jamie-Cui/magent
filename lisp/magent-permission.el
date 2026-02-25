@@ -1,4 +1,4 @@
-;;; magent-permission.el --- Permission system for OpenCode agents  -*- lexical-binding: t; -*-
+;;; magent-permission.el --- Permission system for Magent agents  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 
@@ -51,9 +51,18 @@ Examples:
    ;; Special cases
    (cons 'doom_loop magent-permission-ask)
    (cons 'external_directory magent-permission-ask)
+   (cons 'emacs_eval magent-permission-ask)
+   (cons 'delegate magent-permission-allow)
    ;; File read restrictions (mirror .gitignore for .env)
    ;; More specific patterns must come before less specific ones.
    (cons 'read
+         (list
+          (cons '* magent-permission-allow)
+          (cons "*.env.example" magent-permission-allow)
+          (cons "*.env" magent-permission-deny)
+          (cons "*.env.*" magent-permission-deny)))
+   ;; File edit restrictions (same as read)
+   (cons 'edit
          (list
           (cons '* magent-permission-allow)
           (cons "*.env.example" magent-permission-allow)
