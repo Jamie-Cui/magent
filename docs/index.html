@@ -48,22 +48,16 @@
   <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/plugins/search.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
   <script>
-    mermaid.initialize({ startOnLoad: false });
-    document.addEventListener('DOMContentLoaded', function() {
-      // Re-render mermaid diagrams after docsify page changes
-      var defined = false;
-      var observer = new MutationObserver(function() {
+    mermaid.initialize({ startOnLoad: false, securityLevel: 'loose' });
+    // Render mermaid diagrams after docsify loads each page
+    window.$docsify.plugins = (window.$docsify.plugins || []).concat(function(hook) {
+      hook.doneEach(function() {
         var els = document.querySelectorAll('.mermaid');
         if (els.length > 0) {
           els.forEach(function(el) { el.removeAttribute('data-processed'); });
           mermaid.run({ nodes: els });
         }
       });
-      // Observe the docsify app container for content changes
-      var target = document.getElementById('app');
-      if (target) {
-        observer.observe(target, { childList: true, subtree: true });
-      }
     });
   </script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-bash.min.js"></script>

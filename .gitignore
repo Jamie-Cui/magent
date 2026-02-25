@@ -1,5 +1,7 @@
 .agent-shell
 
+node_modules/*
+
 # Byte-compiled Emacs Lisp files
 *.elc
 
