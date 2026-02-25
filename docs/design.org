@@ -1,0 +1,248 @@
+#+TITLE: Magent Design
+#+AUTHOR: Jamie Cui
+#+OPTIONS: toc:3 num:nil
+
+* Architecture
+
+Magent is an Emacs Lisp AI coding agent. All LLM communication is delegated to
+[[https://github.com/karthink/gptel][gptel]] (sole external dependency beyond Emacs 27.1+). The system has five layers:
+
+#+begin_example
+User Interface  (magent-ui.el)
+     ↓
+Session         (magent-session.el)
+     ↓
+Agent           (magent-agent.el, magent-agent-*.el)
+     ↓
+Permission      (magent-permission.el)
+     ↓
+Tools           (magent-tools.el)
+     ↓
+LLM / gptel
+#+end_example
+
+** Request flow
+
+1. User invokes =magent-prompt= (=C-c o p=) → minibuffer input
+2. User message added to session
+3. =magent-agent-process= builds gptel prompt list from session history
+4. Per-agent gptel overrides applied (model, temperature) via
+   =magent-agent-info-apply-gptel-overrides=
+5. =magent-tools-get-gptel-tools= filters global tool list by agent permissions
+6. =gptel-request= called — gptel owns the tool-calling FSM loop
+7. Callback (=magent-agent--make-callback=) handles text chunks, tool call
+   notifications, and errors; final response is recorded in session
+
+** Custom agent loading
+
+On =magent-mode= activation: registry initialised with built-in agents, then
+=.magent/agent/*.md= files are parsed (YAML frontmatter + markdown body) and
+registered.
+
+* Agent System
+
+** Modes
+
+- =primary= — user-facing, selectable interactively
+- =subagent= — called internally (e.g., by =delegate= tool)
+- =all= — either role (used for hidden utility agents)
+
+** Built-in agents
+
+| Name       | Mode     | Purpose                                         |
+|------------+----------+-------------------------------------------------|
+| build      | primary  | Default; full tool access                       |
+| plan       | primary  | Design/architecture; restricted file edits      |
+| explore    | subagent | Fast codebase exploration (read/grep/glob only) |
+| general    | subagent | Multi-step task execution                       |
+| compaction | all      | Session summarisation (hidden)                  |
+| title      | all      | Conversation title generation (hidden)          |
+| summary    | all      | PR-style summaries (hidden)                     |
+
+** Agent data structure (=magent-agent-info=)
+
+#+begin_src elisp
+(cl-defstruct magent-agent-info
+  name         ; unique string identifier
+  description  ; human-readable
+  mode         ; 'primary | 'subagent | 'all
+  native       ; t if built-in
+  hidden       ; hide from user selection
+  prompt       ; system prompt string or nil
+  permission   ; permission ruleset (see Permission System)
+  temperature  ; optional LLM override
+  top-p        ; optional LLM override
+  model        ; optional (provider . model-id) override
+  color        ; UI color hint
+  steps        ; optional max iteration count
+  options)     ; additional alist
+#+end_src
+
+** Custom agents
+
+Create =.magent/agent/<name>.md=:
+
+#+begin_example
+---
+description: Short description
+mode: primary
+hidden: false
+temperature: 0.5
+model: claude-haiku-4-20250514
+permissions:
+  - (read_file . allow)
+  - (write_file . deny)
+  - (bash . ask)
+---
+
+System prompt markdown here.
+#+end_example
+
+Frontmatter fields: =description= (required), =mode=, =hidden=, =temperature=,
+=top_p=, =model=, =color=, =permissions=.
+
+* Permission System
+
+Each agent carries a permission ruleset controlling which tools it may call.
+
+** Actions
+
+- =allow= — permitted
+- =deny= — blocked
+- =ask= — prompt user for confirmation
+
+** Rule format
+
+#+begin_src elisp
+;; Simple
+((bash . deny)
+ (write_file . ask))
+
+;; Nested file-pattern rules (glob syntax)
+((read_file . (("*.env"         . deny)
+               ("*.env.example" . allow)
+               ("*"             . allow))))
+
+;; Wildcard default
+((* . allow))
+#+end_src
+
+** Resolution order
+
+1. Exact tool match → return its action
+2. Tool has nested rules and a file path is provided → match glob patterns in order
+3. Wildcard =(* . <action>)= rule
+4. Default: =allow=
+
+** Default permissions (=build= agent)
+
+#+begin_src elisp
+((read_file . (("*.env"         . deny)
+               ("*.env.*"       . deny)
+               ("*.env.example" . allow)
+               ("*"             . allow)))
+ (*          . allow))
+#+end_src
+
+* Tools
+
+Tools are =gptel-tool= structs defined in =magent-tools.el=. They are registered
+globally and filtered per-agent at request time.
+
+** Available tools
+
+| Tool         | Side-effect | Description                                 |
+|--------------|-------------|---------------------------------------------|
+| =read_file=  | no          | Read file contents                          |
+| =write_file= | yes         | Write/create file (auto-creates parent dirs) |
+| =edit_file=  | yes         | Replace exact text in file (must match once) |
+| =grep=       | no          | Regex search; returns =file:line:content=   |
+| =glob=       | no          | File pattern match; returns newline-separated paths |
+| =bash=       | yes         | Shell command, configurable timeout (default 30 s) |
+| =emacs_eval= | yes         | Evaluate Emacs Lisp sexp (default timeout 10 s) |
+| =delegate=   | yes         | Spawn a nested =gptel-request= using a named subagent |
+
+Tools with side effects are defined with =:confirm t= so gptel can prompt the
+user before execution.
+
+** Adding a tool
+
+1. Implement =magent-tools--<name>= in =magent-tools.el=, wrapping body in
+   =condition-case= and returning a string.
+2. Register with =gptel-make-tool= (:category "magent").
+3. Add to =magent-tools--all-gptel-tools=.
+4. Add a =(name . symbol)= entry to =magent-tools--name-to-permission-key=.
+5. Add the symbol to =magent-enable-tools= default value in =magent-config.el=.
+
+* Session Management
+
+** Structure
+
+#+begin_src elisp
+(cl-defstruct magent-session
+  messages     ; list, newest first internally; oldest-first for API
+  max-history  ; default 100 (trimmed on every add)
+  id           ; "session-YYYYMMDD-HHMMSS"
+  agent)       ; assigned magent-agent-info
+#+end_src
+
+** Persistence
+
+Sessions save to =~/.emacs.d/magent-sessions/<id>.json=. Agent assignment is
+/not/ persisted (limitation — agent reverts to default on reload).
+
+** Global session variable
+
+Currently one global session: =magent--current-session=. Per-buffer or
+per-project sessions are not yet implemented.
+
+* LLM / gptel Integration
+
+All provider, model, and API key configuration is in gptel — Magent adds no
+HTTP code.
+
+** Provider setup (via gptel)
+
+#+begin_src elisp
+;; Anthropic (default)
+(setq gptel-api-key "sk-ant-...")
+(setq gptel-model 'claude-sonnet-4-20250514)
+;; or set ANTHROPIC_API_KEY env var
+
+;; OpenAI
+(setq gptel-backend
+      (gptel-make-openai "OpenAI"
+        :key "sk-..."
+        :models '(gpt-4-turbo gpt-4)))
+
+;; Ollama (local)
+(setq gptel-backend
+      (gptel-make-ollama "Ollama"
+        :host "localhost:11434"
+        :models '(llama3 codellama)))
+#+end_src
+
+** Per-agent overrides
+
+=magent-agent-info-apply-gptel-overrides= temporarily sets =gptel-backend=,
+=gptel-model=, and =gptel-temperature= for the duration of one request.
+Priority: agent override > gptel default.
+
+* Configuration Reference
+
+Settings under =customize-group RET magent=:
+
+| Variable                   | Default                          | Description                          |
+|----------------------------|----------------------------------|--------------------------------------|
+| =magent-system-prompt=     | (built-in string)                | Default system prompt                |
+| =magent-buffer-name=       | ="*magent*"=                     | Output buffer name                   |
+| =magent-enable-tools=      | all 8 tools                      | Globally enabled tools               |
+| =magent-max-history=       | =100=                            | Max messages per session             |
+| =magent-default-agent=     | ="build"=                        | Default agent name                   |
+| =magent-load-custom-agents=| =t=                              | Load =.magent/agent/*.md= on startup |
+| =magent-agent-directory=   | =".magent/agent"=                | Custom agent directory               |
+| =magent-session-directory= | =~/.emacs.d/magent-sessions/=   | Session persistence directory        |
+| =magent-enable-logging=    | =nil=                            | Log requests to =*magent-log*=       |
+| =magent-grep-program=      | ="rg"=                           | Grep backend binary                  |
+| =magent-auto-scroll=       | =t=                              | Auto-scroll output buffer            |
+| =magent-enable-streaming=  | =t=                              | Streaming responses via gptel        |

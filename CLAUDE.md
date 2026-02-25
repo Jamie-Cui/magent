@@ -46,7 +46,7 @@ Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and perm
 
 5. **Permission system** (`magent-permission.el`): Rule-based access control per agent. Rules map tool names to `allow`/`deny`/`ask`, with optional nested file-pattern rules (glob syntax). Resolution order: exact tool match → nested file rules → wildcard (`*`) fallback → default deny.
 
-6. **Tools** (`magent-tools.el`): Implements `read_file`, `write_file`, `grep`, `glob`, `bash` as `gptel-tool` structs. Tools are registered globally but filtered per-agent through the permission system.
+6. **Tools** (`magent-tools.el`): Implements `read_file`, `write_file`, `edit_file`, `grep`, `glob`, `bash`, `emacs_eval`, `delegate` as `gptel-tool` structs. Tools are registered globally but filtered per-agent through the permission system. `delegate` spawns a nested `gptel-request` using a named subagent.
 
 7. **Session** (`magent-session.el`): Conversation state with messages list, assigned agent, and history trimming. Persists to `~/.emacs.d/magent-sessions/` as JSON. Converts to gptel prompt list format for API calls.
 
