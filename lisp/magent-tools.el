@@ -202,6 +202,11 @@ Returns the result as a string."
 
 ;;; Tool filtering by agent permissions
 
+(defconst magent-tools--permission-keys
+  '(read write grep glob bash)
+  "Canonical list of magent tool permission key symbols.
+This is the single source of truth for all tool names in the permission system.")
+
 (defvar magent-tools--name-to-permission-key
   '(("read_file"  . read)
     ("write_file" . write)

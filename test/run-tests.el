@@ -26,11 +26,10 @@
 (message "Loading test files...")
 
 (defvar magent-test-files
-  '("magent-agent-info-test"
-    "magent-permission-test"
-    "magent-session-test"
-    "magent-agent-registry-test")
-  "List of test modules to load.")
+  (let* ((test-dir (file-name-directory (expand-file-name load-file-name)))
+         (files (directory-files test-dir nil "\\`magent-.*-test\\.el\\'")))
+    (mapcar (lambda (f) (file-name-base f)) files))
+  "List of test modules to load, auto-discovered from the test/ directory.")
 
 (dolist (test-file magent-test-files)
   (message "Loading %s..." test-file)

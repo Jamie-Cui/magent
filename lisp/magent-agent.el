@@ -80,16 +80,14 @@ FINAL-CALLBACK is called with the response string (or nil on error)."
       (dolist (entry (cdr response))
         (let* ((tool (car entry))
                (args (cadr entry)))
-          (when (fboundp 'magent-ui-insert-tool-call)
-            (magent-ui-insert-tool-call (gptel-tool-name tool) args)))))
+          (magent-ui-insert-tool-call (gptel-tool-name tool) args))))
 
      ;; Tool calls pending user confirmation
      ((and (consp response) (eq (car response) 'tool-call))
       ;; gptel handles the confirmation UI; we just log
-      (when (fboundp 'magent-log)
-        (dolist (pending (cdr response))
-          (magent-log "Awaiting confirmation for tool: %s"
-                      (gptel-tool-name (car pending))))))
+      (dolist (pending (cdr response))
+        (magent-log "Awaiting confirmation for tool: %s"
+                    (gptel-tool-name (car pending)))))
 
      ;; Reasoning block (extended thinking) — ignore
      ((and (consp response) (eq (car response) 'reasoning))
@@ -103,8 +101,7 @@ FINAL-CALLBACK is called with the response string (or nil on error)."
      ;; nil / error
      ((null response)
       (let ((status (plist-get info :status)))
-        (when (fboundp 'magent-ui-insert-error)
-          (magent-ui-insert-error (or status "Request failed")))
+        (magent-ui-insert-error (or status "Request failed"))
         (when final-callback
           (funcall final-callback nil)))))))
 

@@ -106,7 +106,8 @@ FILE is optional file path to check."
 (defun magent-permission--check-file-rules (rules file)
   "Check if FILE matches any rule in RULES.
 RULES is an alist of (pattern . permission).
-Specific patterns are checked first; the wildcard \\='* or \"*\" is used as fallback."
+Specific patterns are checked first; the wildcard \\='* or \"*\" is used as fallback.
+Pattern matching is attempted against both the full FILE path and its basename."
   (let ((filename (file-name-nondirectory file))
         (wildcard-permission nil))
     (catch 'found
@@ -121,11 +122,13 @@ Specific patterns are checked first; the wildcard \\='* or \"*\" is used as fall
            ;; String pattern
            ((stringp pattern)
             (cond
-             ;; Glob pattern like "*.env" or "*.el"
+             ;; Glob pattern like "*.env", "*.el", or "src/**/*.env"
              ((string-match-p "\\*" pattern)
-              (when (string-match-p (wildcard-to-regexp pattern) filename)
-                (throw 'found permission)))
-             ;; Exact filename match
+              (let ((regexp (wildcard-to-regexp pattern)))
+                (when (or (string-match-p regexp filename)
+                          (string-match-p regexp file))
+                  (throw 'found permission))))
+             ;; Exact match against full path or basename
              ((or (string-equal pattern file)
                   (string-equal pattern filename))
               (throw 'found permission)))))))

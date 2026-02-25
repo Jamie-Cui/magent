@@ -18,6 +18,7 @@
 (require 'magent-agent-info)
 (require 'magent-agent-registry)
 (require 'magent-permission)
+(require 'magent-tools)
 
 ;;; File paths
 
@@ -85,8 +86,8 @@ Handles booleans, numbers, strings, and lists."
    ;; Boolean
    ((string-equal str "true") t)
    ((string-equal str "false") nil)
-   ;; Number
-   ((string-match-p "^[0-9]+$" str) (string-to-number str))
+   ;; Number (integer or float)
+   ((string-match-p "^[0-9]+\\(?:\\.[0-9]+\\)?$" str) (string-to-number str))
    ;; Quoted string
    ((and (> (length str) 1)
          (or (and (eq (aref str 0) ?\") (eq (aref str (1- (length str))) ?\"))
@@ -112,7 +113,7 @@ Returns 'primary, 'subagent, or 'all (default)."
   "Parse tools config to permission rules.
 TOOLS-CONFIG is a plist like (:bash t :read nil)."
   (let ((rules nil)
-        (all-tools '(bash read write edit list glob grep webfetch task todowrite todoread)))
+        (all-tools magent-tools--permission-keys))
     ;; Start with all tools allowed
     (dolist (tool all-tools)
       (push (cons tool 'allow) rules))
