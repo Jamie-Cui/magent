@@ -14,6 +14,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'magent-config)
 (require 'magent-agent-info)
 (require 'magent-agent-types)
 (require 'magent-permission)
@@ -219,7 +220,7 @@ With prefix argument, include hidden agents."
    (list (completing-read "Set default agent: "
                           (magent-agent-registry-list-names))))
   (if (magent-agent-registry-set-default agent-name)
-      (message "Default agent set to: %s" agent-name)
+      (magent-log "INFO default agent set to: %s" agent-name)
     (error "Agent not found: %s" agent-name)))
 
 (provide 'magent-agent-registry)

@@ -26,7 +26,7 @@
 (declare-function magent-ui-insert-error "magent-ui")
 (declare-function magent-ui-insert-streaming "magent-ui")
 (declare-function magent-ui-start-streaming "magent-ui")
-(declare-function magent-log "magent-ui")
+(declare-function gptel--accept-tool-calls "gptel")
 
 ;;; Agent execution
 
@@ -53,14 +53,27 @@ The tool calling loop is managed by gptel's FSM.  Magent's role is to:
            (system-msg (or (magent-agent-info-prompt agent)
                            magent-system-prompt))
            (tools (magent-tools-get-gptel-tools agent)))
-      ;; Apply per-agent gptel variable overrides, then fire the request
+      (magent-log "INFO agent=%s model=%s tools=[%s] streaming=%s"
+                  (magent-agent-info-name agent)
+                  gptel-model
+                  (mapconcat #'gptel-tool-name tools ", ")
+                  magent-enable-streaming)
+      ;; Apply per-agent gptel variable overrides, then fire the request.
+      ;;
+      ;; gptel reads gptel-tools and gptel-use-tools via `buffer-local-value'
+      ;; from the :buffer argument (defaults to current-buffer).  Dynamic `let'
+      ;; bindings are invisible to `buffer-local-value', so we must set them
+      ;; buffer-locally in the buffer that gptel will read from.
       (magent-agent-info-apply-gptel-overrides
        agent
        (lambda ()
-         (let ((gptel-tools tools)
-               (gptel-use-tools (if tools t nil)))
+         (let ((request-buffer (get-buffer-create " *magent-request*")))
+           (with-current-buffer request-buffer
+             (setq-local gptel-tools tools)
+             (setq-local gptel-use-tools (if tools t nil)))
            (gptel-request
              prompt-list
+             :buffer request-buffer
              :system system-msg
              :stream magent-enable-streaming
              :callback (magent-agent--make-callback session callback))))))))
@@ -81,18 +94,21 @@ with t to signal completion."
        ((and magent-enable-streaming (stringp response))
         (unless streaming-started
           (setq streaming-started t)
+          (magent-log "INFO streaming started")
           (magent-ui-start-streaming))
         (setq streamed-text (concat streamed-text response))
         (magent-ui-insert-streaming response))
 
        ;; Streaming: completion signal (response is t)
        ((and magent-enable-streaming (eq response t))
+        (magent-log "INFO streaming complete (%d chars)" (length streamed-text))
         (magent-session-add-message session 'assistant streamed-text)
         (when final-callback
           (funcall final-callback streamed-text)))
 
        ;; Non-streaming: final string response
        ((stringp response)
+        (magent-log "INFO response received (%d chars)" (length response))
         (magent-session-add-message session 'assistant response)
         (when final-callback
           (funcall final-callback response)))
@@ -104,27 +120,43 @@ with t to signal completion."
         (setq streaming-started nil)
         (dolist (entry (cdr response))
           (let* ((tool (car entry))
-                 (args (cadr entry)))
+                 (args (cadr entry))
+                 (result (caddr entry)))
+            (magent-log "INFO tool result: %s args=%s result=%s"
+                        (gptel-tool-name tool)
+                        (truncate-string-to-width (format "%s" args) 120 nil nil "...")
+                        (truncate-string-to-width (format "%s" result) 120 nil nil "..."))
             (magent-ui-insert-tool-call (gptel-tool-name tool) args))))
 
-       ;; Tool calls pending user confirmation
+       ;; Tool calls pending user confirmation — auto-accept since magent
+       ;; manages access control via its permission system.  gptel's
+       ;; :confirm mechanism is not wired to magent's UI, so pending calls
+       ;; would silently stall the FSM if left unhandled.
        ((and (consp response) (eq (car response) 'tool-call))
-        (dolist (pending (cdr response))
-          (magent-log "Awaiting confirmation for tool: %s"
-                      (gptel-tool-name (car pending)))))
+        (let ((pending (cdr response)))
+          (magent-log "INFO auto-accepting %d pending tool call(s)" (length pending))
+          (dolist (p pending)
+            (magent-log "INFO  -> %s arg-values=%s raw-tool-use=%s"
+                        (gptel-tool-name (car p))
+                        (truncate-string-to-width (format "%s" (cadr p)) 120 nil nil "...")
+                        (truncate-string-to-width
+                         (format "%s" (plist-get info :tool-use)) 200 nil nil "...")))
+          (gptel--accept-tool-calls pending nil)))
 
        ;; Reasoning block (extended thinking) — ignore
        ((and (consp response) (eq (car response) 'reasoning))
-        nil)
+        (magent-log "INFO reasoning block received"))
 
        ;; Abort
        ((eq response 'abort)
+        (magent-log "INFO request aborted")
         (when final-callback
           (funcall final-callback nil)))
 
        ;; nil / error
        ((null response)
         (let ((status (plist-get info :status)))
+          (magent-log "ERROR request failed: %s" (or status "unknown"))
           (magent-ui-insert-error (or status "Request failed"))
           (when final-callback
             (funcall final-callback nil))))))))

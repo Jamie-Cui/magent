@@ -138,5 +138,15 @@ If rg is not found, grep tool calls will fail with an informative error."
   :type 'string
   :group 'magent)
 
+;;; Logging stub
+;; Defined here so all modules can call magent-log unconditionally.
+;; magent-ui.el overrides this with the real implementation that writes
+;; to *magent-log*.  The stub is a no-op so tests and early-load contexts
+;; never raise void-function errors.
+
+(defun magent-log (format-string &rest args)
+  "Log FORMAT-STRING with ARGS.  No-op until magent-ui is loaded."
+  (ignore format-string args))
+
 (provide 'magent-config)
 ;;; magent-config.el ends here

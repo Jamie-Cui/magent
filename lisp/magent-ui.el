@@ -42,7 +42,10 @@ After BODY, auto-scroll if `magent-auto-scroll' is non-nil."
        ,@body
        (when magent-auto-scroll
          (goto-char (point-max))
-         (recenter -1)))))
+         (let ((win (get-buffer-window (current-buffer))))
+           (when win
+             (with-selected-window win
+               (recenter -1))))))))
 
 (defun magent-log (format-string &rest args)
   "Log a message to the Magent log buffer.
@@ -247,7 +250,7 @@ Handles code blocks, bold, and inline code."
   (when magent-ui--processing
     (error "Magent: Already processing a request"))
   (setq magent-ui--processing t)
-  (message "Magent: Processing...")
+  (magent-log "INFO processing: %s" (truncate-string-to-width input 80 nil nil "..."))
 
   (condition-case err
       (progn
@@ -263,9 +266,9 @@ Handles code blocks, bold, and inline code."
          (lambda (response)
            (magent-ui--finish-processing response))))
     (error
+     (magent-log "ERROR in process: %s" (error-message-string err))
      (magent-ui-insert-error (error-message-string err))
-     (setq magent-ui--processing nil)
-     (message "Magent: Error"))))
+     (setq magent-ui--processing nil))))
 
 (defun magent-ui--remove-loading-indicator ()
   "Remove the loading indicator from the end of the output buffer."
@@ -286,17 +289,17 @@ Handles both streaming and non-streaming completion."
    ((and magent-enable-streaming (stringp response) (> (length response) 0))
     (magent-ui--with-insert (magent-ui-get-buffer)
       (insert "\n"))
-    (message "Magent: Done"))
+    (magent-log "INFO done (streaming)"))
    ;; Non-streaming: insert the full response
    (response
     (magent-ui--remove-loading-indicator)
     (magent-ui-insert-assistant-message response)
-    (message "Magent: Done"))
+    (magent-log "INFO done (non-streaming, %d chars)" (length response)))
    ;; Failure
    (t
     (magent-ui--remove-loading-indicator)
-    (magent-ui-insert-error "Request failed or was aborted")
-    (message "Magent: Failed"))))
+    (magent-log "ERROR request failed or aborted")
+    (magent-ui-insert-error "Request failed or was aborted"))))
 
 ;;; Session management commands
 
@@ -306,7 +309,7 @@ Handles both streaming and non-streaming completion."
   (interactive)
   (magent-session-reset)
   (magent-ui-clear-buffer)
-  (message "Magent: Session cleared"))
+  (magent-log "INFO session cleared"))
 
 ;;;###autoload
 (defun magent-show-session ()
@@ -332,8 +335,7 @@ Handles both streaming and non-streaming completion."
   (interactive)
   (with-current-buffer (magent-ui-get-log-buffer)
     (let ((inhibit-read-only t))
-      (erase-buffer)))
-  (message "Magent: Log cleared"))
+      (erase-buffer))))
 
 ;;; Agent selection commands
 
@@ -348,7 +350,7 @@ Handles both streaming and non-streaming completion."
       (let* ((agent-info (magent-agent-registry-get selected))
              (session (magent-session-get)))
         (magent-session-set-agent session agent-info)
-        (message "Magent: Agent set to %s" selected)))))
+        (magent-log "INFO agent selected: %s" selected)))))
 
 ;;;###autoload
 (defun magent-show-current-agent ()
@@ -357,10 +359,10 @@ Handles both streaming and non-streaming completion."
   (let* ((session (magent-session-get))
          (agent (magent-session-get-agent session)))
     (if agent
-        (message "Magent: Current agent is %s (%s)"
+        (message "Magent: agent=%s (%s)"
                  (magent-agent-info-name agent)
                  (or (magent-agent-info-description agent) "no description"))
-      (message "Magent: No agent selected (will use default)"))))
+      (message "Magent: no agent selected (will use default)"))))
 
 (provide 'magent-ui)
 ;;; magent-ui.el ends here

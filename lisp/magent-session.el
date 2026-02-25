@@ -57,7 +57,7 @@ If CONTENT is a list of content blocks, concatenate their text fields."
   "Reset the current session, clearing all messages."
   (interactive)
   (setq magent--current-session nil)
-  (message "Magent session cleared."))
+  (magent-log "INFO session cleared"))
 
 (defun magent-session-get-id (session)
   "Get or generate a unique ID for SESSION."

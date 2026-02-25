@@ -160,7 +160,7 @@ Returns the agent info if successful, nil otherwise."
                 (magent-agent-registry-register agent-info)
                 agent-info)))))
     (error
-     (message "Error loading agent file %s: %s" filepath (error-message-string err))
+     (magent-log "ERROR loading agent file %s: %s" filepath (error-message-string err))
      nil)))
 
 (defun magent-agent-file-load-all (&optional directory)
@@ -172,9 +172,9 @@ Returns number of agents loaded."
       (when (magent-agent-file-load file)
         (cl-incf count)))
     (when (> count 0)
-      (message "Loaded %d agent file(s) from %s"
-               count
-               (magent-agent-file--agent-dir directory)))
+      (magent-log "INFO loaded %d agent file(s) from %s"
+                  count
+                  (magent-agent-file--agent-dir directory)))
     count))
 
 ;;; Saving agents to files
@@ -231,7 +231,7 @@ Returns the filepath if successful."
   (let ((agent-info (magent-agent-registry-get agent-name)))
     (if agent-info
         (let ((filepath (magent-agent-file-save agent-info directory)))
-          (message "Agent saved to: %s" filepath))
+          (magent-log "INFO agent saved to: %s" filepath))
       (error "Agent not found: %s" agent-name))))
 
 (provide 'magent-agent-file)

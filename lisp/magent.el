@@ -114,8 +114,8 @@ When enabled, Magent commands are available.
         ;; Load custom agents if enabled
         (when magent-load-custom-agents
           (magent-agent-file-load-all))
-        (message "Magent mode enabled"))
-    (message "Magent mode disabled")))
+        (magent-log "INFO magent mode enabled"))
+    (magent-log "INFO magent mode disabled")))
 
 ;;;###autoload
 (define-globalized-minor-mode global-magent-mode magent-mode

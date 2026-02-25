@@ -149,10 +149,13 @@ then spawns a nested `gptel-request' with the subagent's configuration."
         (magent-agent-info-apply-gptel-overrides
          agent
          (lambda ()
-           (let ((gptel-tools tools)
-                 (gptel-use-tools (if tools t nil)))
+           (let ((request-buffer (get-buffer-create " *magent-delegate-request*")))
+             (with-current-buffer request-buffer
+               (setq-local gptel-tools tools)
+               (setq-local gptel-use-tools (if tools t nil)))
              (gptel-request
                prompt-list
+               :buffer request-buffer
                :system system-msg
                :stream nil
                :callback (lambda (response _info)
