@@ -126,22 +126,21 @@ current session in chronological order."
 (defun magent-ui-insert-user-message (text)
   "Insert user message TEXT into output buffer."
   (magent-ui--with-insert (magent-ui-get-buffer)
-                          (insert (propertize (format "\n%s%s\n" magent-user-prompt text)
+                          (insert (propertize (format "\n%s%s" magent-user-prompt text)
                                               'face '(bold font-lock-keyword-face)))))
 
 (defun magent-ui-insert-assistant-message (text)
   "Insert assistant message TEXT into output buffer."
   (magent-ui--with-insert (magent-ui-get-buffer)
                           (insert (propertize (concat "\n" magent-assistant-prompt) 'face 'font-lock-string-face))
-                          (insert (magent-ui--render-markdown text))
-                          (insert "\n")))
+                          (insert (magent-ui--render-markdown text))))
 
 (defun magent-ui-insert-tool-call (tool-name input)
   "Insert tool call notification into output buffer."
   (magent-ui--with-insert (magent-ui-get-buffer)
                           (insert (propertize (format "\n%s%s" magent-tool-call-prompt tool-name)
                                               'face 'font-lock-builtin-face))
-                          (insert (propertize (format " %s\n"
+                          (insert (propertize (format " %s"
                                                       (if (stringp input)
                                                           input
                                                         (truncate-string-to-width
@@ -151,7 +150,7 @@ current session in chronological order."
 (defun magent-ui-insert-error (error-text)
   "Insert ERROR-TEXT into output buffer."
   (magent-ui--with-insert (magent-ui-get-buffer)
-                          (insert (propertize (format "\n%s%s\n" magent-error-prompt error-text)
+                          (insert (propertize (format "\n%s%s" magent-error-prompt error-text)
                                               'face '(bold font-lock-warning-face)))))
 
 (defun magent-ui-start-streaming ()
@@ -287,8 +286,6 @@ Handles both streaming and non-streaming completion."
   (cond
    ;; Streaming mode: text was already inserted incrementally
    ((and magent-enable-streaming (stringp response) (> (length response) 0))
-    (magent-ui--with-insert (magent-ui-get-buffer)
-      (insert "\n"))
     (magent-log "INFO done (streaming)"))
    ;; Non-streaming: insert the full response
    (response

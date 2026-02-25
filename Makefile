@@ -1,6 +1,6 @@
 EMACS = emacs
 GPTEL_DIR ?= $(HOME)/proj/gptel
-LOADPATH = -L lisp -L test -L $(GPTEL_DIR)
+LOADPATH = -L lisp -L $(GPTEL_DIR)
 
 SRCS = lisp/magent.el \
        lisp/magent-config.el \
@@ -14,16 +14,9 @@ SRCS = lisp/magent.el \
        lisp/magent-permission.el \
        lisp/magent-ui.el
 
-TEST_SRCS = test/magent-test-helper.el \
-            test/magent-agent-info-test.el \
-            test/magent-permission-test.el \
-            test/magent-session-test.el \
-            test/magent-agent-registry-test.el
-
 COMPILED = $(SRCS:.el=.elc)
-TEST_COMPILED = $(TEST_SRCS:.el=.elc)
 
-.PHONY: all compile compile-tests clean clean-tests test test-only help
+.PHONY: all compile clean help
 
 all: compile
 
@@ -32,16 +25,10 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  compile       - Byte compile all Elisp files"
-	@echo "  compile-tests - Byte compile test files"
 	@echo "  clean         - Remove compiled files"
-	@echo "  clean-tests   - Remove compiled test files"
-	@echo "  test          - Compile and run tests"
-	@echo "  test-only     - Run tests without compiling"
 	@echo "  help          - Show this help message"
 
 compile: $(COMPILED)
-
-compile-tests: $(TEST_COMPILED)
 
 %.elc: %.el
 	@echo "Compiling $<..."
@@ -50,15 +37,3 @@ compile-tests: $(TEST_COMPILED)
 clean:
 	@echo "Cleaning compiled files..."
 	@rm -f $(COMPILED)
-
-clean-tests:
-	@echo "Cleaning compiled test files..."
-	@rm -f $(TEST_COMPILED)
-
-test: compile
-	@echo "Running tests..."
-	@$(EMACS) -Q --batch $(LOADPATH) -l test/run-tests.el
-
-test-only:
-	@echo "Running tests (without recompiling)..."
-	@$(EMACS) -Q --batch $(LOADPATH) -l test/run-tests.el

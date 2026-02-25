@@ -95,27 +95,27 @@ Should match one of the registered agent names."
   :type 'boolean
   :group 'magent)
 
-(defcustom magent-assistant-prompt "🤖 "
+(defcustom magent-assistant-prompt ""
   "Prompt string displayed before assistant messages."
   :type 'string
   :group 'magent)
 
-(defcustom magent-user-prompt "❯ "
+(defcustom magent-user-prompt "> "
   "Prompt string displayed before user messages."
   :type 'string
   :group 'magent)
 
-(defcustom magent-tool-call-prompt "🔧 "
+(defcustom magent-tool-call-prompt "[Tool-Call] "
   "Prompt string displayed before tool call notifications."
   :type 'string
   :group 'magent)
 
-(defcustom magent-error-prompt "⚠ Error: "
+(defcustom magent-error-prompt "[Error] "
   "Prompt string displayed before error messages."
   :type 'string
   :group 'magent)
 
-(defcustom magent-loading-indicator " [Loading] "
+(defcustom magent-loading-indicator "[Loading] "
   "Character displayed as a loading indicator during processing."
   :type 'string
   :group 'magent)

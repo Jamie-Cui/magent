@@ -6,8 +6,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 make compile       # Byte-compile all Elisp files
-make test          # Compile then run all 63 ERT tests
-make test-only     # Run tests without recompiling
 make clean         # Remove compiled .elc files
 ```
 
@@ -16,14 +14,9 @@ Single-file compilation:
 emacs -Q --batch -L lisp -L ~/proj/gptel -f batch-byte-compile lisp/magent-foo.el
 ```
 
-Run a single test by name:
-```bash
-emacs -Q --batch -L lisp -L test -L ~/proj/gptel -l test/run-tests.el --eval '(ert-run-tests-batch-and-exit "magent-test-name-pattern")'
-```
-
 The Makefile expects gptel source at `$HOME/proj/gptel` by default. Override with `GPTEL_DIR`:
 ```bash
-make test GPTEL_DIR=/path/to/gptel
+make compile GPTEL_DIR=/path/to/gptel
 ```
 
 ## Architecture
