@@ -43,11 +43,7 @@ compile: $(COMPILED)
 
 compile-tests: $(TEST_COMPILED)
 
-lisp/%.elc: lisp/%.el
-	@echo "Compiling $<..."
-	@$(EMACS) -Q --batch $(LOADPATH) -f batch-byte-compile $<
-
-test/%.elc: test/%.el
+%.elc: %.el
 	@echo "Compiling $<..."
 	@$(EMACS) -Q --batch $(LOADPATH) -f batch-byte-compile $<
 

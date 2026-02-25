@@ -25,6 +25,23 @@
   (id nil)
   (agent nil))
 
+;;; Message helpers
+
+(defsubst magent-msg-role (msg)
+  "Return the role symbol of message MSG."
+  (cdr (assq 'role msg)))
+
+(defsubst magent-msg-content (msg)
+  "Return the content of message MSG (string or content-block list)."
+  (cdr (assq 'content msg)))
+
+(defsubst magent-session--content-to-string (content)
+  "Coerce CONTENT to a plain string.
+If CONTENT is a string, return it unchanged.
+If CONTENT is a list of content blocks, concatenate their text fields."
+  (if (stringp content) content
+    (mapconcat (lambda (b) (or (cdr (assq 'text b)) "")) content "")))
+
 ;;; Session management
 
 (defvar magent--current-session nil
@@ -94,17 +111,9 @@ RESULT is the string result of tool execution."
 This is a rough estimate assuming ~4 chars per token."
   (let ((total-chars 0))
     (dolist (msg (magent-session-get-messages session))
-      (let ((content (cdr (assq 'content msg))))
-        (cl-incf total-chars
-               (if (stringp content)
-                   (length content)
-                 ;; For structured content, count text fields
-                 (let ((chars 0))
-                   (dolist (block content)
-                     (when (equal (cdr (assq 'type block)) "text")
-                       (cl-incf chars (length (cdr (assq 'text block))))))
-                   chars)))))
-    (/ total-chars 4))) ; Rough estimate
+      (cl-incf total-chars
+               (length (magent-session--content-to-string (magent-msg-content msg)))))
+    (/ total-chars 4)))
 
 ;;; Session persistence
 
@@ -112,10 +121,9 @@ This is a rough estimate assuming ~4 chars per token."
   "Save SESSION to FILE.
 If FILE is nil, uses a default location based on session ID."
   (let* ((session-id (magent-session-get-id session))
-         (default-dir (expand-file-name "magent-sessions" user-emacs-directory))
-         (default-file (expand-file-name (concat session-id ".json") default-dir))
+         (default-file (expand-file-name (concat session-id ".json") magent-session-directory))
          (filename (or file default-file)))
-    (make-directory default-dir t)
+    (make-directory magent-session-directory t)
     (with-temp-file filename
       (insert (json-encode `((id . ,session-id)
                             (messages . ,(magent-session-messages session))
@@ -134,9 +142,8 @@ If FILE is nil, uses a default location based on session ID."
 
 (defun magent-session-list-saved ()
   "List all saved session files."
-  (let ((session-dir (expand-file-name "magent-sessions" user-emacs-directory)))
-    (when (file-directory-p session-dir)
-      (directory-files session-dir t "\\.json$"))))
+  (when (file-directory-p magent-session-directory)
+    (directory-files magent-session-directory t "\\.json$")))
 
 ;;; Session context helpers
 
@@ -160,16 +167,11 @@ Returns a condensed version of the conversation."
       (with-temp-buffer
         (insert "Session Summary:\n\n")
         (dolist (msg (last messages 20))
-          (let ((role (cdr (assq 'role msg)))
-                (content (cdr (assq 'content msg))))
+          (let ((role (magent-msg-role msg))
+                (content (magent-msg-content msg)))
             (insert (format "[%s] " (upcase (symbol-name role))))
-            (if (stringp content)
-                (insert (truncate-string-to-width content 80 nil nil "..."))
-              ;; Handle structured content
-              (let ((text-parts (cl-loop for block in content
-                                         when (equal (cdr (assq 'type block)) "text")
-                                         collect (cdr (assq 'text block)))))
-                (insert (string-join text-parts " "))))
+            (insert (truncate-string-to-width
+                     (magent-session--content-to-string content) 80 nil nil "..."))
             (insert "\n\n")))
         (buffer-string)))))
 
@@ -185,21 +187,13 @@ internally within each request."
     (delq nil
           (mapcar
            (lambda (msg)
-             (let ((role (cdr (assq 'role msg)))
-                   (content (cdr (assq 'content msg))))
+             (let ((role (magent-msg-role msg))
+                   (content (magent-msg-content msg)))
                (pcase role
                  ('user
-                  (cons 'prompt
-                        (if (stringp content) content
-                          (mapconcat
-                           (lambda (b) (or (cdr (assq 'text b)) ""))
-                           content ""))))
+                  (cons 'prompt (magent-session--content-to-string content)))
                  ('assistant
-                  (cons 'response
-                        (if (stringp content) content
-                          (mapconcat
-                           (lambda (b) (or (cdr (assq 'text b)) ""))
-                           content ""))))
+                  (cons 'response (magent-session--content-to-string content)))
                  (_ nil))))
            messages))))
 

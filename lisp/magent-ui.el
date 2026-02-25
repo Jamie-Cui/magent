@@ -32,17 +32,24 @@
         (magent-log-mode)))
     buffer))
 
+(defmacro magent-ui--with-insert (buffer &rest body)
+  "Execute BODY at end of BUFFER with `inhibit-read-only' set.
+After BODY, auto-scroll if `magent-auto-scroll' is non-nil."
+  (declare (indent 1))
+  `(with-current-buffer ,buffer
+     (let ((inhibit-read-only t))
+       (goto-char (point-max))
+       ,@body
+       (when magent-auto-scroll
+         (goto-char (point-max))
+         (recenter -1)))))
+
 (defun magent-log (format-string &rest args)
   "Log a message to the Magent log buffer.
 FORMAT-STRING and ARGS are passed to `format'."
-  (with-current-buffer (magent-ui-get-log-buffer)
-    (let ((inhibit-read-only t)
-          (timestamp (format-time-string "%Y-%m-%d %H:%M:%S")))
-      (goto-char (point-max))
-      (insert (format "[%s] %s\n" timestamp (apply #'format format-string args))))
-    (when magent-auto-scroll
-      (goto-char (point-max))
-      (recenter -1))))
+  (magent-ui--with-insert (magent-ui-get-log-buffer)
+                          (let ((timestamp (format-time-string "%Y-%m-%d %H:%M:%S")))
+                            (insert (format "[%s] %s\n" timestamp (apply #'format format-string args))))))
 
 (defun magent-ui-get-buffer ()
   "Get or create the Magent output buffer."
@@ -56,6 +63,7 @@ FORMAT-STRING and ARGS are passed to `format'."
   "Display the Magent output buffer.
 If the buffer is empty but the session has history, render all
 past messages so the user can see the full conversation."
+  (interactive)
   (let ((buffer (magent-ui-get-buffer)))
     (when (zerop (buffer-size buffer))
       (magent-ui-render-history))
@@ -65,26 +73,21 @@ past messages so the user can see the full conversation."
   "Render all session messages into the output buffer.
 Clears the buffer first, then inserts each message from the
 current session in chronological order."
-  (let ((session (magent-session-get))
-        (buffer (magent-ui-get-buffer)))
-    (with-current-buffer buffer
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (dolist (msg (magent-session-get-messages session))
-          (let ((role (cdr (assq 'role msg)))
-                (content (cdr (assq 'content msg))))
-            (pcase role
-              ('user
-               (when (stringp content)
-                 (goto-char (point-max))
-                 (insert (propertize (format "\n❯ %s\n" content)
-                                     'face '(bold font-lock-keyword-face)))))
-              ('assistant
-               (when (stringp content)
-                 (goto-char (point-max))
-                 (insert (propertize "\n🤖 " 'face 'font-lock-string-face))
-                 (insert (magent-ui--render-markdown content))
-                 (insert "\n"))))))))))
+  (let ((session (magent-session-get)))
+    (magent-ui-clear-buffer)
+    (let ((magent-auto-scroll nil))
+      (dolist (msg (magent-session-get-messages session))
+        (let ((role (magent-msg-role msg))
+              (content (magent-msg-content msg)))
+          (pcase role
+            ('user
+             (when (stringp content)
+               (magent-ui-insert-user-message content)))
+            ('assistant
+             (when (stringp content)
+               (magent-ui-insert-assistant-message content)))))))
+    (with-current-buffer (magent-ui-get-buffer)
+      (goto-char (point-max)))))
 
 (defun magent-ui-clear-buffer ()
   "Clear the Magent output buffer."
@@ -119,65 +122,40 @@ current session in chronological order."
 
 (defun magent-ui-insert-user-message (text)
   "Insert user message TEXT into output buffer."
-  (with-current-buffer (magent-ui-get-buffer)
-    (let ((inhibit-read-only t))
-      (goto-char (point-max))
-      (insert (propertize (format "\n❯ %s\n" text)
-                          'face '(bold font-lock-keyword-face)))
-      (when magent-auto-scroll
-        (goto-char (point-max))
-        (recenter -1)))))
+  (magent-ui--with-insert (magent-ui-get-buffer)
+                          (insert (propertize (format "\n%s%s\n" magent-user-prompt text)
+                                              'face '(bold font-lock-keyword-face)))))
 
 (defun magent-ui-insert-assistant-message (text)
   "Insert assistant message TEXT into output buffer."
-  (with-current-buffer (magent-ui-get-buffer)
-    (let ((inhibit-read-only t))
-      (goto-char (point-max))
-      (insert (propertize "\n🤖 " 'face 'font-lock-string-face))
-      (insert (magent-ui--render-markdown text))
-      (insert "\n")
-      (when magent-auto-scroll
-        (goto-char (point-max))
-        (recenter -1)))))
+  (magent-ui--with-insert (magent-ui-get-buffer)
+                          (insert (propertize (concat "\n" magent-assistant-prompt) 'face 'font-lock-string-face))
+                          (insert (magent-ui--render-markdown text))
+                          (insert "\n")))
 
 (defun magent-ui-insert-tool-call (tool-name input)
   "Insert tool call notification into output buffer."
-  (with-current-buffer (magent-ui-get-buffer)
-    (let ((inhibit-read-only t))
-      (goto-char (point-max))
-      (insert (propertize (format "\n🔧 %s" tool-name)
-                          'face 'font-lock-builtin-face))
-      (insert (propertize (format " %s\n"
-                                  (if (stringp input)
-                                      input
-                                    (truncate-string-to-width
-                                     (json-encode input) 100 nil nil "...")))
-                          'face 'font-lock-comment-face))
-      (when magent-auto-scroll
-        (goto-char (point-max))
-        (recenter -1)))))
+  (magent-ui--with-insert (magent-ui-get-buffer)
+                          (insert (propertize (format "\n%s%s" magent-tool-call-prompt tool-name)
+                                              'face 'font-lock-builtin-face))
+                          (insert (propertize (format " %s\n"
+                                                      (if (stringp input)
+                                                          input
+                                                        (truncate-string-to-width
+                                                         (json-encode input) 100 nil nil "...")))
+                                              'face 'font-lock-comment-face))))
 
 (defun magent-ui-insert-error (error-text)
   "Insert ERROR-TEXT into output buffer."
-  (with-current-buffer (magent-ui-get-buffer)
-    (let ((inhibit-read-only t))
-      (goto-char (point-max))
-      (insert (propertize (format "\n⚠ Error: %s\n" error-text)
-                          'face '(bold font-lock-warning-face)))
-      (when magent-auto-scroll
-        (goto-char (point-max))
-        (recenter -1)))))
+  (magent-ui--with-insert (magent-ui-get-buffer)
+                          (insert (propertize (format "\n%s%s\n" magent-error-prompt error-text)
+                                              'face '(bold font-lock-warning-face)))))
 
 (defun magent-ui-insert-streaming (text)
   "Insert streaming TEXT into output buffer."
-  (with-current-buffer (magent-ui-get-buffer)
-    (let ((inhibit-read-only t))
-      (save-excursion
-        (goto-char (point-max))
-        (insert text))
-      (when magent-auto-scroll
-        (goto-char (point-max))
-        (recenter -1)))))
+  (magent-ui--with-insert (magent-ui-get-buffer)
+                          (save-excursion
+                            (insert text))))
 
 ;;; Basic markdown rendering
 
@@ -262,7 +240,7 @@ Handles code blocks, bold, and inline code."
           (let ((inhibit-read-only t))
             (save-excursion
               (goto-char (point-max))
-              (insert (propertize "▌" 'face 'font-lock-comment-face)))))
+              (insert (propertize magent-loading-indicator 'face 'font-lock-comment-face)))))
 
         (magent-agent-process
          input
@@ -281,8 +259,9 @@ Handles code blocks, bold, and inline code."
     (let ((inhibit-read-only t))
       (save-excursion
         (goto-char (point-max))
-        (when (looking-back "▌" 1)
-          (delete-char -1)))))
+        (when (looking-back (regexp-quote magent-loading-indicator)
+                           (length magent-loading-indicator))
+          (delete-char (- (length magent-loading-indicator)))))))
   (if response
       (progn
         (magent-ui-insert-assistant-message response)

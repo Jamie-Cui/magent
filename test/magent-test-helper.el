@@ -52,21 +52,15 @@
        (when (file-directory-p ,var)
          (delete-directory ,var t)))))
 
-(defun magent-test-assert-equal (expected actual &optional message)
-  "Assert that EXPECTED equals ACTUAL with optional MESSAGE."
-  (should (equal expected actual)))
-
-(defun magent-test-assert-match (regexp string &optional message)
-  "Assert that REGEXP matches STRING with optional MESSAGE."
-  (should (string-match-p regexp string)))
-
-(defun magent-test-assert-nil (value &optional message)
-  "Assert that VALUE is nil with optional MESSAGE."
-  (should (null value)))
-
-(defun magent-test-assert-not-nil (value &optional message)
-  "Assert that VALUE is not nil with optional MESSAGE."
-  (should value))
+(defmacro magent-test-with-registry (&rest body)
+  "Execute BODY with a freshly initialized agent registry.
+Dynamically binds registry state so tests do not interfere."
+  (declare (indent 0))
+  `(let ((magent-agent-registry--agents (make-hash-table :test 'equal))
+         (magent-agent-registry--default-agent nil)
+         (magent-agent-registry--initialized nil))
+     (magent-agent-registry-init)
+     ,@body))
 
 (defun magent-test-fixture-path (filename)
   "Get the path to a fixture file FILENAME in test/fixtures/."

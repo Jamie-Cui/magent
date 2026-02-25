@@ -86,5 +86,41 @@ Should match one of the registered agent names."
   :type 'boolean
   :group 'magent)
 
+(defcustom magent-assistant-prompt "🤖 "
+  "Prompt string displayed before assistant messages."
+  :type 'string
+  :group 'magent)
+
+(defcustom magent-user-prompt "❯ "
+  "Prompt string displayed before user messages."
+  :type 'string
+  :group 'magent)
+
+(defcustom magent-tool-call-prompt "🔧 "
+  "Prompt string displayed before tool call notifications."
+  :type 'string
+  :group 'magent)
+
+(defcustom magent-error-prompt "⚠ Error: "
+  "Prompt string displayed before error messages."
+  :type 'string
+  :group 'magent)
+
+(defcustom magent-loading-indicator "▌"
+  "Character displayed as a loading indicator during processing."
+  :type 'string
+  :group 'magent)
+
+(defcustom magent-agent-directory ".magent/agent"
+  "Relative path (from project root) to the custom agent directory."
+  :type 'string
+  :group 'magent)
+
+(defcustom magent-session-directory
+  (expand-file-name "magent-sessions" user-emacs-directory)
+  "Directory where session files are stored."
+  :type 'directory
+  :group 'magent)
+
 (provide 'magent-config)
 ;;; magent-config.el ends here

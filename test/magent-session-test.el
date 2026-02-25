@@ -91,9 +91,9 @@
     (magent-session-add-message session 'user "Third")
     (let ((messages (magent-session-get-messages session)))
       (should (= 3 (length messages)))
-      (should (string= "First" (cdr (assq 'content (nth 0 messages)))))
-      (should (string= "Second" (cdr (assq 'content (nth 1 messages)))))
-      (should (string= "Third" (cdr (assq 'content (nth 2 messages))))))))
+      (should (string= "First" (magent-msg-content (nth 0 messages))))
+      (should (string= "Second" (magent-msg-content (nth 1 messages))))
+      (should (string= "Third" (magent-msg-content (nth 2 messages)))))))
 
 (ert-deftest magent-session-test-add-structured-content ()
   "Test adding messages with structured content."
@@ -101,7 +101,7 @@
         (content '((type . "text") (text . "Hello"))))
     (magent-session-add-message session 'user content)
     (let ((messages (magent-session-get-messages session)))
-      (should (equal content (cdr (assq 'content (car messages))))))))
+      (should (equal content (magent-msg-content (car messages)))))))
 
 (ert-deftest magent-session-test-max-history ()
   "Test that messages are trimmed to max history."
@@ -112,9 +112,9 @@
     (magent-session-add-message session 'user "4")
     (should (= 3 (length (magent-session-messages session))))
     (let ((messages (magent-session-get-messages session)))
-      (should (string= "2" (cdr (assq 'content (nth 0 messages)))))
-      (should (string= "3" (cdr (assq 'content (nth 1 messages)))))
-      (should (string= "4" (cdr (assq 'content (nth 2 messages))))))))
+      (should (string= "2" (magent-msg-content (nth 0 messages))))
+      (should (string= "3" (magent-msg-content (nth 1 messages))))
+      (should (string= "4" (magent-msg-content (nth 2 messages)))))))
 
 ;;; Tool result tests
 
@@ -125,8 +125,8 @@
     (let ((messages (magent-session-get-messages session)))
       (should (= 1 (length messages)))
       (let* ((msg (car messages))
-             (content (cdr (assq 'content msg))))
-        (should (eq 'tool (cdr (assq 'role msg))))
+             (content (magent-msg-content msg)))
+        (should (eq 'tool (magent-msg-role msg)))
         (should (string= "tool_result" (cdr (assq 'type content))))
         (should (string= "tool-123" (cdr (assq 'tool_use_id content))))
         (should (string= "Result content" (cdr (assq 'content content))))))))
@@ -164,8 +164,7 @@
   (let* ((session (magent-session-create))
          (magent-max-history 100)
          (session-id (magent-session-get-id session))
-         (expected-dir (expand-file-name "magent-sessions" user-emacs-directory))
-         (expected-file (expand-file-name (concat session-id ".json") expected-dir)))
+         (expected-file (expand-file-name (concat session-id ".json") magent-session-directory)))
     (unwind-protect
         (progn
           (magent-session-add-message session 'user "Test")
