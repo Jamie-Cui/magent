@@ -90,22 +90,15 @@ temperature: 0.3
 
 ### 请求流程
 
-```
-magent-agent-process
-    |
-从会话构建提示列表 (magent-session-to-gptel-prompt-list)
-    |
-从智能体获取系统提示 (或 magent-system-prompt)
-    |
-按智能体权限过滤工具 (magent-tools-get-gptel-tools)
-    |
-应用每个智能体的覆盖 (magent-agent-info-apply-gptel-overrides)
-    |
-gptel-request (提示列表, :system, :stream nil, :callback)
-    |
-gptel 处理 LLM 通信和工具调用循环
-    |
-回调接收：字符串响应、工具结果或错误
+```mermaid
+graph TD
+    A["magent-agent-process"] --> B["从会话构建提示列表<br/>(magent-session-to-gptel-prompt-list)"]
+    B --> C["从智能体获取系统提示<br/>(或 magent-system-prompt)"]
+    C --> D["按智能体权限过滤工具<br/>(magent-tools-get-gptel-tools)"]
+    D --> E["应用每个智能体的覆盖<br/>(magent-agent-info-apply-gptel-overrides)"]
+    E --> F["gptel-request<br/>(提示列表, :system, :stream nil, :callback)"]
+    F --> G["gptel 处理 LLM 通信和工具调用循环"]
+    G --> H["回调接收：字符串响应、工具结果或错误"]
 ```
 
 ### 工具注册

@@ -90,22 +90,15 @@ These overrides are applied temporarily during the request via `magent-agent-inf
 
 ### Request Flow
 
-```
-magent-agent-process
-    |
-Build prompt list from session (magent-session-to-gptel-prompt-list)
-    |
-Get system prompt from agent (or magent-system-prompt)
-    |
-Filter tools by agent permissions (magent-tools-get-gptel-tools)
-    |
-Apply per-agent overrides (magent-agent-info-apply-gptel-overrides)
-    |
-gptel-request (prompt-list, :system, :stream nil, :callback)
-    |
-gptel handles LLM communication and tool-calling loop
-    |
-Callback receives: string response, tool results, or error
+```mermaid
+graph TD
+    A["magent-agent-process"] --> B["Build prompt list from session<br/>(magent-session-to-gptel-prompt-list)"]
+    B --> C["Get system prompt from agent<br/>(or magent-system-prompt)"]
+    C --> D["Filter tools by agent permissions<br/>(magent-tools-get-gptel-tools)"]
+    D --> E["Apply per-agent overrides<br/>(magent-agent-info-apply-gptel-overrides)"]
+    E --> F["gptel-request<br/>(prompt-list, :system, :stream nil, :callback)"]
+    F --> G["gptel handles LLM communication<br/>and tool-calling loop"]
+    G --> H["Callback receives:<br/>string response, tool results, or error"]
 ```
 
 ### Tool Registration

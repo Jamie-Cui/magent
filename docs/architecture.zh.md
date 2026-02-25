@@ -8,56 +8,16 @@ Magent 是一个多智能体 AI 编程助手，通过 [gptel](https://github.com
 
 ## 系统架构
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      User Interface Layer                    │
-│                       (magent-ui.el)                         │
-│  - Minibuffer prompts                                        │
-│  - Output buffer display                                     │
-│  - Interactive commands                                      │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│                      Session Layer                           │
-│                    (magent-session.el)                       │
-│  - Conversation history management                           │
-│  - Message persistence                                       │
-│  - Agent assignment per session                              │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│                      Agent Layer                             │
-│           (magent-agent.el, magent-agent-*.el)              │
-│  - Agent orchestration via gptel                            │
-│  - Per-agent gptel overrides (model, temperature)           │
-│  - Permission-based access control                          │
-│  - Built-in and custom agent management                     │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│                      Permission Layer                        │
-│                  (magent-permission.el)                      │
-│  - Rule-based tool access control                           │
-│  - File pattern matching                                    │
-│  - allow/deny/ask resolution                                │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│                      Tools Layer                             │
-│                    (magent-tools.el)                         │
-│  - read_file, write_file                                    │
-│  - grep, glob                                               │
-│  - bash command execution                                   │
-│  - Registered as gptel-tool structs                         │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│                      LLM Layer (gptel)                       │
-│  - HTTP client for LLM providers                            │
-│  - Message format conversion                                │
-│  - Tool calling FSM (loop management)                       │
-│  - Streaming support                                        │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    UI["<b>User Interface Layer</b><br/>(magent-ui.el)<br/>Minibuffer prompts / Output buffer / Interactive commands"]
+    Session["<b>Session Layer</b><br/>(magent-session.el)<br/>Conversation history / Message persistence / Agent assignment"]
+    Agent["<b>Agent Layer</b><br/>(magent-agent.el, magent-agent-*.el)<br/>Agent orchestration via gptel / Per-agent overrides / Permission-based access"]
+    Permission["<b>Permission Layer</b><br/>(magent-permission.el)<br/>Rule-based tool access / File pattern matching / allow·deny·ask resolution"]
+    Tools["<b>Tools Layer</b><br/>(magent-tools.el)<br/>read_file, write_file / grep, glob / bash command execution"]
+    LLM["<b>LLM Layer (gptel)</b><br/>HTTP client for LLM providers / Message format conversion / Tool calling FSM / Streaming"]
+
+    UI --> Session --> Agent --> Permission --> Tools --> LLM
 ```
 
 ## 核心组件

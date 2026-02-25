@@ -31,11 +31,41 @@
         paths: 'auto'
       },
       auto2top: true,
-      notFoundPage: true
+      notFoundPage: true,
+      markdown: {
+        renderer: {
+          code: function(code, lang) {
+            if (lang === 'mermaid') {
+              return '<div class="mermaid">' + code + '</div>';
+            }
+            return this.origin.code.apply(this, arguments);
+          }
+        }
+      }
     };
   </script>
   <script src="https://cdn.jsdelivr.net/npm/docsify@4"></script>
   <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/plugins/search.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script>
+    mermaid.initialize({ startOnLoad: false });
+    document.addEventListener('DOMContentLoaded', function() {
+      // Re-render mermaid diagrams after docsify page changes
+      var defined = false;
+      var observer = new MutationObserver(function() {
+        var els = document.querySelectorAll('.mermaid');
+        if (els.length > 0) {
+          els.forEach(function(el) { el.removeAttribute('data-processed'); });
+          mermaid.run({ nodes: els });
+        }
+      });
+      // Observe the docsify app container for content changes
+      var target = document.getElementById('app');
+      if (target) {
+        observer.observe(target, { childList: true, subtree: true });
+      }
+    });
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-bash.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-json.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-lisp.min.js"></script>
