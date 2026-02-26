@@ -17,7 +17,6 @@
 (require 'cl-lib)
 (require 'magent-config)
 (require 'magent-agent-registry)
-(require 'magent-agent-info)
 
 ;;; Tool implementations
 

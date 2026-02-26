@@ -18,7 +18,6 @@
 (require 'magent-tools)
 (require 'magent-session)
 (require 'magent-agent-registry)
-(require 'magent-agent-info)
 (require 'magent-permission)
 
 ;; Forward declarations for UI functions used in the callback
@@ -94,12 +93,15 @@ with t to signal completion."
       (cond
        ;; Streaming: text chunk (string while streaming is enabled)
        ((and magent-enable-streaming (stringp response))
-        (unless streaming-started
-          (setq streaming-started t)
-          (magent-log "INFO streaming started")
-          (magent-ui-start-streaming))
         (setq streamed-text (concat streamed-text response))
-        (magent-ui-insert-streaming response))
+        ;; Defer UI insertion until the first non-empty chunk so that
+        ;; tool-only rounds never leave an empty [AI  ] line.
+        (when (not (string-empty-p streamed-text))
+          (unless streaming-started
+            (setq streaming-started t)
+            (magent-log "INFO streaming started")
+            (magent-ui-start-streaming))
+          (magent-ui-insert-streaming response)))
 
        ;; Streaming: completion signal (response is t)
        ((and magent-enable-streaming (eq response t))

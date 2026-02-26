@@ -15,7 +15,6 @@
 
 (require 'cl-lib)
 (require 'magent-config)
-(require 'magent-agent-info)
 (require 'magent-agent-registry)
 (require 'magent-permission)
 (require 'magent-tools)

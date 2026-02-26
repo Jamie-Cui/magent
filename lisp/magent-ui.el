@@ -44,8 +44,7 @@ After BODY, auto-scroll if `magent-auto-scroll' is non-nil."
          (goto-char (point-max))
          (let ((win (get-buffer-window (current-buffer))))
            (when win
-             (with-selected-window win
-               (recenter -1))))))))
+             (set-window-point win (point-max))))))))
 
 (defun magent-log (format-string &rest args)
   "Log a message to the Magent log buffer.
@@ -126,6 +125,11 @@ current session in chronological order."
 (defun magent-ui-insert-user-message (text)
   "Insert user message TEXT into output buffer."
   (magent-ui--with-insert (magent-ui-get-buffer)
+    (when (and (> (point) 1)
+               (not (eq (char-before) ?\n))
+               (not (and (>= (point) 2)
+                         (eq (char-before (1- (point))) ?\n))))
+      (insert "\n"))
     (insert (propertize (format "\n%s%s\n" magent-user-prompt text)
                         'face '(bold font-lock-keyword-face)))))
 

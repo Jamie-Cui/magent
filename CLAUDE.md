@@ -31,10 +31,8 @@ Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and perm
 
 3. **Agent processing** (`magent-agent.el`): `magent-agent-process` builds a gptel prompt list from the session, applies per-agent overrides (model, temperature), filters tools by permissions, then calls `gptel-request`. gptel handles the LLM communication and tool-calling loop. The callback receives either a final string response or an error.
 
-4. **Agent definitions**: Five files compose the agent system:
-   - `magent-agent-info.el`: `cl-defstruct` with fields: name, description, mode, native, hidden, temperature, top-p, color, model, prompt, options, steps, permission
-   - `magent-agent-types.el`: 7 built-in agents — `build` (default primary), `plan` (primary), `explore` (subagent), `general` (subagent), `compaction`, `title`, `summary` (all internal)
-   - `magent-agent-registry.el`: Hash-table registry with lookup, filtering by mode/visibility, and interactive selection
+4. **Agent definitions**: Three files compose the agent system:
+   - `magent-agent-registry.el`: `cl-defstruct` (`magent-agent-info`) with fields (name, description, mode, native, hidden, temperature, top-p, color, model, prompt, options, steps, permission), 7 built-in agents (`build`, `plan`, `explore`, `general`, `compaction`, `title`, `summary`), and hash-table registry with lookup, filtering by mode/visibility, and interactive selection
    - `magent-agent-file.el`: Loads custom agents from `.magent/agent/*.md` (YAML frontmatter + markdown body as system prompt)
 
 5. **Permission system** (`magent-permission.el`): Rule-based access control per agent. Rules map tool names to `allow`/`deny`/`ask`, with optional nested file-pattern rules (glob syntax). Resolution order: exact tool match → nested file rules → wildcard (`*`) fallback → default deny.

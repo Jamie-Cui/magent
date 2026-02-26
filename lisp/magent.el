@@ -79,7 +79,6 @@
 (require 'magent-agent)
 (require 'magent-ui)
 (require 'magent-agent-registry)
-(require 'magent-agent-info)
 (require 'magent-permission)
 (require 'magent-agent-file)
 

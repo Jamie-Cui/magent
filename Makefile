@@ -7,9 +7,7 @@ SRCS = lisp/magent.el \
        lisp/magent-session.el \
        lisp/magent-tools.el \
        lisp/magent-agent.el \
-       lisp/magent-agent-info.el \
        lisp/magent-agent-registry.el \
-       lisp/magent-agent-types.el \
        lisp/magent-agent-file.el \
        lisp/magent-permission.el \
        lisp/magent-ui.el
