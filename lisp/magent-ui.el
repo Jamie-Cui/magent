@@ -12,6 +12,7 @@
 
 ;;; Code:
 
+(require 'markdown-mode)
 (require 'magent-session)
 (require 'magent-agent)
 (require 'magent-agent-registry)
@@ -86,7 +87,7 @@ current session in chronological order."
              (when (stringp content)
                (magent-ui-insert-user-message content)))
             ('assistant
-             (when (stringp content)
+             (when (and (stringp content) (> (length content) 0))
                (magent-ui-insert-assistant-message content)))))))
     (with-current-buffer (magent-ui-get-buffer)
       (goto-char (point-max)))))
@@ -100,8 +101,9 @@ current session in chronological order."
 
 ;;; Output mode
 
-(define-derived-mode magent-output-mode fundamental-mode "Magent"
-  "Major mode for Magent output."
+(define-derived-mode magent-output-mode markdown-view-mode "Magent"
+  "Major mode for Magent output.
+Inherits markdown syntax highlighting from `markdown-view-mode'."
   (setq buffer-read-only t)
   (visual-line-mode 1)
   (setq-local display-fill-column-indicator-column nil))
@@ -131,76 +133,44 @@ current session in chronological order."
                          (eq (char-before (1- (point))) ?\n))))
       (insert "\n"))
     (insert (propertize (format "\n%s%s\n" magent-user-prompt text)
-                        'face '(bold font-lock-keyword-face)))))
+                        'font-lock-face '(bold font-lock-keyword-face)))))
 
 (defun magent-ui-insert-assistant-message (text)
   "Insert assistant message TEXT into output buffer."
   (magent-ui--with-insert (magent-ui-get-buffer)
-    (insert (propertize (concat "\n" magent-assistant-prompt) 'face 'font-lock-string-face))
-    (insert (magent-ui--render-markdown text))))
+    (insert (propertize (concat "\n" magent-assistant-prompt) 'font-lock-face 'font-lock-string-face))
+    (insert text)))
 
 (defun magent-ui-insert-tool-call (tool-name input)
   "Insert tool call notification into output buffer."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (insert (propertize (format "\n%s%s" magent-tool-call-prompt tool-name)
-                        'face 'font-lock-builtin-face))
+                        'font-lock-face 'font-lock-builtin-face))
     (insert (propertize (format " %s"
                                 (if (stringp input)
                                     input
                                   (truncate-string-to-width
                                    (json-encode input) 100 nil nil "...")))
-                        'face 'font-lock-comment-face))))
+                        'font-lock-face 'font-lock-comment-face))))
 
 (defun magent-ui-insert-error (error-text)
   "Insert ERROR-TEXT into output buffer."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (insert (propertize (format "\n%s%s" magent-error-prompt error-text)
-                        'face '(bold font-lock-warning-face)))))
+                        'font-lock-face '(bold font-lock-warning-face)))))
 
 (defun magent-ui-start-streaming ()
   "Prepare the output buffer for a streaming response.
 Inserts the assistant prompt prefix."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (insert (propertize (concat "\n" magent-assistant-prompt)
-                        'face 'font-lock-string-face))))
+                        'font-lock-face 'font-lock-string-face))))
 
 (defun magent-ui-insert-streaming (text)
   "Insert streaming TEXT into output buffer."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (save-excursion
       (insert text))))
-
-;;; Basic markdown rendering
-
-(defun magent-ui--render-markdown (text)
-  "Basic markdown rendering for TEXT.
-Handles code blocks, bold, and inline code."
-  (let ((result text))
-    ;; Code blocks
-    (setq result (replace-regexp-in-string
-                  "```\\([^\n]*\\)\n\\([^`]*?\\)\n```"
-                  (lambda (match)
-                    (let ((lang (match-string 1 match))
-                          (code (match-string 2 match)))
-                      (propertize code
-                                  'face 'font-lock-constant-face
-                                  'display `(margin left-margin ,(concat " " lang "\n")))))
-                  result t t))
-    ;; Inline code
-    (setq result (replace-regexp-in-string
-                  "`\\([^`]+\\)`"
-                  (lambda (match)
-                    (propertize (match-string 1 match)
-                                'face 'font-lock-constant-face))
-                  result t t))
-    ;; Bold
-    (setq result (replace-regexp-in-string
-                  "\\*\\*\\([^*]+\\)\\*\\*"
-                  (lambda (match)
-                    (propertize (match-string 1 match)
-                                'face 'bold))
-                  result t t))
-    result))
 
 ;;; Minibuffer interface
 

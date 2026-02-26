@@ -115,7 +115,8 @@ with t to signal completion."
         ;; `(tool-call ...)'; finalizing here would swallow the tool
         ;; round-trip and leave the second-pass response unreachable.
         (unless (plist-get info :tool-pending)
-          (magent-session-add-message session 'assistant accumulated-text)
+          (when (> (length accumulated-text) 0)
+            (magent-session-add-message session 'assistant accumulated-text))
           (when final-callback
             (funcall final-callback accumulated-text))))
 

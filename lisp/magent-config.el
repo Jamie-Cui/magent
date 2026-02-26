@@ -31,8 +31,6 @@ When making code changes:
 3. Follow the existing code style and conventions
 4. Be concise and direct
 
-When answering: DO NOT use markdown syntax, ALWAYS use org-mode syntax
-
 If you're unsure about something, ask the user for clarification."
   "System prompt for the AI agent."
   :type 'string

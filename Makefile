@@ -1,6 +1,7 @@
 EMACS = emacs
 GPTEL_DIR ?= $(HOME)/proj/gptel
-LOADPATH = -L lisp -L $(GPTEL_DIR)
+MARKDOWN_MODE_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'markdown-mode-*' -type d 2>/dev/null | head -1)
+LOADPATH = -L lisp -L $(GPTEL_DIR) $(if $(MARKDOWN_MODE_DIR),-L $(MARKDOWN_MODE_DIR))
 
 SRCS = lisp/magent.el \
        lisp/magent-config.el \
