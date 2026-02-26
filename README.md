@@ -73,7 +73,7 @@ Customize with `M-x customize-group RET magent RET`:
 | `magent-ask-at-point` | `C-c o a` | Ask about symbol at point |
 | `magent-clear-session` | `C-c o c` | Clear current session |
 | `magent-show-session` | `C-c o s` | Show session summary |
-| `magent-view-log` | `C-c o l` | View API request/response log |
+| `magent-show-log` | `C-c o l` | View API request/response log |
 | `magent-clear-log` | `C-c o L` | Clear the log buffer |
 | `magent-select-agent` | `C-c o A` | Select an agent for this session |
 | `magent-show-current-agent` | `C-c o i` | Show current session's agent |
@@ -266,7 +266,7 @@ View request/response logs:
 
 ```elisp
 (setq magent-enable-logging t)
-M-x magent-view-log
+M-x magent-show-log
 ```
 
 ### Check Agent Configuration

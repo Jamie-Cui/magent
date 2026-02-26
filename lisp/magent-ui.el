@@ -51,8 +51,8 @@ After BODY, auto-scroll if `magent-auto-scroll' is non-nil."
   "Log a message to the Magent log buffer.
 FORMAT-STRING and ARGS are passed to `format'."
   (magent-ui--with-insert (magent-ui-get-log-buffer)
-                          (let ((timestamp (format-time-string "%Y-%m-%d %H:%M:%S")))
-                            (insert (format "[%s] %s\n" timestamp (apply #'format format-string args))))))
+    (let ((timestamp (format-time-string "%Y-%m-%d %H:%M:%S")))
+      (insert (format "[%s] %s\n" timestamp (apply #'format format-string args))))))
 
 (defun magent-ui-get-buffer ()
   "Get or create the Magent output buffer."
@@ -126,32 +126,32 @@ current session in chronological order."
 (defun magent-ui-insert-user-message (text)
   "Insert user message TEXT into output buffer."
   (magent-ui--with-insert (magent-ui-get-buffer)
-                          (insert (propertize (format "\n%s%s" magent-user-prompt text)
-                                              'face '(bold font-lock-keyword-face)))))
+    (insert (propertize (format "\n%s%s\n" magent-user-prompt text)
+                        'face '(bold font-lock-keyword-face)))))
 
 (defun magent-ui-insert-assistant-message (text)
   "Insert assistant message TEXT into output buffer."
   (magent-ui--with-insert (magent-ui-get-buffer)
-                          (insert (propertize (concat "\n" magent-assistant-prompt) 'face 'font-lock-string-face))
-                          (insert (magent-ui--render-markdown text))))
+    (insert (propertize (concat "\n" magent-assistant-prompt) 'face 'font-lock-string-face))
+    (insert (magent-ui--render-markdown text))))
 
 (defun magent-ui-insert-tool-call (tool-name input)
   "Insert tool call notification into output buffer."
   (magent-ui--with-insert (magent-ui-get-buffer)
-                          (insert (propertize (format "\n%s%s" magent-tool-call-prompt tool-name)
-                                              'face 'font-lock-builtin-face))
-                          (insert (propertize (format " %s"
-                                                      (if (stringp input)
-                                                          input
-                                                        (truncate-string-to-width
-                                                         (json-encode input) 100 nil nil "...")))
-                                              'face 'font-lock-comment-face))))
+    (insert (propertize (format "\n%s%s" magent-tool-call-prompt tool-name)
+                        'face 'font-lock-builtin-face))
+    (insert (propertize (format " %s"
+                                (if (stringp input)
+                                    input
+                                  (truncate-string-to-width
+                                   (json-encode input) 100 nil nil "...")))
+                        'face 'font-lock-comment-face))))
 
 (defun magent-ui-insert-error (error-text)
   "Insert ERROR-TEXT into output buffer."
   (magent-ui--with-insert (magent-ui-get-buffer)
-                          (insert (propertize (format "\n%s%s" magent-error-prompt error-text)
-                                              'face '(bold font-lock-warning-face)))))
+    (insert (propertize (format "\n%s%s" magent-error-prompt error-text)
+                        'face '(bold font-lock-warning-face)))))
 
 (defun magent-ui-start-streaming ()
   "Prepare the output buffer for a streaming response.
@@ -172,8 +172,8 @@ Removes the loading indicator and inserts the assistant prompt prefix."
 (defun magent-ui-insert-streaming (text)
   "Insert streaming TEXT into output buffer."
   (magent-ui--with-insert (magent-ui-get-buffer)
-                          (save-excursion
-                            (insert text))))
+    (save-excursion
+      (insert text))))
 
 ;;; Basic markdown rendering
 
@@ -249,6 +249,8 @@ Handles code blocks, bold, and inline code."
   (when magent-ui--processing
     (error "Magent: Already processing a request"))
   (setq magent-ui--processing t)
+
+  ;; FIXME(@jamie) there should be no truncating
   (magent-log "INFO processing: %s" (truncate-string-to-width input 80 nil nil "..."))
 
   (condition-case err
@@ -300,6 +302,10 @@ Handles both streaming and non-streaming completion."
 
 ;;; Session management commands
 
+(defalias 'magent-show-ui 'magent-ui-display-buffer)
+
+(defalias 'magent-clear-ui 'magent-ui-clear-buffer)
+
 ;;;###autoload
 (defun magent-clear-session ()
   "Clear the current session."
@@ -317,7 +323,7 @@ Handles both streaming and non-streaming completion."
       (princ (magent-session-summarize session)))))
 
 ;;;###autoload
-(defun magent-view-log ()
+(defun magent-show-log ()
   "View the Magent log buffer."
   (interactive)
   (let ((buffer (magent-ui-get-log-buffer)))
@@ -351,7 +357,7 @@ Handles both streaming and non-streaming completion."
 
 ;;;###autoload
 (defun magent-show-current-agent ()
-  "Show the current agent for this session."
+  "Show the current agent for this session in message buffer."
   (interactive)
   (let* ((session (magent-session-get))
          (agent (magent-session-get-agent session)))

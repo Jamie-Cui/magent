@@ -31,6 +31,8 @@ When making code changes:
 3. Follow the existing code style and conventions
 4. Be concise and direct
 
+When answering: DO NOT use markdown syntax, ALWAYS use org-mode syntax
+
 If you're unsure about something, ask the user for clarification."
   "System prompt for the AI agent."
   :type 'string
@@ -105,18 +107,23 @@ Should match one of the registered agent names."
   :type 'string
   :group 'magent)
 
-(defcustom magent-tool-call-prompt "[Tool-Call] "
+(defcustom magent-tool-call-prompt "[TOOL] "
   "Prompt string displayed before tool call notifications."
   :type 'string
   :group 'magent)
 
-(defcustom magent-error-prompt "[Error] "
+(defcustom magent-error-prompt "[ERR ] "
   "Prompt string displayed before error messages."
   :type 'string
   :group 'magent)
 
-(defcustom magent-loading-indicator "[Loading] "
+(defcustom magent-loading-indicator "[WAIT] "
   "Character displayed as a loading indicator during processing."
+  :type 'string
+  :group 'magent)
+
+(defcustom magent-loading-done-indicator "[DONE] "
+  "Character displayed as a loading done indicator after processing."
   :type 'string
   :group 'magent)
 

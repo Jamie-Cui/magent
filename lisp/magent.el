@@ -98,17 +98,17 @@ When enabled, Magent commands are available.
   :lighter " Magent"
   :keymap (let ((map (make-sparse-keymap)))
             ;; Keybindings
-            (define-key map (kbd "C-c o p") #'magent-prompt)
-            (define-key map (kbd "C-c o r") #'magent-prompt-region)
-            (define-key map (kbd "C-c o a") #'magent-ask-at-point)
-            (define-key map (kbd "C-c o c") #'magent-clear-session)
-            (define-key map (kbd "C-c o s") #'magent-show-session)
-            (define-key map (kbd "C-c o l") #'magent-view-log)
-            (define-key map (kbd "C-c o L") #'magent-clear-log)
+            (define-key map (kbd "C-c m p") #'magent-prompt)
+            (define-key map (kbd "C-c m r") #'magent-prompt-region)
+            (define-key map (kbd "C-c m a") #'magent-ask-at-point)
+            (define-key map (kbd "C-c m c") #'magent-clear-session)
+            (define-key map (kbd "C-c m s") #'magent-show-session)
+            (define-key map (kbd "C-c m l") #'magent-show-log)
+            (define-key map (kbd "C-c m L") #'magent-clear-log)
             ;; Agent management
-            (define-key map (kbd "C-c o A") #'magent-select-agent)
-            (define-key map (kbd "C-c o i") #'magent-show-current-agent)
-            (define-key map (kbd "C-c o v") #'magent-list-agents)
+            (define-key map (kbd "C-c m A") #'magent-select-agent)
+            (define-key map (kbd "C-c m i") #'magent-show-current-agent)
+            (define-key map (kbd "C-c m v") #'magent-list-agents)
             map)
   (when magent-mode
     (unless magent--initialized
