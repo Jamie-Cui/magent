@@ -25,6 +25,7 @@
 (declare-function magent-ui-insert-error "magent-ui")
 (declare-function magent-ui-insert-streaming "magent-ui")
 (declare-function magent-ui-start-streaming "magent-ui")
+(declare-function magent-ui-finish-streaming-fontify "magent-ui")
 (declare-function gptel--accept-tool-calls "gptel")
 
 ;;; Agent execution
@@ -109,6 +110,7 @@ with t to signal completion."
           (magent-log "INFO reasoning block received (x%d)" reasoning-count)
           (setq reasoning-count 0))
         (magent-log "INFO streaming complete (%d chars)" (length streamed-text))
+        (magent-ui-finish-streaming-fontify)
         (setq accumulated-text (concat accumulated-text streamed-text))
         ;; Only finalize if no tool calls are pending.  When tools are
         ;; involved gptel sends `t' after the text chunk but before

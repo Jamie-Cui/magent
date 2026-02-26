@@ -17,6 +17,50 @@
 (require 'magent-agent)
 (require 'magent-agent-registry)
 
+(defvar magent-ui--md-buffer nil
+  "Temporary markdown-mode buffer for fontifying AI text.")
+
+(defun magent-ui--get-md-buffer ()
+  "Return a reusable temporary `markdown-mode' buffer."
+  (if (buffer-live-p magent-ui--md-buffer)
+      magent-ui--md-buffer
+    (setq magent-ui--md-buffer
+          (with-current-buffer (generate-new-buffer " *magent-md*")
+            (markdown-mode)
+            (current-buffer)))))
+
+(defun magent-ui--fontify-md-region (buf start end)
+  "Fontify text in BUF between START and END using markdown-mode.
+Copies the plain text to a temporary markdown-mode buffer, runs
+font-lock there, then transfers face properties back.
+Does nothing if the region is empty."
+  (when (< start end)
+    (let* ((text (with-current-buffer buf
+                   (buffer-substring-no-properties start end)))
+           (md-buf (magent-ui--get-md-buffer)))
+      (with-current-buffer md-buf
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert text)
+          (font-lock-ensure)))
+      ;; Transfer face properties from the markdown buffer to the output
+      ;; buffer.  Both buffers have matching text starting at position 1
+      ;; (md-buf) and START (output buf), so offset = START - 1.
+      (with-current-buffer buf
+        (let ((inhibit-read-only t)
+              (offset (1- start))
+              (pos 1)
+              (md-end (1+ (length text))))
+          (while (< pos md-end)
+            (let* ((next (with-current-buffer md-buf
+                           (next-single-property-change pos 'face nil md-end)))
+                   (face (with-current-buffer md-buf
+                           (get-text-property pos 'face))))
+              (when face
+                (put-text-property (+ offset pos) (+ offset next)
+                                   'font-lock-face face buf))
+              (setq pos next))))))))
+
 ;;; Buffer management
 
 (defvar-local magent-ui--output-buffer nil
@@ -101,10 +145,9 @@ current session in chronological order."
 
 ;;; Output mode
 
-(define-derived-mode magent-output-mode markdown-view-mode "Magent"
+(define-derived-mode magent-output-mode special-mode "Magent"
   "Major mode for Magent output.
-Inherits markdown syntax highlighting from `markdown-view-mode'."
-  (setq buffer-read-only t)
+Markdown rendering is applied selectively to AI assistant messages only."
   (visual-line-mode 1)
   (setq-local display-fill-column-indicator-column nil))
 
@@ -137,9 +180,12 @@ Inherits markdown syntax highlighting from `markdown-view-mode'."
 
 (defun magent-ui-insert-assistant-message (text)
   "Insert assistant message TEXT into output buffer."
-  (magent-ui--with-insert (magent-ui-get-buffer)
-    (insert (propertize (concat "\n" magent-assistant-prompt) 'font-lock-face 'font-lock-string-face))
-    (insert text)))
+  (let ((buf (magent-ui-get-buffer)))
+    (magent-ui--with-insert buf
+      (insert (propertize (concat "\n" magent-assistant-prompt) 'font-lock-face 'font-lock-string-face))
+      (let ((start (point)))
+        (insert text)
+        (magent-ui--fontify-md-region buf start (point))))))
 
 (defun magent-ui-insert-tool-call (tool-name input)
   "Insert tool call notification into output buffer."
@@ -159,18 +205,33 @@ Inherits markdown syntax highlighting from `markdown-view-mode'."
     (insert (propertize (format "\n%s%s" magent-error-prompt error-text)
                         'font-lock-face '(bold font-lock-warning-face)))))
 
+(defvar-local magent-ui--streaming-start nil
+  "Buffer position where the current streaming AI text begins.
+Set by `magent-ui-start-streaming', used by
+`magent-ui-finish-streaming-fontify' to apply markdown rendering.")
+
 (defun magent-ui-start-streaming ()
   "Prepare the output buffer for a streaming response.
 Inserts the assistant prompt prefix."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (insert (propertize (concat "\n" magent-assistant-prompt)
-                        'font-lock-face 'font-lock-string-face))))
+                        'font-lock-face 'font-lock-string-face))
+    (setq magent-ui--streaming-start (point))))
 
 (defun magent-ui-insert-streaming (text)
   "Insert streaming TEXT into output buffer."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (save-excursion
       (insert text))))
+
+(defun magent-ui-finish-streaming-fontify ()
+  "Apply markdown fontification to the completed streaming region."
+  (let ((buf (magent-ui-get-buffer)))
+    (with-current-buffer buf
+      (when (and magent-ui--streaming-start
+                 (< magent-ui--streaming-start (point-max)))
+        (magent-ui--fontify-md-region buf magent-ui--streaming-start (point-max))
+        (setq magent-ui--streaming-start nil)))))
 
 ;;; Minibuffer interface
 
@@ -233,7 +294,8 @@ Inserts the assistant prompt prefix."
 Handles both streaming and non-streaming completion."
   (setq magent-ui--processing nil)
   (cond
-   ;; Streaming mode: text was already inserted incrementally
+   ;; Streaming mode: text was already inserted incrementally;
+   ;; markdown fontification was applied at each streaming completion signal.
    ((and magent-enable-streaming (stringp response) (> (length response) 0))
     (magent-log "INFO done (streaming)"))
    ;; Streaming mode produced no text (tool-only round) — nothing to display
