@@ -102,7 +102,7 @@ Should match one of the registered agent names."
   :type 'string
   :group 'magent)
 
-(defcustom magent-user-prompt "> "
+(defcustom magent-user-prompt "[USER] "
   "Prompt string displayed before user messages."
   :type 'string
   :group 'magent)
@@ -114,16 +114,6 @@ Should match one of the registered agent names."
 
 (defcustom magent-error-prompt "[ERR ] "
   "Prompt string displayed before error messages."
-  :type 'string
-  :group 'magent)
-
-(defcustom magent-loading-indicator " .... "
-  "Character displayed as a loading indicator during processing."
-  :type 'string
-  :group 'magent)
-
-(defcustom magent-loading-done-indicator "[DONE] "
-  "Character displayed as a loading done indicator after processing."
   :type 'string
   :group 'magent)
 
