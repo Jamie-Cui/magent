@@ -212,7 +212,7 @@ Returns list of allowed tool names."
 
 (defun magent-permission-disabled (permission-rules all-tools)
   "Get list of disabled tools from PERMISSION-RULES.
-ALL-TABLES is list of all available tool names.
+ALL-TOOLS is list of all available tool names.
 Returns list of tool names that are denied."
   (let ((disabled nil))
     (dolist (tool all-tools)
@@ -228,8 +228,9 @@ Returns 'allow if user approves, 'deny if denied."
   (let ((prompt (format "Allow tool '%s'%s? "
                         tool
                         (if file (format " for file '%s'" file) ""))))
-    (when (y-or-n-p prompt)
-      magent-permission-allow)))
+    (if (y-or-n-p prompt)
+        magent-permission-allow
+      magent-permission-deny)))
 
 (provide 'magent-permission)
 ;;; magent-permission.el ends here

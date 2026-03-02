@@ -80,7 +80,18 @@ Returns list of matching file paths."
       (let* ((default-directory (if (file-directory-p path)
                                     path
                                   (file-name-directory path)))
-             (matches (file-expand-wildcards pattern t)))
+             (matches
+              (if (string-match-p "\\*\\*" pattern)
+                  ;; ** requires recursive search
+                  (let* ((parts (split-string pattern "\\*\\*/?"))
+                         (file-regexp (if (> (length parts) 1)
+                                         (wildcard-to-regexp (car (last parts)))
+                                       nil)))
+                    (directory-files-recursively
+                     default-directory
+                     (or file-regexp ".")))
+                ;; Single * uses file-expand-wildcards
+                (file-expand-wildcards pattern t))))
         (mapconcat #'identity matches "\n"))
     (error (format "Error during glob: %s" (error-message-string err)))))
 
@@ -127,7 +138,7 @@ Returns command output (stdout + stderr)."
   (condition-case err
       (let* ((timeout (or timeout 30))
              (output (with-timeout (timeout (error "Command timed out"))
-                       (shell-command-to-string command))))
+                       (shell-command-to-string (concat command " 2>&1")))))
         (if (string-blank-p output)
             "Command completed with no output"
           (string-trim-right output)))
@@ -152,7 +163,7 @@ then spawns a nested `gptel-request' with the subagent's configuration."
         (magent-agent-info-apply-gptel-overrides
          agent
          (lambda ()
-           (let ((request-buffer (get-buffer-create " *magent-delegate-request*")))
+           (let ((request-buffer (generate-new-buffer " *magent-delegate-request*")))
              (with-current-buffer request-buffer
                (setq-local gptel-tools tools)
                (setq-local gptel-use-tools (if tools t nil)))
@@ -162,6 +173,8 @@ then spawns a nested `gptel-request' with the subagent's configuration."
                :system system-msg
                :stream nil
                :callback (lambda (response _info)
+                           (when (buffer-live-p request-buffer)
+                             (kill-buffer request-buffer))
                            (funcall callback
                                     (cond
                                      ((stringp response) response)
@@ -344,19 +357,17 @@ For 'emacs' skill, OPERATION can be:
   - current-buffer-state: Get buffer name, mode, and content excerpt (no args)"
   (require 'magent-skills)
   (let ((skill (magent-skills-get skill-name)))
-    (unless skill
-      (cl-return-from magent-tools--skill-invoke
+    (if (not skill)
         (format "Error: skill '%s' not found. Available skills: %s"
                 skill-name
-                (mapconcat #'identity (magent-skills-list) ", "))))
-
-    ;; Dispatch based on skill name
-    (pcase skill-name
-      ("emacs"
-       (require 'magent-skill-emacs)
-       (magent-skill-emacs-invoke operation args))
-      (_
-       (format "Error: skill '%s' is not yet implemented" skill-name)))))
+                (mapconcat #'identity (magent-skills-list) ", "))
+      ;; Dispatch based on skill name
+      (pcase skill-name
+        ("emacs"
+         (require 'magent-skill-emacs)
+         (magent-skill-emacs-invoke operation args))
+        (_
+         (format "Error: skill '%s' is not yet implemented" skill-name))))))
 
 (defvar magent-tools--skill-invoke-tool
   (gptel-make-tool

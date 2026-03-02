@@ -29,7 +29,12 @@
 
 ;; Forward declarations
 (declare-function magent-session-add-message "magent-session")
-(declare-function magent-log "magent-config")
+(declare-function magent-log "magent-ui")
+(declare-function gptel-request "gptel")
+(declare-function gptel-make-tool "gptel")
+(declare-function gptel--accept-tool-calls "gptel")
+(defvar gptel-backend)
+(defvar gptel-model)
 
 ;;; FSM Data Structure
 
@@ -80,23 +85,21 @@
 (defun magent-fsm--handle-init (fsm)
   "Handle INIT state: validate inputs and prepare for first request."
   (let ((session (magent-fsm-session fsm))
-        (agent (magent-fsm-agent fsm))
         (backend (magent-fsm-backend fsm))
         (model (magent-fsm-model fsm)))
-    (unless session
+    (cond
+     ((not session)
       (setf (magent-fsm-error fsm) "No session provided")
-      (magent-fsm-transition fsm 'ERROR)
-      (cl-return-from magent-fsm--handle-init))
-    (unless backend
+      (magent-fsm-transition fsm 'ERROR))
+     ((not backend)
       (setf (magent-fsm-error fsm) "No backend provided")
-      (magent-fsm-transition fsm 'ERROR)
-      (cl-return-from magent-fsm--handle-init))
-    (unless model
+      (magent-fsm-transition fsm 'ERROR))
+     ((not model)
       (setf (magent-fsm-error fsm) "No model provided")
-      (magent-fsm-transition fsm 'ERROR)
-      (cl-return-from magent-fsm--handle-init))
-    ;; Ready to send first request
-    (magent-fsm-transition fsm 'SEND)))
+      (magent-fsm-transition fsm 'ERROR))
+     (t
+      ;; Ready to send first request
+      (magent-fsm-transition fsm 'SEND)))))
 
 (defun magent-fsm--handle-send (fsm)
   "Handle SEND state: prepare and fire HTTP request."
@@ -157,23 +160,21 @@
                   ;; Loop back to SEND
                   (magent-fsm-transition fsm 'SEND)))))
 
-        (unless tool-spec
-          (funcall process-result (format "Error: tool '%s' not found" name))
-          (cl-return-from nil))
-
-        ;; Execute tool (sync or async)
-        (condition-case err
-            (let ((tool-fn (plist-get tool-spec :function))
-                  (tool-async (plist-get tool-spec :async)))
-              (if tool-async
-                  ;; Async tool: pass callback as first argument
-                  (apply tool-fn process-result args)
-                ;; Sync tool: call directly and invoke callback
-                (let ((result (apply tool-fn args)))
-                  (funcall process-result result))))
-          (error
-           (funcall process-result
-                    (format "Error executing tool: %s" (error-message-string err)))))))))
+        (if (not tool-spec)
+            (funcall process-result (format "Error: tool '%s' not found" name))
+          ;; Execute tool (sync or async)
+          (condition-case err
+              (let ((tool-fn (plist-get tool-spec :function))
+                    (tool-async (plist-get tool-spec :async)))
+                (if tool-async
+                    ;; Async tool: pass callback as first argument
+                    (apply tool-fn process-result args)
+                  ;; Sync tool: call directly and invoke callback
+                  (let ((result (apply tool-fn args)))
+                    (funcall process-result result))))
+            (error
+             (funcall process-result
+                      (format "Error executing tool: %s" (error-message-string err))))))))))
 
 (defun magent-fsm--handle-done (fsm)
   "Handle DONE state: finalize and call user callback."
@@ -186,6 +187,10 @@
                                 'assistant
                                 (magent-fsm-accumulated-text fsm)))
 
+  ;; Clean up request buffer
+  (when (buffer-live-p (magent-fsm-request-buffer fsm))
+    (kill-buffer (magent-fsm-request-buffer fsm)))
+
   ;; Call user callback
   (when (magent-fsm-callback fsm)
     (funcall (magent-fsm-callback fsm)
@@ -195,6 +200,10 @@
   "Handle ERROR state: log error and call user callback with nil."
   (let ((error-msg (or (magent-fsm-error fsm) "Unknown error")))
     (magent-log "ERROR FSM error: %s" error-msg)
+
+    ;; Clean up request buffer
+    (when (buffer-live-p (magent-fsm-request-buffer fsm))
+      (kill-buffer (magent-fsm-request-buffer fsm)))
 
     ;; Call user callback with nil to signal error
     (when (magent-fsm-callback fsm)
@@ -215,8 +224,7 @@ RESULTS is a list of plists with :id, :name, :args, :result."
   ;; For Anthropic: append tool_result content blocks
   ;; For OpenAI: append assistant message with tool_calls, then tool messages
 
-  (let ((backend (magent-fsm-backend fsm))
-        (prompt-list (magent-fsm-prompt-list fsm)))
+  (let ((prompt-list (magent-fsm-prompt-list fsm)))
 
     ;; For now, use a simplified approach that works with gptel
     ;; We'll enhance this when we implement direct HTTP
@@ -247,11 +255,11 @@ This will be replaced with direct HTTP implementation."
     (setf (magent-fsm-request-buffer fsm) request-buffer)
 
     ;; Convert magent tools to gptel tools format
-    (let ((gptel-tools (magent-fsm--convert-tools-to-gptel tools)))
+    (let ((converted-tools (magent-fsm--convert-tools-to-gptel tools)))
 
       (with-current-buffer request-buffer
-        (setq-local gptel-tools gptel-tools)
-        (setq-local gptel-use-tools (if gptel-tools t nil)))
+        (setq-local gptel-tools converted-tools)
+        (setq-local gptel-use-tools (if converted-tools t nil)))
 
       ;; Call gptel-request with FSM callback
       (let ((gptel-backend backend)

@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'json)
 (require 'magent-config)
 
 ;;; Session state structure
@@ -147,17 +148,16 @@ If FILE is nil, uses a default location based on session ID."
 
 ;;; Session context helpers
 
-(defun magent-session-get-project-files (session &optional directory)
+(defun magent-session-get-project-files (_session &optional directory)
   "Get a list of relevant project files for context.
 Uses DIRECTORY or current project root."
   (let* ((default-directory (or directory
                                (when (fboundp 'projectile-project-root)
                                  (projectile-project-root))
-                               default-directory))
-         (files (condition-case nil
-                    (all-completions "" (directory-files default-directory))
-                  (error nil))))
-    files))
+                               default-directory)))
+    (condition-case nil
+        (directory-files default-directory)
+      (error nil))))
 
 (defun magent-session-summarize (session)
   "Create a summary of SESSION messages.

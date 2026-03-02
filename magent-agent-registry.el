@@ -21,6 +21,8 @@
 (require 'magent-config)
 (require 'magent-permission)
 
+(declare-function magent-agent-file-load-all "magent-agent-file")
+
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Agent info structure
 ;; ──────────────────────────────────────────────────────────────────────
@@ -392,7 +394,8 @@ Returns list of agent info structures."
           (magent-agent-types-default-name))
     (setq magent-agent-registry--initialized t)
     ;; Load custom agents from config files
-    (when (require 'magent-agent-file nil t)
+    (when (and magent-load-custom-agents
+               (require 'magent-agent-file nil t))
       (magent-agent-file-load-all))))
 
 ;;; Agent registration
@@ -469,7 +472,7 @@ If MODE is non-nil (primary, subagent, or all), filter by mode.
 If NATIVE-ONLY is non-nil, only include native (built-in) agents."
   (magent-agent-registry-ensure-initialized)
   (let ((agents nil))
-    (maphash (lambda (name info)
+    (maphash (lambda (_name info)
                (when (and (or include-hidden
                               (not (magent-agent-info-hidden info)))
                           (or (null mode)

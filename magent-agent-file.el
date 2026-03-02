@@ -58,7 +58,7 @@ If no frontmatter found, returns (nil . CONTENT)."
         (forward-line 1)
         (let ((start (point)))
           (when (re-search-forward "^---" nil t)
-            (let ((yaml-str (buffer-substring-no-properties start (1- (point)))))
+            (let ((yaml-str (buffer-substring-no-properties start (match-beginning 0))))
               (setq frontmatter (magent-agent-file--parse-yaml yaml-str))
               (forward-line 1)
               (setq body (buffer-substring-no-properties (point) (point-max)))))))
@@ -147,7 +147,7 @@ Returns the agent info if successful, nil otherwise."
                    (agent-info (magent-agent-info-create
                                 :name name
                                 :description (plist-get frontmatter :description)
-                                :mode (magent-agent-file--parse-mode mode-str)
+                                :mode (if mode-str (magent-agent-file--parse-mode mode-str) 'all)
                                 :native nil
                                 :hidden (plist-get frontmatter :hidden)
                                 :temperature (plist-get frontmatter :temperature)

@@ -112,11 +112,8 @@ When enabled, Magent commands are available.
             map)
   (when magent-mode
     (unless magent--initialized
-      ;; Initialize agent registry
+      ;; Initialize agent registry (also loads custom agents)
       (magent-agent-registry-init)
-      ;; Load custom agents if enabled
-      (when magent-load-custom-agents
-        (magent-agent-file-load-all))
       ;; Load Claude Code skills
       (magent-skills-load-all)
       (setq magent--initialized t)

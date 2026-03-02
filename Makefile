@@ -1,20 +1,20 @@
 EMACS = emacs
 GPTEL_DIR ?= $(HOME)/proj/gptel
 MARKDOWN_MODE_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'markdown-mode-*' -type d 2>/dev/null | head -1)
-LOADPATH = -L lisp -L $(GPTEL_DIR) $(if $(MARKDOWN_MODE_DIR),-L $(MARKDOWN_MODE_DIR))
+LOADPATH = -L . -L $(GPTEL_DIR) $(if $(MARKDOWN_MODE_DIR),-L $(MARKDOWN_MODE_DIR))
 
-SRCS = lisp/magent.el \
-       lisp/magent-config.el \
-       lisp/magent-session.el \
-       lisp/magent-tools.el \
-       lisp/magent-agent.el \
-       lisp/magent-agent-registry.el \
-       lisp/magent-agent-file.el \
-       lisp/magent-permission.el \
-       lisp/magent-ui.el \
-       lisp/magent-fsm.el \
-       lisp/magent-skill-emacs.el \
-       lisp/magent-skills.el
+SRCS = magent.el \
+       magent-config.el \
+       magent-session.el \
+       magent-tools.el \
+       magent-agent.el \
+       magent-agent-registry.el \
+       magent-agent-file.el \
+       magent-permission.el \
+       magent-ui.el \
+       magent-fsm.el \
+       magent-skill-emacs.el \
+       magent-skills.el
 
 COMPILED = $(SRCS:.el=.elc)
 

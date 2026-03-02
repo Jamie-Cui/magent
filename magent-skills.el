@@ -16,7 +16,7 @@
 (require 'cl-lib)
 (require 'magent-skill-emacs)
 
-(declare-function magent-log "magent-config")
+(declare-function magent-log "magent-ui")
 
 ;;; Skill data structure
 
