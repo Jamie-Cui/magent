@@ -23,6 +23,7 @@
 
 ;; Forward declarations for UI functions
 (declare-function magent-ui-insert-streaming "magent-ui")
+(declare-function magent-skills-get-instruction-prompts "magent-skills")
 
 ;;; Agent execution
 
@@ -46,8 +47,16 @@ The tool calling loop is managed by magent-fsm.  This function:
     (magent-session-add-message session 'user user-prompt)
     ;; Build prompt list from full session history
     (let* ((prompt-list (magent-session-to-gptel-prompt-list session))
-           (system-msg (or (magent-agent-info-prompt agent)
-                           magent-system-prompt))
+           (base-system-msg (or (magent-agent-info-prompt agent)
+                                magent-system-prompt))
+           ;; Include instruction-type skill prompts
+           (skill-prompts (when (require 'magent-skills nil t)
+                            (magent-skills-get-instruction-prompts)))
+           (system-msg (if skill-prompts
+                           (concat base-system-msg
+                                   "\n\n# Active Skills\n\n"
+                                   (mapconcat #'identity skill-prompts "\n\n"))
+                         base-system-msg))
            (tools (magent-tools-get-magent-tools agent)))
 
       ;; Apply per-agent gptel variable overrides to get backend/model

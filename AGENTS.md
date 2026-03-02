@@ -41,7 +41,17 @@ Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and perm
 
 7. **FSM** (`magent-fsm.el`): Finite state machine for tool-calling loop (INIT → SEND → WAIT → PROCESS → TOOL → DONE/ERROR). Currently delegates HTTP to gptel via `gptel-request`.
 
-8. **Skills** (`magent-skills.el` + `magent-skill-emacs.el`): Skill registry with built-in emacs skill for interacting with the running Emacs instance (list-functions, describe-function, eval-expression, execute-keys, minibuffer-prompt, current-buffer-state). Skills are invoked directly in-process via the `skill_invoke` tool.
+8. **Skills** (`magent-skills.el` + `magent-skill-file.el` + `magent-skill-emacs.el`): Claude Code/OpenCode style skill system with two types:
+   - **instruction type**: Markdown body is injected into the system prompt. LLM follows instructions and uses available tools directly.
+   - **tool type**: Skill is invoked via `skill_invoke` tool with predefined operations.
+
+   Skills are loaded from:
+   - Global: `~/.emacs.d/magent-skills/<name>/SKILL.md`
+   - Project: `.magent/skills/<name>/SKILL.md`
+
+   Tool-type skills can have companion `.el` files defining `magent-skill-<name>-invoke` function.
+
+   Built-in `emacs` skill (tool-type) provides: list-functions, describe-function, eval-expression, execute-keys, minibuffer-prompt, current-buffer-state.
 
 9. **Session** (`magent-session.el`): Conversation state with messages list, assigned agent, and history trimming. Persists to `~/.emacs.d/magent-sessions/` as JSON. Converts to gptel prompt list format for API calls.
 
@@ -51,9 +61,38 @@ Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and perm
 - **Per-agent gptel overrides**: `magent-agent-info-apply-gptel-overrides` temporarily sets gptel variables (model, temperature, backend) for the duration of a request.
 - **Agent modes**: `primary` (user-facing), `subagent` (called internally), `all` (either role).
 - **Tool filtering**: Tools are defined once globally but each agent only sees tools allowed by its permission rules.
+- **Skill types**: `instruction` (Claude Code style - prompts injected to system message) vs `tool` (traditional - invoked via `skill_invoke`).
+
+### Skill File Format
+
+```markdown
+---
+name: skill-name
+description: Brief description
+tools: bash, read        # Required tools (optional)
+type: instruction        # 'instruction' or 'tool'
+---
+
+# Skill Instructions
+
+The markdown body becomes part of the system prompt for instruction-type skills.
+For tool-type skills, this describes available operations.
+```
 
 ### Configuration
 
 Magent-specific settings via `customize-group RET magent` (17 defcustom variables): `magent-system-prompt`, `magent-buffer-name`, `magent-auto-scroll`, `magent-enable-streaming`, `magent-enable-tools`, `magent-project-root-function`, `magent-max-history`, `magent-default-agent`, `magent-load-custom-agents`, `magent-enable-logging`, `magent-assistant-prompt`, `magent-user-prompt`, `magent-tool-call-prompt`, `magent-error-prompt`, `magent-agent-directory`, `magent-session-directory`, `magent-grep-program`.
 
+Skill-specific settings:
+- `magent-skill-directories`: List of directories to scan for skill files (default: `~/.emacs.d/magent-skills`)
+- `magent-skill-file-name`: Skill definition file name (default: `SKILL.md`)
+
 LLM provider/model/key settings are managed entirely by gptel — configure via `gptel-backend`, `gptel-model`, and `gptel-api-key` (or env vars `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`).
+
+### Interactive Commands
+
+| Command | Description |
+|---------|-------------|
+| `magent-list-skills` | Display all registered skills |
+| `magent-describe-skill` | Show detailed skill information |
+| `magent-reload-skills` | Reload skills from disk |

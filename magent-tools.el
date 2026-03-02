@@ -310,37 +310,21 @@ then spawns a nested `gptel-request' with the subagent's configuration."
 
 (defun magent-tools--skill-invoke (skill-name operation &rest args)
   "Invoke OPERATION from SKILL-NAME with ARGS.
-For 'emacs' skill, OPERATION can be:
-  - list-functions: List interactive commands matching prefix (arg: prefix)
-  - describe-function: Get docstring and arglist (arg: function-name)
-  - eval-expression: Evaluate elisp expression (arg: expression)
-  - execute-keys: Simulate keystrokes in kbd format (arg: keys)
-  - minibuffer-prompt: Read current minibuffer state (no args)
-  - current-buffer-state: Get buffer name, mode, and content excerpt (no args)"
+Only works for tool-type skills.  Instruction-type skills are
+automatically included in the system prompt."
   (require 'magent-skills)
-  (let ((skill (magent-skills-get skill-name)))
-    (if (not skill)
-        (format "Error: skill '%s' not found. Available skills: %s"
-                skill-name
-                (mapconcat #'identity (magent-skills-list) ", "))
-      ;; Dispatch based on skill name
-      (pcase skill-name
-        ("emacs"
-         (require 'magent-skill-emacs)
-         (magent-skill-emacs-invoke operation args))
-        (_
-         (format "Error: skill '%s' is not yet implemented" skill-name))))))
+  (magent-skills-invoke skill-name operation args))
 
 (defvar magent-tools--skill-invoke-tool
   (gptel-make-tool
    :name "skill_invoke"
-   :description "Invoke a Claude Code skill operation. Currently supports 'emacs' skill for interacting with the running Emacs instance. Operations: list-functions (PREFIX), describe-function (NAME), eval-expression (EXPR), execute-keys (KEYS), minibuffer-prompt (), current-buffer-state ()."
+   :description "Invoke a tool-type skill operation. Only tool-type skills can be invoked this way. Instruction-type skills are automatically active in the system prompt. Check available skills and their operations before invoking."
    :args (list '(:name "skill_name"
                        :type string
-                       :description "Name of the skill (currently only 'emacs')")
+                       :description "Name of the skill to invoke")
                '(:name "operation"
                        :type string
-                       :description "Operation to perform (e.g., 'list-functions', 'describe-function')")
+                       :description "Operation to perform (varies by skill)")
                '(:name "args"
                        :type array
                        :description "Arguments for the operation (varies by operation)"

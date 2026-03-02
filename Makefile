@@ -14,7 +14,8 @@ SRCS = magent.el \
        magent-ui.el \
        magent-fsm.el \
        magent-skill-emacs.el \
-       magent-skills.el
+       magent-skills.el \
+       magent-skill-file.el
 
 COMPILED = $(SRCS:.el=.elc)
 
