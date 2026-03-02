@@ -160,16 +160,29 @@
           ;; Execute tool (sync or async)
           (condition-case err
               (let ((tool-fn (plist-get tool-spec :function))
-                    (tool-async (plist-get tool-spec :async)))
+                    (tool-async (plist-get tool-spec :async))
+                    ;; Convert args plist to positional arguments based on tool spec
+                    (arg-values (magent-fsm--args-to-positional args (plist-get tool-spec :args))))
                 (if tool-async
                     ;; Async tool: pass callback as first argument
-                    (apply tool-fn process-result args)
+                    (apply tool-fn process-result arg-values)
                   ;; Sync tool: call directly and invoke callback
-                  (let ((result (apply tool-fn args)))
+                  (let ((result (apply tool-fn arg-values)))
                     (funcall process-result result))))
             (error
              (funcall process-result
                       (format "Error executing tool: %s" (error-message-string err))))))))))
+
+(defun magent-fsm--args-to-positional (args-plist args-spec)
+  "Convert ARGS-PLIST to positional arguments based on ARGS-SPEC.
+ARGS-PLIST is a plist like (:path \"foo\" :content \"bar\").
+ARGS-SPEC is a list of argument specifications from the tool definition.
+Returns a list of positional arguments in the order defined by ARGS-SPEC."
+  (mapcar
+   (lambda (arg-spec)
+     (let ((key (intern (concat ":" (plist-get arg-spec :name)))))
+       (plist-get args-plist key)))
+   args-spec))
 
 (defun magent-fsm--handle-done (fsm)
   "Handle DONE state: finalize and call user callback."
@@ -276,9 +289,20 @@ RESULTS is a list of plists with :id, :name, :args, :result."
       (setf (magent-fsm-accumulated-text fsm)
             (concat (magent-fsm-accumulated-text fsm)
                     (magent-fsm-streamed-chunks fsm)))
-      ;; Don't transition yet if tools are pending
-      (unless (plist-get info :tool-pending)
-        (magent-fsm-transition fsm 'PROCESS)))
+      ;; Check for tool calls from gptel's parsed streaming response
+      (cond
+       ((plist-get info :tool-use)
+        ;; gptel parsed tool calls from the stream, execute them
+        (let ((tool-calls (plist-get info :tool-use)))
+          (magent-log "Streaming completed with %d tool call(s)" (length tool-calls))
+          (setf (magent-fsm-pending-tools fsm) tool-calls)
+          (magent-fsm-transition fsm 'TOOL)))
+       ((plist-get info :tool-pending)
+        ;; Tools are waiting for user confirmation, don't transition yet
+        nil)
+       (t
+        ;; No tools, proceed to PROCESS
+        (magent-fsm-transition fsm 'PROCESS))))
 
      ;; Non-streaming final response
      ((stringp response)

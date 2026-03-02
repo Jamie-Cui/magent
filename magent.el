@@ -82,6 +82,7 @@
 (require 'magent-permission)
 (require 'magent-agent-file)
 (require 'magent-skills)
+(require 'magent-skill-file)
 
 ;;; Initialization
 
@@ -114,8 +115,10 @@ When enabled, Magent commands are available.
     (unless magent--initialized
       ;; Initialize agent registry (also loads custom agents)
       (magent-agent-registry-init)
-      ;; Load Claude Code skills
-      (magent-skills-load-all)
+      ;; Register built-in skills
+      (magent-skills--register-builtin)
+      ;; Load skills from files
+      (magent-skill-file-load-all)
       (setq magent--initialized t)
       (magent-log "INFO magent mode enabled"))))
 
