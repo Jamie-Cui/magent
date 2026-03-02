@@ -11,7 +11,7 @@ make clean         # Remove compiled .elc files
 
 Single-file compilation:
 ```bash
-emacs -Q --batch -L lisp -L ~/proj/gptel -f batch-byte-compile lisp/magent-foo.el
+emacs -Q --batch -L . -L ~/proj/gptel -f batch-byte-compile magent-foo.el
 ```
 
 The Makefile expects gptel source at `$HOME/proj/gptel` by default. Override with `GPTEL_DIR`:
