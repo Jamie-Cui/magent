@@ -102,13 +102,8 @@
       (magent-fsm-transition fsm 'SEND)))))
 
 (defun magent-fsm--handle-send (fsm)
-  "Handle SEND state: prepare and fire HTTP request."
-  ;; TODO: Implement HTTP request using gptel's backend interface
-  ;; For now, use gptel-request as a fallback
+  "Handle SEND state: prepare and fire HTTP request via gptel."
   (magent-log "SEND state: preparing HTTP request")
-
-  ;; This will be replaced with direct HTTP implementation
-  ;; For MVP, we delegate to gptel but capture the FSM flow
   (magent-fsm--send-via-gptel fsm))
 
 (defun magent-fsm--handle-process (fsm)
@@ -220,26 +215,15 @@
 (defun magent-fsm--inject-tool-results (fsm results)
   "Inject tool RESULTS into FSM's prompt-list for next request.
 RESULTS is a list of plists with :id, :name, :args, :result."
-  ;; Format depends on backend type
-  ;; For Anthropic: append tool_result content blocks
-  ;; For OpenAI: append assistant message with tool_calls, then tool messages
-
   (let ((prompt-list (magent-fsm-prompt-list fsm)))
-
-    ;; For now, use a simplified approach that works with gptel
-    ;; We'll enhance this when we implement direct HTTP
-
-    ;; Append tool results as a special marker for gptel to handle
-    ;; This is a temporary implementation
     (setf (magent-fsm-prompt-list fsm)
           (append prompt-list
                   (list (cons 'tool-results results))))))
 
-;;; HTTP Layer (Temporary gptel delegation)
+;;; HTTP Layer (gptel delegation)
 
 (defun magent-fsm--send-via-gptel (fsm)
-  "Temporary implementation: delegate to gptel-request.
-This will be replaced with direct HTTP implementation."
+  "Send LLM request via gptel-request."
   (require 'gptel)
   (require 'magent-session)
 

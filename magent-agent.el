@@ -1,4 +1,4 @@
-;;; magent-agent.el --- Agent logic with internal FSM  -*- lexical-binding: t; -*-
+;;; magent-agent.el --- Agent processing for Magent  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 
@@ -8,8 +8,8 @@
 
 ;;; Commentary:
 
-;; Agent logic for Magent.  Uses internal FSM (magent-fsm.el) for managing
-;; the tool calling loop.  gptel is used as an HTTP backend provider.
+;; Agent processing for Magent.  Builds prompt lists from session history,
+;; applies per-agent gptel overrides, and starts FSM execution.
 
 ;;; Code:
 
@@ -79,20 +79,6 @@ The tool calling loop is managed by magent-fsm.  This function:
 
              ;; Start FSM execution
              (magent-fsm-start fsm))))))))
-
-;;; Agent selection helpers
-
-(defun magent-agent-get-by-name (name)
-  "Get agent by NAME from registry."
-  (magent-agent-registry-get name))
-
-(defun magent-agent-list-primary ()
-  "List all primary agents."
-  (magent-agent-registry-primary-agents))
-
-(defun magent-agent-list-subagents ()
-  "List all subagents."
-  (magent-agent-registry-subagents))
 
 (provide 'magent-agent)
 ;;; magent-agent.el ends here

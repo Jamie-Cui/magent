@@ -105,13 +105,6 @@ The agent's TEMPERATURE field, if non-nil, overrides `gptel-temperature'."
 
 ;;; Agent display
 
-(defun magent-agent-info-display-name (info)
-  "Get the display name for INFO."
-  (let ((name (magent-agent-info-name info)))
-    (if (magent-agent-info-native info)
-        (format "%s (built-in)" name)
-      name)))
-
 (defun magent-agent-info-format-for-display (info)
   "Format INFO as a string for display in listings."
   (let ((name (magent-agent-info-name info))
@@ -130,43 +123,6 @@ The agent's TEMPERATURE field, if non-nil, overrides `gptel-temperature'."
   (and (magent-agent-info-p info)
        (stringp (magent-agent-info-name info))
        (magent-agent-info-valid-mode-p (magent-agent-info-mode info))))
-
-;;; Agent info defaults
-
-(defun magent-agent-info-merge-defaults (info &optional defaults)
-  "Merge DEFAULTS into INFO, preserving INFO's values.
-DEFAULTS should be a magent-agent-info structure.
-Returns a new magent-agent-info structure."
-  (let ((base (or defaults (magent-agent-info-create
-                            :name "default"
-                            :mode 'all
-                            :native t
-                            :permission (magent-permission-defaults)))))
-    (magent-agent-info-create
-     :name (or (magent-agent-info-name info)
-               (magent-agent-info-name base))
-     :description (or (magent-agent-info-description info)
-                      (magent-agent-info-description base))
-     :mode (or (magent-agent-info-mode info)
-               (magent-agent-info-mode base))
-     :native (magent-agent-info-native info)
-     :hidden (or (magent-agent-info-hidden info)
-                 (magent-agent-info-hidden base))
-     :temperature (or (magent-agent-info-temperature info)
-                      (magent-agent-info-temperature base))
-     :top-p (or (magent-agent-info-top-p info)
-                (magent-agent-info-top-p base))
-     :color (magent-agent-info-color info)
-     :model (or (magent-agent-info-model info)
-                (magent-agent-info-model base))
-     :prompt (magent-agent-info-prompt info)
-     :options (append (magent-agent-info-options base)
-                      (magent-agent-info-options info))
-     :steps (or (magent-agent-info-steps info)
-                (magent-agent-info-steps base))
-     :permission (magent-permission-merge
-                  (magent-agent-info-permission base)
-                  (magent-agent-info-permission info)))))
 
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Built-in agent types
@@ -363,10 +319,6 @@ Returns list of agent info structures."
    (magent-agent-types--title)
    (magent-agent-types--summary)))
 
-(defun magent-agent-types-default-name ()
-  "Return the default agent name."
-  "build")
-
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Agent registry
 ;; ──────────────────────────────────────────────────────────────────────
@@ -391,7 +343,7 @@ Returns list of agent info structures."
     (dolist (agent-info (magent-agent-types-initialize))
       (magent-agent-registry-register agent-info))
     (setq magent-agent-registry--default-agent
-          (magent-agent-types-default-name))
+          magent-default-agent)
     (setq magent-agent-registry--initialized t)
     ;; Load custom agents from config files
     (when (and magent-load-custom-agents
@@ -409,35 +361,6 @@ Returns the registered agent info."
              agent-info
              magent-agent-registry--agents)
     agent-info))
-
-(defun magent-agent-registry-unregister (name)
-  "Unregister agent named NAME.
-Returns the removed agent info, or nil if not found."
-  (remhash name magent-agent-registry--agents))
-
-(defun magent-agent-registry-register-from-config (name config)
-  "Create and register an agent from CONFIG alist.
-CONFIG should contain keys like :description, :mode, :prompt, etc.
-Returns the registered agent info, or nil if invalid."
-  (let* ((permission-plist (plist-get config :permission))
-         (permission (when permission-plist
-                       (magent-permission-from-config permission-plist)))
-         (agent-info (magent-agent-info-create
-                      :name name
-                      :description (plist-get config :description)
-                      :mode (or (plist-get config :mode) 'all)
-                      :native nil
-                      :hidden (plist-get config :hidden)
-                      :temperature (plist-get config :temperature)
-                      :top-p (plist-get config :top-p)
-                      :color (plist-get config :color)
-                      :model (plist-get config :model)
-                      :prompt (plist-get config :prompt)
-                      :options (plist-get config :options)
-                      :steps (plist-get config :steps)
-                      :permission permission)))
-    (when (magent-agent-info-valid-p agent-info)
-      (magent-agent-registry-register agent-info))))
 
 ;;; Agent retrieval
 
@@ -510,16 +433,6 @@ Returns list of agent name strings."
 
 ;;; Agent utilities
 
-(defun magent-agent-registry-exists-p (name)
-  "Check if agent named NAME exists in the registry."
-  (magent-agent-registry-ensure-initialized)
-  (and (gethash name magent-agent-registry--agents) t))
-
-(defun magent-agent-registry-count ()
-  "Return the number of registered agents."
-  (magent-agent-registry-ensure-initialized)
-  (hash-table-count magent-agent-registry--agents))
-
 (defun magent-agent-registry-clear ()
   "Clear all agents from the registry.
 This does not affect built-in agents that will be reloaded on initialization."
@@ -537,16 +450,6 @@ This does not affect built-in agents that will be reloaded on initialization."
   "Ensure the registry is initialized."
   (unless magent-agent-registry--initialized
     (magent-agent-registry-init)))
-
-(defun magent-agent-registry-resolve (agent-or-name)
-  "Resolve AGENT-OR-NAME to an agent info structure.
-If AGENT-OR-NAME is already a magent-agent-info, return it.
-If it's a string, look it up in the registry.
-Returns nil if not found."
-  (cond
-   ((magent-agent-info-p agent-or-name) agent-or-name)
-   ((stringp agent-or-name) (magent-agent-registry-get agent-or-name))
-   (t nil)))
 
 ;;; Interactive functions
 

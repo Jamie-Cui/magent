@@ -199,38 +199,5 @@ CONFIG is an alist like ((read . allow) (bash . deny)).
 Returns permission rules."
   (magent-permission-create :rules config))
 
-;;; Permission filtering for tools
-
-(defun magent-permission-filter-tools (permission-rules tools)
-  "Filter TOOLS list based on PERMISSION-RULES.
-Returns list of allowed tool names."
-  (let ((allowed nil))
-    (dolist (tool tools)
-      (when (magent-permission-allow-p permission-rules tool)
-        (push tool allowed)))
-    (nreverse allowed)))
-
-(defun magent-permission-disabled (permission-rules all-tools)
-  "Get list of disabled tools from PERMISSION-RULES.
-ALL-TOOLS is list of all available tool names.
-Returns list of tool names that are denied."
-  (let ((disabled nil))
-    (dolist (tool all-tools)
-      (when (magent-permission-deny-p permission-rules tool)
-        (push tool disabled)))
-    disabled))
-
-;;; User prompts for 'ask' permissions
-
-(defun magent-permission-prompt-user (tool file)
-  "Ask user for permission for TOOL with FILE.
-Returns 'allow if user approves, 'deny if denied."
-  (let ((prompt (format "Allow tool '%s'%s? "
-                        tool
-                        (if file (format " for file '%s'" file) ""))))
-    (if (y-or-n-p prompt)
-        magent-permission-allow
-      magent-permission-deny)))
-
 (provide 'magent-permission)
 ;;; magent-permission.el ends here

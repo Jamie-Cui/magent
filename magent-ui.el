@@ -63,9 +63,6 @@ Does nothing if the region is empty."
 
 ;;; Buffer management
 
-(defvar-local magent-ui--output-buffer nil
-  "The buffer used for Magent output.")
-
 (defvar magent-log-buffer-name "*magent-log*"
   "Name of the buffer used for Magent logging.")
 
@@ -312,17 +309,12 @@ Handles both streaming and non-streaming completion."
 
 ;;; Session management commands
 
-(defalias 'magent-show-ui 'magent-ui-display-buffer)
-
-(defalias 'magent-clear-ui 'magent-ui-clear-buffer)
-
 ;;;###autoload
 (defun magent-clear-session ()
   "Clear the current session."
   (interactive)
   (magent-session-reset)
-  (magent-ui-clear-buffer)
-  (magent-log "INFO session cleared"))
+  (magent-ui-clear-buffer))
 
 ;;;###autoload
 (defun magent-show-session ()

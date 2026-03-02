@@ -38,10 +38,6 @@
   "Return list of all registered skill names."
   (mapcar #'car magent-skills--registry))
 
-(defun magent-skills-clear ()
-  "Clear skill registry."
-  (setq magent-skills--registry nil))
-
 ;;; Built-in skill registration
 
 (defun magent-skills-load-all ()

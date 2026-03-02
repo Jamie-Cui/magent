@@ -181,41 +181,6 @@ then spawns a nested `gptel-request' with the subagent's configuration."
                                      ((null response) "Error: subagent request failed")
                                      (t (format "%s" response))))))))))))))
 
-;;; Tool execution dispatcher (retained for direct use)
-
-(defun magent-tools-execute (tool-name input)
-  "Execute TOOL with INPUT (parsed JSON object).
-Returns the result as a string."
-  (let ((result
-         (pcase tool-name
-           ("read_file"
-            (magent-tools--read-file (cdr (assq 'path input))))
-           ("write_file"
-            (magent-tools--write-file (cdr (assq 'path input))
-                                      (cdr (assq 'content input))))
-           ("edit_file"
-            (magent-tools--edit-file (cdr (assq 'path input))
-                                     (cdr (assq 'old_text input))
-                                     (cdr (assq 'new_text input))))
-           ("grep"
-            (magent-tools--grep (cdr (assq 'pattern input))
-                                (cdr (assq 'path input))
-                                (cdr (assq 'case_sensitive input))))
-           ("glob"
-            (magent-tools--glob (cdr (assq 'pattern input))
-                                (cdr (assq 'path input))))
-           ("bash"
-            (magent-tools--bash (cdr (assq 'command input))
-                                (cdr (assq 'timeout input))))
-           ("emacs_eval"
-            (magent-tools--emacs-eval (cdr (assq 'sexp input))
-                                      (cdr (assq 'timeout input))))
-           ("delegate"
-            (format "Error: delegate tool requires async context (use gptel tool calling)"))
-           (_
-            (format "Unknown tool: %s" tool-name)))))
-    result))
-
 ;;; gptel-tool registrations
 
 (require 'gptel)
@@ -278,8 +243,7 @@ Returns the result as a string."
                        :type boolean
                        :description "Whether the search is case-sensitive"
                        :optional t))
-   :function (lambda (pattern path &optional case-sensitive)
-               (magent-tools--grep pattern path case-sensitive))
+   :function #'magent-tools--grep
    :category "magent")
   "gptel-tool struct for grep.")
 
@@ -308,8 +272,7 @@ Returns the result as a string."
                        :type integer
                        :description "Timeout in seconds, defaults to 30"
                        :optional t))
-   :function (lambda (command &optional timeout)
-               (magent-tools--bash command timeout))
+   :function #'magent-tools--bash
    :confirm t
    :category "magent")
   "gptel-tool struct for bash.")
@@ -325,8 +288,7 @@ Returns the result as a string."
                        :type integer
                        :description "Timeout in seconds, defaults to 10"
                        :optional t))
-   :function (lambda (sexp &optional timeout)
-               (magent-tools--emacs-eval sexp timeout))
+   :function #'magent-tools--emacs-eval
    :confirm t
    :category "magent")
   "gptel-tool struct for emacs_eval.")
@@ -383,11 +345,7 @@ For 'emacs' skill, OPERATION can be:
                        :type array
                        :description "Arguments for the operation (varies by operation)"
                        :optional t))
-   :function (lambda (skill-name operation &optional args)
-               (apply #'magent-tools--skill-invoke
-                      skill-name
-                      operation
-                      args))
+   :function #'magent-tools--skill-invoke
    :category "magent")
   "gptel-tool struct for skill_invoke.")
 
