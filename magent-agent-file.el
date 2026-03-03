@@ -18,6 +18,7 @@
 (require 'magent-agent-registry)
 (require 'magent-permission)
 (require 'magent-tools)
+(require 'magent-yaml)
 
 ;;; File paths
 
@@ -42,62 +43,6 @@
          (files (when (file-directory-p agent-dir)
                   (directory-files agent-dir t "\\.md$"))))
     (sort files #'string<)))
-
-;;; Frontmatter parsing
-
-(defun magent-agent-file--parse-frontmatter (content)
-  "Parse YAML frontmatter from CONTENT.
-Returns (FRONTMATTER . BODY) where FRONTMATTER is a plist.
-If no frontmatter found, returns (nil . CONTENT)."
-  (with-temp-buffer
-    (insert content)
-    (goto-char (point-min))
-    (let ((frontmatter nil)
-          (body content))
-      (when (looking-at-p "^---")
-        (forward-line 1)
-        (let ((start (point)))
-          (when (re-search-forward "^---" nil t)
-            (let ((yaml-str (buffer-substring-no-properties start (match-beginning 0))))
-              (setq frontmatter (magent-agent-file--parse-yaml yaml-str))
-              (forward-line 1)
-              (setq body (buffer-substring-no-properties (point) (point-max)))))))
-      (cons frontmatter body))))
-
-(defun magent-agent-file--parse-yaml (yaml-str)
-  "Parse simple YAML string to plist.
-Supports basic key: value pairs and nested structures."
-  (let ((result nil)
-        (lines (split-string yaml-str "\n")))
-    (dolist (line lines)
-      (when (string-match "^\\s-*\\([^:]+\\):\\s-\\(.+\\)$" line)
-        (let* ((key (match-string 1 line))
-               (value-str (match-string 2 line))
-               (value (magent-agent-file--parse-value value-str)))
-          (setq result (plist-put result (intern (concat ":" key)) value)))))
-    result))
-
-(defun magent-agent-file--parse-value (str)
-  "Parse a YAML value string.
-Handles booleans, numbers, strings, and lists."
-  (setq str (string-trim str))
-  (cond
-   ;; Boolean
-   ((string-equal str "true") t)
-   ((string-equal str "false") nil)
-   ;; Number (integer or float)
-   ((string-match-p "^[0-9]+\\(?:\\.[0-9]+\\)?$" str) (string-to-number str))
-   ;; Quoted string
-   ((and (> (length str) 1)
-         (or (and (eq (aref str 0) ?\") (eq (aref str (1- (length str))) ?\"))
-             (and (eq (aref str 0) ?') (eq (aref str (1- (length str))) ?'))))
-    (substring str 1 -1))
-   ;; List (comma-separated)
-   ((string-match-p "," str)
-    (mapcar #'magent-agent-file--parse-value
-            (split-string str "," t "[\s,]+")))
-   ;; Default: return as string
-   (t str)))
 
 (defun magent-agent-file--parse-mode (mode-str)
   "Parse mode string MODE-STR to symbol.
@@ -135,7 +80,7 @@ Returns the agent info if successful, nil otherwise."
       (with-temp-buffer
         (insert-file-contents filepath)
         (let* ((content (buffer-string))
-               (parsed (magent-agent-file--parse-frontmatter content))
+               (parsed (magent-yaml-parse-frontmatter content))
                (frontmatter (car parsed))
                (body (cdr parsed))
                (name (file-name-base filepath)))
