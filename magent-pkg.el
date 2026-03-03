@@ -1,7 +1,8 @@
 (define-package "magent" "0.1.0"
   "Magent AI coding agent for Emacs"
   '((emacs "27.1")
-    (gptel "0.9.8"))
+    (gptel "0.9.8")
+    (spinner "1.7.4"))
   :keywords '("tools" "ai" "copilot")
   :authors '(("Jamie Cui" . "jamie.cui@outlook.com"))
   :maintainers '(("Jamie Cui" . "jamie.cui@outlook.com"))
