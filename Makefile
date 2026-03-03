@@ -21,7 +21,7 @@ SRCS = magent.el \
 
 COMPILED = $(SRCS:.el=.elc)
 
-.PHONY: all compile clean help
+.PHONY: all compile clean test help
 
 all: compile
 
@@ -30,6 +30,7 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  compile       - Byte compile all Elisp files"
+	@echo "  test          - Run unit tests"
 	@echo "  clean         - Remove compiled files"
 	@echo "  help          - Show this help message"
 
@@ -38,6 +39,13 @@ compile: $(COMPILED)
 %.elc: %.el
 	@echo "Compiling $<..."
 	@$(EMACS) -Q --batch $(LOADPATH) -f batch-byte-compile $<
+
+test:
+	@echo "Running unit tests..."
+	@$(EMACS) -Q --batch $(LOADPATH) \
+		-l ert \
+		-l test/magent-test.el \
+		-f ert-run-tests-batch-and-exit
 
 clean:
 	@echo "Cleaning compiled files..."
