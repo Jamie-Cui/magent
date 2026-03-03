@@ -73,7 +73,7 @@ Examples:
 
 (defun magent-permission-resolve (rules tool &optional file)
   "Resolve permission for TOOL with optional FILE path.
-Returns 'allow, 'deny, or 'ask.
+Returns \\='allow, \\='deny, or \\='ask.
 
 RULES is a permission structure (list or symbol).
 TOOL is the tool name (symbol or string).

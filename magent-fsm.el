@@ -43,6 +43,7 @@
 (declare-function gptel-tool-args "gptel-request")
 (defvar gptel-backend)
 (defvar gptel-model)
+(defvar magent-request-timeout)
 
 ;;; FSM Data Structure
 
@@ -109,9 +110,40 @@
       ;; Ready to send first request
       (magent-fsm-transition fsm 'SEND)))))
 
+(defvar magent-fsm--timers (make-hash-table :test 'eq :weakness 'key)
+  "Hash table mapping FSM instances to their timeout timers.")
+
+(defun magent-fsm--start-timeout (fsm)
+  "Start or restart the timeout timer for FSM."
+  (magent-fsm--cancel-timeout fsm)
+  (when (and (boundp 'magent-request-timeout)
+             (> magent-request-timeout 0))
+    (puthash fsm
+             (run-at-time magent-request-timeout nil
+                          #'magent-fsm--timeout-handler fsm)
+             magent-fsm--timers)))
+
+(defun magent-fsm--cancel-timeout (fsm)
+  "Cancel the timeout timer for FSM."
+  (let ((timer (gethash fsm magent-fsm--timers)))
+    (when timer
+      (cancel-timer timer)
+      (remhash fsm magent-fsm--timers))))
+
+(defun magent-fsm--timeout-handler (fsm)
+  "Handle timeout for FSM stuck in WAIT state."
+  (remhash fsm magent-fsm--timers)
+  (when (eq (magent-fsm-state fsm) 'WAIT)
+    (magent-log "ERROR FSM timeout: no response in %d seconds"
+                magent-request-timeout)
+    (setf (magent-fsm-error fsm)
+          (format "Request timed out after %d seconds" magent-request-timeout))
+    (magent-fsm-transition fsm 'ERROR)))
+
 (defun magent-fsm--handle-send (fsm)
   "Handle SEND state: prepare and fire HTTP request via gptel."
   (magent-log "SEND state: preparing HTTP request")
+  (magent-fsm--start-timeout fsm)
   (magent-fsm--send-via-gptel fsm))
 
 (defun magent-fsm--handle-process (fsm)
@@ -199,6 +231,7 @@ Returns a list of positional arguments in the order defined by ARGS-SPEC."
 
 (defun magent-fsm--handle-done (fsm)
   "Handle DONE state: finalize and call user callback."
+  (magent-fsm--cancel-timeout fsm)
   (magent-log "FSM DONE: final response length=%d"
               (length (magent-fsm-accumulated-text fsm)))
 
@@ -219,6 +252,7 @@ Returns a list of positional arguments in the order defined by ARGS-SPEC."
 
 (defun magent-fsm--handle-error (fsm)
   "Handle ERROR state: log error and call user callback with nil."
+  (magent-fsm--cancel-timeout fsm)
   (let ((error-msg (or (magent-fsm-error fsm) "Unknown error")))
     (magent-log "ERROR FSM error: %s" error-msg)
 
@@ -353,81 +387,90 @@ and only transitions to PROCESS/DONE when the final response
   (lambda (response info)
     ;; Ignore callbacks if FSM already completed
     (unless (memq (magent-fsm-state fsm) '(DONE ERROR))
-      ;; Transition to WAIT state when request is sent
-      (when (eq (magent-fsm-state fsm) 'SEND)
-        (setf (magent-fsm-state fsm) 'WAIT))
+      ;; Suppress beginning-of-buffer / end-of-buffer signals that can
+      ;; leak from UI operations called inside gptel's process filter.
+      ;; These are benign cursor-adjustment errors (often from evil-mode)
+      ;; that would otherwise appear in *Messages* as "progn: ...".
+      (condition-case nil
+          (progn
+            ;; Reset timeout on every callback activity
+            (magent-fsm--start-timeout fsm)
+            ;; Transition to WAIT state when request is sent
+            (when (eq (magent-fsm-state fsm) 'SEND)
+              (setf (magent-fsm-state fsm) 'WAIT))
 
-      (cond
-       ;; Streaming text chunk
-       ((and (magent-fsm-streaming-p fsm) (stringp response))
-        (setf (magent-fsm-streamed-chunks fsm)
-              (concat (magent-fsm-streamed-chunks fsm) response))
-        ;; Call UI callback
-        (when (magent-fsm-ui-callback fsm)
-          (funcall (magent-fsm-ui-callback fsm) response)))
+            (cond
+             ;; Streaming text chunk
+             ((and (magent-fsm-streaming-p fsm) (stringp response))
+              (setf (magent-fsm-streamed-chunks fsm)
+                    (concat (magent-fsm-streamed-chunks fsm) response))
+              ;; Call UI callback
+              (when (magent-fsm-ui-callback fsm)
+                (funcall (magent-fsm-ui-callback fsm) response)))
 
-       ;; Streaming completion (t signal)
-       ((and (magent-fsm-streaming-p fsm) (eq response t))
-        (setf (magent-fsm-accumulated-text fsm)
-              (concat (magent-fsm-accumulated-text fsm)
-                      (magent-fsm-streamed-chunks fsm)))
-        (setf (magent-fsm-streamed-chunks fsm) "")
-        ;; Apply markdown fontification to completed streaming text
-        (magent-ui-finish-streaming-fontify)
-        ;; If no tool calls pending, we are done
-        (unless (or (plist-get info :tool-use)
-                    (plist-get info :tool-pending))
-          (magent-fsm-transition fsm 'PROCESS)))
+             ;; Streaming completion (t signal)
+             ((and (magent-fsm-streaming-p fsm) (eq response t))
+              (setf (magent-fsm-accumulated-text fsm)
+                    (concat (magent-fsm-accumulated-text fsm)
+                            (magent-fsm-streamed-chunks fsm)))
+              (setf (magent-fsm-streamed-chunks fsm) "")
+              ;; Apply markdown fontification to completed streaming text
+              (magent-ui-finish-streaming-fontify)
+              ;; If no tool calls pending, we are done
+              (unless (or (plist-get info :tool-use)
+                          (plist-get info :tool-pending))
+                (magent-fsm-transition fsm 'PROCESS)))
 
-       ;; Non-streaming final response
-       ((stringp response)
-        (setf (magent-fsm-accumulated-text fsm) response)
-        (magent-fsm-transition fsm 'PROCESS))
+             ;; Non-streaming final response
+             ((stringp response)
+              (setf (magent-fsm-accumulated-text fsm) response)
+              (magent-fsm-transition fsm 'PROCESS))
 
-       ;; gptel tool-call confirmation — show in UI, then auto-accept.
-       ;; Only fires when gptel-confirm-tool-calls is t or tool has :confirm.
-       ;; Format: (tool-call . ((gptel-tool arg-values callback) ...))
-       ((and (consp response) (eq (car response) 'tool-call))
-        (dolist (tc (cdr response))
-          (let* ((tool-spec (car tc))
-                 (arg-values (cadr tc))
-                 (cb (caddr tc))
-                 (name (gptel-tool-name tool-spec))
-                 (args-plist
-                  (cl-loop for spec in (gptel-tool-args tool-spec)
-                           for val in arg-values
-                           append (list (intern (concat ":" (plist-get spec :name))) val))))
-            (magent-fsm--show-tool-call name args-plist)
-            ;; Auto-accept: run the tool and call the callback
-            (if (gptel-tool-async tool-spec)
-                (apply (gptel-tool-function tool-spec) cb arg-values)
-              (funcall cb (apply (gptel-tool-function tool-spec) arg-values))))))
+             ;; gptel tool-call confirmation — show in UI, then auto-accept.
+             ;; Only fires when gptel-confirm-tool-calls is t or tool has :confirm.
+             ;; Format: (tool-call . ((gptel-tool arg-values callback) ...))
+             ((and (consp response) (eq (car response) 'tool-call))
+              (dolist (tc (cdr response))
+                (let* ((tool-spec (car tc))
+                       (arg-values (cadr tc))
+                       (cb (caddr tc))
+                       (name (gptel-tool-name tool-spec))
+                       (args-plist
+                        (cl-loop for spec in (gptel-tool-args tool-spec)
+                                 for val in arg-values
+                                 append (list (intern (concat ":" (plist-get spec :name))) val))))
+                  (magent-fsm--show-tool-call name args-plist)
+                  ;; Auto-accept: run the tool and call the callback
+                  (if (gptel-tool-async tool-spec)
+                      (apply (gptel-tool-function tool-spec) cb arg-values)
+                    (funcall cb (apply (gptel-tool-function tool-spec) arg-values))))))
 
-       ;; gptel tool-result — show tool call + result, prepare for next round.
-       ;; Format: (tool-result . ((gptel-tool args result) ...))
-       ;; In auto-confirm mode (default), this is the primary path.
-       ;; args here is a plist (:key val ...) from gptel.
-       ((and (consp response) (eq (car response) 'tool-result))
-        (dolist (tr (cdr response))
-          (let ((name (gptel-tool-name (car tr)))
-                (args (cadr tr))
-                (result (caddr tr)))
-            (magent-fsm--show-tool-call name args)
-            (magent-fsm--show-tool-result name result)))
-        ;; Prepare UI for next streaming response
-        (magent-ui-start-streaming)
-        (setf (magent-fsm-streamed-chunks fsm) ""))
+             ;; gptel tool-result — show tool call + result, prepare for next round.
+             ;; Format: (tool-result . ((gptel-tool args result) ...))
+             ;; In auto-confirm mode (default), this is the primary path.
+             ;; args here is a plist (:key val ...) from gptel.
+             ((and (consp response) (eq (car response) 'tool-result))
+              (dolist (tr (cdr response))
+                (let ((name (gptel-tool-name (car tr)))
+                      (args (cadr tr))
+                      (result (caddr tr)))
+                  (magent-fsm--show-tool-call name args)
+                  (magent-fsm--show-tool-result name result)))
+              ;; Prepare UI for next streaming response
+              (magent-ui-start-streaming)
+              (setf (magent-fsm-streamed-chunks fsm) ""))
 
-       ;; Error
-       ((null response)
-        (setf (magent-fsm-error fsm)
-              (or (plist-get info :status) "Request failed"))
-        (magent-fsm-transition fsm 'ERROR))
+             ;; Error
+             ((null response)
+              (setf (magent-fsm-error fsm)
+                    (or (plist-get info :status) "Request failed"))
+              (magent-fsm-transition fsm 'ERROR))
 
-       ;; Abort
-       ((eq response 'abort)
-        (setf (magent-fsm-error fsm) "Request aborted")
-        (magent-fsm-transition fsm 'ERROR))))))
+             ;; Abort
+             ((eq response 'abort)
+              (setf (magent-fsm-error fsm) "Request aborted")
+              (magent-fsm-transition fsm 'ERROR))))
+        ((beginning-of-buffer end-of-buffer) nil)))))
 
 (defun magent-fsm--convert-tools-to-gptel (tools)
   "Convert magent tool specs to gptel-tool structs.

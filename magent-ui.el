@@ -46,7 +46,9 @@ Does nothing if the region is empty."
         (let ((inhibit-read-only t))
           (erase-buffer)
           (insert text)
-          (font-lock-ensure)))
+          (condition-case nil
+              (font-lock-ensure)
+            ((beginning-of-buffer end-of-buffer) nil))))
       ;; Transfer face properties from the markdown buffer to the output
       ;; buffer.  Both buffers have matching text starting at position 1
       ;; (md-buf) and START (output buf), so offset = START - 1.
@@ -80,17 +82,23 @@ Does nothing if the region is empty."
 
 (defmacro magent-ui--with-insert (buffer &rest body)
   "Execute BODY at end of BUFFER with `inhibit-read-only' set.
-After BODY, auto-scroll if `magent-auto-scroll' is non-nil."
+After BODY, auto-scroll if `magent-auto-scroll' is non-nil.
+Buffer-boundary signals are suppressed because callbacks from
+gptel process filters can trigger evil-mode cursor adjustments
+that hit buffer edges."
   (declare (indent 1))
   `(with-current-buffer ,buffer
      (let ((inhibit-read-only t))
-       (goto-char (point-max))
-       ,@body
-       (when magent-auto-scroll
-         (goto-char (point-max))
-         (let ((win (get-buffer-window (current-buffer))))
-           (when win
-             (set-window-point win (point-max))))))))
+       (condition-case nil
+           (progn
+             (goto-char (point-max))
+             ,@body
+             (when magent-auto-scroll
+               (goto-char (point-max))
+               (let ((win (get-buffer-window (current-buffer))))
+                 (when win
+                   (set-window-point win (point-max))))))
+         ((beginning-of-buffer end-of-buffer) nil)))))
 
 (defun magent-log (format-string &rest args)
   "Log a message to the Magent log buffer.
@@ -328,6 +336,9 @@ Set by `magent-ui-insert-tool-call' right after the header line.")
   "Insert tool call notification into output buffer.
 Starts a collapsible tool section with a `[tool]' header."
   (magent-ui--with-insert (magent-ui-get-buffer)
+    ;; Blank line separator (except at buffer start)
+    (when (> (point) 1)
+      (insert "\n"))
     (let ((section-start (point)))
       (let ((header (magent-ui--make-header
                      (format "%s: %s" magent-tool-call-prompt tool-name))))
@@ -384,6 +395,11 @@ Set by `magent-ui-start-streaming', used by
   "Buffer position where the current streaming section begins.
 Used to create the section overlay when streaming finishes.")
 
+(defvar-local magent-ui--streaming-has-text nil
+  "Non-nil if any text was inserted via `magent-ui-insert-streaming'.
+Used to distinguish empty streaming rounds from rounds where tool
+lines were inserted after the header by other functions.")
+
 (defun magent-ui-start-streaming ()
   "Prepare the output buffer for a streaming response.
 Inserts the assistant section header."
@@ -395,13 +411,15 @@ Inserts the assistant section header."
     ;; Header
     (let ((header (magent-ui--make-header magent-assistant-prompt)))
       (insert (propertize header 'font-lock-face 'font-lock-string-face) "\n"))
-    (setq magent-ui--streaming-start (point))))
+    (setq magent-ui--streaming-start (point))
+    (setq magent-ui--streaming-has-text nil)))
 
 (defun magent-ui-insert-streaming (text)
   "Insert streaming TEXT into output buffer."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (save-excursion
-      (insert text))))
+      (insert text))
+    (setq magent-ui--streaming-has-text t)))
 
 (defun magent-ui-finish-streaming-fontify ()
   "Apply markdown fontification to the completed streaming region.
@@ -410,25 +428,29 @@ If no text was streamed (tool-only round), removes the orphaned header."
   (let ((buf (magent-ui-get-buffer)))
     (with-current-buffer buf
       (when magent-ui--streaming-start
-        (if (>= magent-ui--streaming-start (point-max))
-            ;; No text was streamed — remove the orphaned header
-            (when magent-ui--streaming-section-start
+        (condition-case nil
+            (if (not magent-ui--streaming-has-text)
+                ;; No text was streamed — remove the orphaned header
+                (when magent-ui--streaming-section-start
+                  (let ((inhibit-read-only t))
+                    (delete-region magent-ui--streaming-section-start
+                                  (min (1+ magent-ui--streaming-start) (point-max)))))
+              ;; Text was streamed — fontify and create section overlay
+              (magent-ui--fontify-md-region buf magent-ui--streaming-start (point-max))
               (let ((inhibit-read-only t))
-                (delete-region magent-ui--streaming-section-start (point-max))))
-          ;; Text was streamed — fontify and create section overlay
-          (magent-ui--fontify-md-region buf magent-ui--streaming-start (point-max))
-          (let ((inhibit-read-only t))
-            (goto-char (point-max))
-            (unless (eq (char-before) ?\n)
-              (insert "\n")))
-          (when magent-ui--streaming-section-start
-            (magent-ui--make-section buf
-                                     magent-ui--streaming-section-start
-                                     (point-max)
-                                     'assistant
-                                     magent-ui--streaming-start)))
+                (goto-char (point-max))
+                (unless (eq (char-before) ?\n)
+                  (insert "\n")))
+              (when magent-ui--streaming-section-start
+                (magent-ui--make-section buf
+                                         magent-ui--streaming-section-start
+                                         (point-max)
+                                         'assistant
+                                         magent-ui--streaming-start)))
+          ((beginning-of-buffer end-of-buffer) nil))
         (setq magent-ui--streaming-start nil)
-        (setq magent-ui--streaming-section-start nil)))))
+        (setq magent-ui--streaming-section-start nil)
+        (setq magent-ui--streaming-has-text nil)))))
 
 ;;; Minibuffer interface
 

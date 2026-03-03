@@ -91,7 +91,8 @@
 ;;; Initialization
 
 (defvar magent--initialized nil
-  "Non-nil if magent has already been initialized (registry and custom agents loaded).")
+  "Non-nil if magent has already been initialized.
+Registry and custom agents are loaded when non-nil.")
 
 (defvar magent--spinner (spinner-create 'rotating-line)
   "Global spinner displayed in the modeline while magent is processing.")

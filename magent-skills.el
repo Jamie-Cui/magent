@@ -24,6 +24,10 @@
 (declare-function magent-log "magent-ui")
 (declare-function magent-skill-emacs-invoke "magent-skill-emacs")
 
+(defvar magent-skill-emacs--description nil
+  "Description of the built-in emacs skill.
+Defined in magent-skill-emacs.el.")
+
 ;;; Skill data structure
 
 (cl-defstruct (magent-skill (:constructor magent-skill-create))

@@ -46,7 +46,7 @@
 
 (defun magent-agent-file--parse-mode (mode-str)
   "Parse mode string MODE-STR to symbol.
-Returns 'primary, 'subagent, or 'all (default)."
+Returns \\='primary, \\='subagent, or \\='all (default)."
   (pcase (downcase mode-str)
     ("primary" 'primary)
     ("subagent" 'subagent)
