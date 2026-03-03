@@ -289,6 +289,7 @@ Markdown rendering is applied selectively to AI assistant messages only.
 Press \\[magent-ui-toggle-section] to fold/unfold the section at point.
 Press \\[magent-ui-toggle-all-sections] to fold/unfold all sections."
   (visual-line-mode 1)
+  (font-lock-mode 1)
   (setq-local display-fill-column-indicator-column nil)
   (setq-local magent-ui--all-folded nil)
   (add-hook 'kill-buffer-hook #'magent-ui--cancel-timers nil t))
@@ -457,33 +458,37 @@ Inserts the assistant section header."
     (setq magent-ui--streaming-batch-buffer "")))
 
 (defun magent-ui--flush-streaming-batch ()
-  "Flush accumulated streaming text to buffer."
-  (when (> (length magent-ui--streaming-batch-buffer) 0)
-    (magent-ui--with-insert (magent-ui-get-buffer)
-      (save-excursion
-        (insert magent-ui--streaming-batch-buffer))
-      (setq magent-ui--streaming-has-text t)
-      (setq magent-ui--streaming-batch-buffer "")))
-  (when magent-ui--streaming-batch-timer
-    (cancel-timer magent-ui--streaming-batch-timer)
-    (setq magent-ui--streaming-batch-timer nil)))
+  "Flush accumulated streaming text to buffer.
+All buffer-local variable access is done inside the magent output buffer."
+  (let ((buf (magent-ui-get-buffer)))
+    (with-current-buffer buf
+      (when (> (length magent-ui--streaming-batch-buffer) 0)
+        (magent-ui--with-insert buf
+          (insert magent-ui--streaming-batch-buffer)
+          (setq magent-ui--streaming-has-text t)
+          (setq magent-ui--streaming-batch-buffer "")))
+      (when magent-ui--streaming-batch-timer
+        (cancel-timer magent-ui--streaming-batch-timer)
+        (setq magent-ui--streaming-batch-timer nil)))))
 
 (defun magent-ui-insert-streaming (text)
   "Insert streaming TEXT into output buffer.
 Small chunks are batched to reduce UI updates."
   (require 'magent-config)
-  ;; Accumulate text
-  (setq magent-ui--streaming-batch-buffer
-        (concat magent-ui--streaming-batch-buffer text))
+  (let ((buf (magent-ui-get-buffer)))
+    (with-current-buffer buf
+      ;; Accumulate text in the output buffer's local variable
+      (setq magent-ui--streaming-batch-buffer
+            (concat magent-ui--streaming-batch-buffer text))
 
-  ;; Cancel existing timer
-  (when magent-ui--streaming-batch-timer
-    (cancel-timer magent-ui--streaming-batch-timer))
+      ;; Cancel existing timer
+      (when magent-ui--streaming-batch-timer
+        (cancel-timer magent-ui--streaming-batch-timer))
 
-  ;; Set new timer to flush after delay
-  (setq magent-ui--streaming-batch-timer
-        (run-with-timer magent-ui-batch-insert-delay nil
-                        #'magent-ui--flush-streaming-batch)))
+      ;; Set new timer to flush after delay
+      (setq magent-ui--streaming-batch-timer
+            (run-with-timer magent-ui-batch-insert-delay nil
+                            #'magent-ui--flush-streaming-batch)))))
 
 (defun magent-ui-finish-streaming-fontify ()
   "Apply markdown fontification to the completed streaming region.
@@ -566,7 +571,8 @@ If no text was streamed (tool-only round), removes the orphaned header."
   (when magent-ui--processing
     (error "Magent: Already processing a request"))
   (setq magent-ui--processing t)
-  (spinner-start magent--spinner)
+  (when (and (boundp 'magent--spinner) magent--spinner)
+    (spinner-start magent--spinner))
 
   ;; Log full input without truncating (previous truncation was for readability,
   ;; but full logs are more useful for debugging)
@@ -581,13 +587,15 @@ If no text was streamed (tool-only round), removes the orphaned header."
      (magent-log "ERROR in process: %s" (error-message-string err))
      (magent-ui-insert-error (error-message-string err))
      (setq magent-ui--processing nil)
-     (spinner-stop magent--spinner))))
+     (when (and (boundp 'magent--spinner) magent--spinner)
+       (spinner-stop magent--spinner)))))
 
 (defun magent-ui--finish-processing (response)
   "Finish processing with RESPONSE.
 Handles both streaming and non-streaming completion."
   (setq magent-ui--processing nil)
-  (spinner-stop magent--spinner)
+  (when (and (boundp 'magent--spinner) magent--spinner)
+    (spinner-stop magent--spinner))
   (cond
    ;; Streaming mode: text was already inserted incrementally;
    ;; markdown fontification was applied at each streaming completion signal.

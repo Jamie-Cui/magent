@@ -431,39 +431,28 @@ and only transitions to PROCESS/DONE when the final response
               (setf (magent-fsm-accumulated-text fsm) response)
               (magent-fsm-transition fsm 'PROCESS))
 
-             ;; gptel tool-call confirmation — show in UI, then auto-accept.
+             ;; gptel tool-call confirmation — auto-accept.
+             ;; tool call/result display is handled by the wrapped function.
              ;; Only fires when gptel-confirm-tool-calls is t or tool has :confirm.
              ;; Format: (tool-call . ((gptel-tool arg-values callback) ...))
              ((and (consp response) (eq (car response) 'tool-call))
               (dolist (tc (cdr response))
                 (let* ((tool-spec (car tc))
                        (arg-values (cadr tc))
-                       (cb (caddr tc))
-                       (name (gptel-tool-name tool-spec))
-                       (args-plist
-                        (cl-loop for spec in (gptel-tool-args tool-spec)
-                                 for val in arg-values
-                                 append (list (intern (concat ":" (plist-get spec :name))) val))))
-                  (magent-fsm--show-tool-call name args-plist)
+                       (cb (caddr tc)))
                   ;; Auto-accept: run the tool and call the callback
                   (if (gptel-tool-async tool-spec)
                       (apply (gptel-tool-function tool-spec) cb arg-values)
                     (funcall cb (apply (gptel-tool-function tool-spec) arg-values))))))
 
-             ;; gptel tool-result — show tool call + result, prepare for next round.
+             ;; gptel tool-result — tool call/result already shown via wrapped function.
+             ;; Prepare UI for next streaming response (streaming mode only).
              ;; Format: (tool-result . ((gptel-tool args result) ...))
-             ;; In auto-confirm mode (default), this is the primary path.
-             ;; args here is a plist (:key val ...) from gptel.
              ((and (consp response) (eq (car response) 'tool-result))
-              (dolist (tr (cdr response))
-                (let ((name (gptel-tool-name (car tr)))
-                      (args (cadr tr))
-                      (result (caddr tr)))
-                  (magent-fsm--show-tool-call name args)
-                  (magent-fsm--show-tool-result name result)))
-              ;; Prepare UI for next streaming response
-              (magent-ui-start-streaming)
-              (setf (magent-fsm-streamed-chunks fsm) ""))
+              ;; Prepare UI for next streaming response (streaming mode only)
+              (when (magent-fsm-streaming-p fsm)
+                (magent-ui-start-streaming)
+                (setf (magent-fsm-streamed-chunks fsm) "")))
 
              ;; Error
              ((null response)
@@ -479,17 +468,50 @@ and only transitions to PROCESS/DONE when the final response
          (magent-log "DEBUG Suppressed cursor error in FSM callback")
          nil)))))
 
+(defun magent-fsm--wrap-tool-function (name args-spec original-fn async-p)
+  "Wrap ORIGINAL-FN to show tool call/result in UI before/after execution.
+NAME is the tool name string, ARGS-SPEC is the args list from the tool spec.
+ASYNC-P indicates if the tool is asynchronous."
+  (if async-p
+      (lambda (callback &rest arg-values)
+        (let ((args-plist
+               (cl-loop for spec in args-spec
+                        for val in arg-values
+                        append (list (intern (concat ":" (plist-get spec :name))) val))))
+          (magent-fsm--show-tool-call name args-plist)
+          (apply original-fn
+                 (lambda (result)
+                   (magent-fsm--show-tool-result name result)
+                   (funcall callback result))
+                 arg-values)))
+    (lambda (&rest arg-values)
+      (let ((args-plist
+             (cl-loop for spec in args-spec
+                      for val in arg-values
+                      append (list (intern (concat ":" (plist-get spec :name))) val))))
+        (magent-fsm--show-tool-call name args-plist)
+        (let ((result (apply original-fn arg-values)))
+          (magent-fsm--show-tool-result name result)
+          result)))))
+
 (defun magent-fsm--convert-tools-to-gptel (tools)
   "Convert magent tool specs to gptel-tool structs.
-TOOLS is a list of plists with :name, :description, :args, :function, :async."
+TOOLS is a list of plists with :name, :description, :args, :function, :async.
+Each tool function is wrapped to display call/result in the UI."
   (mapcar (lambda (tool)
             (require 'gptel)
-            (gptel-make-tool
-             :name (plist-get tool :name)
-             :description (plist-get tool :description)
-             :args (plist-get tool :args)
-             :function (plist-get tool :function)
-             :async (plist-get tool :async)))
+            (let* ((name (plist-get tool :name))
+                   (args-spec (plist-get tool :args))
+                   (original-fn (plist-get tool :function))
+                   (async-p (plist-get tool :async))
+                   (wrapped-fn (magent-fsm--wrap-tool-function
+                                name args-spec original-fn async-p)))
+              (gptel-make-tool
+               :name name
+               :description (plist-get tool :description)
+               :args args-spec
+               :function wrapped-fn
+               :async async-p)))
           tools))
 
 ;;; Public API
