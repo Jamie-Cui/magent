@@ -21,28 +21,62 @@
 (declare-function magent-skill-emacs-invoke "magent-skill-emacs")
 (declare-function magent-skills-get "magent-skills")
 (declare-function magent-skills-list "magent-skills")
+(declare-function magent-skills-invoke "magent-skills")
 
 ;;; Tool implementations
+
+(defun magent-tools--project-root ()
+  "Return the project root directory for tool operations.
+Uses `magent-project-root-function' if set, then tries projectile
+and project.el, falling back to `default-directory'."
+  (or (when (bound-and-true-p magent-project-root-function)
+        (funcall magent-project-root-function))
+      (when (fboundp 'projectile-project-root)
+        (ignore-errors (projectile-project-root)))
+      (when (fboundp 'project-current)
+        (ignore-errors
+          (when-let ((proj (project-current nil)))
+            (if (fboundp 'project-root)
+                (project-root proj)
+              (car (with-no-warnings (project-roots proj)))))))
+      default-directory))
+
+(defun magent-tools--resolve-path (path)
+  "Resolve PATH for tool operations.
+Expands ~ and environment variables first, then resolves relative
+paths against the project root.  Never returns nil."
+  (let* ((expanded (expand-file-name (substitute-in-file-name path)))
+         (root (magent-tools--project-root)))
+    (cond
+     ((file-directory-p expanded) expanded)
+     ((file-exists-p expanded) expanded)
+     (t
+      (let ((resolved (expand-file-name path root)))
+        (if (or (file-directory-p resolved) (file-exists-p resolved))
+            resolved
+          root))))))
 
 (defun magent-tools--read-file (callback path)
   "Read contents of file at PATH asynchronously.
 CALLBACK is called with the file contents or error message."
-  (condition-case err
+  (let ((path (expand-file-name (substitute-in-file-name path))))
+    (condition-case err
       (if (file-exists-p path)
           (let ((buf (generate-new-buffer " *magent-read*")))
             (with-current-buffer buf
-              (insert-file-contents-literally path)
+              (insert-file-contents path)
               (let ((content (buffer-string)))
                 (kill-buffer buf)
                 (funcall callback content))))
         (funcall callback (format "Error: file not found: %s" path)))
-    (error (funcall callback (format "Error reading file: %s" (error-message-string err))))))
+    (error (funcall callback (format "Error reading file: %s" (error-message-string err)))))))
 
 (defun magent-tools--write-file (callback path content)
   "Write CONTENT to file at PATH asynchronously.
 Creates parent directories if needed.
 CALLBACK is called with success message or error."
-  (condition-case err
+  (let ((path (expand-file-name (substitute-in-file-name path))))
+    (condition-case err
       (progn
         (let ((dir (file-name-directory path)))
           (when (and dir (not (file-exists-p dir)))
@@ -51,22 +85,24 @@ CALLBACK is called with success message or error."
           (insert content)
           (write-region (point-min) (point-max) path nil 0))
         (funcall callback (format "Successfully wrote %s" path)))
-    (error (funcall callback (format "Error writing file: %s" (error-message-string err))))))
+    (error (funcall callback (format "Error writing file: %s" (error-message-string err)))))))
 
 (defun magent-tools--grep (callback pattern path &optional case-sensitive)
   "Search for PATTERN in files under PATH using ripgrep asynchronously.
 If CASE-SENSITIVE is nil, performs case-insensitive search.
 CALLBACK is called with matching lines or error message."
-  (let* ((default-directory (if (file-directory-p path)
-                                path
-                              (file-name-directory path)))
+  (let* ((resolved (magent-tools--resolve-path path))
+         (default-directory (if (file-directory-p resolved)
+                                resolved
+                              (or (file-name-directory resolved)
+                                  (magent-tools--project-root))))
          (buf (generate-new-buffer " *magent-grep*"))
          (args (list "--no-heading" "--line-number" "--color=never"
                      "--max-count=100")))
     (unless case-sensitive
       (push "--ignore-case" args))
-    (unless (file-directory-p path)
-      (push path args))
+    (unless (file-directory-p resolved)
+      (push resolved args))
     (push pattern args)
     (make-process
      :name "magent-grep"
@@ -87,9 +123,11 @@ CALLBACK is called with matching lines or error message."
 Supports * and ** wildcards.
 CALLBACK is called with list of matching file paths."
   (condition-case err
-      (let* ((default-directory (if (file-directory-p path)
-                                    path
-                                  (file-name-directory path)))
+      (let* ((resolved (magent-tools--resolve-path path))
+             (default-directory (if (file-directory-p resolved)
+                                    resolved
+                                  (or (file-name-directory resolved)
+                                      (magent-tools--project-root))))
              (matches
               (if (string-match-p "\\*\\*" pattern)
                   ;; ** requires recursive search
@@ -109,7 +147,8 @@ CALLBACK is called with list of matching file paths."
   "Edit file at PATH by replacing OLD-TEXT with NEW-TEXT asynchronously.
 OLD-TEXT must match exactly once in the file.
 CALLBACK is called with success message or error."
-  (condition-case err
+  (let ((path (expand-file-name (substitute-in-file-name path))))
+    (condition-case err
       (let* ((content (with-temp-buffer
                         (insert-file-contents path)
                         (buffer-string)))
@@ -129,7 +168,7 @@ CALLBACK is called with success message or error."
               (insert new-content)
               (write-region (point-min) (point-max) path nil 0))
             (funcall callback (format "Successfully edited %s" path))))))
-    (error (funcall callback (format "Error editing file: %s" (error-message-string err))))))
+    (error (funcall callback (format "Error editing file: %s" (error-message-string err)))))))
 
 (defun magent-tools--emacs-eval (callback sexp &optional timeout)
   "Evaluate SEXP string as Emacs Lisp with optional TIMEOUT in seconds.
@@ -237,8 +276,12 @@ then spawns a nested `gptel-request' with the subagent's configuration."
                :system system-msg
                :stream nil
                :callback (lambda (response _info)
-                           (when (buffer-live-p request-buffer)
-                             (kill-buffer request-buffer))
+                           ;; Defer buffer kill so gptel's sentinel can
+                           ;; finish using it after this callback returns.
+                           (run-at-time 0 nil
+                                        (lambda ()
+                                          (when (buffer-live-p request-buffer)
+                                            (kill-buffer request-buffer))))
                            (funcall callback
                                     (cond
                                      ((stringp response) response)

@@ -73,7 +73,8 @@ When non-nil, responses are displayed incrementally as they arrive."
 
 (defcustom magent-enable-tools '(read write edit grep glob bash emacs_eval delegate skill)
   "List of enabled tools.
-Available tools: read, write, edit, grep, glob, bash, emacs_eval, delegate, skill."
+Available tools: read, write, edit, grep, glob, bash, emacs_eval,
+delegate, skill."
   :type '(set (const :tag "Read files" read)
               (const :tag "Write files" write)
               (const :tag "Edit files" edit)
@@ -87,14 +88,22 @@ Available tools: read, write, edit, grep, glob, bash, emacs_eval, delegate, skil
 
 (defcustom magent-project-root-function nil
   "Function to find project root directory.
-The function should take no arguments and return the project root path as a string.
-If nil, uses `projectile-project-root' when available, or `default-directory'."
+The function should take no arguments and return the project root
+path as a string.  If nil, uses `projectile-project-root' when
+available, or `default-directory'."
   :type '(choice (function :tag "Custom function")
                  (const :tag "Default" nil))
   :group 'magent)
 
 (defcustom magent-max-history 100
   "Maximum number of messages to keep in session history."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-request-timeout 120
+  "Timeout in seconds for LLM requests.
+If no callback activity occurs within this period, the FSM
+transitions to ERROR.  Set to 0 to disable."
   :type 'integer
   :group 'magent)
 

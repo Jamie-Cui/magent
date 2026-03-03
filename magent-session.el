@@ -78,7 +78,7 @@ If CONTENT is a list of content blocks, concatenate their text fields."
 
 (defun magent-session-add-message (session role content)
   "Add a message to SESSION.
-ROLE is either 'user', 'assistant', or 'tool'.
+ROLE is either \\='user, \\='assistant, or \\='tool.
 CONTENT can be a string or a list of content blocks."
   (let ((messages (magent-session-messages session)))
     (push (list (cons 'role role)

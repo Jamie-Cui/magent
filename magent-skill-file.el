@@ -81,7 +81,7 @@ Each directory can contain subdirectories with SKILL.md files."
 
 (defun magent-skill-file--parse-type (type-str)
   "Parse type string TYPE-STR to symbol.
-Returns 'instruction or 'tool (default: 'instruction)."
+Returns \\='instruction or \\='tool (default: \\='instruction)."
   (pcase (downcase type-str)
     ("tool" 'tool)
     ("instruction" 'instruction)
@@ -114,7 +114,6 @@ Returns the file path if found, nil otherwise."
          ;; Try SKILL.el in same directory
          (sibling-el (expand-file-name (concat basename ".el") dir))
          ;; Also try <skill-name>.el where skill-name is from directory
-         (parent-dir (file-name-directory (directory-file-name dir)))
          (skill-name (file-name-nondirectory
                       (directory-file-name dir)))
          (named-el (expand-file-name (concat skill-name ".el") dir)))

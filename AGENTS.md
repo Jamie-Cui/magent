@@ -27,7 +27,13 @@ Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and perm
 
 1. **Entry point** (`magent.el`): `magent-mode` minor mode with `C-c m` keybinding prefix. Activating the mode initializes the agent registry, loads custom agents, and loads Claude Code skills.
 
-2. **UI** (`magent-ui.el`): Minibuffer input, output buffer rendering (markdown, tool calls, errors), and logging. Commands like `magent-prompt`, `magent-prompt-region`, `magent-ask-at-point` feed into the agent system.
+2. **UI** (`magent-ui.el`): Minibuffer input, output buffer rendering, and logging. The `*magent*` buffer uses overlay-based collapsible sections:
+   - Each message block (user, assistant, tool, error) gets a `[type]` header with a dot-dash line extending to window width, followed by a collapsible body.
+   - Tool calls render as `[tool: tool_name]` sections with args and result in the body.
+   - Sections fold/unfold with `TAB`; `S-TAB` toggles all sections. `magent-output-mode` provides these keybindings.
+   - Streaming responses create the section overlay on completion; tool-only rounds (no text streamed) clean up the orphaned header.
+   - Assistant message bodies are fontified via a temporary `markdown-mode` buffer.
+   - Commands: `magent-prompt`, `magent-prompt-region`, `magent-ask-at-point`.
 
 3. **Agent processing** (`magent-agent.el`): `magent-agent-process` builds a gptel prompt list from the session, applies per-agent overrides (model, temperature), filters tools by permissions, then calls `gptel-request`. gptel handles the LLM communication and tool-calling loop. The callback receives either a final string response or an error.
 
@@ -81,7 +87,7 @@ For tool-type skills, this describes available operations.
 
 ### Configuration
 
-Magent-specific settings via `customize-group RET magent` (17 defcustom variables): `magent-system-prompt`, `magent-buffer-name`, `magent-auto-scroll`, `magent-enable-streaming`, `magent-enable-tools`, `magent-project-root-function`, `magent-max-history`, `magent-default-agent`, `magent-load-custom-agents`, `magent-enable-logging`, `magent-assistant-prompt`, `magent-user-prompt`, `magent-tool-call-prompt`, `magent-error-prompt`, `magent-agent-directory`, `magent-session-directory`, `magent-grep-program`.
+Magent-specific settings via `customize-group RET magent` (17 defcustom variables): `magent-system-prompt`, `magent-buffer-name`, `magent-auto-scroll`, `magent-enable-streaming`, `magent-enable-tools`, `magent-project-root-function`, `magent-max-history`, `magent-default-agent`, `magent-load-custom-agents`, `magent-enable-logging`, `magent-assistant-prompt` (tag text for `[assistant]` headers), `magent-user-prompt` (tag text for `[user]` headers), `magent-tool-call-prompt` (tag text for `[tool: ...]` headers), `magent-error-prompt` (tag text for `[error]` headers), `magent-agent-directory`, `magent-session-directory`, `magent-grep-program`.
 
 Skill-specific settings:
 - `magent-skill-directories`: List of directories to scan for skill files (default: `~/.emacs.d/magent-skills`)
