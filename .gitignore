@@ -1,16 +1,32 @@
-.agent-shell
-
-# Byte-compiled Emacs Lisp files
+# Compiled files
 *.elc
+*.eln
 
-# Package autoloads
-*-autoloads.el
+# Package files
+*.tar
+*.tar.gz
+*.zip
 
 # Backup files
 *~
 \#*\#
 .\#*
 
-/package-lock.json
-/package.json
-/node_modules/
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test artifacts
+test-output/
+coverage/
+
+# Session files
+.emacs.desktop
+.emacs.desktop.lock
+auto-save-list

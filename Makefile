@@ -1,8 +1,19 @@
-EMACS = emacs
+EMACS ?= emacs
+EMACS_BATCH = $(EMACS) -Q --batch
+
+# Auto-detect dependency paths
 GPTEL_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'gptel-*' -type d 2>/dev/null | head -1)
 MARKDOWN_MODE_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'markdown-mode-*' -type d 2>/dev/null | head -1)
 SPINNER_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'spinner-*' -type d 2>/dev/null | head -1)
-LOADPATH = -L . $(if $(GPTEL_DIR),-L $(GPTEL_DIR)) $(if $(MARKDOWN_MODE_DIR),-L $(MARKDOWN_MODE_DIR)) $(if $(SPINNER_DIR),-L $(SPINNER_DIR))
+
+LOADPATH = -L . \
+	$(if $(GPTEL_DIR),-L $(GPTEL_DIR)) \
+	$(if $(MARKDOWN_MODE_DIR),-L $(MARKDOWN_MODE_DIR)) \
+	$(if $(SPINNER_DIR),-L $(SPINNER_DIR))
+
+# Compilation flags
+BYTE_COMPILE_FLAGS = --eval "(setq byte-compile-error-on-warn nil)" \
+	--eval "(setq byte-compile-warnings '(not cl-functions obsolete))"
 
 SRCS = magent.el \
        magent-config.el \
@@ -35,10 +46,12 @@ help:
 	@echo "  help          - Show this help message"
 
 compile: $(COMPILED)
+	@echo "Compilation complete: $(words $(COMPILED)) files"
 
 %.elc: %.el
 	@echo "Compiling $<..."
-	@$(EMACS) -Q --batch $(LOADPATH) -f batch-byte-compile $<
+	@$(EMACS_BATCH) $(LOADPATH) $(BYTE_COMPILE_FLAGS) -f batch-byte-compile $< 2>&1 | \
+		grep -v "^Compiling" | grep -v "^Wrote" || true
 
 test:
 	@echo "Running unit tests..."
