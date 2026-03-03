@@ -9,13 +9,17 @@
 ;;; Commentary:
 
 ;; User interface for Magent including minibuffer commands and output buffer.
+;; Features collapsible sections with overlay-based fold/unfold (TAB / S-TAB).
 
 ;;; Code:
 
 (require 'markdown-mode)
+(require 'spinner)
 (require 'magent-session)
 (require 'magent-agent)
 (require 'magent-agent-registry)
+
+(defvar magent--spinner)
 
 (defvar magent-ui--md-buffer nil
   "Temporary markdown-mode buffer for fontifying AI text.")
@@ -140,13 +144,121 @@ current session in chronological order."
     (let ((inhibit-read-only t))
       (erase-buffer))))
 
+;;; Section header helpers
+
+(defun magent-ui--make-header (tag)
+  "Return a section header string for TAG.
+Format: [tag] followed by a line that auto-fills to window width."
+  (concat (format "[%s]" tag)
+          (propertize " " 'display '(space :align-to right-fringe)
+                      'face nil)))
+
+;;; Section overlay management
+
+(defun magent-ui--make-section (buf start end type body-start)
+  "Create a section overlay in BUF from START to END.
+TYPE is a symbol (`user', `assistant', `error').
+BODY-START marks where the collapsible body begins."
+  (let ((ov (make-overlay start end buf)))
+    (overlay-put ov 'magent-section t)
+    (overlay-put ov 'magent-section-type type)
+    (overlay-put ov 'magent-section-hidden nil)
+    (overlay-put ov 'magent-section-body-start body-start)
+    ov))
+
+(defun magent-ui--section-at (pos)
+  "Return the magent-section overlay at POS, or nil."
+  (let ((ovs (overlays-at pos))
+        found)
+    (while (and ovs (not found))
+      (when (overlay-get (car ovs) 'magent-section)
+        (setq found (car ovs)))
+      (setq ovs (cdr ovs)))
+    found))
+
+(defun magent-ui--all-sections ()
+  "Return all magent-section overlays in the current buffer."
+  (let (sections)
+    (dolist (ov (overlays-in (point-min) (point-max)))
+      (when (overlay-get ov 'magent-section)
+        (push ov sections)))
+    (nreverse sections)))
+
+(defun magent-ui--hide-section (ov)
+  "Hide the body of section overlay OV."
+  (unless (overlay-get ov 'magent-section-hidden)
+    (let* ((body-start (overlay-get ov 'magent-section-body-start))
+           (end (overlay-end ov))
+           (inv-ov (make-overlay body-start end)))
+      (overlay-put inv-ov 'invisible t)
+      (overlay-put inv-ov 'magent-section-body t)
+      (overlay-put inv-ov 'evaporate t)
+      (overlay-put ov 'magent-section-hidden t)
+      (overlay-put ov 'magent-section-body-overlay inv-ov))))
+
+(defun magent-ui--show-section (ov)
+  "Show (unfold) the body of section overlay OV."
+  (when (overlay-get ov 'magent-section-hidden)
+    (let ((inv-ov (overlay-get ov 'magent-section-body-overlay)))
+      (when inv-ov
+        (delete-overlay inv-ov)))
+    (overlay-put ov 'magent-section-hidden nil)
+    (overlay-put ov 'magent-section-body-overlay nil)))
+
+;;; Folding API
+
+(defun magent-ui-toggle-section ()
+  "Toggle fold on the section at point."
+  (interactive)
+  (let ((ov (magent-ui--section-at (point))))
+    (when ov
+      (if (overlay-get ov 'magent-section-hidden)
+          (magent-ui--show-section ov)
+        (magent-ui--hide-section ov)))))
+
+(defun magent-ui-fold-all ()
+  "Fold all sections in the output buffer."
+  (interactive)
+  (dolist (ov (magent-ui--all-sections))
+    (magent-ui--hide-section ov)))
+
+(defun magent-ui-unfold-all ()
+  "Unfold all sections in the output buffer."
+  (interactive)
+  (dolist (ov (magent-ui--all-sections))
+    (magent-ui--show-section ov)))
+
+(defvar magent-ui--all-folded nil
+  "Buffer-local toggle state for S-TAB fold-all/unfold-all.")
+
+(defun magent-ui-toggle-all-sections ()
+  "Toggle between folding all and unfolding all sections."
+  (interactive)
+  (if magent-ui--all-folded
+      (progn (magent-ui-unfold-all)
+             (setq magent-ui--all-folded nil))
+    (magent-ui-fold-all)
+    (setq magent-ui--all-folded t)))
+
 ;;; Output mode
+
+(defvar magent-output-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map special-mode-map)
+    (define-key map (kbd "TAB") #'magent-ui-toggle-section)
+    (define-key map (kbd "<backtab>") #'magent-ui-toggle-all-sections)
+    map)
+  "Keymap for `magent-output-mode'.")
 
 (define-derived-mode magent-output-mode special-mode "Magent"
   "Major mode for Magent output.
-Markdown rendering is applied selectively to AI assistant messages only."
+Markdown rendering is applied selectively to AI assistant messages only.
+\\<magent-output-mode-map>
+Press \\[magent-ui-toggle-section] to fold/unfold the section at point.
+Press \\[magent-ui-toggle-all-sections] to fold/unfold all sections."
   (visual-line-mode 1)
-  (setq-local display-fill-column-indicator-column nil))
+  (setq-local display-fill-column-indicator-column nil)
+  (setq-local magent-ui--all-folded nil))
 
 (define-derived-mode magent-log-mode fundamental-mode "MagentLog"
   "Major mode for Magent log buffer."
@@ -165,54 +277,124 @@ Markdown rendering is applied selectively to AI assistant messages only."
 ;;; Rendering functions
 
 (defun magent-ui-insert-user-message (text)
-  "Insert user message TEXT into output buffer."
+  "Insert user message TEXT into output buffer with section header."
   (magent-ui--with-insert (magent-ui-get-buffer)
-    (when (and (> (point) 1)
-               (not (eq (char-before) ?\n))
-               (not (and (>= (point) 2)
-                         (eq (char-before (1- (point))) ?\n))))
-      (insert "\n"))
-    (insert (propertize (format "\n%s%s\n" magent-user-prompt text)
-                        'font-lock-face '(bold font-lock-keyword-face)))))
+    (let ((section-start (point)))
+      ;; Blank line separator (except at buffer start)
+      (when (> (point) 1)
+        (insert "\n"))
+      (setq section-start (point))
+      ;; Header
+      (let ((header (magent-ui--make-header magent-user-prompt)))
+        (insert (propertize header 'font-lock-face 'font-lock-keyword-face) "\n"))
+      (let ((body-start (point)))
+        ;; Body
+        (insert (propertize text 'font-lock-face '(bold)))
+        (insert "\n")
+        ;; Create section overlay
+        (magent-ui--make-section (current-buffer) section-start (point) 'user body-start)))))
 
 (defun magent-ui-insert-assistant-message (text)
-  "Insert assistant message TEXT into output buffer."
+  "Insert assistant message TEXT into output buffer with section header."
   (let ((buf (magent-ui-get-buffer)))
     (magent-ui--with-insert buf
-      (insert (propertize (concat "\n" magent-assistant-prompt) 'font-lock-face 'font-lock-string-face))
-      (let ((start (point)))
-        (insert text)
-        (magent-ui--fontify-md-region buf start (point))))))
+      (let ((section-start (point)))
+        ;; Blank line separator
+        (when (> (point) 1)
+          (insert "\n"))
+        (setq section-start (point))
+        ;; Header
+        (let ((header (magent-ui--make-header magent-assistant-prompt)))
+          (insert (propertize header 'font-lock-face 'font-lock-string-face) "\n"))
+        (let ((body-start (point))
+              (text-start (point)))
+          ;; Body
+          (insert text)
+          (magent-ui--fontify-md-region buf text-start (point))
+          (insert "\n")
+          ;; Create section overlay
+          (magent-ui--make-section buf section-start (point) 'assistant body-start))))))
+
+(defvar-local magent-ui--tool-section-start nil
+  "Buffer position where the current tool section started.
+Set by `magent-ui-insert-tool-call', used by
+`magent-ui-insert-tool-result' to create the section overlay.")
+
+(defvar-local magent-ui--tool-body-start nil
+  "Buffer position where the current tool section body starts.
+Set by `magent-ui-insert-tool-call' right after the header line.")
 
 (defun magent-ui-insert-tool-call (tool-name input)
-  "Insert tool call notification into output buffer."
+  "Insert tool call notification into output buffer.
+Starts a collapsible tool section with a `[tool]' header."
   (magent-ui--with-insert (magent-ui-get-buffer)
-    (insert (propertize (format "\n%s%s" magent-tool-call-prompt tool-name)
-                        'font-lock-face 'font-lock-builtin-face))
-    (insert (propertize (format " %s"
-                                (if (stringp input)
-                                    input
-                                  (truncate-string-to-width
-                                   (json-encode input) 100 nil nil "...")))
-                        'font-lock-face 'font-lock-comment-face))))
+    (let ((section-start (point)))
+      (let ((header (magent-ui--make-header
+                     (format "%s: %s" magent-tool-call-prompt tool-name))))
+        (insert (propertize header 'font-lock-face 'font-lock-builtin-face) "\n"))
+      (setq magent-ui--tool-section-start section-start)
+      (setq magent-ui--tool-body-start (point))
+      (let ((input-str (if (stringp input)
+                           input
+                         (truncate-string-to-width
+                          (json-encode input) 100 nil nil "..."))))
+        (insert (propertize (format "%s\n" input-str)
+                            'font-lock-face 'font-lock-comment-face))))))
+
+(defun magent-ui-insert-tool-result (_tool-name result)
+  "Insert tool RESULT for _TOOL-NAME into output buffer.
+Closes the tool section started by `magent-ui-insert-tool-call'."
+  (magent-ui--with-insert (magent-ui-get-buffer)
+    (let ((result-str (truncate-string-to-width
+                       (if (stringp result) result (format "%s" result))
+                       120 nil nil "...")))
+      (insert (propertize (format "-> %s\n" result-str)
+                          'font-lock-face 'font-lock-comment-face))
+      ;; Create section overlay spanning tool-call header + body (args + result)
+      (when magent-ui--tool-section-start
+        (magent-ui--make-section (current-buffer)
+                                 magent-ui--tool-section-start (point)
+                                 'tool-call magent-ui--tool-body-start)
+        (setq magent-ui--tool-section-start nil)
+        (setq magent-ui--tool-body-start nil)))))
 
 (defun magent-ui-insert-error (error-text)
-  "Insert ERROR-TEXT into output buffer."
+  "Insert ERROR-TEXT into output buffer with section header."
   (magent-ui--with-insert (magent-ui-get-buffer)
-    (insert (propertize (format "\n%s%s" magent-error-prompt error-text)
-                        'font-lock-face '(bold font-lock-warning-face)))))
+    (let ((section-start (point)))
+      (when (> (point) 1)
+        (insert "\n"))
+      (setq section-start (point))
+      ;; Header
+      (let ((header (magent-ui--make-header magent-error-prompt)))
+        (insert (propertize header 'font-lock-face '(bold font-lock-warning-face)) "\n"))
+      (let ((body-start (point)))
+        (insert (propertize error-text 'font-lock-face '(bold font-lock-warning-face)))
+        (insert "\n")
+        (magent-ui--make-section (current-buffer) section-start (point) 'error body-start)))))
+
+;;; Streaming support
 
 (defvar-local magent-ui--streaming-start nil
   "Buffer position where the current streaming AI text begins.
 Set by `magent-ui-start-streaming', used by
 `magent-ui-finish-streaming-fontify' to apply markdown rendering.")
 
+(defvar-local magent-ui--streaming-section-start nil
+  "Buffer position where the current streaming section begins.
+Used to create the section overlay when streaming finishes.")
+
 (defun magent-ui-start-streaming ()
   "Prepare the output buffer for a streaming response.
-Inserts the assistant prompt prefix."
+Inserts the assistant section header."
   (magent-ui--with-insert (magent-ui-get-buffer)
-    (insert (propertize (concat "\n" magent-assistant-prompt)
-                        'font-lock-face 'font-lock-string-face))
+    ;; Blank line separator
+    (when (> (point) 1)
+      (insert "\n"))
+    (setq magent-ui--streaming-section-start (point))
+    ;; Header
+    (let ((header (magent-ui--make-header magent-assistant-prompt)))
+      (insert (propertize header 'font-lock-face 'font-lock-string-face) "\n"))
     (setq magent-ui--streaming-start (point))))
 
 (defun magent-ui-insert-streaming (text)
@@ -222,13 +404,31 @@ Inserts the assistant prompt prefix."
       (insert text))))
 
 (defun magent-ui-finish-streaming-fontify ()
-  "Apply markdown fontification to the completed streaming region."
+  "Apply markdown fontification to the completed streaming region.
+Also creates the section overlay for the completed assistant block.
+If no text was streamed (tool-only round), removes the orphaned header."
   (let ((buf (magent-ui-get-buffer)))
     (with-current-buffer buf
-      (when (and magent-ui--streaming-start
-                 (< magent-ui--streaming-start (point-max)))
-        (magent-ui--fontify-md-region buf magent-ui--streaming-start (point-max))
-        (setq magent-ui--streaming-start nil)))))
+      (when magent-ui--streaming-start
+        (if (>= magent-ui--streaming-start (point-max))
+            ;; No text was streamed — remove the orphaned header
+            (when magent-ui--streaming-section-start
+              (let ((inhibit-read-only t))
+                (delete-region magent-ui--streaming-section-start (point-max))))
+          ;; Text was streamed — fontify and create section overlay
+          (magent-ui--fontify-md-region buf magent-ui--streaming-start (point-max))
+          (let ((inhibit-read-only t))
+            (goto-char (point-max))
+            (unless (eq (char-before) ?\n)
+              (insert "\n")))
+          (when magent-ui--streaming-section-start
+            (magent-ui--make-section buf
+                                     magent-ui--streaming-section-start
+                                     (point-max)
+                                     'assistant
+                                     magent-ui--streaming-start)))
+        (setq magent-ui--streaming-start nil)
+        (setq magent-ui--streaming-section-start nil)))))
 
 ;;; Minibuffer interface
 
@@ -272,6 +472,7 @@ Inserts the assistant prompt prefix."
   (when magent-ui--processing
     (error "Magent: Already processing a request"))
   (setq magent-ui--processing t)
+  (spinner-start magent--spinner)
 
   ;; FIXME(@jamie) there should be no truncating
   (magent-log "INFO processing: %s" (truncate-string-to-width input 80 nil nil "..."))
@@ -284,18 +485,20 @@ Inserts the assistant prompt prefix."
     (error
      (magent-log "ERROR in process: %s" (error-message-string err))
      (magent-ui-insert-error (error-message-string err))
-     (setq magent-ui--processing nil))))
+     (setq magent-ui--processing nil)
+     (spinner-stop magent--spinner))))
 
 (defun magent-ui--finish-processing (response)
   "Finish processing with RESPONSE.
 Handles both streaming and non-streaming completion."
   (setq magent-ui--processing nil)
+  (spinner-stop magent--spinner)
   (cond
    ;; Streaming mode: text was already inserted incrementally;
    ;; markdown fontification was applied at each streaming completion signal.
    ((and magent-enable-streaming (stringp response) (> (length response) 0))
     (magent-log "INFO done (streaming)"))
-   ;; Streaming mode produced no text (tool-only round) — nothing to display
+   ;; Streaming mode produced no text (tool-only round) -- nothing to display
    ((and magent-enable-streaming (stringp response) (zerop (length response)))
     (magent-log "INFO done (streaming, tool-only round, no text)"))
    ;; Non-streaming: insert the full response
@@ -315,14 +518,6 @@ Handles both streaming and non-streaming completion."
   (interactive)
   (magent-session-reset)
   (magent-ui-clear-buffer))
-
-;;;###autoload
-(defun magent-show-session ()
-  "Show the current session summary."
-  (interactive)
-  (let ((session (magent-session-get)))
-    (with-output-to-temp-buffer "*Magent Session*"
-      (princ (magent-session-summarize session)))))
 
 ;;;###autoload
 (defun magent-show-log ()

@@ -73,6 +73,7 @@
 ;;; Code:
 
 ;; Required modules
+(require 'spinner)
 (require 'magent-config)
 (require 'magent-session)
 (require 'magent-tools)
@@ -84,10 +85,28 @@
 (require 'magent-skills)
 (require 'magent-skill-file)
 
+;; Forward declaration for byte-compiler
+(declare-function magent-ui-toggle-section "magent-ui")
+
 ;;; Initialization
 
 (defvar magent--initialized nil
   "Non-nil if magent has already been initialized (registry and custom agents loaded).")
+
+(defvar magent--spinner (spinner-create 'rotating-line)
+  "Global spinner displayed in the modeline while magent is processing.")
+
+(defconst magent--lighter
+  '(" Magent" (:eval (spinner-print magent--spinner)))
+  "Modeline lighter for `magent-mode'.
+Shows \" Magent\" plus an animated spinner while processing.")
+(put 'magent--lighter 'risky-local-variable t)
+
+(defvar magent--mode-line-spinner-construct
+  '(:eval (when (spinner--active-p magent--spinner)
+            (concat " Magent:" (spinner-print magent--spinner))))
+  "Mode-line construct added to `global-mode-string'.
+Shows \"Magent:<spinner>\" in `mode-line-misc-info' while processing.")
 
 ;;;###autoload
 (define-minor-mode magent-mode
@@ -96,16 +115,17 @@ When enabled, Magent commands are available.
 
 \\{magent-mode-map}"
   :init-value nil
-  :lighter " Magent"
+  :lighter magent--lighter
   :keymap (let ((map (make-sparse-keymap)))
             ;; Keybindings
             (define-key map (kbd "C-c m p") #'magent-prompt)
             (define-key map (kbd "C-c m r") #'magent-prompt-region)
             (define-key map (kbd "C-c m a") #'magent-ask-at-point)
             (define-key map (kbd "C-c m c") #'magent-clear-session)
-            (define-key map (kbd "C-c m s") #'magent-show-session)
             (define-key map (kbd "C-c m l") #'magent-show-log)
             (define-key map (kbd "C-c m L") #'magent-clear-log)
+            ;; Section folding
+            (define-key map (kbd "C-c m t") #'magent-ui-toggle-section)
             ;; Agent management
             (define-key map (kbd "C-c m A") #'magent-select-agent)
             (define-key map (kbd "C-c m i") #'magent-show-current-agent)
@@ -117,6 +137,9 @@ When enabled, Magent commands are available.
       (magent-agent-registry-init)
       ;; Load skills from files (built-in skills auto-register on require)
       (magent-skill-file-load-all)
+      ;; Add spinner to global-mode-string for custom mode-lines
+      (unless (member magent--mode-line-spinner-construct global-mode-string)
+        (push magent--mode-line-spinner-construct global-mode-string))
       (setq magent--initialized t)
       (magent-log "INFO magent mode enabled"))))
 

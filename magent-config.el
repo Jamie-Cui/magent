@@ -115,23 +115,23 @@ Should match one of the registered agent names."
   :type 'boolean
   :group 'magent)
 
-(defcustom magent-assistant-prompt "[AI  ] "
-  "Prompt string displayed before assistant messages."
+(defcustom magent-assistant-prompt "assistant"
+  "Tag text displayed in assistant section headers."
   :type 'string
   :group 'magent)
 
-(defcustom magent-user-prompt "[USER] "
-  "Prompt string displayed before user messages."
+(defcustom magent-user-prompt "user"
+  "Tag text displayed in user section headers."
   :type 'string
   :group 'magent)
 
-(defcustom magent-tool-call-prompt "[TOOL] "
-  "Prompt string displayed before tool call notifications."
+(defcustom magent-tool-call-prompt "tool"
+  "Tag text displayed in tool call lines."
   :type 'string
   :group 'magent)
 
-(defcustom magent-error-prompt "[ERR ] "
-  "Prompt string displayed before error messages."
+(defcustom magent-error-prompt "error"
+  "Tag text displayed in error section headers."
   :type 'string
   :group 'magent)
 

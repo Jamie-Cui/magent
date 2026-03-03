@@ -29,6 +29,7 @@
 (require 'cl-lib)
 (require 'magent-config)
 (require 'magent-skills)
+(require 'magent-yaml)
 
 (declare-function magent-log "magent-ui")
 
@@ -68,75 +69,15 @@ Each directory can contain subdirectories with SKILL.md files."
         (files nil))
     (dolist (dir dirs)
       (when (file-directory-p dir)
-        ;; Check for SKILL.md directly in dir
         (let ((direct-skill (expand-file-name magent-skill-file-name dir)))
           (when (file-exists-p direct-skill)
             (push direct-skill files)))
-        ;; Check for subdirectories containing SKILL.md
         (dolist (subdir (directory-files dir t "^[^.]"))
           (when (file-directory-p subdir)
             (let ((skill-file (expand-file-name magent-skill-file-name subdir)))
               (when (file-exists-p skill-file)
                 (push skill-file files)))))))
     (sort files #'string<)))
-
-;;; Frontmatter parsing
-
-(defun magent-skill-file--parse-frontmatter (content)
-  "Parse YAML frontmatter from CONTENT.
-Returns (FRONTMATTER . BODY) where FRONTMATTER is a plist.
-If no frontmatter found, returns (nil . CONTENT)."
-  (with-temp-buffer
-    (insert content)
-    (goto-char (point-min))
-    (let ((frontmatter nil)
-          (body content))
-      (when (looking-at-p "^---")
-        (forward-line 1)
-        (let ((start (point)))
-          (when (re-search-forward "^---" nil t)
-            (let ((yaml-str (buffer-substring-no-properties start (match-beginning 0))))
-              (setq frontmatter (magent-skill-file--parse-yaml yaml-str))
-              (forward-line 1)
-              (setq body (buffer-substring-no-properties (point) (point-max)))))))
-      (cons frontmatter body))))
-
-(defun magent-skill-file--parse-yaml (yaml-str)
-  "Parse simple YAML string to plist.
-Supports basic key: value pairs and lists."
-  (let ((result nil)
-        (lines (split-string yaml-str "\n")))
-    (dolist (line lines)
-      (when (string-match "^\\s-*\\([^:]+\\):\\s-*\\(.+\\)$" line)
-        (let* ((key (string-trim (match-string 1 line)))
-               (value-str (string-trim (match-string 2 line)))
-               (value (magent-skill-file--parse-value value-str)))
-          (setq result (plist-put result
-                                  (intern (concat ":" key))
-                                  value)))))
-    result))
-
-(defun magent-skill-file--parse-value (str)
-  "Parse a YAML value string.
-Handles booleans, numbers, strings, and comma-separated lists."
-  (cond
-   ;; Boolean
-   ((string-equal str "true") t)
-   ((string-equal str "false") nil)
-   ;; Number (integer or float)
-   ((string-match-p "^[0-9]+\\(?:\\.[0-9]+\\)?$" str)
-    (string-to-number str))
-   ;; Quoted string
-   ((and (> (length str) 1)
-         (or (and (eq (aref str 0) ?\") (eq (aref str (1- (length str))) ?\"))
-             (and (eq (aref str 0) ?') (eq (aref str (1- (length str))) ?'))))
-    (substring str 1 -1))
-   ;; Comma-separated list
-   ((string-match-p "," str)
-    (mapcar (lambda (s) (string-trim s))
-            (split-string str "," t)))
-   ;; Default: return as string
-   (t str)))
 
 (defun magent-skill-file--parse-type (type-str)
   "Parse type string TYPE-STR to symbol.
@@ -202,7 +143,7 @@ For tool-type skills, also loads companion .el file if present."
       (with-temp-buffer
         (insert-file-contents filepath)
         (let* ((content (buffer-string))
-               (parsed (magent-skill-file--parse-frontmatter content))
+               (parsed (magent-yaml-parse-frontmatter content))
                (frontmatter (car parsed))
                (body (cdr parsed)))
           (when frontmatter
