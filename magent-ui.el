@@ -69,6 +69,23 @@ Does nothing if the region is empty."
                                    'font-lock-face face buf))
               (setq pos next))))))))
 
+(defun magent-ui--fontify-md-region-async (buf start end)
+  "Fontify markdown text asynchronously if it exceeds threshold.
+For small text blocks, fontifies synchronously.
+For large blocks, schedules fontification with idle timer."
+  (require 'magent-config)
+  (let ((text-length (- end start)))
+    (if (< text-length magent-ui-fontify-threshold)
+        ;; Small text: synchronous fontification
+        (magent-ui--fontify-md-region buf start end)
+      ;; Large text: async fontification
+      (magent-log "INFO Scheduling async fontification for %d chars" text-length)
+      (run-with-idle-timer magent-ui-fontify-idle-delay nil
+                           (lambda ()
+                             (when (buffer-live-p buf)
+                               (magent-ui--fontify-md-region buf start end)
+                               (magent-log "INFO Async fontification complete")))))))
+
 ;;; Buffer management
 
 (defvar magent-log-buffer-name "*magent-log*"
@@ -322,7 +339,8 @@ Press \\[magent-ui-toggle-all-sections] to fold/unfold all sections."
               (text-start (point)))
           ;; Body
           (insert text)
-          (magent-ui--fontify-md-region buf text-start (point))
+          ;; Use async fontification
+          (magent-ui--fontify-md-region-async buf text-start (point))
           (insert "\n")
           ;; Create section overlay
           (magent-ui--make-section buf section-start (point) 'assistant body-start))))))
@@ -404,6 +422,13 @@ Used to create the section overlay when streaming finishes.")
 Used to distinguish empty streaming rounds from rounds where tool
 lines were inserted after the header by other functions.")
 
+(defvar-local magent-ui--streaming-batch-buffer ""
+  "Accumulated text chunks waiting to be inserted.
+Used for batching small streaming chunks to reduce UI updates.")
+
+(defvar-local magent-ui--streaming-batch-timer nil
+  "Timer for flushing batched streaming text.")
+
 (defun magent-ui-start-streaming ()
   "Prepare the output buffer for a streaming response.
 Inserts the assistant section header."
@@ -416,14 +441,37 @@ Inserts the assistant section header."
     (let ((header (magent-ui--make-header magent-assistant-prompt)))
       (insert (propertize header 'font-lock-face 'font-lock-string-face) "\n"))
     (setq magent-ui--streaming-start (point))
-    (setq magent-ui--streaming-has-text nil)))
+    (setq magent-ui--streaming-has-text nil)
+    (setq magent-ui--streaming-batch-buffer "")))
+
+(defun magent-ui--flush-streaming-batch ()
+  "Flush accumulated streaming text to buffer."
+  (when (> (length magent-ui--streaming-batch-buffer) 0)
+    (magent-ui--with-insert (magent-ui-get-buffer)
+      (save-excursion
+        (insert magent-ui--streaming-batch-buffer))
+      (setq magent-ui--streaming-has-text t)
+      (setq magent-ui--streaming-batch-buffer "")))
+  (when magent-ui--streaming-batch-timer
+    (cancel-timer magent-ui--streaming-batch-timer)
+    (setq magent-ui--streaming-batch-timer nil)))
 
 (defun magent-ui-insert-streaming (text)
-  "Insert streaming TEXT into output buffer."
-  (magent-ui--with-insert (magent-ui-get-buffer)
-    (save-excursion
-      (insert text))
-    (setq magent-ui--streaming-has-text t)))
+  "Insert streaming TEXT into output buffer.
+Small chunks are batched to reduce UI updates."
+  (require 'magent-config)
+  ;; Accumulate text
+  (setq magent-ui--streaming-batch-buffer
+        (concat magent-ui--streaming-batch-buffer text))
+
+  ;; Cancel existing timer
+  (when magent-ui--streaming-batch-timer
+    (cancel-timer magent-ui--streaming-batch-timer))
+
+  ;; Set new timer to flush after delay
+  (setq magent-ui--streaming-batch-timer
+        (run-with-timer magent-ui-batch-insert-delay nil
+                        #'magent-ui--flush-streaming-batch)))
 
 (defun magent-ui-finish-streaming-fontify ()
   "Apply markdown fontification to the completed streaming region.
@@ -431,6 +479,9 @@ Also creates the section overlay for the completed assistant block.
 If no text was streamed (tool-only round), removes the orphaned header."
   (let ((buf (magent-ui-get-buffer)))
     (with-current-buffer buf
+      ;; Flush any remaining batched text first
+      (magent-ui--flush-streaming-batch)
+
       (when magent-ui--streaming-start
         (condition-case nil
             (if (not magent-ui--streaming-has-text)
@@ -439,8 +490,8 @@ If no text was streamed (tool-only round), removes the orphaned header."
                   (let ((inhibit-read-only t))
                     (delete-region magent-ui--streaming-section-start
                                    (min (1+ magent-ui--streaming-start) (point-max)))))
-              ;; Text was streamed — fontify and create section overlay
-              (magent-ui--fontify-md-region buf magent-ui--streaming-start (point-max))
+              ;; Text was streamed — use async fontification
+              (magent-ui--fontify-md-region-async buf magent-ui--streaming-start (point-max))
               (let ((inhibit-read-only t))
                 (goto-char (point-max))
                 (unless (eq (char-before) ?\n)

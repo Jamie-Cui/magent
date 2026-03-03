@@ -197,6 +197,25 @@ If rg is not found, grep tool calls will fail with an informative error."
   :type 'integer
   :group 'magent)
 
+(defcustom magent-ui-fontify-threshold 500
+  "Character threshold for async fontification.
+Text blocks smaller than this are fontified synchronously.
+Larger blocks are fontified with idle timer to avoid blocking."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-ui-fontify-idle-delay 0.1
+  "Idle delay in seconds before async fontification starts."
+  :type 'float
+  :group 'magent)
+
+(defcustom magent-ui-batch-insert-delay 0.05
+  "Delay in seconds for batching small streaming chunks.
+Streaming text chunks are accumulated for this duration before
+rendering to reduce UI updates."
+  :type 'float
+  :group 'magent)
+
 ;;; Logging stub
 ;; Defined here so all modules can call magent-log unconditionally.
 ;; magent-ui.el overrides this with the real implementation that writes
