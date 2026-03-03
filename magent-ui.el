@@ -46,9 +46,11 @@ Does nothing if the region is empty."
         (let ((inhibit-read-only t))
           (erase-buffer)
           (insert text)
-          (condition-case nil
+          (condition-case err
               (font-lock-ensure)
-            ((beginning-of-buffer end-of-buffer) nil))))
+            ((beginning-of-buffer end-of-buffer)
+             (magent-log "WARN Cursor adjustment during markdown fontification: %s" err)
+             nil))))
       ;; Transfer face properties from the markdown buffer to the output
       ;; buffer.  Both buffers have matching text starting at position 1
       ;; (md-buf) and START (output buf), so offset = START - 1.
@@ -98,7 +100,9 @@ that hit buffer edges."
                (let ((win (get-buffer-window (current-buffer))))
                  (when win
                    (set-window-point win (point-max))))))
-         ((beginning-of-buffer end-of-buffer) nil)))))
+         ((beginning-of-buffer end-of-buffer)
+          (magent-log "DEBUG Suppressed cursor error in buffer insert")
+          nil)))))
 
 (defun magent-log (format-string &rest args)
   "Log a message to the Magent log buffer.
@@ -434,7 +438,7 @@ If no text was streamed (tool-only round), removes the orphaned header."
                 (when magent-ui--streaming-section-start
                   (let ((inhibit-read-only t))
                     (delete-region magent-ui--streaming-section-start
-                                  (min (1+ magent-ui--streaming-start) (point-max)))))
+                                   (min (1+ magent-ui--streaming-start) (point-max)))))
               ;; Text was streamed — fontify and create section overlay
               (magent-ui--fontify-md-region buf magent-ui--streaming-start (point-max))
               (let ((inhibit-read-only t))
@@ -447,7 +451,9 @@ If no text was streamed (tool-only round), removes the orphaned header."
                                          (point-max)
                                          'assistant
                                          magent-ui--streaming-start)))
-          ((beginning-of-buffer end-of-buffer) nil))
+          ((beginning-of-buffer end-of-buffer)
+           (magent-log "DEBUG Suppressed cursor error in streaming fontify")
+           nil))
         (setq magent-ui--streaming-start nil)
         (setq magent-ui--streaming-section-start nil)
         (setq magent-ui--streaming-has-text nil)))))
@@ -458,6 +464,7 @@ If no text was streamed (tool-only round), removes the orphaned header."
 (defun magent-prompt ()
   "Prompt for input and send to Magent agent."
   (interactive)
+  (magent--ensure-initialized)  ; Lazy init on first use
   (let ((input (read-string "Ask magent: ")))
     (when (not (string-blank-p input))
       (magent-ui-display-buffer)
@@ -468,6 +475,7 @@ If no text was streamed (tool-only round), removes the orphaned header."
 (defun magent-prompt-region (begin end)
   "Send region from BEGIN to END to Magent agent."
   (interactive "r")
+  (magent--ensure-initialized)  ; Lazy init on first use
   (let ((input (buffer-substring begin end)))
     (magent-ui-display-buffer)
     (magent-ui-insert-user-message (format "[Region] %s" input))
@@ -477,6 +485,7 @@ If no text was streamed (tool-only round), removes the orphaned header."
 (defun magent-ask-at-point ()
   "Ask about the symbol at point."
   (interactive)
+  (magent--ensure-initialized)  ; Lazy init on first use
   (let ((symbol (thing-at-point 'symbol)))
     (when symbol
       (let ((input (format "Explain this code: %s" symbol)))
@@ -497,7 +506,7 @@ If no text was streamed (tool-only round), removes the orphaned header."
   (spinner-start magent--spinner)
 
   ;; FIXME(@jamie) there should be no truncating
-  (magent-log "INFO processing: %s" (truncate-string-to-width input 80 nil nil "..."))
+  (magent-log "INFO processing: %s" (truncate-string-to-width input magent-ui-log-truncate-length nil nil "..."))
 
   (condition-case err
       (magent-agent-process
@@ -565,6 +574,7 @@ Handles both streaming and non-streaming completion."
 (defun magent-select-agent ()
   "Select an agent for the current session."
   (interactive)
+  (magent--ensure-initialized)  ; Lazy init on first use
   (let* ((agents (magent-agent-registry-primary-agents))
          (agent-names (mapcar #'magent-agent-info-name agents))
          (selected (completing-read "Select agent: " agent-names nil t)))
@@ -578,6 +588,7 @@ Handles both streaming and non-streaming completion."
 (defun magent-show-current-agent ()
   "Show the current agent for this session in message buffer."
   (interactive)
+  (magent--ensure-initialized)  ; Lazy init on first use
   (let* ((session (magent-session-get))
          (agent (magent-session-get-agent session)))
     (if agent

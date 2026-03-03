@@ -61,15 +61,15 @@ paths against the project root.  Never returns nil."
 CALLBACK is called with the file contents or error message."
   (let ((path (expand-file-name (substitute-in-file-name path))))
     (condition-case err
-      (if (file-exists-p path)
-          (let ((buf (generate-new-buffer " *magent-read*")))
-            (with-current-buffer buf
-              (insert-file-contents path)
-              (let ((content (buffer-string)))
-                (kill-buffer buf)
-                (funcall callback content))))
-        (funcall callback (format "Error: file not found: %s" path)))
-    (error (funcall callback (format "Error reading file: %s" (error-message-string err)))))))
+        (if (file-exists-p path)
+            (let ((buf (generate-new-buffer " *magent-read*")))
+              (with-current-buffer buf
+                (insert-file-contents path)
+                (let ((content (buffer-string)))
+                  (kill-buffer buf)
+                  (funcall callback content))))
+          (funcall callback (format "Error: file not found: %s" path)))
+      (error (funcall callback (format "Error reading file: %s" (error-message-string err)))))))
 
 (defun magent-tools--write-file (callback path content)
   "Write CONTENT to file at PATH asynchronously.
@@ -77,15 +77,15 @@ Creates parent directories if needed.
 CALLBACK is called with success message or error."
   (let ((path (expand-file-name (substitute-in-file-name path))))
     (condition-case err
-      (progn
-        (let ((dir (file-name-directory path)))
-          (when (and dir (not (file-exists-p dir)))
-            (make-directory dir t)))
-        (with-temp-buffer
-          (insert content)
-          (write-region (point-min) (point-max) path nil 0))
-        (funcall callback (format "Successfully wrote %s" path)))
-    (error (funcall callback (format "Error writing file: %s" (error-message-string err)))))))
+        (progn
+          (let ((dir (file-name-directory path)))
+            (when (and dir (not (file-exists-p dir)))
+              (make-directory dir t)))
+          (with-temp-buffer
+            (insert content)
+            (write-region (point-min) (point-max) path nil 0))
+          (funcall callback (format "Successfully wrote %s" path)))
+      (error (funcall callback (format "Error writing file: %s" (error-message-string err)))))))
 
 (defun magent-tools--grep (callback pattern path &optional case-sensitive)
   "Search for PATTERN in files under PATH using ripgrep asynchronously.
@@ -98,7 +98,7 @@ CALLBACK is called with matching lines or error message."
                                   (magent-tools--project-root))))
          (buf (generate-new-buffer " *magent-grep*"))
          (args (list "--no-heading" "--line-number" "--color=never"
-                     "--max-count=100")))
+                     (format "--max-count=%d" magent-grep-max-matches))))
     (unless case-sensitive
       (push "--ignore-case" args))
     (unless (file-directory-p resolved)
@@ -149,32 +149,32 @@ OLD-TEXT must match exactly once in the file.
 CALLBACK is called with success message or error."
   (let ((path (expand-file-name (substitute-in-file-name path))))
     (condition-case err
-      (let* ((content (with-temp-buffer
-                        (insert-file-contents path)
-                        (buffer-string)))
-             (count (let ((start 0) (n 0))
-                      (while (setq start (string-search old-text content start))
-                        (cl-incf n)
-                        (setq start (+ start (length old-text))))
-                      n)))
-        (cond
-         ((= count 0)
-          (funcall callback (format "Error: old_text not found in %s" path)))
-         ((> count 1)
-          (funcall callback (format "Error: old_text found %d times in %s (must be unique)" count path)))
-         (t
-          (let ((new-content (string-replace old-text new-text content)))
-            (with-temp-buffer
-              (insert new-content)
-              (write-region (point-min) (point-max) path nil 0))
-            (funcall callback (format "Successfully edited %s" path))))))
-    (error (funcall callback (format "Error editing file: %s" (error-message-string err)))))))
+        (let* ((content (with-temp-buffer
+                          (insert-file-contents path)
+                          (buffer-string)))
+               (count (let ((start 0) (n 0))
+                        (while (setq start (string-search old-text content start))
+                          (cl-incf n)
+                          (setq start (+ start (length old-text))))
+                        n)))
+          (cond
+           ((= count 0)
+            (funcall callback (format "Error: old_text not found in %s" path)))
+           ((> count 1)
+            (funcall callback (format "Error: old_text found %d times in %s (must be unique)" count path)))
+           (t
+            (let ((new-content (string-replace old-text new-text content)))
+              (with-temp-buffer
+                (insert new-content)
+                (write-region (point-min) (point-max) path nil 0))
+              (funcall callback (format "Successfully edited %s" path))))))
+      (error (funcall callback (format "Error editing file: %s" (error-message-string err)))))))
 
 (defun magent-tools--emacs-eval (callback sexp &optional timeout)
   "Evaluate SEXP string as Emacs Lisp with optional TIMEOUT in seconds.
 CALLBACK is called with the result as a readable string, or an error message."
   (condition-case err
-      (let* ((timeout (or timeout 10))
+      (let* ((timeout (or timeout magent-emacs-eval-timeout))
              (form (car (read-from-string sexp)))
              (timer nil)
              (result nil)
@@ -208,7 +208,7 @@ CALLBACK is called with the result as a readable string, or an error message."
 (defun magent-tools--bash (callback command &optional timeout)
   "Execute shell COMMAND asynchronously with optional TIMEOUT in seconds.
 CALLBACK is called with the command output (stdout + stderr)."
-  (let* ((timeout (or timeout 30))
+  (let* ((timeout (or timeout magent-bash-timeout))
          (buf (generate-new-buffer " *magent-bash*"))
          (timer nil)
          (proc nil)
