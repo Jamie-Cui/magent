@@ -1,4 +1,4 @@
-;;; magent-yaml.el --- YAML parsing utilities for Magent  -*- lexical-binding: t; -*-
+;;; magent-frontmatter.el --- Frontmatter parsing utilities for Magent  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 
@@ -8,13 +8,14 @@
 
 ;;; Commentary:
 
-;; Shared YAML parsing utilities for Magent.
+;; Shared frontmatter parsing utilities for Magent.
+;; Parses Jekyll/Hugo style --- delimited frontmatter (key: value pairs).
 ;; Used by both agent-file and skill-file modules.
 
 ;;; Code:
 
-(defun magent-yaml-parse-frontmatter (content)
-  "Parse YAML frontmatter from CONTENT.
+(defun magent-frontmatter-parse (content)
+  "Parse frontmatter from CONTENT.
 Returns (FRONTMATTER . BODY) where FRONTMATTER is a plist.
 If no frontmatter found, returns (nil . CONTENT)."
   (with-temp-buffer
@@ -26,27 +27,27 @@ If no frontmatter found, returns (nil . CONTENT)."
         (forward-line 1)
         (let ((start (point)))
           (when (re-search-forward "^---" nil t)
-            (let ((yaml-str (buffer-substring-no-properties start (match-beginning 0))))
-              (setq frontmatter (magent-yaml-parse yaml-str))
+            (let ((header-str (buffer-substring-no-properties start (match-beginning 0))))
+              (setq frontmatter (magent-frontmatter--parse-header header-str))
               (forward-line 1)
               (setq body (buffer-substring-no-properties (point) (point-max)))))))
       (cons frontmatter body))))
 
-(defun magent-yaml-parse (yaml-str)
-  "Parse simple YAML string YAML-STR to plist.
-Supports basic key: value pairs and nested structures."
+(defun magent-frontmatter--parse-header (header-str)
+  "Parse frontmatter header string HEADER-STR to plist.
+Supports basic key: value pairs."
   (let ((result nil)
-        (lines (split-string yaml-str "\n")))
+        (lines (split-string header-str "\n")))
     (dolist (line lines)
       (when (string-match "^\\s-*\\([^:]+\\):\\s-*\\(.+\\)$" line)
         (let* ((key (string-trim (match-string 1 line)))
                (value-str (string-trim (match-string 2 line)))
-               (value (magent-yaml-parse-value value-str)))
+               (value (magent-frontmatter--parse-value value-str)))
           (setq result (plist-put result (intern (concat ":" key)) value)))))
     result))
 
-(defun magent-yaml-parse-value (str)
-  "Parse a YAML value string STR.
+(defun magent-frontmatter--parse-value (str)
+  "Parse a frontmatter value string STR.
 Handles booleans, numbers, strings, and comma-separated lists."
   (setq str (string-trim str))
   (cond
@@ -58,9 +59,9 @@ Handles booleans, numbers, strings, and comma-separated lists."
              (and (eq (aref str 0) ?') (eq (aref str (1- (length str))) ?'))))
     (substring str 1 -1))
    ((string-match-p "," str)
-    (mapcar #'magent-yaml-parse-value
+    (mapcar #'magent-frontmatter--parse-value
             (split-string str "," t "[\s,]+")))
    (t str)))
 
-(provide 'magent-yaml)
-;;; magent-yaml.el ends here
+(provide 'magent-frontmatter)
+;;; magent-frontmatter.el ends here

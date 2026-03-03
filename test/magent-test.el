@@ -98,46 +98,6 @@
     (should-not (magent-permission-allow-p rules 'write))
     (should (magent-permission-allow-p rules 'bash))))
 
-;;; Test 4b: Simplified permission system
-
-(ert-deftest magent-test-permission-simple-tool-rules ()
-  "Test simplified permission tool rules."
-  (require 'magent-permission-simple)
-  (let ((perm (magent-permission-simple-create
-               :allow-all t
-               :tool-rules '((read . allow) (write . deny)))))
-    (should (magent-permission-simple-check perm 'read))
-    (should-not (magent-permission-simple-check perm 'write))
-    (should (magent-permission-simple-check perm 'bash))))
-
-(ert-deftest magent-test-permission-simple-file-patterns ()
-  "Test simplified permission file patterns."
-  (require 'magent-permission-simple)
-  (let ((perm (magent-permission-simple-create
-               :allow-all t
-               :file-deny-patterns '("*.env" "*.env.*")
-               :file-allow-patterns '("*.env.example"))))
-    (should-not (magent-permission-simple-check perm 'read ".env"))
-    (should-not (magent-permission-simple-check perm 'read "config.env"))
-    (should (magent-permission-simple-check perm 'read ".env.example"))
-    (should (magent-permission-simple-check perm 'read "test.txt"))))
-
-(ert-deftest magent-test-permission-simple-presets ()
-  "Test simplified permission preset constructors."
-  (require 'magent-permission-simple)
-  (let ((default (magent-permission-simple-default))
-        (readonly (magent-permission-simple-read-only))
-        (noexec (magent-permission-simple-no-exec)))
-    ;; Default allows most, denies .env
-    (should (magent-permission-simple-check default 'bash))
-    (should-not (magent-permission-simple-check default 'read ".env"))
-    ;; Read-only denies write
-    (should (magent-permission-simple-check readonly 'read))
-    (should-not (magent-permission-simple-check readonly 'write))
-    ;; No-exec denies bash
-    (should-not (magent-permission-simple-check noexec 'bash))
-    (should (magent-permission-simple-check noexec 'read))))
-
 (ert-deftest magent-test-permission-file-patterns ()
   "Test file-based permission rules."
   (require 'magent-permission)

@@ -13,7 +13,7 @@
 
 ;;; Code:
 
-(require 'markdown-mode)
+(require 'markdown-mode nil t)  ; optional — graceful degradation if not installed
 (require 'spinner)
 (require 'magent-session)
 (require 'magent-agent)
@@ -25,49 +25,52 @@
   "Temporary markdown-mode buffer for fontifying AI text.")
 
 (defun magent-ui--get-md-buffer ()
-  "Return a reusable temporary `markdown-mode' buffer."
-  (if (buffer-live-p magent-ui--md-buffer)
-      magent-ui--md-buffer
-    (setq magent-ui--md-buffer
-          (with-current-buffer (generate-new-buffer " *magent-md*")
-            (markdown-mode)
-            (current-buffer)))))
+  "Return a reusable temporary `markdown-mode' buffer, or nil if unavailable."
+  (when (fboundp 'markdown-mode)
+    (if (buffer-live-p magent-ui--md-buffer)
+        magent-ui--md-buffer
+      (setq magent-ui--md-buffer
+            (with-current-buffer (generate-new-buffer " *magent-md*")
+              (markdown-mode)
+              (current-buffer))))))
 
 (defun magent-ui--fontify-md-region (buf start end)
   "Fontify text in BUF between START and END using markdown-mode.
 Copies the plain text to a temporary markdown-mode buffer, runs
 font-lock there, then transfers face properties back.
-Does nothing if the region is empty."
+Does nothing if the region is empty or markdown-mode is unavailable."
   (when (< start end)
     (let* ((text (with-current-buffer buf
                    (buffer-substring-no-properties start end)))
            (md-buf (magent-ui--get-md-buffer)))
-      (with-current-buffer md-buf
-        (let ((inhibit-read-only t))
-          (erase-buffer)
-          (insert text)
-          (condition-case err
-              (font-lock-ensure)
-            ((beginning-of-buffer end-of-buffer)
-             (magent-log "WARN Cursor adjustment during markdown fontification: %s" err)
-             nil))))
-      ;; Transfer face properties from the markdown buffer to the output
-      ;; buffer.  Both buffers have matching text starting at position 1
-      ;; (md-buf) and START (output buf), so offset = START - 1.
-      (with-current-buffer buf
-        (let ((inhibit-read-only t)
-              (offset (1- start))
-              (pos 1)
-              (md-end (1+ (length text))))
-          (while (< pos md-end)
-            (let* ((next (with-current-buffer md-buf
-                           (next-single-property-change pos 'face nil md-end)))
-                   (face (with-current-buffer md-buf
-                           (get-text-property pos 'face))))
-              (when face
-                (put-text-property (+ offset pos) (+ offset next)
-                                   'font-lock-face face buf))
-              (setq pos next))))))))
+      (when md-buf
+        (with-current-buffer md-buf
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (insert text)
+            (condition-case err
+                (font-lock-ensure)
+              ((beginning-of-buffer end-of-buffer)
+               (magent-log "WARN Cursor adjustment during markdown fontification: %s" err)
+               nil))))
+        ;; Transfer face properties from the markdown buffer to the output
+        ;; buffer.  Both buffers have matching text starting at position 1
+        ;; (md-buf) and START (output buf), so offset = START - 1.
+        (with-current-buffer buf
+          (let ((inhibit-read-only t)
+                (offset (1- start))
+                (pos 1)
+                (md-end (1+ (length text))))
+            (while (< pos md-end)
+              (let* ((next (with-current-buffer md-buf
+                             (next-single-property-change pos 'face nil md-end)))
+                     (face (with-current-buffer md-buf
+                             (get-text-property pos 'face))))
+                (when face
+                  (put-text-property (+ offset pos) (+ offset next)
+                                     'font-lock-face face buf))
+                (setq pos next)))))))))
+
 
 (defun magent-ui--fontify-md-region-async (buf start end)
   "Fontify markdown text asynchronously if it exceeds threshold.
@@ -287,7 +290,16 @@ Press \\[magent-ui-toggle-section] to fold/unfold the section at point.
 Press \\[magent-ui-toggle-all-sections] to fold/unfold all sections."
   (visual-line-mode 1)
   (setq-local display-fill-column-indicator-column nil)
-  (setq-local magent-ui--all-folded nil))
+  (setq-local magent-ui--all-folded nil)
+  (add-hook 'kill-buffer-hook #'magent-ui--cancel-timers nil t))
+
+(defun magent-ui--cancel-timers ()
+  "Cancel any pending streaming timers for the current buffer.
+Called via `kill-buffer-hook' to prevent timers firing on dead buffers."
+  (when (and (boundp 'magent-ui--streaming-batch-timer)
+             magent-ui--streaming-batch-timer)
+    (cancel-timer magent-ui--streaming-batch-timer)
+    (setq magent-ui--streaming-batch-timer nil)))
 
 (define-derived-mode magent-log-mode fundamental-mode "MagentLog"
   "Major mode for Magent log buffer."

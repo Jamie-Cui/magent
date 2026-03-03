@@ -17,7 +17,7 @@ BYTE_COMPILE_FLAGS = --eval "(setq byte-compile-error-on-warn nil)" \
 
 SRCS = magent.el \
        magent-config.el \
-       magent-yaml.el \
+       magent-frontmatter.el \
        magent-session.el \
        magent-tools.el \
        magent-agent.el \

@@ -241,12 +241,15 @@ Returns a list of positional arguments in the order defined by ARGS-SPEC."
                                 'assistant
                                 (magent-fsm-accumulated-text fsm)))
 
-  ;; Call user callback
-  (when (magent-fsm-callback fsm)
-    (funcall (magent-fsm-callback fsm)
-             (magent-fsm-accumulated-text fsm)))
+  ;; Call user callback — wrap in condition-case so cleanup always runs
+  (condition-case err
+      (when (magent-fsm-callback fsm)
+        (funcall (magent-fsm-callback fsm)
+                 (magent-fsm-accumulated-text fsm)))
+    (error
+     (magent-log "ERROR in DONE callback: %s" (error-message-string err))))
 
-  ;; Clean up resources
+  ;; Clean up resources (always runs even if callback threw)
   (magent-fsm-destroy fsm))
 
 (defun magent-fsm--handle-error (fsm)
@@ -255,11 +258,14 @@ Returns a list of positional arguments in the order defined by ARGS-SPEC."
   (let ((error-msg (or (magent-fsm-error fsm) "Unknown error")))
     (magent-log "ERROR FSM error: %s" error-msg)
 
-    ;; Call user callback with nil to signal error
-    (when (magent-fsm-callback fsm)
-      (funcall (magent-fsm-callback fsm) nil))
+    ;; Call user callback with nil — wrap in condition-case so cleanup always runs
+    (condition-case err
+        (when (magent-fsm-callback fsm)
+          (funcall (magent-fsm-callback fsm) nil))
+      (error
+       (magent-log "ERROR in ERROR callback: %s" (error-message-string err))))
 
-    ;; Clean up resources
+    ;; Clean up resources (always runs even if callback threw)
     (magent-fsm-destroy fsm)))
 
 ;;; Tool Utilities

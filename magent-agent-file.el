@@ -18,18 +18,12 @@
 (require 'magent-agent-registry)
 (require 'magent-permission)
 (require 'magent-tools)
-(require 'magent-yaml)
+(require 'magent-frontmatter)
 
 ;;; File paths
 
-(defun magent-agent-file--project-root ()
-  "Get the project root directory for agent files."
-  (let ((root (when (bound-and-true-p magent-project-root-function)
-                (funcall magent-project-root-function))))
-    (or root
-        (when (fboundp 'projectile-project-root)
-          (projectile-project-root))
-        default-directory)))
+(defalias 'magent-agent-file--project-root #'magent-project-root
+  "Get the project root directory for agent files.")
 
 (defun magent-agent-file--agent-dir (&optional directory)
   "Get the agent directory for DIRECTORY or project root."
@@ -80,7 +74,7 @@ Returns the agent info if successful, nil otherwise."
       (with-temp-buffer
         (insert-file-contents filepath)
         (let* ((content (buffer-string))
-               (parsed (magent-yaml-parse-frontmatter content))
+               (parsed (magent-frontmatter-parse content))
                (frontmatter (car parsed))
                (body (cdr parsed))
                (name (file-name-base filepath)))
