@@ -30,3 +30,4 @@ coverage/
 .emacs.desktop
 .emacs.desktop.lock
 auto-save-list
+/.agent-shell/
