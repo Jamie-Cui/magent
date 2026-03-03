@@ -48,7 +48,9 @@ When making code changes:
 3. Follow the existing code style and conventions
 4. Be concise and direct
 
-If you're unsure about something, ask the user for clarification."
+If you're unsure about something, ask the user for clarification.
+
+IMPORTANT: Respond with plain ASCII text only. Do not use markdown formatting (no **bold**, no `code`, no ### headers, no bullet points with -, no numbered lists with 1.). Use plain text indentation and spacing instead."
   "System prompt for the AI agent."
   :type 'string
   :group 'magent)

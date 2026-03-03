@@ -24,19 +24,24 @@
 
 ;;; Tool implementations
 
-(defun magent-tools--read-file (path)
-  "Read contents of file at PATH.
-Returns the file contents as a string, or an error message."
+(defun magent-tools--read-file (callback path)
+  "Read contents of file at PATH asynchronously.
+CALLBACK is called with the file contents or error message."
   (condition-case err
-      (with-temp-buffer
-        (insert-file-contents path)
-        (buffer-string))
-    (error (format "Error reading file: %s" (error-message-string err)))))
+      (if (file-exists-p path)
+          (let ((buf (generate-new-buffer " *magent-read*")))
+            (with-current-buffer buf
+              (insert-file-contents-literally path)
+              (let ((content (buffer-string)))
+                (kill-buffer buf)
+                (funcall callback content))))
+        (funcall callback (format "Error: file not found: %s" path)))
+    (error (funcall callback (format "Error reading file: %s" (error-message-string err))))))
 
-(defun magent-tools--write-file (path content)
-  "Write CONTENT to file at PATH.
+(defun magent-tools--write-file (callback path content)
+  "Write CONTENT to file at PATH asynchronously.
 Creates parent directories if needed.
-Returns success message or error."
+CALLBACK is called with success message or error."
   (condition-case err
       (progn
         (let ((dir (file-name-directory path)))
@@ -45,37 +50,42 @@ Returns success message or error."
         (with-temp-buffer
           (insert content)
           (write-region (point-min) (point-max) path nil 0))
-        (format "Successfully wrote %s" path))
-    (error (format "Error writing file: %s" (error-message-string err)))))
+        (funcall callback (format "Successfully wrote %s" path)))
+    (error (funcall callback (format "Error writing file: %s" (error-message-string err))))))
 
-(defun magent-tools--grep (pattern path &optional case-sensitive)
-  "Search for PATTERN in files under PATH using ripgrep.
+(defun magent-tools--grep (callback pattern path &optional case-sensitive)
+  "Search for PATTERN in files under PATH using ripgrep asynchronously.
 If CASE-SENSITIVE is nil, performs case-insensitive search.
-Returns matching lines with file paths and line numbers."
-  (condition-case err
-      (let* ((default-directory (if (file-directory-p path)
-                                    path
-                                  (file-name-directory path)))
-             (args (list "--no-heading" "--line-number" "--color=never"
-                         "--max-count=100")))
-        (unless case-sensitive
-          (push "--ignore-case" args))
-        (unless (file-directory-p path)
-          (push path args))
-        (push pattern args)
-        (let ((output (with-output-to-string
-                        (with-current-buffer standard-output
-                          (apply #'call-process magent-grep-program nil t nil
-                                 (nreverse args))))))
-          (if (string-blank-p output)
-              "No matches found"
-            (string-trim-right output))))
-    (error (format "Error during grep: %s" (error-message-string err)))))
+CALLBACK is called with matching lines or error message."
+  (let* ((default-directory (if (file-directory-p path)
+                                path
+                              (file-name-directory path)))
+         (buf (generate-new-buffer " *magent-grep*"))
+         (args (list "--no-heading" "--line-number" "--color=never"
+                     "--max-count=100")))
+    (unless case-sensitive
+      (push "--ignore-case" args))
+    (unless (file-directory-p path)
+      (push path args))
+    (push pattern args)
+    (make-process
+     :name "magent-grep"
+     :buffer buf
+     :command (cons magent-grep-program (nreverse args))
+     :sentinel
+     (lambda (proc _event)
+       (when (memq (process-status proc) '(exit signal))
+         (let ((output (with-current-buffer buf (buffer-string))))
+           (kill-buffer buf)
+           (funcall callback
+                    (if (string-blank-p output)
+                        "No matches found"
+                      (string-trim-right output)))))))))
 
-(defun magent-tools--glob (pattern path)
-  "Find files matching PATTERN under PATH.
+(defun magent-tools--glob (callback pattern path)
+  "Find files matching PATTERN under PATH asynchronously.
 Supports * and ** wildcards.
-Returns list of matching file paths."
+CALLBACK is called with list of matching file paths."
   (condition-case err
       (let* ((default-directory (if (file-directory-p path)
                                     path
@@ -85,20 +95,20 @@ Returns list of matching file paths."
                   ;; ** requires recursive search
                   (let* ((parts (split-string pattern "\\*\\*/?"))
                          (file-regexp (if (> (length parts) 1)
-                                         (wildcard-to-regexp (car (last parts)))
-                                       nil)))
+                                          (wildcard-to-regexp (car (last parts)))
+                                        nil)))
                     (directory-files-recursively
                      default-directory
                      (or file-regexp ".")))
                 ;; Single * uses file-expand-wildcards
                 (file-expand-wildcards pattern t))))
-        (mapconcat #'identity matches "\n"))
-    (error (format "Error during glob: %s" (error-message-string err)))))
+        (funcall callback (mapconcat #'identity matches "\n")))
+    (error (funcall callback (format "Error during glob: %s" (error-message-string err))))))
 
-(defun magent-tools--edit-file (path old-text new-text)
-  "Edit file at PATH by replacing OLD-TEXT with NEW-TEXT.
+(defun magent-tools--edit-file (callback path old-text new-text)
+  "Edit file at PATH by replacing OLD-TEXT with NEW-TEXT asynchronously.
 OLD-TEXT must match exactly once in the file.
-Returns success message or error."
+CALLBACK is called with success message or error."
   (condition-case err
       (let* ((content (with-temp-buffer
                         (insert-file-contents path)
@@ -110,39 +120,93 @@ Returns success message or error."
                       n)))
         (cond
          ((= count 0)
-          (format "Error: old_text not found in %s" path))
+          (funcall callback (format "Error: old_text not found in %s" path)))
          ((> count 1)
-          (format "Error: old_text found %d times in %s (must be unique)" count path))
+          (funcall callback (format "Error: old_text found %d times in %s (must be unique)" count path)))
          (t
           (let ((new-content (string-replace old-text new-text content)))
             (with-temp-buffer
               (insert new-content)
               (write-region (point-min) (point-max) path nil 0))
-            (format "Successfully edited %s" path)))))
-    (error (format "Error editing file: %s" (error-message-string err)))))
+            (funcall callback (format "Successfully edited %s" path))))))
+    (error (funcall callback (format "Error editing file: %s" (error-message-string err))))))
 
-(defun magent-tools--emacs-eval (sexp &optional timeout)
+(defun magent-tools--emacs-eval (callback sexp &optional timeout)
   "Evaluate SEXP string as Emacs Lisp with optional TIMEOUT in seconds.
-Returns the result as a readable string, or an error message."
+CALLBACK is called with the result as a readable string, or an error message."
   (condition-case err
       (let* ((timeout (or timeout 10))
              (form (car (read-from-string sexp)))
-             (result (with-timeout (timeout (error "Evaluation timed out"))
-                       (eval form t))))
-        (prin1-to-string result))
-    (error (format "Error evaluating sexp: %s" (error-message-string err)))))
+             (timer nil)
+             (result nil)
+             (done nil))
+        (setq timer
+              (run-at-time
+               timeout nil
+               (lambda ()
+                 (unless done
+                   (setq done t)
+                   (cancel-timer timer)
+                   (funcall callback "Error: Evaluation timed out")))))
+        ;; Run evaluation in a timer to avoid blocking
+        (run-at-time
+         0 nil
+         (lambda ()
+           (condition-case err
+               (progn
+                 (setq result (eval form t))
+                 (unless done
+                   (setq done t)
+                   (cancel-timer timer)
+                   (funcall callback (prin1-to-string result))))
+             (error
+              (unless done
+                (setq done t)
+                (cancel-timer timer)
+                (funcall callback (format "Error evaluating sexp: %s" (error-message-string err)))))))))
+    (error (funcall callback (format "Error evaluating sexp: %s" (error-message-string err))))))
 
-(defun magent-tools--bash (command &optional timeout)
-  "Execute shell COMMAND with optional TIMEOUT in seconds.
-Returns command output (stdout + stderr)."
-  (condition-case err
-      (let* ((timeout (or timeout 30))
-             (output (with-timeout (timeout (error "Command timed out"))
-                       (shell-command-to-string (concat command " 2>&1")))))
-        (if (string-blank-p output)
-            "Command completed with no output"
-          (string-trim-right output)))
-    (error (format "Error executing command: %s" (error-message-string err)))))
+(defun magent-tools--bash (callback command &optional timeout)
+  "Execute shell COMMAND asynchronously with optional TIMEOUT in seconds.
+CALLBACK is called with the command output (stdout + stderr)."
+  (let* ((timeout (or timeout 30))
+         (buf (generate-new-buffer " *magent-bash*"))
+         (timer nil)
+         (proc nil)
+         (cleanup
+          (lambda ()
+            (when timer (cancel-timer timer))
+            (when (process-live-p proc) (delete-process proc))
+            (when (buffer-live-p buf) (kill-buffer buf)))))
+    (setq timer
+          (run-at-time
+           timeout nil
+           (lambda ()
+             (when (process-live-p proc)
+               (delete-process proc))
+             (when (buffer-live-p buf)
+               (with-current-buffer buf
+                 (let ((output (buffer-string)))
+                   (funcall cleanup)
+                   (funcall callback
+                            (if (string-blank-p output)
+                                "Command timed out with no output"
+                              (format "Command timed out. Partial output:\n%s"
+                                      (string-trim-right output))))))))))
+    (setq proc
+          (make-process
+           :name "magent-bash"
+           :buffer buf
+           :command (list shell-file-name shell-command-switch command)
+           :sentinel
+           (lambda (p _event)
+             (when (memq (process-status p) '(exit signal))
+               (let ((output (with-current-buffer buf (buffer-string))))
+                 (funcall cleanup)
+                 (funcall callback
+                          (if (string-blank-p output)
+                              "Command completed with no output"
+                            (string-trim-right output))))))))))
 
 (defun magent-tools--delegate (callback agent-name prompt)
   "Delegate PROMPT to subagent AGENT-NAME asynchronously.
@@ -193,6 +257,7 @@ then spawns a nested `gptel-request' with the subagent's configuration."
                        :type string
                        :description "Absolute or relative path to the file"))
    :function #'magent-tools--read-file
+   :async t
    :category "magent")
   "gptel-tool struct for read_file.")
 
@@ -207,6 +272,7 @@ then spawns a nested `gptel-request' with the subagent's configuration."
                        :type string
                        :description "The full content to write to the file"))
    :function #'magent-tools--write-file
+   :async t
    :confirm t
    :category "magent")
   "gptel-tool struct for write_file.")
@@ -225,6 +291,7 @@ then spawns a nested `gptel-request' with the subagent's configuration."
                        :type string
                        :description "The text to replace old_text with"))
    :function #'magent-tools--edit-file
+   :async t
    :confirm t
    :category "magent")
   "gptel-tool struct for edit_file.")
@@ -244,6 +311,7 @@ then spawns a nested `gptel-request' with the subagent's configuration."
                        :description "Whether the search is case-sensitive"
                        :optional t))
    :function #'magent-tools--grep
+   :async t
    :category "magent")
   "gptel-tool struct for grep.")
 
@@ -258,6 +326,7 @@ then spawns a nested `gptel-request' with the subagent's configuration."
                        :type string
                        :description "Root directory to search in"))
    :function #'magent-tools--glob
+   :async t
    :category "magent")
   "gptel-tool struct for glob.")
 
@@ -273,6 +342,7 @@ then spawns a nested `gptel-request' with the subagent's configuration."
                        :description "Timeout in seconds, defaults to 30"
                        :optional t))
    :function #'magent-tools--bash
+   :async t
    :confirm t
    :category "magent")
   "gptel-tool struct for bash.")
@@ -289,6 +359,7 @@ then spawns a nested `gptel-request' with the subagent's configuration."
                        :description "Timeout in seconds, defaults to 10"
                        :optional t))
    :function #'magent-tools--emacs-eval
+   :async t
    :confirm t
    :category "magent")
   "gptel-tool struct for emacs_eval.")
@@ -308,12 +379,13 @@ then spawns a nested `gptel-request' with the subagent's configuration."
    :category "magent")
   "gptel-tool struct for delegate.")
 
-(defun magent-tools--skill-invoke (skill-name operation &rest args)
-  "Invoke OPERATION from SKILL-NAME with ARGS.
+(defun magent-tools--skill-invoke (callback skill-name operation &rest args)
+  "Invoke OPERATION from SKILL-NAME with ARGS asynchronously.
+CALLBACK is called with the result.
 Only works for tool-type skills.  Instruction-type skills are
 automatically included in the system prompt."
   (require 'magent-skills)
-  (magent-skills-invoke skill-name operation args))
+  (magent-skills-invoke skill-name operation args callback))
 
 (defvar magent-tools--skill-invoke-tool
   (gptel-make-tool
@@ -330,6 +402,7 @@ automatically included in the system prompt."
                        :description "Arguments for the operation (varies by operation)"
                        :optional t))
    :function #'magent-tools--skill-invoke
+   :async t
    :category "magent")
   "gptel-tool struct for skill_invoke.")
 

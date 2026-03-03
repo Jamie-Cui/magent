@@ -115,9 +115,7 @@ When enabled, Magent commands are available.
     (unless magent--initialized
       ;; Initialize agent registry (also loads custom agents)
       (magent-agent-registry-init)
-      ;; Register built-in skills
-      (magent-skills--register-builtin)
-      ;; Load skills from files
+      ;; Load skills from files (built-in skills auto-register on require)
       (magent-skill-file-load-all)
       (setq magent--initialized t)
       (magent-log "INFO magent mode enabled"))))

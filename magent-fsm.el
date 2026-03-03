@@ -30,6 +30,8 @@
 ;; Forward declarations
 (declare-function magent-session-add-message "magent-session")
 (declare-function magent-log "magent-ui")
+(declare-function magent-ui-insert-tool-call "magent-ui")
+(declare-function magent-ui-insert-tool-result "magent-ui")
 (declare-function gptel-request "gptel")
 (declare-function gptel-make-tool "gptel")
 (declare-function gptel--accept-tool-calls "gptel")
@@ -136,6 +138,8 @@
              (tool-spec (magent-fsm--find-tool (magent-fsm-tools fsm) name))
              (process-result
               (lambda (result)
+                ;; Show result in UI
+                (magent-fsm--show-tool-result name result)
                 ;; Store result
                 (push (list :id id
                             :name name
@@ -154,6 +158,9 @@
                   (setf (magent-fsm-streamed-chunks fsm) "")
                   ;; Loop back to SEND
                   (magent-fsm-transition fsm 'SEND)))))
+
+        ;; Show tool call in UI
+        (magent-fsm--show-tool-call name args)
 
         (if (not tool-spec)
             (funcall process-result (format "Error: tool '%s' not found" name))
@@ -219,6 +226,63 @@ Returns a list of positional arguments in the order defined by ARGS-SPEC."
 
 ;;; Tool Utilities
 
+(defun magent-fsm--show-tool-call (name args)
+  "Show tool call NAME with ARGS in the UI."
+  (require 'magent-ui)
+  (let ((input (cond
+                ;; skill_invoke: show skill_name and operation
+                ((string= name "skill_invoke")
+                 (let ((skill-name (plist-get args :skill_name))
+                       (operation (plist-get args :operation)))
+                   (format "%s/%s" (or skill-name "?") (or operation "?"))))
+                ;; delegate: show agent name
+                ((string= name "delegate")
+                 (let ((agent (plist-get args :agent)))
+                   (format "agent: %s" (or agent "?"))))
+                ;; bash: show command (truncated)
+                ((string= name "bash")
+                 (let ((cmd (plist-get args :command)))
+                   (if (and cmd (> (length cmd) 60))
+                       (format "%s..." (substring cmd 0 57))
+                     (or cmd "?"))))
+                ;; read_file/write_file/edit_file: show path
+                ((member name '("read_file" "write_file" "edit_file"))
+                 (let ((path (plist-get args :path)))
+                   (or path "?")))
+                ;; grep: show pattern
+                ((string= name "grep")
+                 (let ((pattern (plist-get args :pattern))
+                       (path (plist-get args :path)))
+                   (format "%s in %s" (or pattern "?") (or path "?"))))
+                ;; glob: show pattern
+                ((string= name "glob")
+                 (let ((pattern (plist-get args :pattern)))
+                   (or pattern "?")))
+                ;; emacs_eval: show sexp (truncated)
+                ((string= name "emacs_eval")
+                 (let ((sexp (plist-get args :sexp)))
+                   (if (and sexp (> (length sexp) 40))
+                       (format "%s..." (substring sexp 0 37))
+                     (or sexp "?"))))
+                ;; Default: show all args
+                (t
+                 (if args
+                     (truncate-string-to-width
+                      (format "%s" args) 60 nil nil "...")
+                   "")))))
+    (magent-ui-insert-tool-call name input)))
+
+(defun magent-fsm--show-tool-result (name result)
+  "Show tool RESULT for tool NAME in the UI."
+  (require 'magent-ui)
+  (let* ((result-str (if (stringp result) result (format "%s" result)))
+         (truncated (if (> (length result-str) 200)
+                        (format "%s... [%d bytes]"
+                                (substring result-str 0 150)
+                                (length result-str))
+                      result-str)))
+    (magent-ui-insert-tool-result name truncated)))
+
 (defun magent-fsm--find-tool (tools name)
   "Find tool with NAME in TOOLS list."
   (cl-find-if (lambda (tool)
@@ -239,6 +303,7 @@ RESULTS is a list of plists with :id, :name, :args, :result."
   "Send LLM request via gptel-request."
   (require 'gptel)
   (require 'magent-session)
+  (require 'magent-ui)
 
   (let* ((prompt-list (magent-fsm-prompt-list fsm))
          (system-prompt (magent-fsm-system-prompt fsm))
@@ -250,6 +315,10 @@ RESULTS is a list of plists with :id, :name, :args, :result."
                              (generate-new-buffer " *magent-fsm-request*"))))
 
     (setf (magent-fsm-request-buffer fsm) request-buffer)
+
+    ;; For streaming, prepare the UI with assistant prompt prefix
+    (when streaming
+      (magent-ui-start-streaming))
 
     ;; Convert magent tools to gptel tools format
     (let ((converted-tools (magent-fsm--convert-tools-to-gptel tools)))
@@ -271,65 +340,67 @@ RESULTS is a list of plists with :id, :name, :args, :result."
 (defun magent-fsm--make-gptel-callback (fsm)
   "Create a gptel callback that feeds into FSM state machine."
   (lambda (response info)
-    ;; Transition to WAIT state when request is sent
-    (when (eq (magent-fsm-state fsm) 'SEND)
-      (setf (magent-fsm-state fsm) 'WAIT))
+    ;; Ignore callbacks if FSM already completed
+    (unless (memq (magent-fsm-state fsm) '(DONE ERROR))
+      ;; Transition to WAIT state when request is sent
+      (when (eq (magent-fsm-state fsm) 'SEND)
+        (setf (magent-fsm-state fsm) 'WAIT))
 
-    (cond
-     ;; Streaming text chunk
-     ((and (magent-fsm-streaming-p fsm) (stringp response))
-      (setf (magent-fsm-streamed-chunks fsm)
-            (concat (magent-fsm-streamed-chunks fsm) response))
-      ;; Call UI callback
-      (when (magent-fsm-ui-callback fsm)
-        (funcall (magent-fsm-ui-callback fsm) response)))
-
-     ;; Streaming completion (t signal)
-     ((and (magent-fsm-streaming-p fsm) (eq response t))
-      (setf (magent-fsm-accumulated-text fsm)
-            (concat (magent-fsm-accumulated-text fsm)
-                    (magent-fsm-streamed-chunks fsm)))
-      ;; Check for tool calls from gptel's parsed streaming response
       (cond
-       ((plist-get info :tool-use)
-        ;; gptel parsed tool calls from the stream, execute them
-        (let ((tool-calls (plist-get info :tool-use)))
-          (magent-log "Streaming completed with %d tool call(s)" (length tool-calls))
-          (setf (magent-fsm-pending-tools fsm) tool-calls)
-          (magent-fsm-transition fsm 'TOOL)))
-       ((plist-get info :tool-pending)
-        ;; Tools are waiting for user confirmation, don't transition yet
-        nil)
-       (t
-        ;; No tools, proceed to PROCESS
-        (magent-fsm-transition fsm 'PROCESS))))
+       ;; Streaming text chunk
+       ((and (magent-fsm-streaming-p fsm) (stringp response))
+        (setf (magent-fsm-streamed-chunks fsm)
+              (concat (magent-fsm-streamed-chunks fsm) response))
+        ;; Call UI callback
+        (when (magent-fsm-ui-callback fsm)
+          (funcall (magent-fsm-ui-callback fsm) response)))
 
-     ;; Non-streaming final response
-     ((stringp response)
-      (setf (magent-fsm-accumulated-text fsm) response)
-      (magent-fsm-transition fsm 'PROCESS))
+       ;; Streaming completion (t signal)
+       ((and (magent-fsm-streaming-p fsm) (eq response t))
+        (setf (magent-fsm-accumulated-text fsm)
+              (concat (magent-fsm-accumulated-text fsm)
+                      (magent-fsm-streamed-chunks fsm)))
+        ;; Check for tool calls from gptel's parsed streaming response
+        (cond
+         ((plist-get info :tool-use)
+          ;; gptel parsed tool calls from the stream, execute them
+          (let ((tool-calls (plist-get info :tool-use)))
+            (magent-log "Streaming completed with %d tool call(s)" (length tool-calls))
+            (setf (magent-fsm-pending-tools fsm) tool-calls)
+            (magent-fsm-transition fsm 'TOOL)))
+         ((plist-get info :tool-pending)
+          ;; Tools are waiting for user confirmation, don't transition yet
+          nil)
+         (t
+          ;; No tools, proceed to PROCESS
+          (magent-fsm-transition fsm 'PROCESS))))
 
-     ;; Tool results (after execution)
-     ((and (consp response) (eq (car response) 'tool-result))
-      ;; gptel has executed tools for us, continue
-      (setf (magent-fsm-streamed-chunks fsm) ""))
+       ;; Non-streaming final response
+       ((stringp response)
+        (setf (magent-fsm-accumulated-text fsm) response)
+        (magent-fsm-transition fsm 'PROCESS))
 
-     ;; Pending tool calls (need confirmation)
-     ((and (consp response) (eq (car response) 'tool-call))
-      ;; Auto-accept tool calls (magent uses permission system instead)
-      (require 'gptel)
-      (gptel--accept-tool-calls (cdr response) nil))
+       ;; Tool results (after execution)
+       ((and (consp response) (eq (car response) 'tool-result))
+        ;; gptel has executed tools for us, continue
+        (setf (magent-fsm-streamed-chunks fsm) ""))
 
-     ;; Error
-     ((null response)
-      (setf (magent-fsm-error fsm)
-            (or (plist-get info :status) "Request failed"))
-      (magent-fsm-transition fsm 'ERROR))
+       ;; Pending tool calls (need confirmation)
+       ((and (consp response) (eq (car response) 'tool-call))
+        ;; Auto-accept tool calls (magent uses permission system instead)
+        (require 'gptel)
+        (gptel--accept-tool-calls (cdr response) nil))
 
-     ;; Abort
-     ((eq response 'abort)
-      (setf (magent-fsm-error fsm) "Request aborted")
-      (magent-fsm-transition fsm 'ERROR)))))
+       ;; Error
+       ((null response)
+        (setf (magent-fsm-error fsm)
+              (or (plist-get info :status) "Request failed"))
+        (magent-fsm-transition fsm 'ERROR))
+
+       ;; Abort
+       ((eq response 'abort)
+        (setf (magent-fsm-error fsm) "Request aborted")
+        (magent-fsm-transition fsm 'ERROR))))))
 
 (defun magent-fsm--convert-tools-to-gptel (tools)
   "Convert magent tool specs to gptel-tool structs.

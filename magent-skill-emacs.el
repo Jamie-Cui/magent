@@ -81,38 +81,51 @@ KEYS is a string in `kbd' format (e.g. \"C-x C-s\")."
 
 ;;; Dispatch
 
-(defun magent-skill-emacs-invoke (operation args)
-  "Invoke emacs skill OPERATION with ARGS.
-Returns the result as a string."
-  (condition-case err
-      (pcase operation
-        ("list-functions"
-         (if (null args)
-             "Error: list-functions requires prefix argument"
-           (let ((result (magent-skill-emacs--list-functions (car args))))
-             (if result
-                 (mapconcat #'identity result "\n")
-               "No matching functions found."))))
-        ("describe-function"
-         (if (null args)
-             "Error: describe-function requires function-name argument"
-           (magent-skill-emacs--describe-function (car args))))
-        ("eval-expression"
-         (if (null args)
-             "Error: eval-expression requires expression argument"
-           (magent-skill-emacs--eval-expression (car args))))
-        ("execute-keys"
-         (if (null args)
-             "Error: execute-keys requires keys argument"
-           (magent-skill-emacs--execute-keys (car args))))
-        ("minibuffer-prompt"
-         (magent-skill-emacs--minibuffer-prompt))
-        ("current-buffer-state"
-         (magent-skill-emacs--current-buffer-state))
-        (_
-         (format "Error: unknown operation '%s'. Available: list-functions, describe-function, eval-expression, execute-keys, minibuffer-prompt, current-buffer-state"
-                 operation)))
-    (error (format "Error executing emacs skill: %s" (error-message-string err)))))
+(defun magent-skill-emacs-invoke (operation args callback)
+  "Invoke emacs skill OPERATION with ARGS asynchronously.
+CALLBACK is called with the result as a string.
+ARGS is expected to be a list; if it contains a single list/vector element,
+it is flattened to handle gptel's nested array passing."
+  ;; Flatten args if it contains a single list/vector (gptel passes arrays as vectors)
+  (setq args (if (and (= (length args) 1)
+                      (or (listp (car args)) (vectorp (car args))))
+                 (if (vectorp (car args))
+                     (append (car args) nil)
+                   (car args))
+               (mapcar (lambda (a) (if (vectorp a) (append a nil) a)) args)))
+  (run-at-time
+   0 nil
+   (lambda ()
+     (funcall callback
+              (condition-case err
+                  (pcase operation
+                    ("list-functions"
+                     (if (null args)
+                         "Error: list-functions requires prefix argument"
+                       (let ((result (magent-skill-emacs--list-functions (car args))))
+                         (if result
+                             (mapconcat #'identity result "\n")
+                           "No matching functions found."))))
+                    ("describe-function"
+                     (if (null args)
+                         "Error: describe-function requires function-name argument"
+                       (magent-skill-emacs--describe-function (car args))))
+                    ("eval-expression"
+                     (if (null args)
+                         "Error: eval-expression requires expression argument"
+                       (magent-skill-emacs--eval-expression (car args))))
+                    ("execute-keys"
+                     (if (null args)
+                         "Error: execute-keys requires keys argument"
+                       (magent-skill-emacs--execute-keys (car args))))
+                    ("minibuffer-prompt"
+                     (magent-skill-emacs--minibuffer-prompt))
+                    ("current-buffer-state"
+                     (magent-skill-emacs--current-buffer-state))
+                    (_
+                     (format "Error: unknown operation '%s'. Available: list-functions, describe-function, eval-expression, execute-keys, minibuffer-prompt, current-buffer-state"
+                             operation)))
+                (error (format "Error executing emacs skill: %s" (error-message-string err))))))))
 
 (provide 'magent-skill-emacs)
 ;;; magent-skill-emacs.el ends here
