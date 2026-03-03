@@ -158,7 +158,9 @@ Called on first use of any magent command.  Loads agents and skills."
 (provide 'magent)
 
 ;; Local Variables:
-;; byte-compile-warnings: (not cl-functions)
+;; byte-compile-warnings: (not cl-functions obsolete)
+;; no-byte-compile: nil
+;; no-native-compile: nil
 ;; End:
 
 ;;; magent.el ends here

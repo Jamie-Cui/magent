@@ -556,8 +556,9 @@ If no text was streamed (tool-only round), removes the orphaned header."
   (setq magent-ui--processing t)
   (spinner-start magent--spinner)
 
-  ;; FIXME(@jamie) there should be no truncating
-  (magent-log "INFO processing: %s" (truncate-string-to-width input magent-ui-log-truncate-length nil nil "..."))
+  ;; Log full input without truncating (previous truncation was for readability,
+  ;; but full logs are more useful for debugging)
+  (magent-log "INFO processing: %s" input)
 
   (condition-case err
       (magent-agent-process
