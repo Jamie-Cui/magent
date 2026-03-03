@@ -102,9 +102,10 @@ CONTENT can be a string or a list of content blocks."
          (to-remove (- count max)))
     (when (> to-remove 0)
       ;; Remove oldest messages
-      (setf (magent-session-messages session)
-            (nthcdr to-remove messages))
-      (setf (magent-session-message-count session) max)
+      (let ((trimmed (nthcdr to-remove messages)))
+        (setf (magent-session-messages session) trimmed)
+        ;; Recount from actual list length to stay in sync
+        (setf (magent-session-message-count session) (length trimmed)))
       (magent-log "INFO Trimmed session history: removed %d old messages" to-remove))))
 
 (defun magent-session-get-messages (session)

@@ -25,21 +25,8 @@
 
 ;;; Tool implementations
 
-(defun magent-tools--project-root ()
-  "Return the project root directory for tool operations.
-Uses `magent-project-root-function' if set, then tries projectile
-and project.el, falling back to `default-directory'."
-  (or (when (bound-and-true-p magent-project-root-function)
-        (funcall magent-project-root-function))
-      (when (fboundp 'projectile-project-root)
-        (ignore-errors (projectile-project-root)))
-      (when (fboundp 'project-current)
-        (ignore-errors
-          (when-let ((proj (project-current nil)))
-            (if (fboundp 'project-root)
-                (project-root proj)
-              (car (with-no-warnings (project-roots proj)))))))
-      default-directory))
+(defalias 'magent-tools--project-root #'magent-project-root
+  "Return the project root directory for tool operations.")
 
 (defun magent-tools--resolve-path (path)
   "Resolve PATH for tool operations.

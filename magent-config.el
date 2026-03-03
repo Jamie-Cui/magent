@@ -50,7 +50,7 @@ When making code changes:
 
 If you're unsure about something, ask the user for clarification.
 
-IMPORTANT: Respond with plain ASCII text only. Do not use markdown formatting (no **bold**, no `code`, no ### headers, no bullet points with -, no numbered lists with 1.). Use plain text indentation and spacing instead."
+Use Markdown formatting in your responses: **bold** for emphasis, `code` for inline code, code blocks for multi-line code, and headers where appropriate."
   "System prompt for the AI agent."
   :type 'string
   :group 'magent)
@@ -215,6 +215,24 @@ Streaming text chunks are accumulated for this duration before
 rendering to reduce UI updates."
   :type 'float
   :group 'magent)
+
+;;; Shared utilities
+
+(defun magent-project-root ()
+  "Return the project root directory.
+Uses `magent-project-root-function' if set, then tries projectile
+and project.el, falling back to `default-directory'."
+  (or (when (bound-and-true-p magent-project-root-function)
+        (funcall magent-project-root-function))
+      (when (fboundp 'projectile-project-root)
+        (ignore-errors (projectile-project-root)))
+      (when (fboundp 'project-current)
+        (ignore-errors
+          (when-let ((proj (project-current nil)))
+            (if (fboundp 'project-root)
+                (project-root proj)
+              (car (with-no-warnings (project-roots proj)))))))
+      default-directory))
 
 ;;; Logging stub
 ;; Defined here so all modules can call magent-log unconditionally.

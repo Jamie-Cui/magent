@@ -29,7 +29,7 @@
 (require 'cl-lib)
 (require 'magent-config)
 (require 'magent-skills)
-(require 'magent-yaml)
+(require 'magent-frontmatter)
 
 (declare-function magent-log "magent-ui")
 
@@ -56,8 +56,7 @@ Each directory can contain subdirectories with SKILL.md files."
 
 (defun magent-skill-file--project-skill-dirs ()
   "Get project-local skill directories."
-  (let ((root (when (bound-and-true-p magent-project-root-function)
-                (funcall magent-project-root-function))))
+  (let ((root (magent-project-root)))
     (when root
       (let ((project-skill-dir (expand-file-name ".magent/skills" root)))
         (when (file-directory-p project-skill-dir)
@@ -142,7 +141,7 @@ For tool-type skills, also loads companion .el file if present."
       (with-temp-buffer
         (insert-file-contents filepath)
         (let* ((content (buffer-string))
-               (parsed (magent-yaml-parse-frontmatter content))
+               (parsed (magent-frontmatter-parse content))
                (frontmatter (car parsed))
                (body (cdr parsed)))
           (when frontmatter
