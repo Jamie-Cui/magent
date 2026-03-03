@@ -89,24 +89,29 @@ If a skill with the same name exists, it will be replaced."
 
 ;;; Skill invocation
 
-(defun magent-skills-invoke (skill-name operation args)
-  "Invoke SKILL-NAME with OPERATION and ARGS.
+(defun magent-skills-invoke (skill-name operation args callback)
+  "Invoke SKILL-NAME with OPERATION and ARGS asynchronously.
+CALLBACK is called with the result.
 Only works for tool-type skills."
   (let ((skill (magent-skills-get skill-name)))
     (cond
      ((null skill)
-      (format "Error: skill '%s' not found. Available skills: %s"
-              skill-name (mapconcat #'identity (magent-skills-list) ", ")))
+      (funcall callback
+               (format "Error: skill '%s' not found. Available skills: %s"
+                       skill-name (mapconcat #'identity (magent-skills-list) ", "))))
      ((eq (magent-skill-type skill) 'instruction)
-      (format "Error: skill '%s' is instruction-type, not invokable via tool"
-              skill-name))
+      (funcall callback
+               (format "Error: skill '%s' is instruction-type, not invokable via tool"
+                       skill-name)))
      ((null (magent-skill-invoke-function skill))
-      (format "Error: skill '%s' has no invoke function" skill-name))
+      (funcall callback
+               (format "Error: skill '%s' has no invoke function" skill-name)))
      (t
       (condition-case err
-          (funcall (magent-skill-invoke-function skill) operation args)
-        (error (format "Error invoking skill '%s': %s"
-                       skill-name (error-message-string err))))))))
+          (funcall (magent-skill-invoke-function skill) operation args callback)
+        (error (funcall callback
+                        (format "Error invoking skill '%s': %s"
+                                skill-name (error-message-string err)))))))))
 
 ;;; Get skill prompts for instruction-type skills
 
@@ -134,7 +139,6 @@ If SKILL-NAMES is a list, only include those skills."
 
 (defun magent-skills--register-builtin ()
   "Register built-in skills."
-  ;; Register emacs skill as tool-type
   (require 'magent-skill-emacs)
   (let ((skill (magent-skill-create
                 :name "emacs"
@@ -144,6 +148,9 @@ If SKILL-NAMES is a list, only include those skills."
                 :invoke-function #'magent-skill-emacs-invoke)))
     (magent-skills-register skill)
     (magent-log "INFO registered built-in skill: emacs (tool-type)")))
+
+;; Auto-register built-in skills when this module is loaded
+(magent-skills--register-builtin)
 
 (provide 'magent-skills)
 ;;; magent-skills.el ends here
