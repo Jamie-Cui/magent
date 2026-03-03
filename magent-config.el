@@ -162,6 +162,41 @@ If rg is not found, grep tool calls will fail with an informative error."
   :type 'string
   :group 'magent)
 
+(defcustom magent-grep-max-matches 100
+  "Maximum number of matches to return from grep searches."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-bash-timeout 30
+  "Default timeout in seconds for bash commands."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-emacs-eval-timeout 10
+  "Default timeout in seconds for emacs_eval operations."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-ui-result-max-length 200
+  "Maximum length for tool result display before truncation."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-ui-result-preview-length 150
+  "Length of preview shown for truncated results."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-ui-tool-input-max-length 60
+  "Maximum length for tool input display before truncation."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-ui-log-truncate-length 80
+  "Maximum length for log messages before truncation."
+  :type 'integer
+  :group 'magent)
+
 ;;; Logging stub
 ;; Defined here so all modules can call magent-log unconditionally.
 ;; magent-ui.el overrides this with the real implementation that writes

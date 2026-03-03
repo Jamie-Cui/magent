@@ -20,7 +20,8 @@
 (cl-defstruct (magent-session
                (:constructor magent-session-create)
                (:copier nil))
-  messages
+  (messages nil)             ; List of messages in chronological order
+  (message-count 0)          ; Cached count to avoid repeated length calls
   (max-history magent-max-history)
   (id nil)
   (agent nil))
@@ -80,21 +81,36 @@ If CONTENT is a list of content blocks, concatenate their text fields."
   "Add a message to SESSION.
 ROLE is either \\='user, \\='assistant, or \\='tool.
 CONTENT can be a string or a list of content blocks."
-  (let ((messages (magent-session-messages session)))
-    (push (list (cons 'role role)
-                (cons 'content content))
-          messages)
-    ;; Trim to max history
-    (when (> (length messages) (magent-session-max-history session))
-      (setf messages (butlast messages (- (length messages)
-                                          (magent-session-max-history session)))))
-    ;; Always update the session messages (was missing before!)
-    (setf (magent-session-messages session) messages))
+  (let* ((msg (list (cons 'role role) (cons 'content content)))
+         (messages (magent-session-messages session)))
+    ;; Append to end (maintaining chronological order)
+    (setf (magent-session-messages session)
+          (nconc messages (list msg)))
+    ;; Increment count
+    (cl-incf (magent-session-message-count session))
+    ;; Lazy trim: only when we exceed threshold by 10 messages
+    (when (> (magent-session-message-count session)
+             (+ (magent-session-max-history session) 10))
+      (magent-session--trim-history session)))
   session)
+
+(defun magent-session--trim-history (session)
+  "Trim SESSION messages to max-history limit."
+  (let* ((messages (magent-session-messages session))
+         (count (magent-session-message-count session))
+         (max (magent-session-max-history session))
+         (to-remove (- count max)))
+    (when (> to-remove 0)
+      ;; Remove oldest messages
+      (setf (magent-session-messages session)
+            (nthcdr to-remove messages))
+      (setf (magent-session-message-count session) max)
+      (magent-log "INFO Trimmed session history: removed %d old messages" to-remove))))
 
 (defun magent-session-get-messages (session)
   "Get all messages from SESSION in chronological order."
-  (reverse (magent-session-messages session)))
+  ;; Messages are now stored in chronological order, no reverse needed
+  (magent-session-messages session))
 
 ;;; Session display
 

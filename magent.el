@@ -133,16 +133,22 @@ When enabled, Magent commands are available.
             (define-key map (kbd "C-c m v") #'magent-list-agents)
             map)
   (when magent-mode
-    (unless magent--initialized
-      ;; Initialize agent registry (also loads custom agents)
-      (magent-agent-registry-init)
-      ;; Load skills from files (built-in skills auto-register on require)
-      (magent-skill-file-load-all)
-      ;; Add spinner to global-mode-string for custom mode-lines
-      (unless (member magent--mode-line-spinner-construct global-mode-string)
-        (push magent--mode-line-spinner-construct global-mode-string))
-      (setq magent--initialized t)
-      (magent-log "INFO magent mode enabled"))))
+    ;; Minimal initialization on mode enable
+    (unless (member magent--mode-line-spinner-construct global-mode-string)
+      (push magent--mode-line-spinner-construct global-mode-string))
+    (magent-log "INFO magent mode enabled (lazy init)")))
+
+(defun magent--ensure-initialized ()
+  "Ensure magent is fully initialized.
+Called on first use of any magent command.  Loads agents and skills."
+  (unless magent--initialized
+    (magent-log "INFO Initializing magent agents and skills...")
+    ;; Initialize agent registry (also loads custom agents)
+    (magent-agent-registry-init)
+    ;; Load skills from files (built-in skills auto-register on require)
+    (magent-skill-file-load-all)
+    (setq magent--initialized t)
+    (magent-log "INFO magent initialization complete")))
 
 ;;;###autoload
 (define-globalized-minor-mode global-magent-mode magent-mode

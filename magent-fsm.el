@@ -241,14 +241,13 @@ Returns a list of positional arguments in the order defined by ARGS-SPEC."
                                 'assistant
                                 (magent-fsm-accumulated-text fsm)))
 
-  ;; Clean up request buffer
-  (when (buffer-live-p (magent-fsm-request-buffer fsm))
-    (kill-buffer (magent-fsm-request-buffer fsm)))
-
   ;; Call user callback
   (when (magent-fsm-callback fsm)
     (funcall (magent-fsm-callback fsm)
-             (magent-fsm-accumulated-text fsm))))
+             (magent-fsm-accumulated-text fsm)))
+
+  ;; Clean up resources
+  (magent-fsm-destroy fsm))
 
 (defun magent-fsm--handle-error (fsm)
   "Handle ERROR state: log error and call user callback with nil."
@@ -256,13 +255,12 @@ Returns a list of positional arguments in the order defined by ARGS-SPEC."
   (let ((error-msg (or (magent-fsm-error fsm) "Unknown error")))
     (magent-log "ERROR FSM error: %s" error-msg)
 
-    ;; Clean up request buffer
-    (when (buffer-live-p (magent-fsm-request-buffer fsm))
-      (kill-buffer (magent-fsm-request-buffer fsm)))
-
     ;; Call user callback with nil to signal error
     (when (magent-fsm-callback fsm)
-      (funcall (magent-fsm-callback fsm) nil))))
+      (funcall (magent-fsm-callback fsm) nil))
+
+    ;; Clean up resources
+    (magent-fsm-destroy fsm)))
 
 ;;; Tool Utilities
 
@@ -282,8 +280,8 @@ Returns a list of positional arguments in the order defined by ARGS-SPEC."
                 ;; bash: show command (truncated)
                 ((string= name "bash")
                  (let ((cmd (plist-get args :command)))
-                   (if (and cmd (> (length cmd) 60))
-                       (format "%s..." (substring cmd 0 57))
+                   (if (and cmd (> (length cmd) magent-ui-tool-input-max-length))
+                       (format "%s..." (substring cmd 0 (- magent-ui-tool-input-max-length 3)))
                      (or cmd "?"))))
                 ;; read_file/write_file/edit_file: show path
                 ((member name '("read_file" "write_file" "edit_file"))
@@ -301,8 +299,8 @@ Returns a list of positional arguments in the order defined by ARGS-SPEC."
                 ;; emacs_eval: show sexp (truncated)
                 ((string= name "emacs_eval")
                  (let ((sexp (plist-get args :sexp)))
-                   (if (and sexp (> (length sexp) 40))
-                       (format "%s..." (substring sexp 0 37))
+                   (if (and sexp (> (length sexp) magent-ui-tool-input-max-length))
+                       (format "%s..." (substring sexp 0 (- magent-ui-tool-input-max-length 3)))
                      (or sexp "?"))))
                 ;; Default: show all args
                 (t
@@ -315,10 +313,11 @@ Returns a list of positional arguments in the order defined by ARGS-SPEC."
 (defun magent-fsm--show-tool-result (name result)
   "Show tool RESULT for tool NAME in the UI."
   (require 'magent-ui)
+  (require 'magent-config)
   (let* ((result-str (if (stringp result) result (format "%s" result)))
-         (truncated (if (> (length result-str) 200)
+         (truncated (if (> (length result-str) magent-ui-result-max-length)
                         (format "%s... [%d bytes]"
-                                (substring result-str 0 150)
+                                (substring result-str 0 magent-ui-result-preview-length)
                                 (length result-str))
                       result-str)))
     (magent-ui-insert-tool-result name truncated)))
@@ -470,7 +469,9 @@ and only transitions to PROCESS/DONE when the final response
              ((eq response 'abort)
               (setf (magent-fsm-error fsm) "Request aborted")
               (magent-fsm-transition fsm 'ERROR))))
-        ((beginning-of-buffer end-of-buffer) nil)))))
+        ((beginning-of-buffer end-of-buffer)
+         (magent-log "DEBUG Suppressed cursor error in FSM callback")
+         nil)))))
 
 (defun magent-fsm--convert-tools-to-gptel (tools)
   "Convert magent tool specs to gptel-tool structs.
@@ -497,6 +498,26 @@ TOOLS is a list of plists with :name, :description, :args, :function, :async."
   "Abort FSM execution."
   (setf (magent-fsm-error fsm) "User aborted")
   (magent-fsm-transition fsm 'ERROR))
+
+(defun magent-fsm-destroy (fsm)
+  "Clean up all FSM resources explicitly.
+Cancels timeout timers, kills request buffers, and deletes processes.
+Call this when a FSM is no longer needed to prevent resource leaks."
+  (when fsm
+    ;; Cancel timeout timer
+    (magent-fsm--cancel-timeout fsm)
+
+    ;; Kill request buffer
+    (when-let ((buf (magent-fsm-request-buffer fsm)))
+      (when (buffer-live-p buf)
+        (kill-buffer buf)))
+
+    ;; Delete process if still running
+    (when-let ((proc (magent-fsm-process fsm)))
+      (when (process-live-p proc)
+        (delete-process proc)))
+
+    (magent-log "INFO FSM destroyed and resources cleaned up")))
 
 (provide 'magent-fsm)
 
