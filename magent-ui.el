@@ -59,7 +59,7 @@ that hit buffer edges."
                (let ((win (get-buffer-window (current-buffer))))
                  (when win
                    (set-window-point win (point-max))))))
-         ((beginning-of-buffer end-of-buffer)
+         ((beginning-of-buffer end-of-buffer beginning-of-line end-of-line)
           (magent-log "DEBUG Suppressed cursor error in buffer insert")
           nil)))))
 
@@ -123,12 +123,11 @@ current session in chronological order."
   (when magent--current-fsm
     (magent-fsm-abort magent--current-fsm)
     (setq magent--current-fsm nil))
-  (when magent-ui--processing
-    (setq magent-ui--processing nil)
-    (when (and (boundp 'magent--spinner) magent--spinner)
-      (spinner-stop magent--spinner))
-    (magent-ui-insert-error "[Interrupted by user]")
-    (magent-log "INFO Request interrupted by user")))
+  (setq magent-ui--processing nil)
+  (when (and (boundp 'magent--spinner) magent--spinner)
+    (spinner-stop magent--spinner))
+  (magent-ui-insert-error "[Interrupted by user]")
+  (magent-log "INFO Request interrupted by user"))
 
 ;;; Transient menu
 
@@ -328,7 +327,7 @@ If no text was streamed (tool-only round), removes the orphaned heading."
                 (goto-char (point-max))
                 (unless (eq (char-before) ?\n)
                   (insert "\n"))))
-          ((beginning-of-buffer end-of-buffer)
+          ((beginning-of-buffer end-of-buffer beginning-of-line end-of-line)
            (magent-log "DEBUG Suppressed cursor error in streaming finish")
            nil))
         (setq magent-ui--streaming-start nil)

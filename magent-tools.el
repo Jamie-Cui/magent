@@ -455,6 +455,10 @@ This is the single source of truth for all tool names in the permission system."
     ("skill_invoke" . skill))
   "Maps gptel tool names to magent permission key symbols.")
 
+(defun magent-tools-permission-key (tool-name)
+  "Return the permission key symbol for TOOL-NAME, or nil if unknown."
+  (cdr (assoc tool-name magent-tools--name-to-permission-key)))
+
 (defvar magent-tools--all-gptel-tools
   (list magent-tools--read-file-tool
         magent-tools--write-file-tool
@@ -468,20 +472,21 @@ This is the single source of truth for all tool names in the permission system."
   "All magent tools as gptel-tool structs.")
 
 (defun magent-tools-get-gptel-tools (agent-info)
-  "Return a list of gptel-tool structs allowed for AGENT-INFO.
-Filters by both `magent-enable-tools' global config and agent permissions."
+  "Return a list of gptel-tool structs available for AGENT-INFO.
+Filters by both `magent-enable-tools' global config and agent permissions.
+Tools with \\='ask permission are included (they will be confirmed at runtime)."
   (let ((permission (and agent-info
                          (magent-agent-info-permission agent-info))))
     (cl-remove-if-not
      (lambda (tool)
        (let* ((tool-name (gptel-tool-name tool))
-              (perm-key (cdr (assoc tool-name magent-tools--name-to-permission-key))))
+              (perm-key (magent-tools-permission-key tool-name)))
          (and
           ;; Globally enabled
           (or (null perm-key) (memq perm-key magent-enable-tools))
-          ;; Agent permission allows it
+          ;; Agent permission allows or asks
           (or (null permission)
-              (magent-permission-allow-p permission perm-key)))))
+              (magent-permission-tool-available-p permission perm-key)))))
      magent-tools--all-gptel-tools)))
 
 (defun magent-tools-get-magent-tools (agent-info)
@@ -493,11 +498,13 @@ Returns tools in magent internal format (plists) instead of gptel-tool structs."
 
 (defun magent-tools--gptel-to-magent-tool (gptel-tool)
   "Convert a gptel-tool struct to magent tool plist format."
-  (list :name (gptel-tool-name gptel-tool)
-        :description (gptel-tool-description gptel-tool)
-        :args (gptel-tool-args gptel-tool)
-        :function (gptel-tool-function gptel-tool)
-        :async (gptel-tool-async gptel-tool)))
+  (let ((tool-name (gptel-tool-name gptel-tool)))
+    (list :name tool-name
+          :description (gptel-tool-description gptel-tool)
+          :args (gptel-tool-args gptel-tool)
+          :function (gptel-tool-function gptel-tool)
+          :async (gptel-tool-async gptel-tool)
+          :perm-key (magent-tools-permission-key tool-name))))
 
 (provide 'magent-tools)
 ;;; magent-tools.el ends here
