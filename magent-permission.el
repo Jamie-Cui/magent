@@ -54,6 +54,7 @@ Examples:
    (cons 'doom_loop magent-permission-ask)
    (cons 'external_directory magent-permission-ask)
    (cons 'delegate magent-permission-allow)
+   (cons 'web_search magent-permission-allow)
    ;; File read restrictions (mirror .gitignore for .env)
    ;; More specific patterns must come before less specific ones.
    (cons 'read

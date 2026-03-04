@@ -275,6 +275,67 @@ then spawns a nested `gptel-request' with the subagent's configuration."
                                      ((null response) "Error: subagent request failed")
                                      (t (format "%s" response))))))))))))))
 
+(defun magent-tools--web-search (callback query &optional max-results)
+  "Search the web using DuckDuckGo asynchronously.
+CALLBACK is called with formatted search results or error message.
+QUERY is the search string.
+MAX-RESULTS is the maximum number of results to return (default 5)."
+  (let ((max-results (or max-results 5))
+        (url (format "https://html.duckduckgo.com/html/?q=%s"
+                     (url-hexify-string query))))
+    (condition-case err
+        (url-retrieve
+         url
+         (lambda (status)
+           (magent-tools--web-search-callback status callback query max-results))
+         nil t t)
+      (error (funcall callback (format "Error initiating search: %s" (error-message-string err)))))))
+
+(defun magent-tools--web-search-callback (status callback query max-results)
+  "Handle HTTP response for web search.
+STATUS is the url-retrieve status list.
+CALLBACK is called with formatted results.
+QUERY is the original search query.
+MAX-RESULTS is the maximum number of results."
+  (condition-case err
+      (let ((error-status (plist-get status :error)))
+        (if error-status
+            (funcall callback (format "HTTP error: %s" error-status))
+          (goto-char (point-min))
+          (when (re-search-forward "\r?\n\r?\n" nil t)
+            (let* ((html (libxml-parse-html-region (point) (point-max)))
+                   (results (magent-tools--parse-ddg-results html max-results)))
+              (if results
+                  (funcall callback (magent-tools--format-search-results query results))
+                (funcall callback (format "No results found for: %s" query)))))))
+    (error (funcall callback (format "Error parsing results: %s" (error-message-string err))))))
+
+(defun magent-tools--parse-ddg-results (dom max-results)
+  "Parse DuckDuckGo HTML DOM and extract search results.
+Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
+  (let ((results nil)
+        (count 0))
+    (dolist (result (dom-by-class dom "result__a"))
+      (when (< count max-results)
+        (let ((title (dom-text result))
+              (url (dom-attr result 'href)))
+          (when (and title url (not (string-blank-p title)))
+            (push (list :title (string-trim title) :url url) results)
+            (cl-incf count)))))
+    (nreverse results)))
+
+(defun magent-tools--format-search-results (query results)
+  "Format RESULTS list into readable string for QUERY."
+  (concat (format "Search results for \"%s\":\n\n" query)
+          (mapconcat
+           (lambda (result)
+             (format "%d. %s\n   %s"
+                     (1+ (cl-position result results :test #'equal))
+                     (plist-get result :title)
+                     (plist-get result :url)))
+           results
+           "\n\n")))
+
 ;;; gptel-tool registrations
 
 (require 'gptel)
@@ -436,10 +497,26 @@ automatically included in the system prompt."
    :category "magent")
   "gptel-tool struct for skill_invoke.")
 
+(defvar magent-tools--web-search-tool
+  (gptel-make-tool
+   :name "web_search"
+   :description "Search the web using DuckDuckGo. Returns titles and URLs of search results. Use this to find current information, documentation, or online resources."
+   :args (list '(:name "query"
+                       :type string
+                       :description "Search query string")
+               '(:name "max_results"
+                       :type integer
+                       :description "Maximum number of results to return (default 5)"
+                       :optional t))
+   :function #'magent-tools--web-search
+   :async t
+   :category "magent")
+  "gptel-tool struct for web_search.")
+
 ;;; Tool filtering by agent permissions
 
 (defconst magent-tools--permission-keys
-  '(read write edit grep glob bash emacs_eval delegate skill)
+  '(read write edit grep glob bash emacs_eval delegate skill web_search)
   "Canonical list of magent tool permission key symbols.
 This is the single source of truth for all tool names in the permission system.")
 
@@ -452,7 +529,8 @@ This is the single source of truth for all tool names in the permission system."
     ("bash"         . bash)
     ("emacs_eval"   . emacs_eval)
     ("delegate"     . delegate)
-    ("skill_invoke" . skill))
+    ("skill_invoke" . skill)
+    ("web_search"   . web_search))
   "Maps gptel tool names to magent permission key symbols.")
 
 (defun magent-tools-permission-key (tool-name)
@@ -468,7 +546,8 @@ This is the single source of truth for all tool names in the permission system."
         magent-tools--bash-tool
         magent-tools--emacs-eval-tool
         magent-tools--delegate-tool
-        magent-tools--skill-invoke-tool)
+        magent-tools--skill-invoke-tool
+        magent-tools--web-search-tool)
   "All magent tools as gptel-tool structs.")
 
 (defun magent-tools-get-gptel-tools (agent-info)

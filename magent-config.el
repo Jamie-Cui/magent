@@ -65,10 +65,10 @@ IMPORTANT: Format your responses using Org-mode. Start your content with level-2
   :type 'boolean
   :group 'magent)
 
-(defcustom magent-enable-tools '(read write edit grep glob bash emacs_eval delegate skill)
+(defcustom magent-enable-tools '(read write edit grep glob bash emacs_eval delegate skill web_search)
   "List of enabled tools.
 Available tools: read, write, edit, grep, glob, bash, emacs_eval,
-delegate, skill."
+delegate, skill, web_search."
   :type '(set (const :tag "Read files" read)
               (const :tag "Write files" write)
               (const :tag "Edit files" edit)
@@ -77,7 +77,8 @@ delegate, skill."
               (const :tag "Run shell commands" bash)
               (const :tag "Evaluate Emacs Lisp" emacs_eval)
               (const :tag "Delegate to subagents" delegate)
-              (const :tag "Invoke Claude Code skills" skill))
+              (const :tag "Invoke Claude Code skills" skill)
+              (const :tag "Search the web" web_search))
   :group 'magent)
 
 (defcustom magent-project-root-function nil

@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Magent Design Document</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <h1>Magent Design Document</h1>
+    <p class="subtitle">Author: Jamie Cui | Date: 2026</p>
+
+    <div class="toc">
+        <p><strong>Table of Contents</strong></p>
+        <ul>
+            <li><a href="#introduction">Introduction</a></li>
+            <li><a href="#features">Key Features</a></li>
+            <li><a href="#architecture">Architecture Overview</a></li>
+            <li><a href="#modules">Core Modules</a></li>
+            <li><a href="#data">Core Data Structures</a></li>
+            <li><a href="#design">Key Design Decisions</a></li>
+        </ul>
+    </div>
+
+    <hr>
+
+    <h2 id="introduction">Introduction</h2>
+    <p>Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and permission-based tool access. It delegates all LLM communication to <a href="https://github.com/karthink/gptel">gptel</a> (the sole external dependency beyond Emacs 27.1+).</p>
+    <p>This document provides a comprehensive overview of the magent architecture, design decisions, data structures, and implementation details.</p>
+
+    <h2 id="features">Key Features</h2>
+    <ul>
+        <li>Multi-agent system with specialized agents (build, plan, explore, general, compaction, title, summary)</li>
+        <li>Permission-based tool access control with fine-grained rules per agent</li>
+        <li>Custom agent support via YAML frontmatter + markdown files</li>
+        <li>LLM integration via gptel (Anthropic Claude, OpenAI GPT, Ollama, Gemini, etc.)</li>
+        <li>File operations: read, write, edit, grep, glob</li>
+        <li>Shell command execution via bash tool</li>
+        <li>Emacs Lisp evaluation via emacs_eval tool</li>
+        <li>Agent delegation with explore and general subagents</li>
+        <li>Claude Code skills for interacting with the running Emacs instance</li>
+        <li>Session management with conversation history and persistence</li>
+        <li>Minibuffer interface for quick prompts</li>
+    </ul>
+
+    <h2 id="architecture">Architecture Overview</h2>
+    <p>Magent follows a modular, layered architecture with clear separation of concerns:</p>
+    <pre>magent.el (entry point + mode)
+    |
+    v
++------------------+------------------+------------------+
+|     UI Layer     |   Agent Layer    |   Tool Layer     |
+|  magent-ui.el    | magent-agent.el  | magent-tools.el  |
++------------------+------------------+------------------+
+    |                |                |
+    |                v                |
+    |        Session Layer           |
+    |      magent-session.el         |
+    |                |               |
+    |                v                |
+    |      FSM Layer                 |
+    |       magent-fsm.el            |
+    |                |               |
+    v                v                v
++------------------------------------------------------+
+|                 Core Modules                         |
+|  - Agent Registry (magent-agent-registry.el)         |
+|  - Permission System (magent-permission.el)          |
+|  - Skills (magent-skills.el + skills/*.el)           |
+|  - Frontmatter Parsing (magent-frontmatter.el)       |
+|  - Config (magent-config.el)                         |
++------------------------------------------------------+
+    |
+    v
+  gptel (external)</pre>
+
+    <h2 id="modules">Core Modules</h2>
+
+    <h3>Entry Point (magent.el)</h3>
+    <p>The entry point defines <code>magent-mode</code>, a minor mode with <code>C-c m</code> keybinding prefix. When enabled, it initializes the agent registry, loads custom agents, and loads Claude Code skills.</p>
+
+    <h3>Agent System</h3>
+    <p>Built-in agents:</p>
+    <table>
+        <tr>
+            <th>Agent</th>
+            <th>Mode</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>build</td>
+            <td>primary</td>
+            <td>Default agent for building and general tasks</td>
+        </tr>
+        <tr>
+            <td>plan</td>
+            <td>primary</td>
+            <td>Planning mode with restricted edits</td>
+        </tr>
+        <tr>
+            <td>explore</td>
+            <td>subagent</td>
+            <td>Codebase exploration specialist</td>
+        </tr>
+        <tr>
+            <td>general</td>
+            <td>subagent</td>
+            <td>General-purpose research subagent</td>
+        </tr>
+        <tr>
+            <td>compaction</td>
+            <td>primary</td>
+            <td>Session summarization (hidden)</td>
+        </tr>
+        <tr>
+            <td>title</td>
+            <td>primary</td>
+            <td>Conversation title generation (hidden)</td>
+        </tr>
+        <tr>
+            <td>summary</td>
+            <td>primary</td>
+            <td>Pull-request style summary generation (hidden)</td>
+        </tr>
+    </table>
+
+    <h3>Tool System (magent-tools.el)</h3>
+    <p>9 tools implemented as gptel-tool structs:</p>
+    <table>
+        <tr>
+            <th>Tool</th>
+            <th>Side-effect</th>
+            <th>Description</th>
+        </tr>
+        <tr><td>read_file</td><td>no</td><td>Read file contents</td></tr>
+        <tr><td>write_file</td><td>yes</td><td>Write/create file (auto-creates dirs)</td></tr>
+        <tr><td>edit_file</td><td>yes</td><td>Replace exact text in file</td></tr>
+        <tr><td>grep</td><td>no</td><td>Regex search via ripgrep</td></tr>
+        <tr><td>glob</td><td>no</td><td>Find files matching glob pattern</td></tr>
+        <tr><td>bash</td><td>yes</td><td>Execute shell commands</td></tr>
+        <tr><td>emacs_eval</td><td>yes</td><td>Evaluate Emacs Lisp expressions</td></tr>
+        <tr><td>delegate</td><td>yes</td><td>Spawn nested request using subagent</td></tr>
+        <tr><td>skill_invoke</td><td>no</td><td>Invoke Claude Code skills</td></tr>
+    </table>
+
+    <h3>Finite State Machine (magent-fsm.el)</h3>
+    <p>The FSM manages the complete tool-calling loop with states: INIT → SEND → WAIT → PROCESS → TOOL → DONE/ERROR</p>
+
+    <h2 id="data">Core Data Structures</h2>
+
+    <h3>magent-agent-info</h3>
+    <pre>(cl-defstruct (magent-agent-info (:constructor magent-agent-info-create))
+  name           ; Agent identifier (string)
+  description    ; Human-readable description
+  mode           ; primary, subagent, or all
+  native         ; Whether built-in
+  hidden         ; Hide from listings
+  temperature    ; Optional temperature override
+  top-p          ; Optional top-p override
+  color          ; Optional display color
+  model          ; Optional model spec
+  prompt         ; Optional custom system prompt
+  options        ; Additional options (alist)
+  steps          ; Optional max iteration steps
+  permission     ; Permission ruleset
+)</pre>
+
+    <h3>magent-session</h3>
+    <pre>(cl-defstruct (magent-session (:constructor magent-session-create))
+  messages       ; List of messages in chronological order
+  message-count  ; Cached count
+  max-history    ; Max messages to keep
+  id             ; Session identifier
+  agent          ; Assigned agent info
+)</pre>
+
+    <h2 id="design">Key Design Decisions</h2>
+
+    <h3>No Custom HTTP Client</h3>
+    <p>All LLM communication goes through gptel. This decision:</p>
+    <ul>
+        <li>Reduces code maintenance burden</li>
+        <li>Ensures compatibility with all gptel providers</li>
+        <li>Leverages gptel's battle-tested HTTP implementation</li>
+        <li>Simplifies tool-calling loop implementation</li>
+    </ul>
+
+    <h3>Agent Modes</h3>
+    <p>The <code>primary</code> vs <code>subagent</code> distinction enables:</p>
+    <ul>
+        <li>Clear API between agent types</li>
+        <li>Permission control (non-subagents cannot be delegated to)</li>
+        <li>UI filtering (only primary agents shown in agent selection)</li>
+    </ul>
+
+    <h3>Tool Filtering</h3>
+    <p>Tools are defined once globally but filtered per-agent via permission rules. This approach:</p>
+    <ul>
+        <li>Avoids duplicate tool definitions</li>
+        <li>Centralizes tool implementation</li>
+        <li>Enables dynamic permission changes per session</li>
+    </ul>
+
+    <hr>
+
+    <footer>
+        <p><a href="https://github.com/jamie-cui/magent">View on GitHub</a> | GNU General Public License v3.0</p>
+    </footer>
+</body>
+</html>
