@@ -87,7 +87,7 @@ For tool-type skills, this describes available operations.
 
 ### Configuration
 
-Magent-specific settings via `customize-group RET magent` (17 defcustom variables): `magent-system-prompt`, `magent-buffer-name`, `magent-auto-scroll`, `magent-enable-streaming`, `magent-enable-tools`, `magent-project-root-function`, `magent-max-history`, `magent-default-agent`, `magent-load-custom-agents`, `magent-enable-logging`, `magent-assistant-prompt` (tag text for `[assistant]` headers), `magent-user-prompt` (tag text for `[user]` headers), `magent-tool-call-prompt` (tag text for `[tool: ...]` headers), `magent-error-prompt` (tag text for `[error]` headers), `magent-agent-directory`, `magent-session-directory`, `magent-grep-program`.
+Magent-specific settings via `customize-group RET magent` (16 defcustom variables): `magent-system-prompt`, `magent-buffer-name`, `magent-auto-scroll`, `magent-enable-tools`, `magent-project-root-function`, `magent-max-history`, `magent-default-agent`, `magent-load-custom-agents`, `magent-enable-logging`, `magent-assistant-prompt` (tag text for `[assistant]` headers), `magent-user-prompt` (tag text for `[user]` headers), `magent-tool-call-prompt` (tag text for `[tool: ...]` headers), `magent-error-prompt` (tag text for `[error]` headers), `magent-agent-directory`, `magent-session-directory`, `magent-grep-program`.
 
 Skill-specific settings:
 - `magent-skill-directories`: List of directories to scan for skill files (default: `~/.emacs.d/magent-skills`)
@@ -102,3 +102,14 @@ LLM provider/model/key settings are managed entirely by gptel — configure via 
 | `magent-list-skills` | Display all registered skills |
 | `magent-describe-skill` | Show detailed skill information |
 | `magent-reload-skills` | Reload skills from disk |
+
+## Testing
+
+After any elisp code change, **always** test magent end-to-end in the running Emacs instance (via `emacsclient --eval`):
+
+1. Reload changed files: `(load "/path/to/changed-file.el" nil t)`
+2. Clear session: `(magent-clear-session)`
+3. Run a **tool-use prompt** (e.g., `"how many buffers in emacs"`) — verifies tool calling loop, UI rendering of `[tool: ...]` sections, and FSM state transitions.
+4. Run a **non-tool-use prompt** (e.g., `"what is emacs"`) — verifies streaming text rendering, assistant section creation, and markdown fontification.
+5. Check `*Messages*` buffer for errors (e.g., `progn: Beginning of buffer`, `Wrong type argument`).
+6. Check `*magent-log*` for FSM state transitions and confirm the request reaches `DONE`.

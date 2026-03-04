@@ -426,11 +426,6 @@ and only transitions to PROCESS/DONE when the final response
                           (plist-get info :tool-pending))
                 (magent-fsm-transition fsm 'PROCESS)))
 
-             ;; Non-streaming final response
-             ((stringp response)
-              (setf (magent-fsm-accumulated-text fsm) response)
-              (magent-fsm-transition fsm 'PROCESS))
-
              ;; gptel tool-call confirmation — auto-accept.
              ;; tool call/result display is handled by the wrapped function.
              ;; Only fires when gptel-confirm-tool-calls is t or tool has :confirm.

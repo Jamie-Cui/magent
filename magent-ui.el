@@ -32,6 +32,7 @@
       (setq magent-ui--md-buffer
             (with-current-buffer (generate-new-buffer " *magent-md*")
               (markdown-mode)
+              (font-lock-mode 1)
               (current-buffer))))))
 
 (defun magent-ui--fontify-md-region (buf start end)
@@ -62,14 +63,17 @@ Does nothing if the region is empty or markdown-mode is unavailable."
                 (pos 1)
                 (md-end (1+ (length text))))
             (while (< pos md-end)
-              (let* ((next (with-current-buffer md-buf
-                             (next-single-property-change pos 'face nil md-end)))
-                     (face (with-current-buffer md-buf
-                             (get-text-property pos 'face))))
-                (when face
-                  (put-text-property (+ offset pos) (+ offset next)
-                                     'font-lock-face face buf))
-                (setq pos next)))))))))
+              (let* ((face-prop (with-current-buffer md-buf
+                                  (or (get-text-property pos 'face)
+                                      (get-text-property pos 'font-lock-face))))
+                     (next-change (with-current-buffer md-buf
+                                    (let ((next-face (next-single-property-change pos 'face nil md-end))
+                                          (next-fl (next-single-property-change pos 'font-lock-face nil md-end)))
+                                      (min (or next-face md-end) (or next-fl md-end))))))
+                (when face-prop
+                  (put-text-property (+ offset pos) (+ offset next-change)
+                                     'font-lock-face face-prop buf))
+                (setq pos next-change)))))))))
 
 
 (defun magent-ui--fontify-md-region-async (buf start end)
@@ -229,13 +233,20 @@ BODY-START marks where the collapsible body begins."
       (overlay-put ov 'magent-section-body-overlay inv-ov))))
 
 (defun magent-ui--show-section (ov)
-  "Show (unfold) the body of section overlay OV."
+  "Show (unfold) the body of section overlay OV.
+Re-applies markdown fontification for assistant sections."
   (when (overlay-get ov 'magent-section-hidden)
     (let ((inv-ov (overlay-get ov 'magent-section-body-overlay)))
       (when inv-ov
         (delete-overlay inv-ov)))
     (overlay-put ov 'magent-section-hidden nil)
-    (overlay-put ov 'magent-section-body-overlay nil)))
+    (overlay-put ov 'magent-section-body-overlay nil)
+    (when (eq (overlay-get ov 'magent-section-type) 'assistant)
+      (let* ((body-start (overlay-get ov 'magent-section-body-start))
+             (body-end (overlay-end ov))
+             (buf (overlay-buffer ov)))
+        (when (and body-start body-end (> body-end body-start))
+          (magent-ui--fontify-md-region-async buf body-start body-end))))))
 
 ;;; Folding API
 
@@ -289,9 +300,12 @@ Markdown rendering is applied selectively to AI assistant messages only.
 Press \\[magent-ui-toggle-section] to fold/unfold the section at point.
 Press \\[magent-ui-toggle-all-sections] to fold/unfold all sections."
   (visual-line-mode 1)
-  (font-lock-mode 1)
+  ;; Set font-lock-defaults so font-lock-mode actually enables.
+  ;; We use text properties (font-lock-face) directly, not keywords.
+  (setq-local font-lock-defaults '(nil))
   (setq-local display-fill-column-indicator-column nil)
   (setq-local magent-ui--all-folded nil)
+  (font-lock-mode 1)
   (add-hook 'kill-buffer-hook #'magent-ui--cancel-timers nil t))
 
 (defun magent-ui--cancel-timers ()
@@ -597,17 +611,13 @@ Handles both streaming and non-streaming completion."
   (when (and (boundp 'magent--spinner) magent--spinner)
     (spinner-stop magent--spinner))
   (cond
-   ;; Streaming mode: text was already inserted incrementally;
+   ;; Streaming: text was already inserted incrementally;
    ;; markdown fontification was applied at each streaming completion signal.
-   ((and magent-enable-streaming (stringp response) (> (length response) 0))
-    (magent-log "INFO done (streaming)"))
-   ;; Streaming mode produced no text (tool-only round) -- nothing to display
-   ((and magent-enable-streaming (stringp response) (zerop (length response)))
-    (magent-log "INFO done (streaming, tool-only round, no text)"))
-   ;; Non-streaming: insert the full response
    ((and (stringp response) (> (length response) 0))
-    (magent-ui-insert-assistant-message response)
-    (magent-log "INFO done (non-streaming, %d chars)" (length response)))
+    (magent-log "INFO done (streaming)"))
+   ;; Streaming produced no text (tool-only round) -- nothing to display
+   ((and (stringp response) (zerop (length response)))
+    (magent-log "INFO done (streaming, tool-only round, no text)"))
    ;; Failure
    (t
     (magent-log "ERROR request failed or aborted")

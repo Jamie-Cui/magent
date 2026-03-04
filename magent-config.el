@@ -65,12 +65,6 @@ Use Markdown formatting in your responses: **bold** for emphasis, `code` for inl
   :type 'boolean
   :group 'magent)
 
-(defcustom magent-enable-streaming nil
-  "Enable streaming responses from the LLM.
-When non-nil, responses are displayed incrementally as they arrive."
-  :type 'boolean
-  :group 'magent)
-
 (defcustom magent-enable-tools '(read write edit grep glob bash emacs_eval delegate skill)
   "List of enabled tools.
 Available tools: read, write, edit, grep, glob, bash, emacs_eval,
