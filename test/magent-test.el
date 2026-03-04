@@ -17,7 +17,6 @@
         (gptel-model 'gpt-4o-mini)
         (gptel-tools nil)
         (gptel-use-tools nil)
-        (magent-enable-streaming nil)
         (call-count 0)
         (captured-prompt nil)
         (response nil))
@@ -26,7 +25,8 @@
                  (cl-incf call-count)
                  (setq captured-prompt prompt)
                  (let* ((callback (plist-get kwargs :callback)))
-                   (funcall callback "Hello from AI" nil)))))
+                   (funcall callback "Hello from AI" nil)
+                   (funcall callback t nil)))))
       (magent-agent-process "Hello" (lambda (r) (setq response r))))
     (should (= call-count 1))
     (should (stringp response))
@@ -43,7 +43,7 @@
                :prompt-list nil
                :system-prompt "test"
                :tools nil
-               :streaming-p nil
+               :streaming-p t
                :callback #'ignore
                :ui-callback nil))
          (info-with-tools (list :tool-use
@@ -71,12 +71,12 @@
   (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
         (gptel-model 'gpt-4o-mini)
         (gptel-tools nil)
-        (gptel-use-tools nil)
-        (magent-enable-streaming nil))
+        (gptel-use-tools nil))
     (cl-letf (((symbol-function 'gptel-request)
                (lambda (prompt &rest kwargs)
                  (let* ((callback (plist-get kwargs :callback)))
-                   (funcall callback "AI response" nil)))))
+                   (funcall callback "AI response" nil)
+                   (funcall callback t nil)))))
       (magent-session-reset)
       (magent-agent-process "User message" #'ignore)
       (let* ((session (magent-session-get))
@@ -172,7 +172,7 @@
                :prompt-list nil
                :system-prompt "test"
                :tools nil
-               :streaming-p nil
+               :streaming-p t
                :callback #'ignore
                :ui-callback nil
                :request-buffer buf)))

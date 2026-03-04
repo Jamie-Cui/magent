@@ -66,12 +66,11 @@ The tool calling loop is managed by magent-fsm.  This function:
          (let ((backend gptel-backend)
                (model gptel-model))
 
-           (magent-log "INFO agent=%s backend=%s model=%s tools=[%s] streaming=%s"
+           (magent-log "INFO agent=%s backend=%s model=%s tools=[%s]"
                        (magent-agent-info-name agent)
                        (gptel-backend-name backend)
                        model
-                       (mapconcat (lambda (tool) (plist-get tool :name)) tools ", ")
-                       magent-enable-streaming)
+                       (mapconcat (lambda (tool) (plist-get tool :name)) tools ", "))
 
            ;; Create FSM
            (let ((fsm (magent-fsm-create
@@ -82,7 +81,7 @@ The tool calling loop is managed by magent-fsm.  This function:
                        :prompt-list prompt-list
                        :system-prompt system-msg
                        :tools tools
-                       :streaming-p magent-enable-streaming
+                       :streaming-p t
                        :callback callback
                        :ui-callback #'magent-ui-insert-streaming)))
 
