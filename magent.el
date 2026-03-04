@@ -6,7 +6,7 @@
 ;; Maintainer: Jamie Cui <jamie.cui@outlook.com>
 ;; Keywords: tools, ai, copilot
 ;; Package-Version: 0.1.0
-;; Package-Requires: ((emacs "27.1") (spinner "1.7.4"))
+;; Package-Requires: ((emacs "27.1") (spinner "1.7.4") (transient "0.4"))
 ;; URL: https://github.com/jamie-cui/magent
 
 ;; This file is not part of GNU Emacs.
@@ -74,6 +74,7 @@
 
 ;; Required modules
 (require 'spinner)
+(require 'transient)
 (require 'magent-config)
 (require 'magent-session)
 (require 'magent-tools)
@@ -135,8 +136,8 @@ When enabled, Magent commands are available.
   (when magent-mode
     ;; Minimal initialization on mode enable
     (unless (member magent--mode-line-spinner-construct global-mode-string)
-      (push magent--mode-line-spinner-construct global-mode-string))
-    (magent-log "INFO magent mode enabled (lazy init)")))
+      (push magent--mode-line-spinner-construct global-mode-string)
+      (magent-log "INFO magent mode enabled (lazy init)"))))
 
 (defun magent--ensure-initialized ()
   "Ensure magent is fully initialized.

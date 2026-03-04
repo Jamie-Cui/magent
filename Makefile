@@ -3,12 +3,10 @@ EMACS_BATCH = $(EMACS) -Q --batch
 
 # Auto-detect dependency paths
 GPTEL_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'gptel-*' -type d 2>/dev/null | head -1)
-MARKDOWN_MODE_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'markdown-mode-*' -type d 2>/dev/null | head -1)
 SPINNER_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'spinner-*' -type d 2>/dev/null | head -1)
 
 LOADPATH = -L . \
 	$(if $(GPTEL_DIR),-L $(GPTEL_DIR)) \
-	$(if $(MARKDOWN_MODE_DIR),-L $(MARKDOWN_MODE_DIR)) \
 	$(if $(SPINNER_DIR),-L $(SPINNER_DIR))
 
 # Compilation flags

@@ -34,6 +34,9 @@
 (declare-function magent-ui-insert-tool-result "magent-ui")
 (declare-function magent-ui-start-streaming "magent-ui")
 (declare-function magent-ui-finish-streaming-fontify "magent-ui")
+(declare-function magent-ui-insert-reasoning-start "magent-ui")
+(declare-function magent-ui-insert-reasoning-text "magent-ui")
+(declare-function magent-ui-insert-reasoning-end "magent-ui")
 (declare-function gptel-request "gptel")
 (declare-function gptel-make-tool "gptel")
 (declare-function gptel-tool-async "gptel-request")
@@ -44,6 +47,7 @@
 (defvar gptel-backend)
 (defvar gptel-model)
 (defvar magent-request-timeout)
+(defvar magent-include-reasoning)
 
 ;;; FSM Data Structure
 
@@ -62,6 +66,8 @@
   (pending-tools nil)        ; Tool calls awaiting execution
   (accumulated-text "")      ; Accumulated text response
   (streamed-chunks "")       ; Streaming chunks buffer
+  (reasoning-text "")        ; Accumulated reasoning text
+  (in-reasoning-block nil)   ; Whether currently in a reasoning block
   (http-status nil)          ; Last HTTP status code
   (http-message nil)         ; Last HTTP status message
   (error nil)                ; Error message if any
@@ -349,6 +355,7 @@ RESULTS is a list of plists with :id, :name, :args, :result."
   (require 'gptel)
   (require 'magent-session)
   (require 'magent-ui)
+  (require 'magent-config)
 
   (let* ((prompt-list (magent-fsm-prompt-list fsm))
          (system-prompt (magent-fsm-system-prompt fsm))
@@ -370,7 +377,8 @@ RESULTS is a list of plists with :id, :name, :args, :result."
 
       (with-current-buffer request-buffer
         (setq-local gptel-tools converted-tools)
-        (setq-local gptel-use-tools (if converted-tools t nil)))
+        (setq-local gptel-use-tools (if converted-tools t nil))
+        (setq-local gptel-include-reasoning magent-include-reasoning))
 
       ;; Call gptel-request with FSM callback
       (let ((gptel-backend backend)
@@ -405,6 +413,23 @@ and only transitions to PROCESS/DONE when the final response
               (setf (magent-fsm-state fsm) 'WAIT))
 
             (cond
+             ;; Reasoning block chunk
+             ((and (consp response) (eq (car response) 'reasoning)
+                   (magent-fsm-streaming-p fsm)
+                   magent-include-reasoning)
+              (let ((reasoning-text (cdr response)))
+                (if (eq reasoning-text t)
+                    (progn
+                      (magent-ui-insert-reasoning-end)
+                      (setf (magent-fsm-in-reasoning-block fsm) nil))
+                  (progn
+                    (unless (magent-fsm-in-reasoning-block fsm)
+                      (magent-ui-insert-reasoning-start)
+                      (setf (magent-fsm-in-reasoning-block fsm) t))
+                    (magent-ui-insert-reasoning-text reasoning-text)
+                    (setf (magent-fsm-reasoning-text fsm)
+                          (concat (magent-fsm-reasoning-text fsm) reasoning-text))))))
+
              ;; Streaming text chunk
              ((and (magent-fsm-streaming-p fsm) (stringp response))
               (setf (magent-fsm-streamed-chunks fsm)
@@ -419,7 +444,12 @@ and only transitions to PROCESS/DONE when the final response
                     (concat (magent-fsm-accumulated-text fsm)
                             (magent-fsm-streamed-chunks fsm)))
               (setf (magent-fsm-streamed-chunks fsm) "")
-              ;; Apply markdown fontification to completed streaming text
+              ;; Close reasoning block if still open (some backends
+              ;; don't send (reasoning . t) before streaming completion)
+              (when (magent-fsm-in-reasoning-block fsm)
+                (magent-ui-insert-reasoning-end)
+                (setf (magent-fsm-in-reasoning-block fsm) nil))
+              ;; Apply org fontification to completed streaming text
               (magent-ui-finish-streaming-fontify)
               ;; If no tool calls pending, we are done
               (unless (or (plist-get info :tool-use)
@@ -431,6 +461,10 @@ and only transitions to PROCESS/DONE when the final response
              ;; Only fires when gptel-confirm-tool-calls is t or tool has :confirm.
              ;; Format: (tool-call . ((gptel-tool arg-values callback) ...))
              ((and (consp response) (eq (car response) 'tool-call))
+              ;; Close reasoning block if open before tool call
+              (when (magent-fsm-in-reasoning-block fsm)
+                (magent-ui-insert-reasoning-end)
+                (setf (magent-fsm-in-reasoning-block fsm) nil))
               (dolist (tc (cdr response))
                 (let* ((tool-spec (car tc))
                        (arg-values (cadr tc))
@@ -444,6 +478,8 @@ and only transitions to PROCESS/DONE when the final response
              ;; Prepare UI for next streaming response (streaming mode only).
              ;; Format: (tool-result . ((gptel-tool args result) ...))
              ((and (consp response) (eq (car response) 'tool-result))
+              ;; Reset reasoning state for new response
+              (setf (magent-fsm-in-reasoning-block fsm) nil)
               ;; Prepare UI for next streaming response (streaming mode only)
               (when (magent-fsm-streaming-p fsm)
                 (magent-ui-start-streaming)
