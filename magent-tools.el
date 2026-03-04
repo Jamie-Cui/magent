@@ -22,6 +22,8 @@
 (declare-function magent-skills-get "magent-skills")
 (declare-function magent-skills-list "magent-skills")
 (declare-function magent-skills-invoke "magent-skills")
+(declare-function magent-agent-info-resolve-backend "magent-agent-registry")
+(declare-function magent-agent-info-resolve-model "magent-agent-registry")
 
 ;;; Tool implementations
 
@@ -160,6 +162,7 @@ CALLBACK is called with success message or error."
 (defun magent-tools--emacs-eval (callback sexp &optional timeout)
   "Evaluate SEXP string as Emacs Lisp with optional TIMEOUT in seconds.
 CALLBACK is called with the result as a readable string, or an error message."
+  (magent-log "INFO emacs_eval called: sexp=%s timeout=%s" sexp timeout)
   (condition-case err
       (let* ((timeout (or timeout magent-emacs-eval-timeout))
              (form (car (read-from-string sexp)))
@@ -184,13 +187,17 @@ CALLBACK is called with the result as a readable string, or an error message."
                  (unless done
                    (setq done t)
                    (cancel-timer timer)
+                   (magent-log "INFO emacs_eval result: %s" result)
                    (funcall callback (prin1-to-string result))))
              (error
               (unless done
                 (setq done t)
                 (cancel-timer timer)
+                (magent-log "ERROR emacs_eval error: %s" (error-message-string err))
                 (funcall callback (format "Error evaluating sexp: %s" (error-message-string err)))))))))
-    (error (funcall callback (format "Error evaluating sexp: %s" (error-message-string err))))))
+    (error
+     (magent-log "ERROR emacs_eval outer error: %s" (error-message-string err))
+     (funcall callback (format "Error evaluating sexp: %s" (error-message-string err))))))
 
 (defun magent-tools--bash (callback command &optional timeout)
   "Execute shell COMMAND asynchronously with optional TIMEOUT in seconds.
@@ -249,31 +256,32 @@ then spawns a nested `gptel-request' with the subagent's configuration."
       (let* ((system-msg (or (magent-agent-info-prompt agent)
                              magent-system-prompt))
              (tools (magent-tools-get-gptel-tools agent))
-             (prompt-list (list (cons 'prompt prompt))))
-        (magent-agent-info-apply-gptel-overrides
-         agent
-         (lambda ()
-           (let ((request-buffer (generate-new-buffer " *magent-delegate-request*")))
-             (with-current-buffer request-buffer
-               (setq-local gptel-tools tools)
-               (setq-local gptel-use-tools (if tools t nil)))
-             (gptel-request
-                 prompt-list
-               :buffer request-buffer
-               :system system-msg
-               :stream nil
-               :callback (lambda (response _info)
-                           ;; Defer buffer kill so gptel's sentinel can
-                           ;; finish using it after this callback returns.
-                           (run-at-time 0 nil
-                                        (lambda ()
-                                          (when (buffer-live-p request-buffer)
-                                            (kill-buffer request-buffer))))
-                           (funcall callback
-                                    (cond
-                                     ((stringp response) response)
-                                     ((null response) "Error: subagent request failed")
-                                     (t (format "%s" response))))))))))))))
+             (prompt-list (list (cons 'prompt prompt)))
+             (backend (magent-agent-info-resolve-backend agent))
+             (model (magent-agent-info-resolve-model agent))
+             (request-buffer (generate-new-buffer " *magent-delegate-request*")))
+        (with-current-buffer request-buffer
+          (setq-local gptel-backend backend)
+          (setq-local gptel-model model)
+          (setq-local gptel-tools tools)
+          (setq-local gptel-use-tools (if tools t nil)))
+        (gptel-request
+            prompt-list
+          :buffer request-buffer
+          :system system-msg
+          :stream nil
+          :callback (lambda (response _info)
+                      ;; Defer buffer kill so gptel's sentinel can
+                      ;; finish using it after this callback returns.
+                      (run-at-time 0 nil
+                                   (lambda ()
+                                     (when (buffer-live-p request-buffer)
+                                       (kill-buffer request-buffer))))
+                      (funcall callback
+                               (cond
+                                ((stringp response) response)
+                                ((null response) "Error: subagent request failed")
+                                (t (format "%s" response)))))))))))
 
 (defun magent-tools--web-search (callback query &optional max-results)
   "Search the web using DuckDuckGo asynchronously.
@@ -364,7 +372,6 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
                        :description "The full content to write to the file"))
    :function #'magent-tools--write-file
    :async t
-   :confirm t
    :category "magent")
   "gptel-tool struct for write_file.")
 
@@ -383,7 +390,6 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
                        :description "The text to replace old_text with"))
    :function #'magent-tools--edit-file
    :async t
-   :confirm t
    :category "magent")
   "gptel-tool struct for edit_file.")
 
@@ -434,7 +440,6 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
                        :optional t))
    :function #'magent-tools--bash
    :async t
-   :confirm t
    :category "magent")
   "gptel-tool struct for bash.")
 
@@ -451,7 +456,6 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
                        :optional t))
    :function #'magent-tools--emacs-eval
    :async t
-   :confirm t
    :category "magent")
   "gptel-tool struct for emacs_eval.")
 

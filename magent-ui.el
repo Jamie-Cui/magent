@@ -433,8 +433,10 @@ Handles both streaming and non-streaming completion."
     (spinner-stop magent--spinner))
   (cond
    ((and (stringp response) (> (length response) 0))
+    (magent-ui-finish-streaming-fontify)
     (magent-log "INFO done (streaming)"))
    ((and (stringp response) (zerop (length response)))
+    (magent-ui-finish-streaming-fontify)
     (magent-log "INFO done (streaming, tool-only round, no text)"))
    (t
     (magent-log "ERROR request failed or aborted")

@@ -73,35 +73,35 @@ Fields:
     (or (eq info-mode 'all)
         (eq info-mode mode))))
 
-;;; gptel override support
+;;; gptel configuration resolution
 
-(defun magent-agent-info-apply-gptel-overrides (info body-thunk)
-  "Apply per-agent gptel variable overrides and call BODY-THUNK.
-INFO is a magent-agent-info struct.  BODY-THUNK is a zero-argument
-function called with the overrides in effect.
+(defun magent-agent-info-resolve-backend (info)
+  "Resolve the gptel backend from agent INFO.
+Returns the backend to use, falling back to global `gptel-backend'."
+  (let ((model-field (magent-agent-info-model info)))
+    (cond
+     ((and (consp model-field)
+           (gptel-backend-p (car model-field)))
+      (car model-field))
+     ((gptel-backend-p model-field)
+      model-field)
+     (t gptel-backend))))
 
-The agent's MODEL field can be:
-- nil: use global `gptel-backend' and `gptel-model'
-- A gptel backend object: use it with global `gptel-model'
-- A cons (BACKEND . MODEL-SYMBOL): use both overrides
+(defun magent-agent-info-resolve-model (info)
+  "Resolve the gptel model from agent INFO.
+Returns the model to use, falling back to global `gptel-model'."
+  (let ((model-field (magent-agent-info-model info)))
+    (cond
+     ((and (consp model-field)
+           (symbolp (cdr model-field)))
+      (cdr model-field))
+     (t gptel-model))))
 
-The agent's TEMPERATURE field, if non-nil, overrides `gptel-temperature'."
-  (let* ((model-field (magent-agent-info-model info))
-         (gptel-backend (cond
-                         ((and (consp model-field)
-                               (gptel-backend-p (car model-field)))
-                          (car model-field))
-                         ((gptel-backend-p model-field)
-                          model-field)
-                         (t gptel-backend)))
-         (gptel-model (cond
-                       ((and (consp model-field)
-                             (symbolp (cdr model-field)))
-                        (cdr model-field))
-                       (t gptel-model)))
-         (gptel-temperature (or (magent-agent-info-temperature info)
-                                gptel-temperature)))
-    (funcall body-thunk)))
+(defun magent-agent-info-resolve-temperature (info)
+  "Resolve the temperature from agent INFO.
+Returns the temperature to use, falling back to global `gptel-temperature'."
+  (or (magent-agent-info-temperature info)
+      gptel-temperature))
 
 ;;; Agent display
 

@@ -35,17 +35,21 @@ Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and perm
    - Assistant message bodies are fontified via a temporary `org-mode` buffer.
    - Commands: `magent-prompt`, `magent-prompt-region`, `magent-ask-at-point`.
 
-3. **Agent processing** (`magent-agent.el`): `magent-agent-process` builds a gptel prompt list from the session, applies per-agent overrides (model, temperature), filters tools by permissions, then calls `gptel-request`. gptel handles the LLM communication and tool-calling loop. The callback receives either a final string response or an error.
+3. **Backend system** (`magent-backend.el` + backends): Pluggable backend architecture for request processing:
+   - `magent-backend.el`: Defines backend protocol (`start`, `abort`, `destroy`) and registration system
+   - `magent-backend-gptel.el`: Default backend that delegates to gptel's built-in tool-calling loop (recommended)
+   - `magent-backend-fsm.el`: Custom FSM backend with fine-grained control over request/response cycles
+   - Backend selection via `magent-backend-type` (default: `'gptel`)
 
-4. **Agent definitions**: Two files compose the agent system:
+4. **Agent processing** (`magent-agent.el`): `magent-agent-process` builds a gptel prompt list from the session, applies per-agent overrides (model, temperature), filters tools by permissions, then dispatches to the configured backend. The callback receives either a final string response or an error.
+
+5. **Agent definitions**: Two files compose the agent system:
    - `magent-agent-registry.el`: Consolidated file containing `cl-defstruct` (`magent-agent-info`) with fields (name, description, mode, native, hidden, temperature, top-p, color, model, prompt, options, steps, permission), 7 built-in agents (`build`, `plan`, `explore`, `general`, `compaction`, `title`, `summary`), and hash-table registry with lookup, filtering by mode/visibility, and interactive selection. Provides feature aliases for `magent-agent-info` and `magent-agent-types`.
    - `magent-agent-file.el`: Loads custom agents from `.magent/agent/*.md` (YAML frontmatter + markdown body as system prompt)
 
-5. **Permission system** (`magent-permission.el`): Rule-based access control per agent. Rules map tool names to `allow`/`deny`/`ask`, with optional nested file-pattern rules (glob syntax). Resolution order: exact tool match → nested file rules → wildcard (`*`) fallback → default deny.
+6. **Permission system** (`magent-permission.el`): Rule-based access control per agent. Rules map tool names to `allow`/`deny`/`ask`, with optional nested file-pattern rules (glob syntax). Resolution order: exact tool match → nested file rules → wildcard (`*`) fallback → default deny.
 
-6. **Tools** (`magent-tools.el`): Implements `read_file`, `write_file`, `edit_file`, `grep`, `glob`, `bash`, `emacs_eval`, `delegate`, `skill_invoke` as `gptel-tool` structs (9 total). Tools are registered globally but filtered per-agent through the permission system. `delegate` spawns a nested `gptel-request` using a named subagent. `skill_invoke` calls Claude Code skills (currently: `emacs` skill).
-
-7. **FSM** (`magent-fsm.el`): Finite state machine for tool-calling loop (INIT → SEND → WAIT → PROCESS → TOOL → DONE/ERROR). Currently delegates HTTP to gptel via `gptel-request`.
+7. **Tools** (`magent-tools.el`): Implements `read_file`, `write_file`, `edit_file`, `grep`, `glob`, `bash`, `emacs_eval`, `delegate`, `skill_invoke` as `gptel-tool` structs (9 total). Tools are registered globally but filtered per-agent through the permission system. `delegate` spawns a nested request using a named subagent. `skill_invoke` calls Claude Code skills (currently: `emacs` skill).
 
 8. **Skills** (`magent-skills.el` + `magent-skill-file.el` + `magent-skill-emacs.el`): Claude Code/OpenCode style skill system with two types:
    - **instruction type**: Markdown body is injected into the system prompt. LLM follows instructions and uses available tools directly.

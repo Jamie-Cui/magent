@@ -221,6 +221,14 @@ If nil, discard reasoning content entirely."
                  (const :tag "Discard reasoning" nil))
   :group 'magent)
 
+(defcustom magent-backend-type 'gptel
+  "Backend type for processing requests.
+- gptel: Use gptel's built-in tool-calling loop (default, recommended)
+- fsm: Use custom FSM implementation with fine-grained control"
+  :type '(choice (const :tag "gptel backend (default)" gptel)
+                 (const :tag "FSM backend" fsm))
+  :group 'magent)
+
 ;;; Shared utilities
 
 (defun magent-project-root ()
