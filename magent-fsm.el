@@ -44,10 +44,15 @@
 (declare-function gptel-tool-confirm "gptel-request")
 (declare-function gptel-tool-name "gptel-request")
 (declare-function gptel-tool-args "gptel-request")
+(declare-function magent-permission-resolve "magent-permission")
+(declare-function magent-permission-session-override "magent-permission")
+(declare-function magent-permission-set-session-override "magent-permission")
 (defvar gptel-backend)
 (defvar gptel-model)
+(defvar gptel-confirm-tool-calls)
 (defvar magent-request-timeout)
 (defvar magent-include-reasoning)
+(declare-function magent-tools-permission-key "magent-tools")
 
 ;;; FSM Data Structure
 
@@ -74,7 +79,9 @@
   (callback nil)             ; User callback (called on DONE/ERROR)
   (ui-callback nil)          ; UI callback for streaming chunks
   (request-buffer nil)       ; Buffer for HTTP request
-  (process nil))             ; HTTP process object
+  (process nil)              ; HTTP process object
+  (permission nil)           ; Agent permission rules for tool access control
+  (aborted nil))             ; Whether FSM has been aborted
 
 ;;; State Transition
 
@@ -129,6 +136,11 @@
                           #'magent-fsm--timeout-handler fsm)
              magent-fsm--timers)))
 
+(defun magent-fsm--immediately-finish (fsm error-msg)
+  "Immediately finish FSM with ERROR-MSG, resetting processing state."
+  (setf (magent-fsm-error fsm) error-msg)
+  (magent-fsm-transition fsm 'ERROR))
+
 (defun magent-fsm--cancel-timeout (fsm)
   "Cancel the timeout timer for FSM."
   (let ((timer (gethash fsm magent-fsm--timers)))
@@ -142,9 +154,8 @@
   (when (eq (magent-fsm-state fsm) 'WAIT)
     (magent-log "ERROR FSM timeout: no response in %d seconds"
                 magent-request-timeout)
-    (setf (magent-fsm-error fsm)
-          (format "Request timed out after %d seconds" magent-request-timeout))
-    (magent-fsm-transition fsm 'ERROR)))
+    (magent-fsm--immediately-finish fsm
+      (format "Request timed out after %d seconds" magent-request-timeout))))
 
 (defun magent-fsm--handle-send (fsm)
   "Handle SEND state: prepare and fire HTTP request via gptel."
@@ -372,13 +383,15 @@ RESULTS is a list of plists with :id, :name, :args, :result."
     (when streaming
       (magent-ui-start-streaming))
 
-    ;; Convert magent tools to gptel tools format
-    (let ((converted-tools (magent-fsm--convert-tools-to-gptel tools)))
+    ;; Convert magent tools to gptel tools format (with permission-aware :confirm)
+    (let ((converted-tools (magent-fsm--convert-tools-to-gptel
+                            tools (magent-fsm-permission fsm))))
 
       (with-current-buffer request-buffer
         (setq-local gptel-tools converted-tools)
         (setq-local gptel-use-tools (if converted-tools t nil))
-        (setq-local gptel-include-reasoning magent-include-reasoning))
+        (setq-local gptel-include-reasoning magent-include-reasoning)
+        (setq-local gptel-confirm-tool-calls 'auto))
 
       ;; Call gptel-request with FSM callback
       (let ((gptel-backend backend)
@@ -398,8 +411,9 @@ back to the LLM.  The FSM stays in WAIT during the entire loop
 and only transitions to PROCESS/DONE when the final response
 (with no tool calls) arrives."
   (lambda (response info)
-    ;; Ignore callbacks if FSM already completed
-    (unless (memq (magent-fsm-state fsm) '(DONE ERROR))
+    ;; Ignore callbacks if FSM already completed or aborted
+    (unless (or (memq (magent-fsm-state fsm) '(DONE ERROR))
+                (magent-fsm-aborted fsm))
       ;; Suppress beginning-of-buffer / end-of-buffer signals that can
       ;; leak from UI operations called inside gptel's process filter.
       ;; These are benign cursor-adjustment errors (often from evil-mode)
@@ -456,23 +470,15 @@ and only transitions to PROCESS/DONE when the final response
                           (plist-get info :tool-pending))
                 (magent-fsm-transition fsm 'PROCESS)))
 
-             ;; gptel tool-call confirmation — auto-accept.
-             ;; tool call/result display is handled by the wrapped function.
-             ;; Only fires when gptel-confirm-tool-calls is t or tool has :confirm.
+             ;; gptel tool-call confirmation — permission-aware handling.
+             ;; Fires when a tool's :confirm function returns t.
              ;; Format: (tool-call . ((gptel-tool arg-values callback) ...))
              ((and (consp response) (eq (car response) 'tool-call))
               ;; Close reasoning block if open before tool call
               (when (magent-fsm-in-reasoning-block fsm)
                 (magent-ui-insert-reasoning-end)
                 (setf (magent-fsm-in-reasoning-block fsm) nil))
-              (dolist (tc (cdr response))
-                (let* ((tool-spec (car tc))
-                       (arg-values (cadr tc))
-                       (cb (caddr tc)))
-                  ;; Auto-accept: run the tool and call the callback
-                  (if (gptel-tool-async tool-spec)
-                      (apply (gptel-tool-function tool-spec) cb arg-values)
-                    (funcall cb (apply (gptel-tool-function tool-spec) arg-values))))))
+              (magent-fsm--handle-tool-call-confirmation fsm (cdr response)))
 
              ;; gptel tool-result — tool call/result already shown via wrapped function.
              ;; Prepare UI for next streaming response (streaming mode only).
@@ -491,11 +497,11 @@ and only transitions to PROCESS/DONE when the final response
                     (or (plist-get info :status) "Request failed"))
               (magent-fsm-transition fsm 'ERROR))
 
-             ;; Abort
-             ((eq response 'abort)
-              (setf (magent-fsm-error fsm) "Request aborted")
-              (magent-fsm-transition fsm 'ERROR))))
-        ((beginning-of-buffer end-of-buffer)
+;; Abort
+              ((eq response 'abort)
+               (setf (magent-fsm-error fsm) "Request aborted")
+               (magent-fsm-transition fsm 'ERROR))))
+        ((beginning-of-buffer end-of-buffer beginning-of-line end-of-line)
          (magent-log "DEBUG Suppressed cursor error in FSM callback")
          nil)))))
 
@@ -525,25 +531,222 @@ ASYNC-P indicates if the tool is asynchronous."
           (magent-fsm--show-tool-result name result)
           result)))))
 
-(defun magent-fsm--convert-tools-to-gptel (tools)
+(defun magent-fsm--convert-tools-to-gptel (tools &optional permission)
   "Convert magent tool specs to gptel-tool structs.
 TOOLS is a list of plists with :name, :description, :args, :function, :async.
-Each tool function is wrapped to display call/result in the UI."
+Each tool function is wrapped to display call/result in the UI.
+PERMISSION, if non-nil, is used to set per-tool :confirm functions."
   (mapcar (lambda (tool)
             (require 'gptel)
             (let* ((name (plist-get tool :name))
                    (args-spec (plist-get tool :args))
                    (original-fn (plist-get tool :function))
                    (async-p (plist-get tool :async))
+                   (perm-key (plist-get tool :perm-key))
                    (wrapped-fn (magent-fsm--wrap-tool-function
-                                name args-spec original-fn async-p)))
+                                name args-spec original-fn async-p))
+                   (confirm-fn (when permission
+                                 (magent-fsm--make-confirm-function
+                                  perm-key permission args-spec))))
               (gptel-make-tool
                :name name
                :description (plist-get tool :description)
                :args args-spec
                :function wrapped-fn
-               :async async-p)))
+               :async async-p
+               :confirm confirm-fn)))
           tools))
+
+;;; Permission-aware tool confirmation
+
+(defun magent-fsm--make-confirm-function (perm-key permission args-spec)
+  "Create a :confirm function for PERM-KEY given PERMISSION rules.
+ARGS-SPEC is the tool's argument spec list, used to find the
+file-path arg index.  Returns nil if the tool never needs
+confirmation (fully allowed, no nested rules).  Returns a
+function that receives positional arg values and returns t when
+the tool call should be sent to the FSM for review."
+  (require 'magent-permission)
+  (let* ((base-perm (magent-permission-resolve permission perm-key))
+         (file-arg-index (magent-fsm--find-file-arg-index args-spec)))
+    (cond
+     ;; Tool-level permission is 'ask
+     ((eq base-perm 'ask)
+      (if file-arg-index
+          ;; Has file arg — check session override AND file-specific deny
+          (lambda (&rest arg-values)
+            (let ((override (magent-permission-session-override perm-key)))
+              (if (eq override 'allow)
+                  ;; Session says allow, but still check file-specific deny
+                  (let ((file-path (nth file-arg-index arg-values)))
+                    (when file-path
+                      (eq (magent-permission-resolve permission perm-key file-path)
+                          'deny)))
+                ;; No allow override — always confirm
+                t)))
+        ;; No file arg — confirm unless session override allows
+        (lambda (&rest _arg-values)
+          (not (eq (magent-permission-session-override perm-key) 'allow)))))
+
+     ;; Tool-level permission is 'allow — check for nested file rules
+     ((eq base-perm 'allow)
+      (if file-arg-index
+          ;; Has a file arg — check file-specific deny rules
+          (lambda (&rest arg-values)
+            (let ((file-path (nth file-arg-index arg-values)))
+              (when file-path
+                (not (eq (magent-permission-resolve permission perm-key file-path)
+                         'allow)))))
+        ;; No file arg — fully allowed
+        nil))
+
+     ;; Tool-level permission is 'deny — shouldn't be in tool list,
+     ;; but if it is (nested allow rules), always confirm
+     ((eq base-perm 'deny)
+      (lambda (&rest _arg-values) t))
+
+     ;; Fallback: no confirmation
+     (t nil))))
+
+(defun magent-fsm--find-file-arg-index (args-spec)
+  "Find the index of the file path argument in ARGS-SPEC.
+Returns the 0-based index, or nil if no file arg found.
+Looks for args named \"path\" or \"file\"."
+  (cl-loop for spec in args-spec
+           for i from 0
+           when (member (plist-get spec :name) '("path" "file"))
+           return i))
+
+(defun magent-fsm--handle-tool-call-confirmation (fsm tool-calls)
+  "Handle tool calls that need permission review.
+FSM is the current FSM instance.
+TOOL-CALLS is a list of (gptel-tool arg-values callback) triples.
+Checks session overrides and file-specific rules before prompting."
+  (require 'magent-permission)
+  (let ((permission (magent-fsm-permission fsm))
+        (pending nil))   ; tool-calls that need interactive prompting
+    (dolist (tc tool-calls)
+      (let* ((tool-spec (car tc))
+             (arg-values (cadr tc))
+             (cb (caddr tc))
+             (tool-name (gptel-tool-name tool-spec))
+             (perm-key (magent-tools-permission-key tool-name))
+             (file-path (when perm-key
+                          (let ((idx (magent-fsm--find-file-arg-index
+                                      (gptel-tool-args tool-spec))))
+                            (when idx (nth idx arg-values)))))
+             (resolved (when (and permission perm-key)
+                         (magent-permission-resolve permission perm-key file-path)))
+             (override (when perm-key
+                         (magent-permission-session-override perm-key))))
+        (cond
+         ;; Session override: always allow
+         ((eq override 'allow)
+          (magent-log "PERM auto-allow (session override): %s" tool-name)
+          (magent-fsm--run-tool tool-spec cb arg-values))
+
+         ;; Session override: always deny
+         ((eq override 'deny)
+          (magent-log "PERM auto-deny (session override): %s" tool-name)
+          (funcall cb (format "Error: tool '%s' denied by session policy" tool-name)))
+
+         ;; File-specific deny (e.g., .env files)
+         ((eq resolved 'deny)
+          (magent-log "PERM auto-deny (file rule): %s %s" tool-name (or file-path ""))
+          (funcall cb (format "Error: access denied for %s on %s"
+                              tool-name (or file-path "this resource"))))
+
+         ;; File-specific allow (nested rule matched)
+         ((and file-path (eq resolved 'allow))
+          (magent-log "PERM auto-allow (file rule): %s %s" tool-name file-path)
+          (magent-fsm--run-tool tool-spec cb arg-values))
+
+         ;; Needs interactive prompting
+         (t
+          (push tc pending)))))
+
+    ;; Prompt user for remaining tool calls
+    (when pending
+      (magent-fsm--prompt-tool-calls-serially fsm (nreverse pending)))))
+
+(defun magent-fsm--prompt-tool-calls-serially (fsm tool-calls)
+  "Prompt user for each tool call in TOOL-CALLS sequentially.
+Uses `run-at-time' to break out of gptel's process filter context.
+Each prompt offers: [y]es, [n]o, [A]lways allow, [D]eny always.
+FSM is used for logging."
+  ;; Process one tool call at a time via run-at-time
+  (let ((remaining tool-calls))
+    (magent-fsm--prompt-next-tool-call fsm remaining)))
+
+(defun magent-fsm--prompt-next-tool-call (fsm tool-calls)
+  "Prompt for the next tool call in TOOL-CALLS.
+FSM is the current FSM instance."
+  (if (null tool-calls)
+      nil  ; All done
+    (run-at-time
+     0 nil
+     (lambda ()
+       (let* ((tc (car tool-calls))
+              (rest (cdr tool-calls))
+              (tool-spec (car tc))
+              (arg-values (cadr tc))
+              (cb (caddr tc))
+              (tool-name (gptel-tool-name tool-spec))
+              (perm-key (magent-tools-permission-key tool-name))
+              (summary (magent-fsm--summarize-args
+                        arg-values (gptel-tool-args tool-spec)))
+              (prompt (format "magent: allow %s%s? [y]es/[n]o/[A]lways/[D]eny always: "
+                              tool-name
+                              (if (string-empty-p summary) ""
+                                (format " (%s)" summary))))
+              (choice (read-char-choice prompt '(?y ?n ?A ?D))))
+         (pcase choice
+           (?y
+            (magent-log "PERM user allowed (once): %s" tool-name)
+            (magent-fsm--run-tool tool-spec cb arg-values))
+           (?n
+            (magent-log "PERM user denied (once): %s" tool-name)
+            (funcall cb (format "Error: tool '%s' denied by user" tool-name)))
+           (?A
+            (magent-log "PERM user always-allow: %s" tool-name)
+            (when perm-key
+              (magent-permission-set-session-override perm-key 'allow))
+            (magent-fsm--run-tool tool-spec cb arg-values))
+           (?D
+            (magent-log "PERM user always-deny: %s" tool-name)
+            (when perm-key
+              (magent-permission-set-session-override perm-key 'deny))
+            (funcall cb (format "Error: tool '%s' denied by user" tool-name))))
+         ;; Process next tool call
+         (magent-fsm--prompt-next-tool-call fsm rest))))))
+
+(defun magent-fsm--run-tool (tool-spec cb arg-values)
+  "Execute TOOL-SPEC with ARG-VALUES and call CB with the result.
+Handles both sync and async tools."
+  (condition-case err
+      (if (gptel-tool-async tool-spec)
+          (apply (gptel-tool-function tool-spec) cb arg-values)
+        (funcall cb (apply (gptel-tool-function tool-spec) arg-values)))
+    (error
+     (funcall cb (format "Error executing tool: %s" (error-message-string err))))))
+
+(defun magent-fsm--summarize-args (arg-values args-spec)
+  "Create a short summary of ARG-VALUES for display in prompts.
+ARGS-SPEC is the tool's argument spec list.
+Returns the first argument value, truncated to 60 chars."
+  (let* ((first-val (car arg-values))
+         (first-name (when args-spec
+                       (plist-get (car args-spec) :name)))
+         (display (cond
+                   ((null first-val) "")
+                   ((stringp first-val)
+                    (if (> (length first-val) 60)
+                        (concat (substring first-val 0 57) "...")
+                      first-val))
+                   (t (format "%s" first-val)))))
+    (if (and first-name (not (string-empty-p display)))
+        (format "%s" display)
+      "")))
 
 ;;; Public API
 
@@ -554,9 +757,20 @@ Each tool function is wrapped to display call/result in the UI."
   (magent-fsm-transition fsm 'INIT))
 
 (defun magent-fsm-abort (fsm)
-  "Abort FSM execution."
+  "Abort FSM execution immediately and clean up all resources."
+  (setf (magent-fsm-aborted fsm) t)
+  (magent-fsm--cancel-timeout fsm)
   (setf (magent-fsm-error fsm) "User aborted")
-  (magent-fsm-transition fsm 'ERROR))
+
+  ;; Call user callback to reset UI state
+  (condition-case err
+      (when (magent-fsm-callback fsm)
+        (funcall (magent-fsm-callback fsm) nil))
+    (error
+     (magent-log "ERROR in abort callback: %s" (error-message-string err))))
+
+  ;; Immediately destroy FSM to kill HTTP process
+  (magent-fsm-destroy fsm))
 
 (defun magent-fsm-destroy (fsm)
   "Clean up all FSM resources explicitly.

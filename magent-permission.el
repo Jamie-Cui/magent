@@ -48,10 +48,11 @@ Examples:
   (list
    ;; Default: allow most tools
    (cons '* magent-permission-allow)
-   ;; Special cases
+   ;; Sensitive tools require user confirmation
+   (cons 'bash magent-permission-ask)
+   (cons 'emacs_eval magent-permission-ask)
    (cons 'doom_loop magent-permission-ask)
    (cons 'external_directory magent-permission-ask)
-   (cons 'emacs_eval magent-permission-ask)
    (cons 'delegate magent-permission-allow)
    ;; File read restrictions (mirror .gitignore for .env)
    ;; More specific patterns must come before less specific ones.
@@ -61,7 +62,14 @@ Examples:
           (cons "*.env.example" magent-permission-allow)
           (cons "*.env" magent-permission-deny)
           (cons "*.env.*" magent-permission-deny)))
-   ;; File edit restrictions (same as read)
+   ;; File write requires confirmation, .env files denied
+   (cons 'write
+         (list
+          (cons '* magent-permission-ask)
+          (cons "*.env.example" magent-permission-allow)
+          (cons "*.env" magent-permission-deny)
+          (cons "*.env.*" magent-permission-deny)))
+   ;; File edit: allowed by default, .env files denied
    (cons 'edit
          (list
           (cons '* magent-permission-allow)
@@ -160,6 +168,48 @@ Returns t if denied, nil otherwise."
   "Check if TOOL requires user confirmation (with optional FILE).
 Returns t if ask, nil otherwise."
   (eq (magent-permission-resolve rules tool file) magent-permission-ask))
+
+;;; Session overrides
+
+(defvar magent-permission--session-overrides (make-hash-table :test 'eq)
+  "Session-level permission overrides.
+Maps permission key symbols to `allow' or `deny'.
+Set by user responses to interactive prompts (Always allow / Deny always).
+Cleared on session reset.")
+
+(defun magent-permission-session-override (perm-key)
+  "Return session override for PERM-KEY, or nil if none."
+  (gethash perm-key magent-permission--session-overrides))
+
+(defun magent-permission-set-session-override (perm-key value)
+  "Set session override for PERM-KEY to VALUE (\\='allow or \\='deny)."
+  (puthash perm-key value magent-permission--session-overrides))
+
+(defun magent-permission-clear-session-overrides ()
+  "Clear all session-level permission overrides."
+  (clrhash magent-permission--session-overrides))
+
+;;; Tool availability
+
+(defun magent-permission-tool-available-p (rules tool)
+  "Return t if TOOL should appear in the tool list for RULES.
+Unlike `magent-permission-allow-p', this returns t for tools with
+\\='ask permission and for tools with nested file rules where at
+least one pattern grants access (e.g., plan agent where edit
+defaults to \\='deny but specific paths are \\='allow)."
+  (let* ((effective (if (magent-permission-p rules)
+                        (magent-permission-rules rules)
+                      rules))
+         (tool-rule (and (listp effective) (assq tool effective)))
+         (tool-value (and tool-rule (cdr tool-rule))))
+    (if (and (consp tool-value)
+             (not (memq tool-value '(allow deny ask))))
+        ;; Nested file rules: available if ANY sub-rule grants access
+        (cl-some (lambda (sub-rule)
+                   (memq (cdr sub-rule) '(allow ask)))
+                 tool-value)
+      ;; Simple case: delegate to existing resolver
+      (memq (magent-permission-resolve rules tool) '(allow ask)))))
 
 ;;; Permission merging
 

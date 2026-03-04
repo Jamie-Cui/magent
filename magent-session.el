@@ -55,9 +55,11 @@ If CONTENT is a list of content blocks, concatenate their text fields."
   magent--current-session)
 
 (defun magent-session-reset ()
-  "Reset the current session, clearing all messages."
+  "Reset the current session, clearing all messages and permission overrides."
   (interactive)
   (setq magent--current-session nil)
+  (when (fboundp 'magent-permission-clear-session-overrides)
+    (magent-permission-clear-session-overrides))
   (magent-log "INFO session cleared"))
 
 (defun magent-session-get-id (session)
