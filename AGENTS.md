@@ -32,7 +32,7 @@ Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and perm
    - Tool calls render as `[tool: tool_name]` sections with args and result in the body.
    - Sections fold/unfold with `TAB`; `S-TAB` toggles all sections. `magent-output-mode` provides these keybindings.
    - Streaming responses create the section overlay on completion; tool-only rounds (no text streamed) clean up the orphaned header.
-   - Assistant message bodies are fontified via a temporary `markdown-mode` buffer.
+   - Assistant message bodies are fontified via a temporary `org-mode` buffer.
    - Commands: `magent-prompt`, `magent-prompt-region`, `magent-ask-at-point`.
 
 3. **Agent processing** (`magent-agent.el`): `magent-agent-process` builds a gptel prompt list from the session, applies per-agent overrides (model, temperature), filters tools by permissions, then calls `gptel-request`. gptel handles the LLM communication and tool-calling loop. The callback receives either a final string response or an error.
@@ -110,6 +110,6 @@ After any elisp code change, **always** test magent end-to-end in the running Em
 1. Reload changed files: `(load "/path/to/changed-file.el" nil t)`
 2. Clear session: `(magent-clear-session)`
 3. Run a **tool-use prompt** (e.g., `"how many buffers in emacs"`) — verifies tool calling loop, UI rendering of `[tool: ...]` sections, and FSM state transitions.
-4. Run a **non-tool-use prompt** (e.g., `"what is emacs"`) — verifies streaming text rendering, assistant section creation, and markdown fontification.
+4. Run a **non-tool-use prompt** (e.g., `"what is emacs"`) — verifies streaming text rendering, assistant section creation, and org fontification.
 5. Check `*Messages*` buffer for errors (e.g., `progn: Beginning of buffer`, `Wrong type argument`).
 6. Check `*magent-log*` for FSM state transitions and confirm the request reaches `DONE`.

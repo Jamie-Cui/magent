@@ -50,7 +50,7 @@ When making code changes:
 
 If you're unsure about something, ask the user for clarification.
 
-Use Markdown formatting in your responses: **bold** for emphasis, `code` for inline code, code blocks for multi-line code, and headers where appropriate."
+IMPORTANT: Format your responses using Org-mode. Start your content with level-2 headings (**). The output buffer uses level-1 headings (*) for message section markers (user, assistant, tool, error), so your content MUST use level-2 or deeper headings to maintain proper structure. Use *bold*, /italic/, =code= for inline formatting, and #+BEGIN_SRC blocks for multi-line code."
   "System prompt for the AI agent."
   :type 'string
   :group 'magent)
@@ -118,12 +118,12 @@ Should match one of the registered agent names."
   :type 'boolean
   :group 'magent)
 
-(defcustom magent-assistant-prompt "assistant"
+(defcustom magent-assistant-prompt "ASSISTANT"
   "Tag text displayed in assistant section headers."
   :type 'string
   :group 'magent)
 
-(defcustom magent-user-prompt "user"
+(defcustom magent-user-prompt "USER"
   "Tag text displayed in user section headers."
   :type 'string
   :group 'magent)
@@ -208,6 +208,16 @@ Larger blocks are fontified with idle timer to avoid blocking."
 Streaming text chunks are accumulated for this duration before
 rendering to reduce UI updates."
   :type 'float
+  :group 'magent)
+
+(defcustom magent-include-reasoning t
+  "How to handle LLM reasoning/thinking blocks.
+If t, display reasoning blocks wrapped in #+begin_think/#+end_think.
+If 'ignore, insert reasoning text but hide it with org folding.
+If nil, discard reasoning content entirely."
+  :type '(choice (const :tag "Display reasoning" t)
+                 (const :tag "Hide reasoning" ignore)
+                 (const :tag "Discard reasoning" nil))
   :group 'magent)
 
 ;;; Shared utilities

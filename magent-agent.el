@@ -41,15 +41,11 @@ The tool calling loop is managed by magent-fsm.  This function:
          (agent (or agent-info
                     (magent-session-get-agent session)
                     (magent-agent-registry-get-default))))
-    ;; Store agent in session
     (magent-session-set-agent session agent)
-    ;; Add user message to session
     (magent-session-add-message session 'user user-prompt)
-    ;; Build prompt list from full session history
     (let* ((prompt-list (magent-session-to-gptel-prompt-list session))
            (base-system-msg (or (magent-agent-info-prompt agent)
                                 magent-system-prompt))
-           ;; Include instruction-type skill prompts
            (skill-prompts (when (require 'magent-skills nil t)
                             (magent-skills-get-instruction-prompts)))
            (system-msg (if skill-prompts
@@ -58,21 +54,16 @@ The tool calling loop is managed by magent-fsm.  This function:
                                    (mapconcat #'identity skill-prompts "\n\n"))
                          base-system-msg))
            (tools (magent-tools-get-magent-tools agent)))
-
-      ;; Apply per-agent gptel variable overrides to get backend/model
       (magent-agent-info-apply-gptel-overrides
        agent
        (lambda ()
          (let ((backend gptel-backend)
                (model gptel-model))
-
            (magent-log "INFO agent=%s backend=%s model=%s tools=[%s]"
                        (magent-agent-info-name agent)
                        (gptel-backend-name backend)
                        model
                        (mapconcat (lambda (tool) (plist-get tool :name)) tools ", "))
-
-           ;; Create FSM
            (let ((fsm (magent-fsm-create
                        :session session
                        :agent agent
@@ -84,9 +75,8 @@ The tool calling loop is managed by magent-fsm.  This function:
                        :streaming-p t
                        :callback callback
                        :ui-callback #'magent-ui-insert-streaming)))
-
-             ;; Start FSM execution
-             (magent-fsm-start fsm))))))))
+             (magent-fsm-start fsm)
+             fsm)))))))
 
 (provide 'magent-agent)
 ;;; magent-agent.el ends here
