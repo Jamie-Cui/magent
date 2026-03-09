@@ -85,7 +85,8 @@ If a skill with the same name exists, it will be replaced."
 (defun magent-skills-unregister (name)
   "Remove skill NAME from registry."
   (setq magent-skills--registry
-        (assq-delete-all name magent-skills--registry)))
+        (cl-remove-if (lambda (entry) (equal (car entry) name))
+                      magent-skills--registry)))
 
 (defun magent-skills-clear ()
   "Clear all skills from registry."

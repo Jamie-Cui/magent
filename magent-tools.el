@@ -35,11 +35,10 @@ paths against the project root.  Never returns nil."
   (let* ((expanded (expand-file-name (substitute-in-file-name path)))
          (root (magent-tools--project-root)))
     (cond
-     ((file-directory-p expanded) expanded)
      ((file-exists-p expanded) expanded)
      (t
       (let ((resolved (expand-file-name path root)))
-        (if (or (file-directory-p resolved) (file-exists-p resolved))
+        (if (file-exists-p resolved)
             resolved
           root))))))
 
@@ -48,14 +47,9 @@ paths against the project root.  Never returns nil."
 CALLBACK is called with the file contents or error message."
   (let ((path (expand-file-name (substitute-in-file-name path))))
     (condition-case err
-        (if (file-exists-p path)
-            (let ((buf (generate-new-buffer " *magent-read*")))
-              (with-current-buffer buf
-                (insert-file-contents path)
-                (let ((content (buffer-string)))
-                  (kill-buffer buf)
-                  (funcall callback content))))
-          (funcall callback (format "Error: file not found: %s" path)))
+        (with-temp-buffer
+          (insert-file-contents path)
+          (funcall callback (buffer-string)))
       (error (funcall callback (format "Error reading file: %s" (error-message-string err)))))))
 
 (defun magent-tools--write-file (callback path content)
@@ -199,18 +193,21 @@ CALLBACK is called with the command output (stdout + stderr)."
          (buf (generate-new-buffer " *magent-bash*"))
          (timer nil)
          (proc nil)
+         (finished nil)
          (cleanup
           (lambda ()
-            (when timer (cancel-timer timer))
+            (when timer (cancel-timer timer) (setq timer nil))
             (when (process-live-p proc) (delete-process proc))
             (when (buffer-live-p buf) (kill-buffer buf)))))
     (setq timer
           (run-at-time
            timeout nil
            (lambda ()
-             (when (process-live-p proc)
-               (delete-process proc))
-             (when (buffer-live-p buf)
+             (unless finished
+               (setq finished t)
+               (when (process-live-p proc)
+                 (delete-process proc))
+               (when (buffer-live-p buf)
                (with-current-buffer buf
                  (let ((output (buffer-string)))
                    (funcall cleanup)
@@ -218,7 +215,7 @@ CALLBACK is called with the command output (stdout + stderr)."
                             (if (string-blank-p output)
                                 "Command timed out with no output"
                               (format "Command timed out. Partial output:\n%s"
-                                      (string-trim-right output))))))))))
+                                      (string-trim-right output)))))))))))
     (setq proc
           (make-process
            :name "magent-bash"
@@ -226,7 +223,9 @@ CALLBACK is called with the command output (stdout + stderr)."
            :command (list shell-file-name shell-command-switch command)
            :sentinel
            (lambda (p _event)
-             (when (memq (process-status p) '(exit signal))
+             (when (and (memq (process-status p) '(exit signal))
+                        (not finished))
+               (setq finished t)
                (let ((output (with-current-buffer buf (buffer-string))))
                  (funcall cleanup)
                  (funcall callback
@@ -327,14 +326,14 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
 (defun magent-tools--format-search-results (query results)
   "Format RESULTS list into readable string for QUERY."
   (concat (format "Search results for \"%s\":\n\n" query)
-          (mapconcat
-           (lambda (result)
-             (format "%d. %s\n   %s"
-                     (1+ (cl-position result results :test #'equal))
-                     (plist-get result :title)
-                     (plist-get result :url)))
-           results
-           "\n\n")))
+          (cl-loop for result in results
+                   for i from 1
+                   collect (format "%d. %s\n   %s"
+                                   i
+                                   (plist-get result :title)
+                                   (plist-get result :url))
+                   into parts
+                   finally return (mapconcat #'identity parts "\n\n"))))
 
 ;;; gptel-tool registrations
 

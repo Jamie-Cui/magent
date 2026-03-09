@@ -72,7 +72,6 @@ The tool calling loop is managed by magent-fsm.  This function:
                        :prompt-list prompt-list
                        :system-prompt system-msg
                        :tools tools
-                       :streaming-p t
                        :permission (magent-agent-info-permission agent)
                        :callback callback
                        :ui-callback #'magent-ui-insert-streaming)))

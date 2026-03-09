@@ -139,7 +139,7 @@ Returns the filepath if successful."
         (insert (format "temperature: %s\n"
                         (magent-agent-info-temperature agent-info))))
       (when (magent-agent-info-top-p agent-info)
-        (insert (format "top_p: %s\n"
+        (insert (format "top-p: %s\n"
                         (magent-agent-info-top-p agent-info))))
       (when (magent-agent-info-color agent-info)
         (insert (format "color: %s\n"
