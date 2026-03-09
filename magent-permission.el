@@ -51,8 +51,6 @@ Examples:
    ;; Sensitive tools require user confirmation
    (cons 'bash magent-permission-ask)
    (cons 'emacs_eval magent-permission-ask)
-   (cons 'doom_loop magent-permission-ask)
-   (cons 'external_directory magent-permission-ask)
    (cons 'delegate magent-permission-allow)
    (cons 'web_search magent-permission-allow)
    ;; File read restrictions (mirror .gitignore for .env)
@@ -126,8 +124,9 @@ FILE is optional file path to check."
 RULES is an alist of (pattern . permission).
 Specific patterns are checked first; the wildcard \\='* or \"*\" is used as fallback.
 Pattern matching is attempted against both the full FILE path and its basename."
-  (let ((filename (file-name-nondirectory file))
-        (wildcard-permission nil))
+  (when (and file (stringp file))
+    (let ((filename (file-name-nondirectory file))
+          (wildcard-permission nil))
     (catch 'found
       (dolist (rule rules)
         (let ((pattern (car rule))
@@ -151,7 +150,7 @@ Pattern matching is attempted against both the full FILE path and its basename."
                   (string-equal pattern filename))
               (throw 'found permission)))))))
       ;; No specific match — use wildcard if present, else allow
-      (or wildcard-permission magent-permission-allow))))
+      (or wildcard-permission magent-permission-allow)))))
 
 ;;; Permission checking
 

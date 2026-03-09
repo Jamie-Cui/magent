@@ -19,6 +19,24 @@ The Makefile expects gptel source at `$HOME/proj/gptel` by default. Override wit
 make compile GPTEL_DIR=/path/to/gptel
 ```
 
+## Testing
+
+After any elisp code change, **always** test magent end-to-end in the running Emacs instance (via `emacsclient --eval`):
+
+1. Reload changed files: `(load "/path/to/changed-file.el" nil t)`
+2. Clear session: `(magent-clear-session)`
+3. Run test prompts to verify both streaming and tool-calling:
+   - **Non-tool prompt**: `"你好"` - verifies streaming text rendering and assistant section creation
+   - **Tool-use prompt**: `"帮我看下 emacs 里面有多少 buffer"` - verifies tool calling loop (emacs_eval), UI rendering of `[tool: ...]` sections, and FSM state transitions
+   - **Complex tool prompt**: `"帮我在 emacs 里面打开 magent 的 magit buffer"` - verifies multi-step tool execution
+
+4. Check for errors in:
+   - `*magent*` buffer - main output and tool results
+   - `*magent-log*` buffer - FSM state transitions and debug logs
+   - `*Messages*` buffer - Emacs errors (e.g., `progn: Beginning of buffer`, `Wrong type argument`)
+
+5. Verify FSM reaches `DONE` state in `*magent-log*`
+
 ## Architecture
 
 Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and permission-based tool access. It delegates all LLM communication to **gptel** (the sole external dependency beyond Emacs 27.1+).
@@ -45,7 +63,11 @@ Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and perm
 
 6. **Tools** (`magent-tools.el`): Implements `read_file`, `write_file`, `edit_file`, `grep`, `glob`, `bash`, `emacs_eval`, `delegate`, `skill_invoke` as `gptel-tool` structs (9 total). Tools are registered globally but filtered per-agent through the permission system. `delegate` spawns a nested `gptel-request` using a named subagent. `skill_invoke` calls Claude Code skills (currently: `emacs` skill).
 
-7. **FSM** (`magent-fsm.el`): Finite state machine for tool-calling loop (INIT → SEND → WAIT → PROCESS → TOOL → DONE/ERROR). Currently delegates HTTP to gptel via `gptel-request`.
+7. **FSM** (`magent-fsm.el` + backends): Unified entry point for the tool-calling loop with two switchable backends controlled by `magent-fsm-backend`:
+   - `magent-fsm-backend-native.el`: Custom FSM with states INIT → SEND → WAIT → PROCESS → TOOL → DONE/ERROR. Handles HTTP via gptel, tool execution with mutex-based synchronization, and permission-aware confirmation.
+   - `magent-fsm-backend-gptel.el`: Lightweight wrapper around `gptel-request` that delegates the entire tool-calling loop to gptel. Uses a hidden request buffer; tools auto-execute without interactive confirmation (gptel's confirm UI requires a visible buffer).
+
+   The unified API (`magent-fsm-create`, `magent-fsm-start`, `magent-fsm-abort`, `magent-fsm-destroy`) dispatches to the configured backend. Default backend is `gptel`.
 
 8. **Skills** (`magent-skills.el` + `magent-skill-file.el` + `magent-skill-emacs.el`): Claude Code/OpenCode style skill system with two types:
    - **instruction type**: Markdown body is injected into the system prompt. LLM follows instructions and uses available tools directly.
@@ -64,6 +86,7 @@ Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and perm
 ### Key Design Decisions
 
 - **No custom HTTP client**: All LLM communication goes through gptel. Provider, model, and API key configuration is managed by gptel (`gptel-backend`, `gptel-model`, `gptel-api-key`).
+- **Switchable FSM backends**: `magent-fsm-backend` (default `gptel`) selects between the native FSM and gptel's built-in tool loop. The gptel backend is simpler (no custom state machine) but skips interactive tool confirmation. The native backend provides full FSM control with permission-based confirmation prompts.
 - **Per-agent gptel overrides**: `magent-agent-info-apply-gptel-overrides` temporarily sets gptel variables (model, temperature, backend) for the duration of a request.
 - **Agent modes**: `primary` (user-facing), `subagent` (called internally), `all` (either role).
 - **Tool filtering**: Tools are defined once globally but each agent only sees tools allowed by its permission rules.
@@ -87,7 +110,7 @@ For tool-type skills, this describes available operations.
 
 ### Configuration
 
-Magent-specific settings via `customize-group RET magent` (16 defcustom variables): `magent-system-prompt`, `magent-buffer-name`, `magent-auto-scroll`, `magent-enable-tools`, `magent-project-root-function`, `magent-max-history`, `magent-default-agent`, `magent-load-custom-agents`, `magent-enable-logging`, `magent-assistant-prompt` (tag text for `[assistant]` headers), `magent-user-prompt` (tag text for `[user]` headers), `magent-tool-call-prompt` (tag text for `[tool: ...]` headers), `magent-error-prompt` (tag text for `[error]` headers), `magent-agent-directory`, `magent-session-directory`, `magent-grep-program`.
+Magent-specific settings via `customize-group RET magent` (17 defcustom variables): `magent-system-prompt`, `magent-buffer-name`, `magent-auto-scroll`, `magent-enable-tools`, `magent-project-root-function`, `magent-max-history`, `magent-default-agent`, `magent-load-custom-agents`, `magent-enable-logging`, `magent-assistant-prompt` (tag text for `[assistant]` headers), `magent-user-prompt` (tag text for `[user]` headers), `magent-tool-call-prompt` (tag text for `[tool: ...]` headers), `magent-error-prompt` (tag text for `[error]` headers), `magent-agent-directory`, `magent-session-directory`, `magent-grep-program`, `magent-fsm-backend` (FSM backend: `gptel` or `magent`).
 
 Skill-specific settings:
 - `magent-skill-directories`: List of directories to scan for skill files (default: `~/.emacs.d/magent-skills`)
@@ -103,13 +126,3 @@ LLM provider/model/key settings are managed entirely by gptel — configure via 
 | `magent-describe-skill` | Show detailed skill information |
 | `magent-reload-skills` | Reload skills from disk |
 
-## Testing
-
-After any elisp code change, **always** test magent end-to-end in the running Emacs instance (via `emacsclient --eval`):
-
-1. Reload changed files: `(load "/path/to/changed-file.el" nil t)`
-2. Clear session: `(magent-clear-session)`
-3. Run a **tool-use prompt** (e.g., `"how many buffers in emacs"`) — verifies tool calling loop, UI rendering of `[tool: ...]` sections, and FSM state transitions.
-4. Run a **non-tool-use prompt** (e.g., `"what is emacs"`) — verifies streaming text rendering, assistant section creation, and org fontification.
-5. Check `*Messages*` buffer for errors (e.g., `progn: Beginning of buffer`, `Wrong type argument`).
-6. Check `*magent-log*` for FSM state transitions and confirm the request reaches `DONE`.

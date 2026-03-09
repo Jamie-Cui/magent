@@ -197,6 +197,15 @@ Called via `kill-buffer-hook' to prevent timers firing on dead buffers."
                  ("\\<\\(ERROR\\|WARNING\\|INFO\\|DEBUG\\)\\>"
                   0 font-lock-keyword-face)))))
 
+;;; Section folding
+
+(defun magent-ui-toggle-section ()
+  "Toggle folding of the section at point in the Magent output buffer."
+  (interactive)
+  (with-current-buffer (magent-ui-get-buffer)
+    (when (derived-mode-p 'magent-output-mode)
+      (org-cycle))))
+
 ;;; Rendering functions
 
 (defun magent-ui-insert-user-message (text)
@@ -221,7 +230,7 @@ Wraps in #+begin_tool block."
     (let ((input-str (if (stringp input)
                          input
                        (truncate-string-to-width
-                        (json-encode input) 100 nil nil "..."))))
+                        (json-encode input) magent-ui-tool-input-max-length nil nil "..."))))
       (insert input-str "\n"))))
 
 (defun magent-ui-insert-tool-result (_tool-name result)
@@ -230,7 +239,7 @@ Closes the #+begin_tool block."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (let ((result-str (truncate-string-to-width
                        (if (stringp result) result (format "%s" result))
-                       120 nil nil "...")))
+                       magent-ui-result-max-length nil nil "...")))
       (insert "-> " result-str "\n"))
     (insert "#+end_tool\n")))
 
@@ -299,7 +308,6 @@ All buffer-local variable access is done inside the magent output buffer."
 (defun magent-ui-insert-streaming (text)
   "Insert streaming TEXT into output buffer.
 Small chunks are batched to reduce UI updates."
-  (require 'magent-config)
   (let ((buf (magent-ui-get-buffer)))
     (with-current-buffer buf
       (setq magent-ui--streaming-batch-buffer
@@ -374,6 +382,14 @@ If no text was streamed (tool-only round), removes the orphaned heading."
       (magent-ui-display-buffer)
       (magent-ui-insert-user-message input)
       (magent-ui-process input))))
+
+(defun magent-send-prompt (prompt)
+  "Send PROMPT to Magent agent programmatically."
+  (magent--ensure-initialized)
+  (when (not (string-blank-p prompt))
+    (magent-ui-display-buffer)
+    (magent-ui-insert-user-message prompt)
+    (magent-ui-process prompt)))
 
 ;;;###autoload
 (defun magent-prompt-region (begin end)

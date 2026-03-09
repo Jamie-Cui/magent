@@ -86,9 +86,6 @@
 (require 'magent-skills)
 (require 'magent-skill-file)
 
-;; Forward declaration for byte-compiler
-(declare-function magent-ui-toggle-section "magent-ui")
-
 ;;; Initialization
 
 (defvar magent--initialized nil

@@ -40,7 +40,7 @@ Supports basic key: value pairs."
         (lines (split-string header-str "\n")))
     (dolist (line lines)
       (when (string-match "^\\s-*\\([^:]+\\):\\s-*\\(.+\\)$" line)
-        (let* ((key (string-trim (match-string 1 line)))
+        (let* ((key (replace-regexp-in-string "_" "-" (string-trim (match-string 1 line))))
                (value-str (string-trim (match-string 2 line)))
                (value (magent-frontmatter--parse-value value-str)))
           (setq result (plist-put result (intern (concat ":" key)) value)))))
