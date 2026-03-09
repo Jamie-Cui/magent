@@ -22,11 +22,18 @@
 (require 'magent-agent)
 (require 'magent-agent-registry)
 (require 'magent-fsm)
+(require 'magent-queue)
 
 (defvar magent--spinner)
 
 (defvar magent--current-fsm nil
   "Current active FSM instance, if any.")
+
+(defvar magent-ui--request-generation 0
+  "Monotonically increasing counter for request dispatch cycles.
+Incremented on each new dispatch and on interrupt.  Callbacks
+capture this value and compare on completion to detect and
+discard stale callbacks from interrupted requests.")
 
 ;;; Buffer management
 
@@ -89,24 +96,43 @@ past messages so the user can see the full conversation."
     (pop-to-buffer buffer)))
 
 (defun magent-ui-render-history ()
-  "Render all session messages into the output buffer.
-Clears the buffer first, then inserts each message from the
-current session in chronological order."
-  (let ((session (magent-session-get)))
+  "Render session history into the output buffer.
+If the session has saved buffer content (from a previous render),
+restore it directly to preserve tool calls, reasoning blocks, and
+error messages.  Otherwise fall back to re-rendering from session
+messages (which only contains user/assistant text).
+Before clearing the buffer, the current content is saved to the
+session so that future calls can restore it losslessly."
+  (let* ((session (magent-session-get))
+         (buf (magent-ui-get-buffer))
+         (saved (magent-session-buffer-content session)))
+    ;; Save current buffer content before clearing
+    (with-current-buffer buf
+      (when (> (buffer-size) 0)
+        (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+          (setf (magent-session-buffer-content session) content)
+          (setq saved content))))
     (magent-ui-clear-buffer)
-    (let ((magent-auto-scroll nil))
-      (dolist (msg (magent-session-get-messages session))
-        (let ((role (magent-msg-role msg))
-              (content (magent-msg-content msg)))
-          (pcase role
-            ('user
-             (when (stringp content)
-               (magent-ui-insert-user-message content)))
-            ('assistant
-             (when (and (stringp content) (> (length content) 0))
-               (magent-ui-insert-assistant-message content)))))))
-    (with-current-buffer (magent-ui-get-buffer)
-      (goto-char (point-max)))))
+    (if saved
+        ;; Restore saved content losslessly
+        (with-current-buffer buf
+          (let ((inhibit-read-only t))
+            (insert saved))
+          (goto-char (point-max)))
+      ;; Fallback: re-render from session messages
+      (let ((magent-auto-scroll nil))
+        (dolist (msg (magent-session-get-messages session))
+          (let ((role (magent-msg-role msg))
+                (content (magent-msg-content msg)))
+            (pcase role
+              ('user
+               (when (stringp content)
+                 (magent-ui-insert-user-message content)))
+              ('assistant
+               (when (and (stringp content) (> (length content) 0))
+                 (magent-ui-insert-assistant-message content)))))))
+      (with-current-buffer buf
+        (goto-char (point-max))))))
 
 (defun magent-ui-clear-buffer ()
   "Clear the Magent output buffer."
@@ -118,16 +144,21 @@ current session in chronological order."
 ;;; Interrupt command
 
 (defun magent-interrupt ()
-  "Interrupt the current magent request."
+  "Interrupt the current request and advance the queue.
+The queue is preserved; the next queued item starts automatically.
+Bumps the generation counter so stale callbacks from the aborted
+request are discarded."
   (interactive)
   (when magent--current-fsm
     (magent-fsm-abort magent--current-fsm)
     (setq magent--current-fsm nil))
-  (setq magent-ui--processing nil)
+  (cl-incf magent-ui--request-generation)
   (when (and (boundp 'magent--spinner) magent--spinner)
     (spinner-stop magent--spinner))
   (magent-ui-insert-error "[Interrupted by user]")
-  (magent-log "INFO Request interrupted by user"))
+  (magent-log "INFO Request interrupted by user (gen now %d)"
+              magent-ui--request-generation)
+  (magent-queue-dequeue-and-run))
 
 ;;; Transient menu
 
@@ -140,6 +171,9 @@ current session in chronological order."
    [("A" "Select agent" magent-select-agent)
     ("i" "Show current agent" magent-show-current-agent)
     ("v" "List agents" magent-list-agents)]]
+  ["Queue"
+   [("q" "View queue" magent-list-queue)
+    ("Q" "Remove from queue" magent-remove-queue-item)]]
   ["Buffer"
    [("r" "Toggle read-only" magent-toggle-read-only)]]
   ["Control"
@@ -172,9 +206,9 @@ Press \\[magent-transient-menu] for the command menu."
   (add-hook 'kill-buffer-hook #'magent-ui--cancel-timers nil t))
 
 (defun magent-ui--revert-buffer (_ignore-auto _noconfirm)
-  "Revert the Magent buffer by re-rendering session history."
-  (let ((inhibit-read-only t))
-    (erase-buffer))
+  "Revert the Magent buffer by re-rendering from saved content.
+Delegates to `magent-ui-render-history' which saves the current
+buffer content to the session before clearing, then restores it."
   (magent-ui-render-history))
 
 (defun magent-ui--cancel-timers ()
@@ -222,10 +256,32 @@ Called via `kill-buffer-hook' to prevent timers firing on dead buffers."
     (unless (string-suffix-p "\n" text)
       (insert "\n"))))
 
+(defun magent-ui--fold-block-at (pos block-re)
+  "Fold the block at POS if it matches BLOCK-RE.
+Defers `org-cycle' via timer to avoid blocking process filters."
+  (when pos
+    (let ((buf (current-buffer)))
+      (run-at-time 0 nil
+                   (lambda ()
+                     (when (buffer-live-p buf)
+                       (with-current-buffer buf
+                         (save-excursion
+                           (goto-char pos)
+                           (condition-case nil
+                               (when (looking-at block-re)
+                                 (org-cycle))
+                             (error nil))))))))))
+
+(defvar-local magent-ui--tool-call-start nil
+  "Buffer position where the current #+begin_tool block was inserted.
+Set by `magent-ui-insert-tool-call', consumed by
+`magent-ui-insert-tool-result' to auto-fold the completed block.")
+
 (defun magent-ui-insert-tool-call (tool-name input)
   "Insert tool call notification into output buffer.
 Wraps in #+begin_tool block."
   (magent-ui--with-insert (magent-ui-get-buffer)
+    (setq magent-ui--tool-call-start (point))
     (insert "#+begin_tool " tool-name "\n")
     (let ((input-str (if (stringp input)
                          input
@@ -235,13 +291,16 @@ Wraps in #+begin_tool block."
 
 (defun magent-ui-insert-tool-result (_tool-name result)
   "Insert tool RESULT for _TOOL-NAME into output buffer.
-Closes the #+begin_tool block."
+Closes the #+begin_tool block and auto-folds it."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (let ((result-str (truncate-string-to-width
                        (if (stringp result) result (format "%s" result))
                        magent-ui-result-max-length nil nil "...")))
       (insert "-> " result-str "\n"))
-    (insert "#+end_tool\n")))
+    (insert "#+end_tool\n")
+    (when magent-ui--tool-call-start
+      (magent-ui--fold-block-at magent-ui--tool-call-start "#\\+begin_tool")
+      (setq magent-ui--tool-call-start nil))))
 
 (defun magent-ui-insert-error (error-text)
   "Insert ERROR-TEXT into output buffer with level-1 heading."
@@ -279,17 +338,38 @@ Used for batching small streaming chunks to reduce UI updates.")
 (defvar-local magent-ui--reasoning-start nil
   "Buffer position where the current reasoning block begins.")
 
+(defun magent-ui--reset-streaming-state ()
+  "Reset streaming state variables for a new round.
+Must be called inside the magent output buffer."
+  (setq magent-ui--streaming-start (point-max))
+  (setq magent-ui--streaming-has-text nil)
+  (setq magent-ui--streaming-batch-buffer "")
+  (setq magent-ui--in-reasoning-block nil)
+  (setq magent-ui--reasoning-start nil))
+
 (defun magent-ui-start-streaming ()
   "Prepare the output buffer for a streaming response.
 Inserts the assistant section heading."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (setq magent-ui--streaming-section-start (point))
     (insert "* " magent-assistant-prompt "\n")
-    (setq magent-ui--streaming-start (point))
-    (setq magent-ui--streaming-has-text nil)
-    (setq magent-ui--streaming-batch-buffer "")
-    (setq magent-ui--in-reasoning-block nil)
-    (setq magent-ui--reasoning-start nil)))
+    (magent-ui--reset-streaming-state)))
+
+(defun magent-ui-continue-streaming ()
+  "Continue streaming in the current section after a tool-use round.
+Flushes any pending text from the current round, then resets
+streaming state without inserting a new heading.  Tool blocks and
+subsequent text remain under the existing assistant section."
+  (let ((buf (magent-ui-get-buffer)))
+    (with-current-buffer buf
+      (magent-ui--flush-streaming-batch)
+      (when magent-ui--streaming-has-text
+        (let ((inhibit-read-only t))
+          (goto-char (point-max))
+          (unless (eq (char-before) ?\n)
+            (insert "\n"))))
+      (setq magent-ui--streaming-section-start nil)
+      (magent-ui--reset-streaming-state))))
 
 (defun magent-ui--flush-streaming-batch ()
   "Flush accumulated streaming text to buffer.
@@ -338,9 +418,8 @@ If no text was streamed (tool-only round), removes the orphaned heading."
           ((beginning-of-buffer end-of-buffer beginning-of-line end-of-line)
            (magent-log "DEBUG Suppressed cursor error in streaming finish")
            nil))
-        (setq magent-ui--streaming-start nil)
         (setq magent-ui--streaming-section-start nil)
-        (setq magent-ui--streaming-has-text nil)))))
+        (magent-ui--reset-streaming-state)))))
 
 (defun magent-ui-insert-reasoning-start ()
   "Insert the beginning of a reasoning block."
@@ -362,12 +441,7 @@ If no text was streamed (tool-only round), removes the orphaned heading."
       (setq magent-ui--in-reasoning-block nil)
       (setq magent-ui--streaming-has-text t)
       (when magent-ui--reasoning-start
-        (save-excursion
-          (goto-char magent-ui--reasoning-start)
-          (condition-case nil
-              (when (looking-at "#\\+begin_think")
-                (org-cycle))
-            (error nil)))
+        (magent-ui--fold-block-at magent-ui--reasoning-start "#\\+begin_think")
         (setq magent-ui--reasoning-start nil)))))
 
 ;;; Minibuffer interface
@@ -381,7 +455,7 @@ If no text was streamed (tool-only round), removes the orphaned heading."
     (when (not (string-blank-p input))
       (magent-ui-display-buffer)
       (magent-ui-insert-user-message input)
-      (magent-ui-process input))))
+      (magent-ui-process input 'prompt))))
 
 (defun magent-send-prompt (prompt)
   "Send PROMPT to Magent agent programmatically."
@@ -389,7 +463,7 @@ If no text was streamed (tool-only round), removes the orphaned heading."
   (when (not (string-blank-p prompt))
     (magent-ui-display-buffer)
     (magent-ui-insert-user-message prompt)
-    (magent-ui-process prompt)))
+    (magent-ui-process prompt 'send-prompt)))
 
 ;;;###autoload
 (defun magent-prompt-region (begin end)
@@ -399,7 +473,7 @@ If no text was streamed (tool-only round), removes the orphaned heading."
   (let ((input (buffer-substring begin end)))
     (magent-ui-display-buffer)
     (magent-ui-insert-user-message (format "[Region] %s" input))
-    (magent-ui-process input)))
+    (magent-ui-process input 'prompt-region)))
 
 ;;;###autoload
 (defun magent-ask-at-point ()
@@ -411,57 +485,68 @@ If no text was streamed (tool-only round), removes the orphaned heading."
       (let ((input (format "Explain this code: %s" symbol)))
         (magent-ui-display-buffer)
         (magent-ui-insert-user-message input)
-        (magent-ui-process input)))))
+        (magent-ui-process input 'ask-at-point)))))
 
 ;;; Processing
 
-(defvar magent-ui--processing nil
-  "Whether a request is currently being processed.")
+(defun magent-ui-process (prompt &optional source)
+  "Queue or immediately dispatch PROMPT.
+SOURCE is a symbol identifying the caller (default: \\='prompt).
+Shows a minibuffer notification when the item is queued rather
+than dispatched immediately."
+  (let ((queued (magent-queue-enqueue prompt (or source 'prompt))))
+    (when queued
+      (message "Magent: queued (%d waiting)" (magent-queue-length)))))
 
-(defun magent-ui-process (input)
-  "Process INPUT through the agent."
-  (when magent-ui--processing
-    (error "Magent: Already processing a request"))
-  (setq magent-ui--processing t)
-  (when (and (boundp 'magent--spinner) magent--spinner)
-    (spinner-start magent--spinner))
-  (magent-log "INFO processing: %s" input)
-  (condition-case err
-      (setq magent--current-fsm
-            (magent-agent-process
-             input
-             (lambda (response)
-               (magent-ui--finish-processing response))))
-    (error
-     (magent-log "ERROR in process: %s" (error-message-string err))
-     (magent-ui-insert-error (error-message-string err))
-     (setq magent-ui--processing nil)
-     (setq magent--current-fsm nil)
-     (when (and (boundp 'magent--spinner) magent--spinner)
-       (spinner-stop magent--spinner)))))
+(defun magent-ui--run-item (item)
+  "Dispatch ITEM (a `magent-queue-item') to the agent.
+Called exclusively by `magent-queue--dispatch' after the lock is held.
+Starts the spinner and creates the FSM.  Captures the current
+request generation so stale callbacks are discarded."
+  (let ((input (magent-queue-item-prompt item))
+        (gen (cl-incf magent-ui--request-generation)))
+    (when (and (boundp 'magent--spinner) magent--spinner)
+      (spinner-start magent--spinner))
+    (magent-log "INFO processing [%s] gen=%d: %s"
+                (magent-queue-item-source item) gen input)
+    (condition-case err
+        (setq magent--current-fsm
+              (magent-agent-process
+               input
+               (lambda (response)
+                 (if (= gen magent-ui--request-generation)
+                     (magent-ui--finish-processing response)
+                   (magent-log "DEBUG discarding stale callback gen=%d (current=%d)"
+                               gen magent-ui--request-generation)))))
+      (error
+       (magent-log "ERROR in run-item: %s" (error-message-string err))
+       (magent-ui-insert-error (error-message-string err))
+       (setq magent--current-fsm nil)
+       (when (and (boundp 'magent--spinner) magent--spinner)
+         (spinner-stop magent--spinner))
+       (magent-queue-dequeue-and-run)))))
 
 (defun magent-ui--finish-processing (response)
-  "Finish processing with RESPONSE.
+  "Finish processing with RESPONSE and advance the queue.
 Handles both streaming and non-streaming completion."
-  (setq magent-ui--processing nil)
   (setq magent--current-fsm nil)
   (when (and (boundp 'magent--spinner) magent--spinner)
     (spinner-stop magent--spinner))
   (cond
-   ((and (stringp response) (> (length response) 0))
-    (magent-log "INFO done (streaming)"))
-   ((and (stringp response) (zerop (length response)))
-    (magent-log "INFO done (streaming, tool-only round, no text)"))
+   ((stringp response)
+    (magent-log "INFO done"))
    (t
     (magent-log "ERROR request failed or aborted")
-    (magent-ui-insert-error "Request failed or was aborted"))))
+    (magent-ui-insert-error "Request failed or was aborted")))
+  (magent-queue-dequeue-and-run))
 
 ;;; Session management commands
 
 ;;;###autoload
 (defun magent-clear-session ()
-  "Clear the current session."
+  "Clear the current session and discard any queued prompts."
   (interactive)
+  (magent-queue-clear)
   (magent-session-reset)
   (magent-ui-clear-buffer))
 
@@ -521,6 +606,40 @@ Handles both streaming and non-streaming completion."
                  (magent-agent-info-name agent)
                  (or (magent-agent-info-description agent) "no description"))
       (message "Magent: no agent selected (will use default)"))))
+
+;;; Queue management commands
+
+;;;###autoload
+(defun magent-list-queue ()
+  "Display the current prompt queue in a temporary buffer."
+  (interactive)
+  (let ((items (magent-queue-items)))
+    (if (null items)
+        (message "Magent: queue is empty")
+      (with-output-to-temp-buffer "*magent-queue*"
+        (princ (format "Magent prompt queue (%d item(s)):\n\n" (length items)))
+        (cl-loop for item in items
+                 for i from 0
+                 do (princ
+                     (format "[%d] (%s) %s\n"
+                             i
+                             (format-time-string "%H:%M:%S"
+                                                 (magent-queue-item-timestamp item))
+                             (truncate-string-to-width
+                              (magent-queue-item-prompt item) 72 nil nil "..."))))))))
+
+;;;###autoload
+(defun magent-remove-queue-item (n)
+  "Remove queued item at 0-based index N."
+  (interactive
+   (list (if (zerop (magent-queue-length))
+             (user-error "Magent: queue is empty")
+           (read-number
+            (format "Remove queue item (0-%d): "
+                    (1- (magent-queue-length)))))))
+  (magent-queue-remove-nth n)
+  (message "Magent: removed item %d (%d remaining)"
+           n (magent-queue-length)))
 
 (provide 'magent-ui)
 ;;; magent-ui.el ends here

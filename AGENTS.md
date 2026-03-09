@@ -83,6 +83,8 @@ Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and perm
 
 9. **Session** (`magent-session.el`): Conversation state with messages list, assigned agent, and history trimming. Persists to `~/.emacs.d/magent-sessions/` as JSON. Converts to gptel prompt list format for API calls.
 
+10. **Queue** (`magent-queue.el`): FIFO prompt queue for serializing concurrent requests. When a prompt arrives while processing, it is enqueued rather than rejected. After each request completes (or is interrupted), the next queued item is dispatched automatically via `run-at-time 0`. Queue items are `magent-queue-item` structs with prompt, source symbol, and timestamp. The queue owns the processing lock (`magent-queue--processing`); `magent-ui-process` delegates to `magent-queue-enqueue`, and `magent-ui--run-item` handles actual dispatch.
+
 ### Key Design Decisions
 
 - **No custom HTTP client**: All LLM communication goes through gptel. Provider, model, and API key configuration is managed by gptel (`gptel-backend`, `gptel-model`, `gptel-api-key`).
@@ -110,7 +112,7 @@ For tool-type skills, this describes available operations.
 
 ### Configuration
 
-Magent-specific settings via `customize-group RET magent` (17 defcustom variables): `magent-system-prompt`, `magent-buffer-name`, `magent-auto-scroll`, `magent-enable-tools`, `magent-project-root-function`, `magent-max-history`, `magent-default-agent`, `magent-load-custom-agents`, `magent-enable-logging`, `magent-assistant-prompt` (tag text for `[assistant]` headers), `magent-user-prompt` (tag text for `[user]` headers), `magent-tool-call-prompt` (tag text for `[tool: ...]` headers), `magent-error-prompt` (tag text for `[error]` headers), `magent-agent-directory`, `magent-session-directory`, `magent-grep-program`, `magent-fsm-backend` (FSM backend: `gptel` or `magent`).
+Magent-specific settings via `customize-group RET magent` (18 defcustom variables): `magent-system-prompt`, `magent-buffer-name`, `magent-auto-scroll`, `magent-enable-tools`, `magent-project-root-function`, `magent-max-history`, `magent-default-agent`, `magent-load-custom-agents`, `magent-enable-logging`, `magent-assistant-prompt` (tag text for `[assistant]` headers), `magent-user-prompt` (tag text for `[user]` headers), `magent-tool-call-prompt` (tag text for `[tool: ...]` headers), `magent-error-prompt` (tag text for `[error]` headers), `magent-agent-directory`, `magent-session-directory`, `magent-grep-program`, `magent-fsm-backend` (FSM backend: `gptel` or `magent`), `magent-queue-max-size` (max queued prompts, default 20).
 
 Skill-specific settings:
 - `magent-skill-directories`: List of directories to scan for skill files (default: `~/.emacs.d/magent-skills`)
@@ -125,4 +127,6 @@ LLM provider/model/key settings are managed entirely by gptel — configure via 
 | `magent-list-skills` | Display all registered skills |
 | `magent-describe-skill` | Show detailed skill information |
 | `magent-reload-skills` | Reload skills from disk |
+| `magent-list-queue` | Display pending queued prompts |
+| `magent-remove-queue-item` | Remove a specific item from the queue |
 

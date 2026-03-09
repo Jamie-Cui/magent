@@ -229,6 +229,12 @@ If nil, discard reasoning content entirely."
                  (const :tag "Gptel FSM (gptel-fsm)" gptel))
   :group 'magent)
 
+(defcustom magent-queue-max-size 20
+  "Maximum number of prompts that may be queued while processing.
+When the queue is full, new prompts are rejected with an error."
+  :type 'integer
+  :group 'magent)
+
 ;;; Shared utilities
 
 (defun magent-project-root ()
