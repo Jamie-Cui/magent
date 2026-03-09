@@ -20,15 +20,18 @@ This document provides a comprehensive overview of the magent architecture, desi
 - Shell command execution via bash tool
 - Emacs Lisp evaluation via emacs_eval tool
 - Agent delegation with explore and general subagents
+- Web search via DuckDuckGo
 - Claude Code skills for interacting with the running Emacs instance
-- Session management with conversation history and persistence
+- Session management with conversation history and buffer content persistence
+- FIFO prompt queue for serializing concurrent requests
 - Minibuffer interface for quick prompts
+- Transient menu for command discovery
 
 * Architecture Overview
 
 Magent follows a modular, layered architecture with clear separation of concerns:
 
-#+begin_src shell
+#+begin_src
 magent.el (entry point + mode)
     |
     v
@@ -37,14 +40,16 @@ magent.el (entry point + mode)
 |  magent-ui.el    | magent-agent.el  | magent-tools.el  |
 +------------------+------------------+------------------+
     |                |                |
+    v                v                |
+Queue Layer    Session Layer          |
+magent-queue.el  magent-session.el    |
+    |                |                |
     |                v                |
-    |        Session Layer           |
-    |      magent-session.el         |
-    |                |               |
-    |                v                |
-    |      fsm/fsm Layer             |
-    |       magent-fsm.el            |
-    |                |               |
+    |        FSM Layer                |
+    |       magent-fsm.el             |
+    |          |         \            |
+    |    native backend   gptel       |
+    |                     backend     |
     v                v                v
 +------------------------------------------------------+
 |                 Core Modules                         |
@@ -63,38 +68,107 @@ magent.el (entry point + mode)
 
 ** Entry Point (magent.el)
 
-The entry point defines ~magent-mode~, a minor mode with ~C-c m~ keybinding prefix. When enabled, it initializes the agent registry, loads custom agents, and loads Claude Code skills.
+The entry point defines ~magent-mode~, a minor mode with ~C-c m~ keybinding prefix. When enabled, it adds a modeline lighter showing spinner and queue depth. Agent/skill initialization is deferred until first command use (~magent--ensure-initialized~).
 
 Key components:
 - ~magent-mode~: Minor mode with keybindings for all magent commands
 - ~global-magent-mode~: Global minor mode for automatic activation
 - ~magent--ensure-initialized~: Lazy initialization of agents and skills
 - ~magent--spinner~: Modeline spinner for processing status
+- ~magent--lighter~: Modeline construct showing " Magent", spinner, and "[+N]" queue depth
+
+Package requirements: ~emacs 27.1+~, ~gptel 0.9.8~, ~spinner 1.7.4~, ~transient 0.4~.
 
 ** Configuration (magent-config.el)
 
 All magent-specific configuration is in the ~magent~ customize group. LLM provider, model, and API key settings are managed entirely by gptel.
 
-Configuration options include:
-- System prompt and agent behavior
-- Buffer names and display settings
-- Tool enable/disable switches
-- Timeout settings for bash and emacs_eval
-- Session and agent directory paths
-- UI display preferences
+30 defcustom variables organized by category:
+
+Core settings:
+- ~magent-system-prompt~: System prompt for the AI agent (includes org-mode formatting instructions)
+- ~magent-buffer-name~: Output buffer name (default: ~*magent*~)
+- ~magent-auto-scroll~: Auto-scroll on new content
+- ~magent-enable-tools~: List of enabled tools (read, write, edit, grep, glob, bash, emacs_eval, delegate, skill, web_search)
+- ~magent-project-root-function~: Custom project root function
+- ~magent-max-history~: Max session messages (default: 100)
+- ~magent-request-timeout~: LLM request timeout in seconds (default: 120)
+- ~magent-enable-logging~: Enable ~*magent-log*~ buffer
+- ~magent-default-agent~: Default agent name (default: "build")
+- ~magent-load-custom-agents~: Load agents from ~.magent/agent/*.md~
+
+UI tag settings:
+- ~magent-assistant-prompt~: Tag for assistant sections (default: "ASSISTANT")
+- ~magent-user-prompt~: Tag for user sections (default: "USER")
+- ~magent-tool-call-prompt~: Tag for tool calls (default: "tool")
+- ~magent-error-prompt~: Tag for error sections (default: "error")
+
+Path settings:
+- ~magent-agent-directory~: Relative path to custom agent directory
+- ~magent-session-directory~: Session persistence directory
+
+Tool settings:
+- ~magent-grep-program~: Path to ripgrep (auto-detected)
+- ~magent-grep-max-matches~: Max grep matches (default: 100)
+- ~magent-bash-timeout~: Bash command timeout (default: 30s)
+- ~magent-emacs-eval-timeout~: Emacs eval timeout (default: 10s)
+
+UI display settings:
+- ~magent-ui-result-max-length~: Max tool result display length (default: 200)
+- ~magent-ui-result-preview-length~: Truncated result preview length (default: 150)
+- ~magent-ui-tool-input-max-length~: Max tool input display length (default: 60)
+- ~magent-ui-log-truncate-length~: Max log message length (default: 80)
+- ~magent-ui-fontify-threshold~: Async fontification threshold (default: 500 chars)
+- ~magent-ui-fontify-idle-delay~: Async fontification delay (default: 0.1s)
+- ~magent-ui-batch-insert-delay~: Streaming batch delay (default: 0.05s)
+
+Advanced settings:
+- ~magent-include-reasoning~: How to handle reasoning blocks (t/ignore/nil)
+- ~magent-fsm-backend~: FSM backend (gptel or magent)
+- ~magent-queue-max-size~: Max queued prompts (default: 20)
+
+Skill-specific settings (in ~magent-skill-file.el~):
+- ~magent-skill-directories~: Directories to scan for skills
+- ~magent-skill-file-name~: Skill definition filename (default: ~SKILL.md~)
+
+Also provides shared utilities:
+- ~magent-project-root~: Project root detection (tries ~magent-project-root-function~, then projectile, then project.el, then ~default-directory~)
+- ~magent-log~: Logging stub (overridden by ~magent-ui.el~ with real implementation)
+
+** Queue System (magent-queue.el)
+
+FIFO prompt queue for serializing concurrent requests. Global singleton because magent has a single output buffer and single processing slot.
+
+Data structure:
+- ~magent-queue-item~: Struct with prompt (string), source (symbol), timestamp (float)
+
+Queue behavior:
+- When idle: prompt dispatches immediately
+- When processing: prompt is enqueued (up to ~magent-queue-max-size~)
+- When full: error is signaled
+- After each request completes or is interrupted: next item auto-dispatches via ~run-at-time 0~
+
+Key functions:
+- ~magent-queue-enqueue~: Enqueue or immediate-dispatch; returns t if queued
+- ~magent-queue-dequeue-and-run~: Release lock and dispatch next item
+- ~magent-queue-clear~: Discard all queued items
+- ~magent-queue-remove-nth~: Remove item at index
+
+The queue owns the processing lock (~magent-queue--processing~). ~magent-ui-process~ delegates to ~magent-queue-enqueue~, and ~magent-ui--run-item~ handles actual dispatch.
 
 ** Session Management (magent-session.el)
 
-Sessions store conversation history with per-agent assignment and JSON persistence.
+Sessions store conversation history with per-agent assignment and buffer content persistence.
 
 Data structure:
-- ~magent-session~: Container for messages, assigned agent, and history settings
-- ~magent-msg~: Individual message with role (user/assistant/tool) and content
+- ~magent-session~: Container for messages, assigned agent, history settings, and saved buffer text
+- ~magent-msg~: Individual message accessed via ~magent-msg-role~ and ~magent-msg-content~ accessors (not a struct, an alist)
 
 Key features:
-- Automatic message trimming when exceeding ~magent-max-history~
-- JSON persistence to ~magent-session-directory~
-- Conversion to gptel prompt list format for API calls
+- Automatic message trimming when exceeding ~magent-max-history~ (lazy trim, triggers at max + 10)
+- Buffer content persistence via ~buffer-content~ field for lossless restore
+- Conversion to gptel prompt list format for API calls (~magent-session-to-gptel-prompt-list~)
+- Session summarization (~magent-session-summarize~)
 
 ** Agent System
 
@@ -106,6 +180,7 @@ This consolidated file implements:
 - ~magent-agent-info~ struct with fields: name, description, mode, native, hidden, temperature, top-p, color, model, prompt, options, steps, permission
 - 7 built-in agent definitions
 - Hash-table registry with lookup, filtering, and selection
+- Feature aliases for ~magent-agent-info~ and ~magent-agent-types~
 
 Built-in agents:
 | Agent      | Mode       | Description                                     |
@@ -120,7 +195,7 @@ Built-in agents:
 
 Agent modes:
 - ~primary~: User-facing agents that can be selected for sessions
-- ~subagent~: Internal agents called by primary agents
+- ~subagent~: Internal agents called by primary agents via ~delegate~ tool
 - ~all~: Can act as either primary or subagent
 
 *** magent-agent-file.el
@@ -142,12 +217,16 @@ tools:
 # Instructions for code review specialist
 #+end_example
 
+Also supports saving agents to files (~magent-agent-file-save~).
+
 ** magent-agent.el
 
 The agent processing module:
 - ~magent-agent-process~: Main entry point for agent requests
 - Builds gptel prompt list from session history
+- Resolves agent (explicit > session > registry default)
 - Applies per-agent overrides (model, temperature)
+- Appends instruction-type skill prompts to system prompt
 - Filters tools by permission rules
 - Creates FSM and starts execution
 
@@ -157,52 +236,98 @@ Rule-based access control with support for:
 - Tool-level permissions: allow, deny, ask
 - File-pattern rules with glob syntax
 - Session-level overrides from user prompts
+- Permission merging for composing rulesets
 
 Permission resolution order:
-1. Exact tool match
-2. Nested file rules
-3. Wildcard fallback (~*~)
-4. Default allow
+1. Session overrides (always allow / always deny — set by user responses to [A]lways/[D]eny prompts)
+2. Tool-specific rule (exact match)
+3. Nested file rules (glob patterns against basename and full path)
+4. Wildcard fallback (~*~)
+5. Default allow
 
-Example permission rules:
+Session overrides are cleared on session reset, stored in ~magent-permission--session-overrides~.
+
+Default permissions (~magent-permission-defaults~):
+- ~*~ (wildcard): allow
+- ~bash~: ask
+- ~emacs_eval~: ask
+- ~delegate~: allow
+- ~web_search~: allow
+- ~read~: allow, except ~*.env~ and ~*.env.*~ (deny), ~*.env.example~ (allow)
+- ~write~: ask, except ~*.env~ (deny), ~*.env.example~ (allow)
+- ~edit~: allow, except ~*.env~ (deny), ~*.env.example~ (allow)
+
+Example permission rules (using permission key symbols, not gptel tool names):
 #+begin_src elisp
-'((read_file . allow)
-  (write_file . ((deny "*.env")
-                 (allow "*")))
+'((read . allow)
+  (write . (("*.env" . deny)
+            (* . ask)))
   (bash . ask))
 #+end_src
 
 ** Tool System (magent-tools.el)
 
-9 tools implemented as gptel-tool structs:
+10 tools implemented as gptel-tool structs:
 
-| Tool          | Side-effect | Description                              |
-|---------------+-------------+------------------------------------------|
-| read_file     | no          | Read file contents                       |
-| write_file    | yes         | Write/create file (auto-creates dirs)    |
-| edit_file     | yes         | Replace exact text in file               |
-| grep          | no          | Regex search via ripgrep                 |
-| glob          | no          | Find files matching glob pattern         |
-| bash          | yes         | Execute shell commands                   |
-| emacs_eval    | yes         | Evaluate Emacs Lisp expressions          |
-| delegate      | yes         | Spawn nested request using subagent      |
-| skill_invoke  | no          | Invoke Claude Code skills                |
+| Tool          | Async | Confirm | Description                              |
+|---------------+-------+---------+------------------------------------------|
+| read_file     | yes   | no      | Read file contents                       |
+| write_file    | yes   | yes     | Write/create file (auto-creates dirs)    |
+| edit_file     | yes   | yes     | Replace exact text in file               |
+| grep          | yes   | no      | Regex search via ripgrep (async process) |
+| glob          | yes   | no      | Find files matching glob pattern         |
+| bash          | yes   | yes     | Execute shell commands (async process)   |
+| emacs_eval    | yes   | yes     | Evaluate Emacs Lisp expressions          |
+| delegate      | yes   | no      | Spawn nested request using subagent      |
+| skill_invoke  | yes   | no      | Invoke Claude Code skills                |
+| web_search    | yes   | no      | Search the web via DuckDuckGo            |
 
-Tools with side effects prompt user confirmation before execution.
-Tools are globally defined but filtered per-agent via permission rules.
+All tools are asynchronous (callback-based). Tools with ~:confirm t~ prompt user confirmation before execution.
 
-** Finite State Machine (magent-fsm.el)
+Tools are globally defined but filtered per-agent via:
+1. ~magent-enable-tools~ global config (which tools are available at all)
+2. Agent permission rules (which tools this agent can use)
+3. ~magent-permission-tool-available-p~ handles nested rules (e.g., plan agent where edit defaults to deny but specific paths are allow)
 
-The FSM manages the complete tool-calling loop:
+Tool name to permission key mapping:
+#+begin_src elisp
+'(("read_file"    . read)
+  ("write_file"   . write)
+  ("edit_file"    . edit)
+  ("grep"         . grep)
+  ("glob"         . glob)
+  ("bash"         . bash)
+  ("emacs_eval"   . emacs_eval)
+  ("delegate"     . delegate)
+  ("skill_invoke" . skill)
+  ("web_search"   . web_search))
+#+end_src
+
+** Finite State Machine (magent-fsm.el + backends)
+
+Unified entry point for the tool-calling loop with two switchable backends controlled by ~magent-fsm-backend~:
+
+*** Unified API
+
+- ~magent-fsm-create~: Create FSM with keyword args
+- ~magent-fsm-start~: Start FSM execution
+- ~magent-fsm-abort~: Abort FSM execution
+- ~magent-fsm-destroy~: Clean up resources
+
+All dispatch to the configured backend.
+
+*** Native Backend (magent-fsm-backend-native.el)
+
+Custom FSM with full state machine control and permission-aware confirmation.
 
 States:
-- ~INIT~: Initial state, validate inputs
-- ~SEND~: Prepare and send HTTP request via gptel
-- ~WAIT~: HTTP request in flight (includes entire gptel tool loop)
+- ~INIT~: Validate inputs (session, backend, model)
+- ~SEND~: Prepare and fire HTTP request via gptel, start timeout timer
+- ~WAIT~: HTTP request in flight; gptel handles tool-calling loop
 - ~PROCESS~: Parse response, check for tool usage
-- ~TOOL~: Execute pending tool calls
-- ~DONE~: Terminal state (success)
-- ~ERROR~: Terminal state (failure)
+- ~TOOL~: Execute pending tool calls with mutex-based synchronization
+- ~DONE~: Terminal state (success) — records response in session, calls callback, destroys FSM
+- ~ERROR~: Terminal state (failure) — calls callback with nil, destroys FSM
 
 State transitions:
 #+begin_example
@@ -212,19 +337,39 @@ INIT -> SEND -> WAIT -> PROCESS -> TOOL -> SEND -> WAIT -> ... -> DONE
 #+end_example
 
 FSM callback handles:
-- Reasoning blocks (Claude 3.5+)
+- Reasoning blocks (streaming ~(reasoning . text)~ cons cells)
 - Streaming text chunks
-- Tool call confirmations
-- Tool result injection
+- Tool call confirmations (~(tool-call . ...)~ cons cells)
+- Tool result injection (~(tool-result . ...)~ cons cells)
 - Multiple rounds of tool calls
+- Timeout handling via timer
+- Buffer-boundary error suppression (evil-mode cursor adjustments)
+
+Tool confirmation flow:
+1. Check session override (always allow / always deny)
+2. Check file-specific deny rules
+3. Check file-specific allow rules
+4. Prompt user interactively: [y]es / [n]o / [A]lways allow / [D]eny always
+
+Tool function wrapping: ~magent-fsm--wrap-tool-function~ wraps each tool to display call/result in the UI before/after execution.
+
+*** Gptel Backend (magent-fsm-backend-gptel.el)
+
+Lightweight wrapper around ~gptel-request~ that delegates the entire tool-calling loop to gptel.
+
+- Uses a hidden request buffer
+- Tools auto-execute without interactive confirmation (gptel's confirm UI requires a visible buffer)
+- No custom state machine — just sets up the request and handles the callback
+- Streaming mode enabled by default
+- Handles tool-use rounds by calling ~magent-ui-continue-streaming~ and final rounds by calling ~magent-ui-finish-streaming-fontify~
 
 ** Skills System (magent-skills.el + skill files)
 
 Two skill types:
-- ~instruction~ type: Markdown body injected into system prompt
+- ~instruction~ type: Markdown body injected into system prompt via ~magent-skills-get-instruction-prompts~
 - ~tool~ type: Invoked via ~skill_invoke~ tool with predefined operations
 
-Built-in ~emacs~ skill provides:
+Built-in ~emacs~ skill provides 6 operations:
 - ~list-functions~: List interactive commands matching prefix
 - ~describe-function~: Get function documentation
 - ~eval-expression~: Evaluate arbitrary elisp
@@ -236,18 +381,36 @@ Skills loaded from:
 - Global: ~~/.emacs.d/magent-skills/<name>/SKILL.md~
 - Project: ~.magent/skills/<name>/SKILL.md~
 
+Tool-type skills can have companion ~.el~ files defining ~magent-skill-<name>-invoke~ function. The companion file is discovered automatically (~SKILL.el~ or ~<skill-name>.el~ in the same directory).
+
 ** UI Layer (magent-ui.el)
 
-Output buffer uses ~org-mode~ for native folding support:
+Output buffer derives from ~org-mode~ (~magent-output-mode~) for native folding support:
 - Level-1 headings (~*~) for message section markers (user, assistant, tool, error)
-- Level-2 headings (~**~) for LLM content
-- Section folding with ~TAB~ / ~S-TAB~
+- Level-2+ headings (~**~) for LLM content
+- ~#+begin_tool~ / ~#+end_tool~ blocks for tool calls (auto-folded on completion)
+- ~#+begin_think~ / ~#+end_think~ blocks for reasoning (auto-folded)
+- Section folding with ~TAB~ / ~S-TAB~ via org-cycle
 
 Streaming support:
-- Batched chunk insertion to reduce UI updates
-- Automatic streaming section cleanup for tool-only rounds
-- Org fontification for assistant messages
-- Reasoning block support (~#+begin_think~ ~#+end_think~)
+- Batched chunk insertion to reduce UI updates (~magent-ui-batch-insert-delay~)
+- Streaming state tracking: section start, has-text flag, batch buffer, batch timer
+- Empty streaming sections (tool-only rounds) are cleaned up
+- ~magent-ui-continue-streaming~ for multi-round tool use within one section
+- ~magent-ui-finish-streaming-fontify~ finalizes and removes orphaned headings
+
+Buffer management:
+- ~magent-ui-render-history~: Restores buffer from saved content or re-renders from session messages
+- Buffer content saved to session's ~buffer-content~ field for lossless restore
+- ~magent-ui--revert-buffer~: Revert function delegates to render-history
+
+Transient menu (~magent-transient-menu~, bound to ~?~ in output buffer):
+- Session: prompt, clear session
+- Agent: select, show current, list
+- Queue: view queue, remove item
+- Buffer: toggle read-only
+- Control: interrupt (C-g)
+- Logs: show log, clear log
 
 ** Agent File Format
 
@@ -273,15 +436,15 @@ You are a code review specialist. Analyze code for bugs, style issues, and perfo
 #+end_example
 
 Supported frontmatter keys:
-- ~name~: Agent identifier (filename without .md)
+- ~name~: Agent identifier (defaults to filename without .md)
 - ~description~: Human-readable description
-- ~mode~: primary, subagent, or all
+- ~mode~: primary, subagent, or all (default: all)
 - ~hidden~: Hide from agent selection UI
 - ~temperature~: Temperature override
 - ~top-p~: Top-p override
 - ~color~: Display color (not implemented)
 - ~model~: gptel backend and model override
-- ~tools~: List of tool enablements
+- ~tools~: Tool permission config
 
 ** Skill File Format
 
@@ -307,95 +470,103 @@ Skill types:
 
 ** Frontmatter Parsing (magent-frontmatter.el)
 
-Shared utility for parsing YAML frontmatter:
-- Three-dash delimited headers
-- Key-value pairs
-- Boolean, number, string, and list value parsing
+Shared utility for parsing Jekyll/Hugo style YAML frontmatter:
+- Three-dash delimited headers (~---~)
+- Key-value pairs (key: value)
+- Value parsing: booleans (true/false), numbers, quoted strings, comma-separated lists
+- Underscores in keys converted to hyphens
+- Returns ~(FRONTMATTER-PLIST . BODY-STRING)~
 
 * Core Data Structures
 
 ** magent-agent-info
 
 #+begin_src elisp
-(cl-defstruct (magent-agent-info (:constructor magent-agent-info-create))
+(cl-defstruct (magent-agent-info
+               (:constructor nil)
+               (:constructor magent-agent-info-create)
+               (:copier nil))
   name           ; Agent identifier (string)
   description    ; Human-readable description
   mode           ; primary, subagent, or all
-  native         ; Whether built-in
-  hidden         ; Hide from listings
+  (native nil)   ; Whether built-in
+  (hidden nil)   ; Hide from listings
   temperature    ; Optional temperature override
   top-p          ; Optional top-p override
   color          ; Optional display color
-  model          ; Optional model spec (gptel backend . model symbol)
+  model          ; Optional model spec (backend . model-symbol) or backend
   prompt         ; Optional custom system prompt
-  options        ; Additional options (alist)
+  (options nil)  ; Additional options (alist)
   steps          ; Optional max iteration steps
-  permission     ; Permission ruleset
-)
+  (permission nil)) ; Permission ruleset
 #+end_src
 
 ** magent-session
 
 #+begin_src elisp
-(cl-defstruct (magent-session (:constructor magent-session-create))
-  messages       ; List of messages in chronological order
-  message-count  ; Cached count
-  max-history    ; Max messages to keep
-  id             ; Session identifier
-  agent          ; Assigned agent info
-)
+(cl-defstruct (magent-session
+               (:constructor magent-session-create)
+               (:copier nil))
+  (messages nil)        ; List of messages in chronological order
+  (message-count 0)     ; Cached count
+  (max-history magent-max-history)
+  (id nil)              ; Session identifier
+  (agent nil)           ; Assigned agent info
+  (buffer-content nil)) ; Saved buffer text for lossless restore
 #+end_src
 
 ** magent-msg
 
-Messages are stored as plists:
+Messages are stored as alists:
 #+begin_src elisp
 '((role . user)
   (content . "user message"))
 
 '((role . assistant)
   (content . "assistant response"))
-
-'((role . tool)
-  (content . "tool result"))
 #+end_src
 
-** magent-fsm
+Accessed via ~magent-msg-role~ and ~magent-msg-content~ (defsubst accessors). Content can be a string or a list of content blocks; ~magent-session--content-to-string~ coerces to plain string.
+
+** magent-fsm (native backend)
 
 #+begin_src elisp
-(cl-defstruct (magent-fsm (:constructor magent-fsm-create))
-  state              ; Current state (INIT/SEND/WAIT/PROCESS/TOOL/DONE/ERROR)
-  session            ; magent-session struct
-  agent              ; magent-agent-info struct
-  backend            ; gptel-backend or custom
-  model              ; Model symbol
-  prompt-list        ; Conversation history as prompt list
-  system-prompt      ; System prompt string
-  tools              ; List of available tools
-  streaming-p        ; Whether to stream responses
-  pending-tools      ; Tool calls awaiting execution
-  accumulated-text   ; Accumulated text response
-  streamed-chunks    ; Streaming chunks buffer
-  reasoning-text     ; Accumulated reasoning text
-  in-reasoning-block ; Whether in reasoning block
-  http-status        ; Last HTTP status code
-  http-message       ; Last HTTP status message
-  error              ; Error message if any
-  callback           ; User callback
-  ui-callback        ; UI callback for streaming chunks
-  request-buffer     ; Buffer for HTTP request
-  process            ; HTTP process object
-  permission         ; Agent permission rules
-  aborted            ; Whether aborted
-)
+(cl-defstruct (magent-fsm (:constructor magent-fsm-native-create)
+                          (:copier magent-fsm-copy))
+  (state 'INIT)              ; Current state (INIT/SEND/WAIT/PROCESS/TOOL/DONE/ERROR)
+  (session nil)              ; magent-session struct
+  (agent nil)                ; magent-agent-info struct
+  (backend nil)              ; gptel-backend
+  (model nil)                ; Model symbol
+  (prompt-list nil)          ; Conversation history as prompt list
+  (system-prompt nil)        ; System prompt string
+  (tools nil)                ; List of available tools (magent plist format)
+  (streaming-p nil)          ; Whether to stream responses
+  (pending-tools nil)        ; Tool calls awaiting execution
+  (accumulated-text "")      ; Accumulated text response
+  (streamed-chunks "")       ; Streaming chunks buffer
+  (reasoning-text "")        ; Accumulated reasoning text
+  (in-reasoning-block nil)   ; Whether in reasoning block
+  (http-status nil)          ; Last HTTP status code
+  (http-message nil)         ; Last HTTP status message
+  (error nil)                ; Error message if any
+  (callback nil)             ; User callback (called on DONE/ERROR)
+  (ui-callback nil)          ; UI callback for streaming chunks
+  (request-buffer nil)       ; Buffer for HTTP request
+  (process nil)              ; HTTP process object
+  (permission nil)           ; Agent permission rules
+  (aborted nil))             ; Whether FSM has been aborted
 #+end_src
+
+The gptel backend uses a plain plist instead of a struct.
 
 ** magent-permission
 
 #+begin_src elisp
-(cl-defstruct (magent-permission (:constructor magent-permission-create))
-  rules  ; List of (tool . permission) or nested file rules
-)
+(cl-defstruct (magent-permission
+               (:constructor magent-permission-create)
+               (:copier nil))
+  rules)  ; Alist of (tool . permission) or nested file rules
 #+end_src
 
 ** magent-skill
@@ -404,12 +575,22 @@ Messages are stored as plists:
 (cl-defstruct (magent-skill (:constructor magent-skill-create))
   name              ; Skill identifier (string)
   description       ; Brief description
-  type              ; instruction or tool
-  tools             ; List of required tools
-  prompt            ; Markdown body (instruction type)
-  invoke-function   ; Function for tool type
-  file-path         ; Source file path
-)
+  (type 'instruction) ; 'instruction or 'tool
+  (tools nil)       ; List of required tools (symbols)
+  (prompt nil)      ; Markdown body (instruction type)
+  (invoke-function nil) ; Function for tool type
+  (file-path nil))  ; Source file path
+#+end_src
+
+** magent-queue-item
+
+#+begin_src elisp
+(cl-defstruct (magent-queue-item
+               (:constructor magent-queue-item-create)
+               (:copier nil))
+  (prompt nil :type string)    ; Prompt text
+  (source 'prompt :type symbol) ; Caller symbol (prompt, send-prompt, prompt-region, ask-at-point)
+  (timestamp 0.0 :type float)) ; Enqueue time (float-time)
 #+end_src
 
 * Key Design Decisions
@@ -422,24 +603,26 @@ All LLM communication goes through gptel. This decision:
 - Leverages gptel's battle-tested HTTP implementation
 - Simplifies tool-calling loop implementation
 
+** Switchable FSM Backends
+
+~magent-fsm-backend~ (default ~gptel~) selects between:
+- *Native backend*: Full FSM control with custom state machine. Provides permission-aware interactive confirmation prompts. More complex but offers fine-grained control over tool execution flow.
+- *Gptel backend*: Lightweight wrapper that delegates the entire tool-calling loop to gptel. Simpler code path but tools auto-execute without interactive confirmation (gptel's confirm UI requires a visible buffer, and this backend uses a hidden request buffer).
+
 ** Per-Agent gptel Overrides
 
-The ~magent-agent-info-apply-gptel-overrides~ function temporarily sets gptel variables for the duration of a request:
+The ~magent-agent-info-apply-gptel-overrides~ function temporarily sets gptel variables for the duration of a request. The agent's MODEL field can be:
+- nil: use global ~gptel-backend~ and ~gptel-model~
+- A gptel backend object: use it with global ~gptel-model~
+- A cons (BACKEND . MODEL-SYMBOL): use both overrides
 
-#+begin_src elisp
-(defun magent-agent-info-apply-gptel-overrides (info body-thunk)
-  "Apply per-agent gptel variable overrides and call BODY-THUNK."
-  (let* ((gptel-backend (or (agent-backend info) gptel-backend))
-         (gptel-model (or (agent-model info) gptel-model))
-         (gptel-temperature (or (agent-temperature info) gptel-temperature)))
-    (funcall body-thunk)))
-#+end_src
+Temperature is overridden if the agent specifies it.
 
 ** Agent Modes
 
 The ~primary~ vs ~subagent~ distinction enables:
 - Clear API between agent types
-- Permission control (non-subagents cannot be delegated to)
+- Permission control (non-subagents cannot be delegated to via ~delegate~ tool)
 - UI filtering (only primary agents shown in agent selection)
 
 ** Tool Filtering
@@ -452,15 +635,28 @@ Tools are defined once globally but filtered per-agent via permission rules. Thi
 ** Skill Types
 
 Two distinct skill types serve different use cases:
-- ~instruction~ type: Claude Code style - prompts injected to system message
-- ~tool~ type: Traditional - invoked via ~skill_invoke~
+- ~instruction~ type: Claude Code style — prompts injected into system message. LLM follows instructions and uses available tools directly.
+- ~tool~ type: Traditional — invoked via ~skill_invoke~ tool with predefined operations. Companion ~.el~ files provide the implementation.
 
-** Session Persistence
+** Session Buffer Content Persistence
 
-Sessions are persisted as JSON to ~magent-session-directory~. Key considerations:
-- Format compatible with gptel prompt list conversion
-- Automatic history trimming to prevent memory issues
-- Per-session file naming: ~session-YYYYMMDD-HHMMSS.json~
+Sessions save the raw buffer content (not just messages) for lossless restore. This preserves:
+- Tool call blocks and their results
+- Reasoning blocks
+- Error messages
+- Formatting that cannot be reconstructed from messages alone
+
+When the buffer is reverted or re-rendered, saved content is restored directly rather than re-rendering from session messages.
+
+** Prompt Queue
+
+The queue serializes concurrent requests because magent has a single output buffer and single processing slot. Design choices:
+- Global singleton (not per-session)
+- FIFO ordering
+- Immediate dispatch when idle, queuing when busy
+- Configurable max size with error on overflow
+- Auto-dispatch next item after completion or interruption
+- Deferred dispatch via ~run-at-time 0~ to avoid stack depth issues
 
 ** Streaming Support
 
@@ -468,183 +664,61 @@ Streaming is handled at both the HTTP layer (gptel) and UI layer (magent-ui):
 - gptel manages HTTP streaming and tool-calling within streaming
 - magent-ui batches small chunks to reduce UI updates
 - Empty streaming sections (tool-only rounds) are cleaned up
+- Multi-round tool use stays within the same org section (~magent-ui-continue-streaming~)
 
 ** Permission Resolution
 
-Permission rules support nested file patterns:
-#+begin_src elisp
-'((read . allow)  ; Allow all reads by default
-  (read . (("*.env" . deny)  ; Except .env files
-           ("*.key" . deny))) ; And key files
-  (write . ask))  ; Write always asks for confirmation
-#+end_src
+See [[*Permission System (magent-permission.el)][Permission System]] for the full resolution algorithm, default rules, and examples.
 
-Resolution order:
-1. Exact tool match with nested rules
-2. Wildcard fallback
-3. Default allow
+* Interactive Commands
 
-* Tool Execution Flow
+** Session Commands
 
-** Async vs Sync Tools
+| Keybinding | Command                 | Description                              |
+|------------+-------------------------+------------------------------------------|
+| C-c m p    | ~magent-prompt~         | Prompt for input and send to agent       |
+|            | ~magent-send-prompt~    | Send prompt programmatically             |
+| C-c m r    | ~magent-prompt-region~  | Send selected region to agent            |
+| C-c m a    | ~magent-ask-at-point~   | Ask about the symbol at point            |
+| C-c m c    | ~magent-clear-session~  | Clear session and discard queued prompts |
 
-All tools are asynchronous to avoid blocking the Emacs UI:
+** Agent Commands
 
-#+begin_src elisp
-;; Async tool signature:
-(callback result) => nil
-(funcall callback result)
+| Keybinding | Command                     | Description                          |
+|------------+-----------------------------+--------------------------------------|
+| C-c m A    | ~magent-select-agent~       | Select an agent for this session     |
+| C-c m i    | ~magent-show-current-agent~ | Show current session's agent         |
+| C-c m v    | ~magent-list-agents~        | List all agents                      |
+|            | ~magent-set-default-agent~  | Set the default agent                |
+|            | ~magent-load-agent-files~   | Load agent files from disk           |
+|            | ~magent-save-agent~         | Save an agent to file                |
 
-;; Sync tool signature:
-(args...) => result
-(funcall callback result)
-#+end_src
+** Queue Commands
 
-** Tool Wrapper
+| Command                    | Description                          |
+|----------------------------+--------------------------------------|
+| ~magent-list-queue~        | Display pending queued prompts       |
+| ~magent-remove-queue-item~ | Remove a specific item from queue    |
 
-The FSM wraps tool functions to display call/result in the UI:
+** Skill Commands
 
-#+begin_src elisp
-(defun magent-fsm--wrap-tool-function (name args-spec original-fn async-p)
-  "Wrap ORIGINAL-FN to show tool call/result in UI."
-  (if async-p
-      (lambda (callback &rest arg-values)
-        (magent-fsm--show-tool-call name args-plist)
-        (apply original-fn
-               (lambda (result)
-                 (magent-fsm--show-tool-result name result)
-                 (funcall callback result))
-               arg-values))
-    (lambda (&rest arg-values)
-      (magent-fsm--show-tool-call name args-plist)
-      (let ((result (apply original-fn arg-values)))
-        (magent-fsm--show-tool-result name result)
-        result))))
-#+end_src
+| Command                 | Description                        |
+|-------------------------+------------------------------------|
+| ~magent-list-skills~    | Display all registered skills      |
+| ~magent-describe-skill~ | Show detailed skill information    |
+| ~magent-reload-skills~  | Reload skills from disk            |
 
-** Tool Call Confirmation
+** Buffer & Log Commands
 
-Permission-aware confirmation:
-1. Check session override (always allow / always deny)
-2. Check file-specific deny rules
-3. Prompt user if still needed
-
-* State Machine Implementation
-
-** INIT State
-
-Validates required inputs:
-- Session must exist
-- Backend must be configured
-- Model must be specified
-
-** SEND State
-
-Prepares and fires HTTP request:
-1. Starts timeout timer
-2. Converts magent tools to gptel tools format
-3. Wraps tool functions for UI display
-4. Calls gptel-request with FSM callback
-
-** WAIT State
-
-HTTP request in flight. In streaming mode:
-- gptel handles entire tool-calling loop
-- FSM stays in WAIT until final response
-- Timeout timer resets on each activity
-
-** PROCESS State
-
-After HTTP response:
-1. Check for errors
-2. Check for pending tool calls
-3. Transition to TOOL or DONE
-
-** TOOL State
-
-Executes all pending tool calls:
-1. Show tool call in UI
-2. Execute tool (async or sync)
-3. Store results
-4. When all complete, inject results and loop back to SEND
-
-** DONE/ERROR States
-
-Clean up resources and call user callback:
-- Cancel timeout timer
-- Kill request buffer
-- Delete HTTP process
-- Call user callback with result or nil
-
-* Permission System Implementation
-
-** Permission Resolution Algorithm
-
-#+begin_src elisp
-(defun magent-permission-resolve (rules tool &optional file)
-  "Resolve permission for TOOL with optional FILE."
-  (pcase rules
-    ((or 'allow 'deny 'ask) rules)
-    (nil magent-permission-allow)
-    (`(,_ . ,value) (pcase value
-                      ('allow magent-permission-allow)
-                      ('deny magent-permission-deny)
-                      ('ask magent-permission-ask)
-                      (`(,_ ,_ . ,_) (let ((rule (assq tool value)))
-                                       (if rule (cdr rule)
-                                         (let ((wild (assq '* value)))
-                                           (if wild (cdr wild)
-                                             magent-permission-allow)))))))))  ; tail call optimization
-#+end_src
-
-** File Pattern Matching
-
-Glob patterns are converted to regex:
-- ~*.ext~ -> ~"^.*\\.ext$~"
-- ~**/*.ext~ -> recursive directory search
-
-** Session Overrides
-
-#+begin_src elisp
-(defvar magent-permission--session-overrides (make-hash-table :test 'eq)
-  "Session-level permission overrides.")
-
-(defun magent-permission-set-session-override (perm-key value)
-  "Set session override for PERM-KEY.")
-#+end_src
-
-* Streaming Implementation
-
-** Chunk Batching
-
-Small streaming chunks are accumulated to reduce UI updates:
-
-#+begin_src elisp
-(defvar-local magent-ui--streaming-batch-delay 0.05)
-(defvar-local magent-ui--streaming-batch-buffer "")
-
-(defun magent-ui-insert-streaming (text)
-  "Insert streaming TEXT into output buffer."
-  (setq magent-ui--streaming-batch-buffer
-        (concat magent-ui--streaming-batch-buffer text))
-  (cancel-timer magent-ui--streaming-batch-timer)
-  (setq magent-ui--streaming-batch-timer
-        (run-with-timer magent-ui--streaming-batch-delay nil
-                        #'magent-ui--flush-streaming-batch)))
-#+end_src
-
-** Streaming Finish
-
-Cleans up orphaned headers for tool-only rounds:
-
-#+begin_src elisp
-(defun magent-ui-finish-streaming-fontify ()
-  "Finalize streaming section."
-  (when (not magent-ui--streaming-has-text)
-    ;; Tool-only round: remove orphaned heading
-    (delete-region magent-ui--streaming-section-start
-                   magent-ui--streaming-start)))
-#+end_src
+| Keybinding | Command                    | Description                      |
+|------------+----------------------------+----------------------------------|
+|            | ~magent-ui-display-buffer~ | Display the magent output buffer |
+|            | ~magent-toggle-read-only~  | Toggle read-only in output       |
+| C-c m l    | ~magent-show-log~          | View the log buffer              |
+| C-c m L    | ~magent-clear-log~         | Clear the log buffer             |
+| C-c m t    | ~magent-ui-toggle-section~ | Toggle section folding at point  |
+| C-g        | ~magent-interrupt~         | Interrupt current request        |
+| ?          | ~magent-transient-menu~    | Open transient command menu      |
 
 * Testing
 
@@ -668,7 +742,10 @@ make test
 make compile  # Byte-compile all Elisp files
 make clean    # Remove .elc files
 make test     # Run unit tests
+make help     # Show available targets
 #+end_src
+
+The Makefile auto-detects gptel and spinner in ~$HOME/.emacs.d/elpa~. Override with ~GPTEL_DIR~.
 
 * Troubleshooting
 
@@ -697,26 +774,31 @@ gptel-api-key  ; Should return your API key
 
 #+begin_example
 magent/
-├── magent.el                   ; Main entry point
-├── magent-config.el            ; Configuration (16 defcustom vars)
-├── magent-session.el           ; Session management
-├── magent-tools.el             ; Tool implementations (9 tools)
-├── magent-agent.el             ; Agent processing
-├── magent-agent-registry.el    ; Agent struct + registry + built-ins
-├── magent-agent-file.el        ; Custom agent loader
-├── magent-permission.el        ; Permission system
-├── magent-fsm.el               ; FSM for tool-calling loop
-├── magent-ui.el                ; UI and minibuffer commands
-├── magent-skills.el            ; Skill registry
-├── magent-skill-emacs.el       ; Built-in emacs skill
-├── magent-skill-file.el        ; Skill file loader
-├── magent-frontmatter.el       ; Frontmatter parsing
-├── magent-pkg.el               ; Package descriptor
+├── magent.el                      ; Main entry point + minor mode
+├── magent-config.el               ; Configuration (30 defcustom vars)
+├── magent-queue.el                ; FIFO prompt queue
+├── magent-session.el              ; Session management
+├── magent-tools.el                ; Tool implementations (10 tools)
+├── magent-agent.el                ; Agent processing
+├── magent-agent-registry.el       ; Agent struct + registry + built-ins
+├── magent-agent-file.el           ; Custom agent loader/saver
+├── magent-permission.el           ; Permission system
+├── magent-fsm.el                  ; FSM unified API + backend dispatch
+├── magent-fsm-backend-native.el   ; Native FSM backend (full state machine)
+├── magent-fsm-backend-gptel.el    ; Gptel FSM backend (lightweight wrapper)
+├── magent-ui.el                   ; UI, output buffer, streaming, transient menu
+├── magent-skills.el               ; Skill registry
+├── magent-skill-emacs.el          ; Built-in emacs skill (6 operations)
+├── magent-skill-file.el           ; Skill file loader + interactive commands
+├── magent-frontmatter.el          ; YAML frontmatter parsing
+├── magent-pkg.el                  ; Package descriptor
+├── CLAUDE.md                      ; Claude Code guidance
+├── AGENTS.md                      ; (alias for CLAUDE.md)
+├── Makefile                       ; Build system
 ├── test/
-│   └── magent-test.el          ; Unit tests
+│   └── magent-test.el             ; Unit tests
 └── docs/
-    ├── design.org              ; This document
-    └── ...
+    └── design.org                 ; This document
 #+end_example
 
 * Integration with gptel
@@ -734,17 +816,19 @@ Magent delegates all LLM communication to gptel:
 
 gptel handles:
 - HTTP request/response
-- Provider-specific APIs
-- Tool calling loop
+- Provider-specific APIs (Anthropic, OpenAI, Gemini, Ollama, etc.)
+- Tool calling loop (invoking tools, injecting results, continuing)
 - Streaming
 - Error handling
 
 Magent adds:
-- Multi-agent architecture
-- Permission-based tool access
-- Session management
-- UI rendering
-- Skill system
+- Multi-agent architecture with specialized agents
+- Permission-based tool access with file-pattern rules
+- Session management with buffer content persistence
+- Org-mode based UI rendering with streaming
+- FIFO prompt queue
+- Skill system (instruction and tool types)
+- Interactive tool confirmation with session overrides
 
 * Future Enhancements
 

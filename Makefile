@@ -17,6 +17,7 @@ SRCS = magent.el \
        magent-config.el \
        magent-frontmatter.el \
        magent-session.el \
+       magent-queue.el \
        magent-tools.el \
        magent-agent.el \
        magent-agent-registry.el \

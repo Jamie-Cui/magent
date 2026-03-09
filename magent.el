@@ -85,6 +85,7 @@
 (require 'magent-agent-file)
 (require 'magent-skills)
 (require 'magent-skill-file)
+(require 'magent-queue)
 
 ;;; Initialization
 
@@ -96,9 +97,16 @@ Registry and custom agents are loaded when non-nil.")
   "Global spinner displayed in the modeline while magent is processing.")
 
 (defconst magent--lighter
-  '(" Magent" (:eval (spinner-print magent--spinner)))
+  '(" Magent"
+    (:eval (spinner-print magent--spinner))
+    (:eval (let ((n (magent-queue-length)))
+             (when (> n 0)
+               (propertize (format "[+%d]" n)
+                           'face 'warning
+                           'help-echo (format "Magent: %d prompt(s) queued" n))))))
   "Modeline lighter for `magent-mode'.
-Shows \" Magent\" plus an animated spinner while processing.")
+Shows \" Magent\" plus an animated spinner while processing,
+and \"[+N]\" when N prompts are queued.")
 (put 'magent--lighter 'risky-local-variable t)
 
 (defvar magent--mode-line-spinner-construct

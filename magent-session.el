@@ -24,7 +24,8 @@
   (message-count 0)          ; Cached count to avoid repeated length calls
   (max-history magent-max-history)
   (id nil)
-  (agent nil))
+  (agent nil)
+  (buffer-content nil))      ; Saved buffer text for lossless restore
 
 ;;; Message helpers
 
@@ -60,6 +61,8 @@ If CONTENT is a list of content blocks, concatenate their text fields."
   (setq magent--current-session nil)
   (when (fboundp 'magent-permission-clear-session-overrides)
     (magent-permission-clear-session-overrides))
+  (when (fboundp 'magent-queue-clear)
+    (magent-queue-clear))
   (magent-log "INFO session cleared"))
 
 (defun magent-session-get-id (session)

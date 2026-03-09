@@ -17,6 +17,7 @@
 
 (declare-function magent-fsm--convert-tools-to-gptel "magent-fsm-backend-native")
 (declare-function magent-ui-start-streaming "magent-ui")
+(declare-function magent-ui-continue-streaming "magent-ui")
 (declare-function magent-ui-insert-streaming "magent-ui")
 (declare-function magent-ui-finish-streaming-fontify "magent-ui")
 
@@ -71,21 +72,28 @@ Accepts the same keyword arguments as `magent-fsm-create'."
                      response info callback ui-callback request-buffer))))))
 
 (defun magent-fsm-backend-gptel--callback (response info callback ui-callback buffer)
-  "Handle gptel response."
-  (cond
-   ((stringp response)
-    (when ui-callback (funcall ui-callback response)))
-   ((eq response t)
-    (magent-ui-finish-streaming-fontify)
-    (if (plist-get info :tool-use)
-        ;; Tool use round: gptel will continue the loop, don't finish yet.
-        (magent-ui-start-streaming)
-      ;; Final response: no more tool calls, finish processing.
-      (when callback (funcall callback (or (plist-get info :content) "")))
-      (when (buffer-live-p buffer) (kill-buffer buffer))))
-   ((null response)
-    (when callback (funcall callback nil))
-    (when (buffer-live-p buffer) (kill-buffer buffer)))))
+  "Handle gptel response.
+Wraps all UI operations in `condition-case' to suppress benign
+cursor-boundary signals that can leak from evil-mode adjustments
+inside gptel's process filter."
+  (condition-case nil
+      (cond
+       ((stringp response)
+        (when ui-callback (funcall ui-callback response)))
+       ((eq response t)
+        (if (plist-get info :tool-use)
+            ;; Tool use round: gptel will continue the loop.
+            ;; Stay in the same section — don't finalize or create a new heading.
+            (magent-ui-continue-streaming)
+          ;; Final response: finalize the streaming section and finish.
+          (magent-ui-finish-streaming-fontify)
+          (when callback (funcall callback (or (plist-get info :content) "")))
+          (when (buffer-live-p buffer) (kill-buffer buffer))))
+       ((null response)
+        (when callback (funcall callback nil))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))
+    ((beginning-of-buffer end-of-buffer beginning-of-line end-of-line)
+     nil)))
 
 (defun magent-fsm-backend-gptel-abort (params)
   "Abort gptel request (no-op)."

@@ -23,6 +23,7 @@
 (declare-function magent-ui-insert-tool-call "magent-ui")
 (declare-function magent-ui-insert-tool-result "magent-ui")
 (declare-function magent-ui-start-streaming "magent-ui")
+(declare-function magent-ui-continue-streaming "magent-ui")
 (declare-function magent-ui-finish-streaming-fontify "magent-ui")
 (declare-function magent-ui-insert-reasoning-start "magent-ui")
 (declare-function magent-ui-insert-reasoning-text "magent-ui")
@@ -453,11 +454,12 @@ and only transitions to PROCESS/DONE when the final response
               (when (magent-fsm-in-reasoning-block fsm)
                 (magent-ui-insert-reasoning-end)
                 (setf (magent-fsm-in-reasoning-block fsm) nil))
-              ;; Apply org fontification to completed streaming text
-              (magent-ui-finish-streaming-fontify)
-              ;; If no tool calls pending, we are done
-              (unless (or (plist-get info :tool-use)
-                          (plist-get info :tool-pending))
+              (if (or (plist-get info :tool-use)
+                      (plist-get info :tool-pending))
+                  ;; Tool use round: stay in the same section
+                  (magent-ui-continue-streaming)
+                ;; Final round: finalize and transition
+                (magent-ui-finish-streaming-fontify)
                 (magent-fsm-transition fsm 'PROCESS)))
 
              ;; gptel tool-call confirmation — permission-aware handling.
@@ -471,14 +473,14 @@ and only transitions to PROCESS/DONE when the final response
               (magent-fsm--handle-tool-call-confirmation fsm (cdr response)))
 
              ;; gptel tool-result — tool call/result already shown via wrapped function.
-             ;; Prepare UI for next streaming response (streaming mode only).
+             ;; Continue in the same section (streaming mode only).
              ;; Format: (tool-result . ((gptel-tool args result) ...))
              ((and (consp response) (eq (car response) 'tool-result))
               ;; Reset reasoning state for new response
               (setf (magent-fsm-in-reasoning-block fsm) nil)
-              ;; Prepare UI for next streaming response (streaming mode only)
+              ;; Continue streaming in the same section, no new heading
               (when (magent-fsm-streaming-p fsm)
-                (magent-ui-start-streaming)
+                (magent-ui-continue-streaming)
                 (setf (magent-fsm-streamed-chunks fsm) "")))
 
              ;; Error
