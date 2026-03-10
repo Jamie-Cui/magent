@@ -30,6 +30,7 @@
                (:copier nil))
   "A pending prompt waiting to be dispatched."
   (prompt nil :type string)
+  (display nil :type (or string null))
   (source 'prompt :type symbol)
   (timestamp 0.0 :type float))
 
@@ -60,9 +61,10 @@
 
 ;;; Public mutators
 
-(defun magent-queue-enqueue (prompt source)
+(defun magent-queue-enqueue (prompt source &optional display)
   "Enqueue PROMPT from SOURCE or dispatch immediately if idle.
 SOURCE is a symbol identifying the calling command.
+DISPLAY is the text to show in the user message heading; defaults to PROMPT.
 Returns t if the item was queued (caller should notify user).
 Returns nil if dispatched immediately (no notification needed).
 Signals an error when the queue is full."
@@ -70,6 +72,7 @@ Signals an error when the queue is full."
    ((not magent-queue--processing)
     (magent-queue--dispatch (magent-queue-item-create
                              :prompt prompt
+                             :display display
                              :source source
                              :timestamp (float-time)))
     nil)
@@ -81,6 +84,7 @@ Signals an error when the queue is full."
           (nconc magent-queue--items
                  (list (magent-queue-item-create
                         :prompt prompt
+                        :display display
                         :source source
                         :timestamp (float-time)))))
     (magent-log "INFO queue: enqueued [%s] depth=%d"

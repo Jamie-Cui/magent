@@ -453,16 +453,12 @@ If no text was streamed (tool-only round), removes the orphaned heading."
   (magent--ensure-initialized)
   (let ((input (read-string "Ask magent: ")))
     (when (not (string-blank-p input))
-      (magent-ui-display-buffer)
-      (magent-ui-insert-user-message input)
       (magent-ui-process input 'prompt))))
 
 (defun magent-send-prompt (prompt)
   "Send PROMPT to Magent agent programmatically."
   (magent--ensure-initialized)
   (when (not (string-blank-p prompt))
-    (magent-ui-display-buffer)
-    (magent-ui-insert-user-message prompt)
     (magent-ui-process prompt 'send-prompt)))
 
 ;;;###autoload
@@ -471,9 +467,8 @@ If no text was streamed (tool-only round), removes the orphaned heading."
   (interactive "r")
   (magent--ensure-initialized)
   (let ((input (buffer-substring begin end)))
-    (magent-ui-display-buffer)
-    (magent-ui-insert-user-message (format "[Region] %s" input))
-    (magent-ui-process input 'prompt-region)))
+    (magent-ui-process input 'prompt-region
+                       (format "[Region] %s" input))))
 
 ;;;###autoload
 (defun magent-ask-at-point ()
@@ -483,28 +478,31 @@ If no text was streamed (tool-only round), removes the orphaned heading."
   (let ((symbol (thing-at-point 'symbol)))
     (when symbol
       (let ((input (format "Explain this code: %s" symbol)))
-        (magent-ui-display-buffer)
-        (magent-ui-insert-user-message input)
         (magent-ui-process input 'ask-at-point)))))
 
 ;;; Processing
 
-(defun magent-ui-process (prompt &optional source)
+(defun magent-ui-process (prompt &optional source display)
   "Queue or immediately dispatch PROMPT.
 SOURCE is a symbol identifying the caller (default: \\='prompt).
+DISPLAY is the text shown in the buffer's user-message heading;
+defaults to PROMPT when nil.
 Shows a minibuffer notification when the item is queued rather
 than dispatched immediately."
-  (let ((queued (magent-queue-enqueue prompt (or source 'prompt))))
+  (let ((queued (magent-queue-enqueue prompt (or source 'prompt) display)))
     (when queued
       (message "Magent: queued (%d waiting)" (magent-queue-length)))))
 
 (defun magent-ui--run-item (item)
   "Dispatch ITEM (a `magent-queue-item') to the agent.
 Called exclusively by `magent-queue--dispatch' after the lock is held.
-Starts the spinner and creates the FSM.  Captures the current
-request generation so stale callbacks are discarded."
+Inserts the user message into the output buffer, starts the spinner,
+and creates the FSM.  Captures the current request generation so
+stale callbacks are discarded."
   (let ((input (magent-queue-item-prompt item))
         (gen (cl-incf magent-ui--request-generation)))
+    (magent-ui-display-buffer)
+    (magent-ui-insert-user-message (or (magent-queue-item-display item) input))
     (when (and (boundp 'magent--spinner) magent--spinner)
       (spinner-start magent--spinner))
     (magent-log "INFO processing [%s] gen=%d: %s"
