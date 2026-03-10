@@ -242,16 +242,30 @@ Called via `kill-buffer-hook' to prevent timers firing on dead buffers."
 
 ;;; Rendering functions
 
+(defun magent-ui--insert-header (label)
+  "Insert \"* LABEL\" heading followed by a dash line extending to window edge.
+The line uses an overlay with `display' property `(space :align-to right)'
+so it adapts automatically when the window is resized.  An overlay is
+required because org-mode font-lock overwrites text-property faces on
+heading lines."
+  (insert "* " label " ")
+  (let ((start (point)))
+    (insert " ")
+    (let ((ov (make-overlay start (point))))
+      (overlay-put ov 'display '(space :align-to right))
+      (overlay-put ov 'face '(:strike-through t))))
+  (insert "\n"))
+
 (defun magent-ui-insert-user-message (text)
   "Insert user message TEXT into output buffer with level-1 heading."
   (magent-ui--with-insert (magent-ui-get-buffer)
-    (insert "* " magent-user-prompt "\n")
+    (magent-ui--insert-header magent-user-prompt)
     (insert text "\n")))
 
 (defun magent-ui-insert-assistant-message (text)
   "Insert assistant message TEXT into output buffer with level-1 heading."
   (magent-ui--with-insert (magent-ui-get-buffer)
-    (insert "* " magent-assistant-prompt "\n")
+    (magent-ui--insert-header magent-assistant-prompt)
     (insert text)
     (unless (string-suffix-p "\n" text)
       (insert "\n"))))
@@ -352,7 +366,7 @@ Must be called inside the magent output buffer."
 Inserts the assistant section heading."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (setq magent-ui--streaming-section-start (point))
-    (insert "* " magent-assistant-prompt "\n")
+    (magent-ui--insert-header magent-assistant-prompt)
     (magent-ui--reset-streaming-state)))
 
 (defun magent-ui-continue-streaming ()
