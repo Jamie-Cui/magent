@@ -52,7 +52,10 @@ Accepts the same keyword arguments as `magent-fsm-create'."
          (request-buffer (generate-new-buffer " *magent-gptel-request*"))
          ;; Don't pass permission — gptel's confirm UI requires an interactive
          ;; buffer, but the gptel backend uses a hidden request buffer.
-         (gptel-tools (magent-fsm--convert-tools-to-gptel tools nil)))
+         (gptel-tools (magent-fsm--convert-tools-to-gptel tools nil))
+         ;; Accumulate streamed text chunks for session storage.
+         ;; gptel's :content in info is nil in streaming mode.
+         (accumulated-text ""))
 
     (magent-ui-start-streaming)
 
@@ -69,10 +72,12 @@ Accepts the same keyword arguments as `magent-fsm-create'."
         :system system-prompt
         :stream t
         :callback (lambda (response info)
+                    (when (stringp response)
+                      (setq accumulated-text (concat accumulated-text response)))
                     (magent-fsm-backend-gptel--callback
-                     response info callback ui-callback request-buffer))))))
+                     response info callback ui-callback request-buffer accumulated-text))))))
 
-(defun magent-fsm-backend-gptel--callback (response info callback ui-callback buffer)
+(defun magent-fsm-backend-gptel--callback (response info callback ui-callback buffer &optional accumulated-text)
   "Handle gptel response.
 Wraps all UI operations in `condition-case' to suppress benign
 cursor-boundary signals that can leak from evil-mode adjustments
@@ -88,7 +93,7 @@ inside gptel's process filter."
             (magent-ui-continue-streaming)
           ;; Final response: finalize the streaming section and finish.
           (magent-ui-finish-streaming-fontify)
-          (when callback (funcall callback (or (plist-get info :content) "")))
+          (when callback (funcall callback (or accumulated-text (plist-get info :content) "")))
           (when (buffer-live-p buffer) (kill-buffer buffer))))
        ((null response)
         (when callback (funcall callback nil))
