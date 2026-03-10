@@ -93,14 +93,14 @@ The agent's TEMPERATURE field, if non-nil, overrides `gptel-temperature'."
                           (car model-field))
                          ((gptel-backend-p model-field)
                           model-field)
-                         (t gptel-backend)))
+                         (t (default-value 'gptel-backend))))
          (gptel-model (cond
                        ((and (consp model-field)
                              (symbolp (cdr model-field)))
                         (cdr model-field))
-                       (t gptel-model)))
+                       (t (default-value 'gptel-model))))
          (gptel-temperature (or (magent-agent-info-temperature info)
-                                gptel-temperature)))
+                                (default-value 'gptel-temperature))))
     (funcall body-thunk)))
 
 ;;; Agent display
