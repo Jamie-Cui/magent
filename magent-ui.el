@@ -23,6 +23,7 @@
 (require 'magent-agent-registry)
 (require 'magent-fsm)
 (require 'magent-queue)
+(require 'magent-md2org)
 
 (defvar magent--spinner)
 
@@ -67,7 +68,6 @@ that hit buffer edges."
                  (when win
                    (set-window-point win (point-max))))))
          ((beginning-of-buffer end-of-buffer beginning-of-line end-of-line)
-          (magent-log "DEBUG Suppressed cursor error in buffer insert")
           nil)))))
 
 (defun magent-log (format-string &rest args)
@@ -203,6 +203,7 @@ Press \\[magent-transient-menu] for the command menu."
   (setq buffer-read-only t)
   (setq-local display-fill-column-indicator-column nil)
   (setq-local revert-buffer-function #'magent-ui--revert-buffer)
+  (setq-local evil-move-beyond-eol t)
   (add-hook 'kill-buffer-hook #'magent-ui--cancel-timers nil t))
 
 (defun magent-ui--revert-buffer (_ignore-auto _noconfirm)
@@ -263,12 +264,15 @@ heading lines."
     (insert text "\n")))
 
 (defun magent-ui-insert-assistant-message (text)
-  "Insert assistant message TEXT into output buffer with level-1 heading."
+  "Insert assistant message TEXT into output buffer with level-1 heading.
+Converts markdown to org-mode before insertion."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (magent-ui--insert-header magent-assistant-prompt)
-    (insert text)
-    (unless (string-suffix-p "\n" text)
-      (insert "\n"))))
+    (let ((body-start (point)))
+      (insert text)
+      (unless (string-suffix-p "\n" text)
+        (insert "\n"))
+      (magent-md2org-convert-region body-start (point)))))
 
 (defun magent-ui--fold-block-at (pos block-re)
   "Fold the block at POS if it matches BLOCK-RE.
@@ -279,12 +283,14 @@ Defers `org-cycle' via timer to avoid blocking process filters."
                    (lambda ()
                      (when (buffer-live-p buf)
                        (with-current-buffer buf
-                         (save-excursion
-                           (goto-char pos)
-                           (condition-case nil
-                               (when (looking-at block-re)
-                                 (org-cycle))
-                             (error nil))))))))))
+                         (let ((inhibit-read-only t))
+                           (save-excursion
+                             (condition-case nil
+                                 (progn
+                                   (goto-char pos)
+                                   (when (looking-at block-re)
+                                     (org-cycle)))
+                               (error nil)))))))))))
 
 (defvar-local magent-ui--tool-call-start nil
   "Buffer position where the current #+begin_tool block was inserted.
@@ -319,7 +325,7 @@ Closes the #+begin_tool block and auto-folds it."
 (defun magent-ui-insert-error (error-text)
   "Insert ERROR-TEXT into output buffer with level-1 heading."
   (magent-ui--with-insert (magent-ui-get-buffer)
-    (insert "* " magent-error-prompt "\n")
+    (insert "=" magent-error-prompt "=\n")
     (insert (propertize error-text 'face 'org-warning))
     (insert "\n")))
 
@@ -338,6 +344,12 @@ Used to delete the empty heading when no text was streamed.")
   "Non-nil if any text was inserted via `magent-ui-insert-streaming'.
 Used to distinguish empty streaming rounds from rounds where tool
 lines were inserted after the header by other functions.")
+
+(defvar-local magent-ui--response-body-start nil
+  "Buffer position where the assistant response body begins.
+Set once by `magent-ui-start-streaming', consumed by
+`magent-ui-finish-streaming-fontify' for markdown→org conversion.
+Not reset between tool-use rounds.")
 
 (defvar-local magent-ui--streaming-batch-buffer ""
   "Accumulated text chunks waiting to be inserted.
@@ -367,6 +379,7 @@ Inserts the assistant section heading."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (setq magent-ui--streaming-section-start (point))
     (magent-ui--insert-header magent-assistant-prompt)
+    (setq magent-ui--response-body-start (point-max))
     (magent-ui--reset-streaming-state)))
 
 (defun magent-ui-continue-streaming ()
@@ -414,7 +427,8 @@ Small chunks are batched to reduce UI updates."
 
 (defun magent-ui-finish-streaming-fontify ()
   "Finalize streaming section.
-If no text was streamed (tool-only round), removes the orphaned heading."
+If no text was streamed (tool-only round), removes the orphaned heading.
+When text was streamed, converts markdown to org-mode in the response body."
   (let ((buf (magent-ui-get-buffer)))
     (with-current-buffer buf
       (magent-ui--flush-streaming-batch)
@@ -426,6 +440,9 @@ If no text was streamed (tool-only round), removes the orphaned heading."
                     (delete-region magent-ui--streaming-section-start
                                    (min magent-ui--streaming-start (point-max)))))
               (let ((inhibit-read-only t))
+                (when magent-ui--response-body-start
+                  (magent-md2org-convert-region
+                   magent-ui--response-body-start (point-max)))
                 (goto-char (point-max))
                 (unless (eq (char-before) ?\n)
                   (insert "\n"))))
@@ -433,6 +450,7 @@ If no text was streamed (tool-only round), removes the orphaned heading."
            (magent-log "DEBUG Suppressed cursor error in streaming finish")
            nil))
         (setq magent-ui--streaming-section-start nil)
+        (setq magent-ui--response-body-start nil)
         (magent-ui--reset-streaming-state)))))
 
 (defun magent-ui-insert-reasoning-start ()

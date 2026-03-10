@@ -8,6 +8,7 @@
 
 (require 'ert)
 (require 'magent)
+(require 'magent-fsm-backend-native)
 
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Integration tests
@@ -1177,9 +1178,9 @@
                :request-buffer buf)))
     ;; Buffer should exist
     (should (buffer-live-p buf))
-    ;; Destroy FSM
-    (let ((magent-fsm-backend 'magent))
-      (magent-fsm-destroy fsm))
+    ;; Destroy FSM (call native destroy directly since magent-fsm-destroy
+    ;; always dispatches to gptel backend which is a no-op)
+    (magent-fsm-native-destroy fsm)
     ;; Buffer should be killed
     (should-not (buffer-live-p buf))))
 

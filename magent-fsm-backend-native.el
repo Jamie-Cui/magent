@@ -6,6 +6,10 @@
 ;; Keywords: tools, ai
 ;; Package-Requires: ((emacs "27.1") (gptel "0.9.8"))
 
+;; FIXME: This native FSM backend is not ready for use.
+;; Currently only the gptel backend (magent-fsm-backend-gptel.el) is supported.
+;; See magent-fsm.el and magent-config.el.
+
 ;;; Commentary:
 
 ;; Native magent FSM backend implementation.
@@ -243,12 +247,6 @@ Returns a list of positional arguments in the order defined by ARGS-SPEC."
   (magent-log "FSM DONE: final response length=%d"
               (length (magent-fsm-accumulated-text fsm)))
 
-  ;; Add final response to session
-  (when (> (length (magent-fsm-accumulated-text fsm)) 0)
-    (magent-session-add-message (magent-fsm-session fsm)
-                                'assistant
-                                (magent-fsm-accumulated-text fsm)))
-
   ;; Call user callback — wrap in condition-case so cleanup always runs
   (condition-case err
       (when (magent-fsm-callback fsm)
@@ -278,51 +276,55 @@ Returns a list of positional arguments in the order defined by ARGS-SPEC."
 
 ;;; Tool Utilities
 
+(defun magent-fsm--show-tool-call-format (name args)
+  "Format tool call NAME with ARGS into a display string.
+Returns the formatted input string without inserting anything."
+  (cond
+   ;; skill_invoke: show skill_name and operation
+   ((string= name "skill_invoke")
+    (let ((skill-name (plist-get args :skill_name))
+          (operation (plist-get args :operation)))
+      (format "%s/%s" (or skill-name "?") (or operation "?"))))
+   ;; delegate: show agent name
+   ((string= name "delegate")
+    (let ((agent (plist-get args :agent)))
+      (format "agent: %s" (or agent "?"))))
+   ;; bash: show command (truncated)
+   ((string= name "bash")
+    (let ((cmd (plist-get args :command)))
+      (if cmd
+          (truncate-string-to-width cmd magent-ui-tool-input-max-length nil nil "...")
+        "?")))
+   ;; read_file/write_file/edit_file: show path
+   ((member name '("read_file" "write_file" "edit_file"))
+    (let ((path (plist-get args :path)))
+      (or path "?")))
+   ;; grep: show pattern
+   ((string= name "grep")
+    (let ((pattern (plist-get args :pattern))
+          (path (plist-get args :path)))
+      (format "%s in %s" (or pattern "?") (or path "?"))))
+   ;; glob: show pattern
+   ((string= name "glob")
+    (let ((pattern (plist-get args :pattern)))
+      (or pattern "?")))
+   ;; emacs_eval: show sexp (truncated)
+   ((string= name "emacs_eval")
+    (let ((sexp (plist-get args :sexp)))
+      (if sexp
+          (truncate-string-to-width sexp magent-ui-tool-input-max-length nil nil "...")
+        "?")))
+   ;; Default: show all args
+   (t
+    (if args
+        (truncate-string-to-width
+         (format "%s" args) 60 nil nil "...")
+      ""))))
+
 (defun magent-fsm--show-tool-call (name args)
   "Show tool call NAME with ARGS in the UI."
   (require 'magent-ui)
-  (let ((input (cond
-                ;; skill_invoke: show skill_name and operation
-                ((string= name "skill_invoke")
-                 (let ((skill-name (plist-get args :skill_name))
-                       (operation (plist-get args :operation)))
-                   (format "%s/%s" (or skill-name "?") (or operation "?"))))
-                ;; delegate: show agent name
-                ((string= name "delegate")
-                 (let ((agent (plist-get args :agent)))
-                   (format "agent: %s" (or agent "?"))))
-                ;; bash: show command (truncated)
-                ((string= name "bash")
-                 (let ((cmd (plist-get args :command)))
-                   (if cmd
-                       (truncate-string-to-width cmd magent-ui-tool-input-max-length nil nil "...")
-                     "?")))
-                ;; read_file/write_file/edit_file: show path
-                ((member name '("read_file" "write_file" "edit_file"))
-                 (let ((path (plist-get args :path)))
-                   (or path "?")))
-                ;; grep: show pattern
-                ((string= name "grep")
-                 (let ((pattern (plist-get args :pattern))
-                       (path (plist-get args :path)))
-                   (format "%s in %s" (or pattern "?") (or path "?"))))
-                ;; glob: show pattern
-                ((string= name "glob")
-                 (let ((pattern (plist-get args :pattern)))
-                   (or pattern "?")))
-                ;; emacs_eval: show sexp (truncated)
-                ((string= name "emacs_eval")
-                 (let ((sexp (plist-get args :sexp)))
-                   (if sexp
-                       (truncate-string-to-width sexp magent-ui-tool-input-max-length nil nil "...")
-                     "?")))
-                ;; Default: show all args
-                (t
-                 (if args
-                     (truncate-string-to-width
-                      (format "%s" args) 60 nil nil "...")
-                   "")))))
-    (magent-ui-insert-tool-call name input)))
+  (magent-ui-insert-tool-call name (magent-fsm--show-tool-call-format name args)))
 
 (defun magent-fsm--show-tool-result (name result)
   "Show tool RESULT for tool NAME in the UI."
@@ -504,49 +506,115 @@ and only transitions to PROCESS/DONE when the final response
            for val in arg-values
            append (list (intern (concat ":" (plist-get spec :name))) val)))
 
-(defun magent-fsm--wrap-tool-function (name args-spec original-fn async-p)
-  "Wrap ORIGINAL-FN to show tool call/result in UI before/after execution.
-NAME is the tool name string, ARGS-SPEC is the args list from the tool spec.
-ASYNC-P indicates if the tool is asynchronous."
-  (if async-p
-      (lambda (callback &rest arg-values)
-        (magent-fsm--show-tool-call name (magent-fsm--args-to-plist args-spec arg-values))
-        (apply original-fn
+;;; Tool render queue
+;;
+;; When gptel fires multiple async tool calls in one round (via mapc),
+;; each wrapper would insert #+begin_tool immediately, producing nested
+;; blocks.  The queue serializes rendering: each wrapper enqueues its
+;; work, and the queue processor runs one item at a time —
+;; #+begin_tool → execute → #+end_tool → next.
+
+(cl-defstruct (magent-fsm--tool-queue
+               (:constructor magent-fsm--tool-queue-create))
+  (items nil)    ; list of pending items (plists)
+  (busy nil))    ; t while a tool is between begin/end
+
+(defun magent-fsm--tool-queue-push (queue item)
+  "Push ITEM onto QUEUE and start processing if idle."
+  (setf (magent-fsm--tool-queue-items queue)
+        (nconc (magent-fsm--tool-queue-items queue) (list item)))
+  (magent-fsm--tool-queue-run queue))
+
+(defun magent-fsm--tool-queue-run (queue)
+  "Process the next queued tool if the queue is idle."
+  (unless (magent-fsm--tool-queue-busy queue)
+    (when-let ((item (pop (magent-fsm--tool-queue-items queue))))
+      (setf (magent-fsm--tool-queue-busy queue) t)
+      (let ((name     (plist-get item :name))
+            (input    (plist-get item :input))
+            (fn       (plist-get item :fn))
+            (async-p  (plist-get item :async))
+            (callback (plist-get item :callback))
+            (args     (plist-get item :args)))
+        (require 'magent-ui)
+        (magent-ui-insert-tool-call name input)
+        (let ((completion
                (lambda (result)
                  (magent-fsm--show-tool-result name result)
-                 (funcall callback result))
-               arg-values))
-    (lambda (&rest arg-values)
-      (magent-fsm--show-tool-call name (magent-fsm--args-to-plist args-spec arg-values))
-      (let ((result (apply original-fn arg-values)))
-        (magent-fsm--show-tool-result name result)
-        result))))
+                 (setf (magent-fsm--tool-queue-busy queue) nil)
+                 (funcall callback result)
+                 (magent-fsm--tool-queue-run queue))))
+          (if async-p
+              (apply fn completion args)
+            (let ((result (apply fn args)))
+              (funcall completion result))))))))
+
+(defun magent-fsm--wrap-tool-function (name args-spec original-fn async-p
+                                           &optional queue)
+  "Wrap ORIGINAL-FN to show tool call/result in UI before/after execution.
+NAME is the tool name string, ARGS-SPEC is the args list from the tool spec.
+ASYNC-P indicates if the tool is asynchronous.
+When QUEUE is non-nil, rendering is serialized through the queue to
+prevent nested #+begin_tool/#+end_tool blocks.  The wrapped function
+is always async (takes CALLBACK as first arg) when a queue is used."
+  (if queue
+      ;; Queue path: all tools become async; the queue serializes
+      ;; #+begin_tool / #+end_tool rendering.
+      (lambda (callback &rest arg-values)
+        (magent-fsm--tool-queue-push
+         queue
+         (list :name name
+               :input (magent-fsm--show-tool-call-format
+                       name (magent-fsm--args-to-plist args-spec arg-values))
+               :fn original-fn
+               :async async-p
+               :callback callback
+               :args arg-values)))
+    ;; No queue: original direct rendering (used by native FSM's TOOL handler).
+    (if async-p
+        (lambda (callback &rest arg-values)
+          (magent-fsm--show-tool-call name (magent-fsm--args-to-plist args-spec arg-values))
+          (apply original-fn
+                 (lambda (result)
+                   (magent-fsm--show-tool-result name result)
+                   (funcall callback result))
+                 arg-values))
+      (lambda (&rest arg-values)
+        (magent-fsm--show-tool-call name (magent-fsm--args-to-plist args-spec arg-values))
+        (let ((result (apply original-fn arg-values)))
+          (magent-fsm--show-tool-result name result)
+          result)))))
 
 (defun magent-fsm--convert-tools-to-gptel (tools &optional permission)
   "Convert magent tool specs to gptel-tool structs.
 TOOLS is a list of plists with :name, :description, :args, :function, :async.
 Each tool function is wrapped to display call/result in the UI.
+A shared tool-render queue serializes UI output so that concurrent
+async tool calls produce sequential (not nested) blocks.
 PERMISSION, if non-nil, is used to set per-tool :confirm functions."
   (require 'gptel)
-  (mapcar (lambda (tool)
-            (let* ((name (plist-get tool :name))
-                   (args-spec (plist-get tool :args))
-                   (original-fn (plist-get tool :function))
-                   (async-p (plist-get tool :async))
-                   (perm-key (plist-get tool :perm-key))
-                   (wrapped-fn (magent-fsm--wrap-tool-function
-                                name args-spec original-fn async-p))
-                   (confirm-fn (when permission
-                                 (magent-fsm--make-confirm-function
-                                  perm-key permission args-spec))))
-              (gptel-make-tool
-               :name name
-               :description (plist-get tool :description)
-               :args args-spec
-               :function wrapped-fn
-               :async async-p
-               :confirm confirm-fn)))
-          tools))
+  (let ((queue (magent-fsm--tool-queue-create)))
+    (mapcar (lambda (tool)
+              (let* ((name (plist-get tool :name))
+                     (args-spec (plist-get tool :args))
+                     (original-fn (plist-get tool :function))
+                     (async-p (plist-get tool :async))
+                     (perm-key (plist-get tool :perm-key))
+                     (wrapped-fn (magent-fsm--wrap-tool-function
+                                  name args-spec original-fn async-p queue))
+                     (confirm-fn (when permission
+                                   (magent-fsm--make-confirm-function
+                                    perm-key permission args-spec))))
+                (gptel-make-tool
+                 :name name
+                 :description (plist-get tool :description)
+                 :args args-spec
+                 :function wrapped-fn
+                 ;; All tools are async when queued: the queue serializes
+                 ;; rendering and calls the gptel callback on completion.
+                 :async t
+                 :confirm confirm-fn)))
+            tools)))
 
 ;;; Permission-aware tool confirmation
 

@@ -20,38 +20,17 @@
   :group 'tools
   :link '(url-link :tag "GitHub" "https://github.com/jamie-cui/magent"))
 
+(defvar magent--prompt-file
+  (expand-file-name "prompt.txt"
+                    (file-name-directory (or load-file-name buffer-file-name)))
+  "Path to the system prompt file.")
+
 (defcustom magent-system-prompt
-  "You are Magent, an AI coding agent that helps users with software development tasks.
-
-You have access to tools for reading files, editing files, searching code, running commands, and interacting with the running Emacs instance.
-
-Available Tools:
-- read_file, write_file, edit_file: File operations
-- grep, glob: Code search and file finding
-- bash: Shell command execution
-- emacs_eval: Evaluate Emacs Lisp expressions
-- delegate: Delegate tasks to specialized subagents (explore, general)
-- skill_invoke: Invoke Claude Code skills for Emacs interaction
-
-Emacs Skill (via skill_invoke):
-Use skill_invoke with skill_name=\"emacs\" to interact with the running Emacs instance:
-- list-functions [PREFIX]: List interactive commands matching prefix
-- describe-function [NAME]: Get function documentation
-- eval-expression [EXPR]: Evaluate arbitrary elisp
-- execute-keys [KEYS]: Simulate keystrokes (kbd format, e.g., \"C-x C-s\")
-- minibuffer-prompt: Read current minibuffer state
-- current-buffer-state: Get buffer name, mode, and content
-
-When making code changes:
-1. Always read existing files before editing them
-2. Explain your changes clearly
-3. Follow the existing code style and conventions
-4. Be concise and direct
-
-If you're unsure about something, ask the user for clarification.
-
-IMPORTANT: Format your responses using Org-mode. Start your content with level-2 headings (**). The output buffer uses level-1 headings (*) for message section markers (user, assistant, tool, error), so your content MUST use level-2 or deeper headings to maintain proper structure. Use *bold*, /italic/, =code= for inline formatting, and #+BEGIN_SRC blocks for multi-line code."
-  "System prompt for the AI agent."
+  (with-temp-buffer
+    (insert-file-contents magent--prompt-file)
+    (buffer-string))
+  "System prompt for the AI agent.
+Default value is read from prompt.txt next to this file."
   :type 'string
   :group 'magent)
 
@@ -221,12 +200,12 @@ If nil, discard reasoning content entirely."
                  (const :tag "Discard reasoning" nil))
   :group 'magent)
 
+;; FIXME: native FSM backend (magent-fsm-backend-native.el) is not ready.
+;; Currently only the gptel backend is supported.
 (defcustom magent-fsm-backend 'gptel
   "FSM backend to use for tool calling loop.
-`magent' uses the custom FSM in magent-fsm.el.
-`gptel' uses gptel's built-in FSM (gptel-request.el, default)."
-  :type '(choice (const :tag "Magent FSM (magent-fsm.el)" magent)
-                 (const :tag "Gptel FSM (gptel-fsm)" gptel))
+`gptel' uses gptel's built-in FSM (gptel-request.el)."
+  :type '(const gptel)
   :group 'magent)
 
 (defcustom magent-queue-max-size 20
