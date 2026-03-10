@@ -15,11 +15,12 @@
 (require 'cl-lib)
 (require 'gptel)
 
-(declare-function magent-fsm--convert-tools-to-gptel "magent-fsm-backend-native")
+(require 'magent-fsm-backend-native)
 (declare-function magent-ui-start-streaming "magent-ui")
 (declare-function magent-ui-continue-streaming "magent-ui")
 (declare-function magent-ui-insert-streaming "magent-ui")
 (declare-function magent-ui-finish-streaming-fontify "magent-ui")
+(declare-function magent-log "magent-config")
 
 (defvar magent-include-reasoning)
 
@@ -102,6 +103,48 @@ inside gptel's process filter."
 (defun magent-fsm-backend-gptel-destroy (params)
   "Destroy gptel FSM (no-op)."
   (ignore params))
+
+;;; Unknown-tool advice for gptel FSM
+
+(defun magent--handle-unknown-tools-a (orig-fn fsm)
+  "Around advice for `gptel--handle-tool-use'.
+Pre-fill :result for unknown tool calls so gptel filters them out,
+preventing the FSM from hanging when the model hallucinates tool names."
+  (let* ((info (gptel-fsm-info fsm))
+         (patched nil))
+    (when-let* ((all-tool-use (plist-get info :tool-use))
+                (tools (plist-get info :tools)))
+      (let ((avail (mapconcat #'gptel-tool-name tools ", ")))
+        (dolist (tc all-tool-use)
+          (unless (plist-get tc :result)
+            (let ((name (plist-get tc :name)))
+              (unless (cl-find-if
+                       (lambda (ts) (equal (gptel-tool-name ts) name))
+                       tools)
+                (plist-put tc :result
+                           (format "Error: tool '%s' not found. Available: %s"
+                                   name avail))
+                (setq patched t)
+                (magent-log "WARN unknown tool '%s' — returned error to model"
+                            name)))))))
+    ;; Run original handler
+    (funcall orig-fn fsm)
+    ;; All-unknown edge case: handler body didn't execute, FSM still in TOOL
+    (when (and patched (eq (gptel-fsm-state fsm) 'TOOL))
+      (let ((remaining (cl-remove-if
+                        (lambda (tc) (plist-get tc :result))
+                        (plist-get info :tool-use))))
+        (when (null remaining)
+          (plist-put info :tool-success t)
+          (let ((backend (plist-get info :backend)))
+            (gptel--inject-prompt
+             backend (plist-get info :data)
+             (gptel--parse-tool-results backend (plist-get info :tool-use))))
+          (funcall (plist-get info :callback)
+                   (cons 'tool-result nil) info)
+          (gptel--fsm-transition fsm))))))
+
+(advice-add 'gptel--handle-tool-use :around #'magent--handle-unknown-tools-a)
 
 (provide 'magent-fsm-backend-gptel)
 ;;; magent-fsm-backend-gptel.el ends here
