@@ -281,6 +281,13 @@ When the queue is full, new prompts are rejected with an error."
   :type 'integer
   :group 'magent)
 
+(defcustom magent-auto-context t
+  "Whether to automatically attach calling buffer context in `magent-dwim'.
+When non-nil, buffer name, file path, major mode, line number,
+and active region bounds are prepended to the submitted prompt."
+  :type 'boolean
+  :group 'magent)
+
 ;;; Shared utilities
 
 (defmacro magent--with-display-buffer (name &rest body)
