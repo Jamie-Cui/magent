@@ -125,7 +125,7 @@ When enabled, Magent commands are available.
   :lighter magent--lighter
   :keymap (let ((map (make-sparse-keymap)))
             ;; Keybindings
-            (define-key map (kbd "C-c m p") #'magent-prompt)
+            (define-key map (kbd "C-c m p") #'magent-dwim)
             (define-key map (kbd "C-c m r") #'magent-prompt-region)
             (define-key map (kbd "C-c m a") #'magent-ask-at-point)
             (define-key map (kbd "C-c m c") #'magent-clear-session)

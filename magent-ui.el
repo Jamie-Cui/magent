@@ -41,6 +41,7 @@ Incremented on each new dispatch and on interrupt.  Callbacks
 capture this value and compare on completion to detect and
 discard stale callbacks from interrupted requests.")
 
+
 ;;; Buffer management
 
 (defvar magent-log-buffer-name "*magent-log*"
@@ -189,7 +190,7 @@ request are discarded."
 (transient-define-prefix magent-transient-menu ()
   "Magent command menu."
   ["Session"
-   [("p" "Prompt" magent-prompt)
+   [("p" "Prompt" magent-dwim)
     ("c" "Clear session" magent-clear-session)]]
   ["Agent"
    [("A" "Select agent" magent-select-agent)
@@ -228,6 +229,9 @@ Press \\[magent-transient-menu] for the command menu."
   (setq-local display-fill-column-indicator-column nil)
   (setq-local revert-buffer-function #'magent-ui--revert-buffer)
   (setq-local evil-move-beyond-eol t)
+  ;; Prevent org-mode from fontifying content inside tool/think blocks
+  (setq-local org-protecting-blocks
+              (append '("tool" "think") org-protecting-blocks))
   (add-hook 'kill-buffer-hook #'magent-ui--cancel-timers nil t))
 
 (with-eval-after-load 'evil
@@ -616,21 +620,52 @@ When text was streamed, converts markdown to org-mode in the response body."
         (magent-ui--fold-block-at magent-ui--reasoning-start "#\\+begin_think")
         (setq magent-ui--reasoning-start nil)))))
 
+(defun magent-ui--capture-buffer-context ()
+  "Capture metadata from the current buffer for auto-context.
+Returns a context string or nil if context should not be captured."
+  (when (and magent-auto-context
+             (not (derived-mode-p 'magent-output-mode))
+             (not (minibufferp)))
+    (let* ((buf-name (buffer-name))
+           (file (buffer-file-name))
+           (mode (symbol-name major-mode))
+           (line (line-number-at-pos))
+           (region-active (or (use-region-p)
+                              (and (bound-and-true-p evil-local-mode)
+                                   (fboundp 'evil-visual-state-p)
+                                   (funcall 'evil-visual-state-p))))
+           (parts (list (format "buffer=\"%s\"" buf-name))))
+      (when file
+        (push (format "file=\"%s\"" file) parts))
+      (push (format "mode=%s" mode) parts)
+      (push (format "line=%d" line) parts)
+      (when region-active
+        (let ((beg (line-number-at-pos (region-beginning)))
+              (end (line-number-at-pos (region-end))))
+          (push (format "region=%d-%d" beg end) parts)))
+      (format "[Context: %s]" (string-join (nreverse parts) " ")))))
+
 ;;;###autoload
-(defun magent-prompt ()
+(defun magent-dwim ()
   "Switch to the Magent buffer and position cursor at the input area.
 If no input prompt exists (e.g. first use or after processing),
-one is inserted at the end of the buffer.  In evil-mode the
-cursor enters insert state for immediate typing."
+one is inserted at the end of the buffer.  When `magent-auto-context'
+is non-nil, the calling buffer's metadata is pre-filled as editable
+text that the user can keep or delete.  In evil-mode the cursor
+enters insert state for immediate typing."
   (interactive)
-  (magent-ui-display-buffer)
-  (pop-to-buffer (magent-ui-get-buffer))
-  (unless magent-ui--input-marker
-    (magent-ui--insert-input-prompt))
-  (goto-char (point-max))
-  (when (and (bound-and-true-p evil-mode)
-             (fboundp 'evil-insert-state))
-    (evil-insert-state)))
+  (let ((ctx (magent-ui--capture-buffer-context)))
+    (magent-ui-display-buffer)
+    (pop-to-buffer (magent-ui-get-buffer))
+    (unless magent-ui--input-marker
+      (magent-ui--insert-input-prompt))
+    (when ctx
+      (goto-char (point-max))
+      (insert ctx "\n"))
+    (goto-char (point-max))
+    (when (and (bound-and-true-p evil-mode)
+               (fboundp 'evil-insert-state))
+      (evil-insert-state))))
 
 (defun magent-send-prompt (prompt)
   "Send PROMPT to Magent agent programmatically."
