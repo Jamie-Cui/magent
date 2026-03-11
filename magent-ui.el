@@ -658,12 +658,11 @@ enters insert state for immediate typing."
       (magent-ui-render-history))
     (display-buffer buf)
     (pop-to-buffer buf)
-    (let ((new-prompt (null magent-ui--input-marker)))
-      (when new-prompt
-        (magent-ui--insert-input-prompt))
-      (when (and new-prompt ctx)
-        (goto-char magent-ui--input-marker)
-        (insert ctx "\n")))
+    (unless magent-ui--input-marker
+      (magent-ui--insert-input-prompt))
+    (when ctx
+      (goto-char magent-ui--input-marker)
+      (insert ctx "\n"))
     (goto-char (point-max))
     (when (and (bound-and-true-p evil-mode)
                (fboundp 'evil-insert-state))
