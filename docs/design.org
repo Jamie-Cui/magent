@@ -83,7 +83,7 @@ Package requirements: ~emacs 27.1+~, ~gptel 0.9.8~, ~spinner 1.7.4~, ~transient 
 
 All magent-specific configuration is in the ~magent~ customize group. LLM provider, model, and API key settings are managed entirely by gptel.
 
-30 defcustom variables organized by category:
+33 defcustom variables organized by category:
 
 Core settings:
 - ~magent-system-prompt~: System prompt for the AI agent (includes org-mode formatting instructions)
@@ -114,6 +114,8 @@ Tool settings:
 - ~magent-emacs-eval-timeout~: Emacs eval timeout (default: 10s)
 
 UI display settings:
+- ~magent-ui-header-strike-through~: Enable strike-through line after section headers (default: nil)
+- ~magent-ui-separator-char~: Character used for strike-through separator (default: space)
 - ~magent-ui-result-max-length~: Max tool result display length (default: 200)
 - ~magent-ui-result-preview-length~: Truncated result preview length (default: 150)
 - ~magent-ui-tool-input-max-length~: Max tool input display length (default: 60)
@@ -126,6 +128,7 @@ Advanced settings:
 - ~magent-include-reasoning~: How to handle reasoning blocks (t/ignore/nil)
 - ~magent-fsm-backend~: FSM backend (gptel or magent)
 - ~magent-queue-max-size~: Max queued prompts (default: 20)
+- ~magent-auto-context~: Auto-attach buffer context in ~magent-dwim~ (default: t)
 
 Skill-specific settings (in ~magent-skill-file.el~):
 - ~magent-skill-directories~: Directories to scan for skills
@@ -382,6 +385,23 @@ Skills loaded from:
 - Project: ~.magent/skills/<name>/SKILL.md~
 
 Tool-type skills can have companion ~.el~ files defining ~magent-skill-<name>-invoke~ function. The companion file is discovered automatically (~SKILL.el~ or ~<skill-name>.el~ in the same directory).
+
+** Markdown-to-Org Conversion (magent-md2org.el)
+
+Converts markdown syntax from LLM output into org-mode syntax for rendering in the output buffer. Called during streaming to convert assistant responses in-place.
+
+Conversions:
+- Headers: shifted +1 level (~#~ → ~**~, ~##~ → ~***~, etc., capped at 6 levels)
+- Fenced code blocks: ~```lang~ → ~#+begin_src lang~ / ~#+end_src~ (handles indented fences)
+- Bold: ~**text**~ → ~*text*~ (uses sentinel chars to avoid collision with italic)
+- Italic: ~*text*~ → ~/text/~
+- Inline code: ~`code`~ → ~~code~~
+
+Preserves ~#+begin_tool~ / ~#+end_tool~ and ~#+begin_think~ / ~#+end_think~ blocks unchanged (skips their contents entirely).
+
+Key functions:
+- ~magent-md2org-convert-region~: In-place conversion of a buffer region
+- ~magent-md2org-convert-string~: Convenience wrapper returning converted string
 
 ** UI Layer (magent-ui.el)
 
@@ -676,7 +696,7 @@ See [[*Permission System (magent-permission.el)][Permission System]] for the ful
 
 | Keybinding | Command                 | Description                              |
 |------------+-------------------------+------------------------------------------|
-| C-c m p    | ~magent-prompt~         | Prompt for input and send to agent       |
+| C-c m p    | ~magent-dwim~           | Smart prompt: opens output buffer or prompts for input with auto-context |
 |            | ~magent-send-prompt~    | Send prompt programmatically             |
 | C-c m r    | ~magent-prompt-region~  | Send selected region to agent            |
 | C-c m a    | ~magent-ask-at-point~   | Ask about the symbol at point            |
@@ -775,7 +795,7 @@ gptel-api-key  ; Should return your API key
 #+begin_example
 magent/
 ├── magent.el                      ; Main entry point + minor mode
-├── magent-config.el               ; Configuration (30 defcustom vars)
+├── magent-config.el               ; Configuration (33 defcustom vars)
 ├── magent-queue.el                ; FIFO prompt queue
 ├── magent-session.el              ; Session management
 ├── magent-tools.el                ; Tool implementations (10 tools)
@@ -787,6 +807,7 @@ magent/
 ├── magent-fsm-backend-native.el   ; Native FSM backend (full state machine)
 ├── magent-fsm-backend-gptel.el    ; Gptel FSM backend (lightweight wrapper)
 ├── magent-ui.el                   ; UI, output buffer, streaming, transient menu
+├── magent-md2org.el               ; Markdown to org-mode converter
 ├── magent-skills.el               ; Skill registry
 ├── magent-skill-emacs.el          ; Built-in emacs skill (6 operations)
 ├── magent-skill-file.el           ; Skill file loader + interactive commands
