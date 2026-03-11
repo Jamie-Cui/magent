@@ -36,14 +36,14 @@ Preserves #+begin_tool and #+begin_think blocks unchanged."
                  (looking-at "#\\+end_\\(?:tool\\|think\\)"))
             (setq in-special nil))
            (in-special nil)
-           ((looking-at "```")
+           ((looking-at "[ \t]*```")
             (if in-code
                 (progn
                   (delete-region (line-beginning-position) (line-end-position))
                   (insert "#+end_src")
                   (setq in-code nil))
               (let ((lang (save-excursion
-                            (skip-chars-forward "`")
+                            (skip-chars-forward " \t`")
                             (string-trim
                              (buffer-substring-no-properties
                               (point) (line-end-position))))))
