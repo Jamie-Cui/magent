@@ -436,6 +436,13 @@ Defers `org-cycle' via timer to avoid blocking process filters."
 Set by `magent-ui-insert-tool-call', consumed by
 `magent-ui-insert-tool-result' to auto-fold the completed block.")
 
+(defun magent-ui--sanitize-tool-text (text)
+  "Collapse newlines in TEXT to prevent org-mode from parsing headings.
+Tool result/input strings are display-only summaries inside
+#+begin_tool blocks; embedded newlines can produce spurious org
+headings (e.g. \"* Introduction\" from a file read)."
+  (replace-regexp-in-string "\n" "\\\\n" text))
+
 (defun magent-ui-insert-tool-call (tool-name input)
   "Insert tool call notification into output buffer.
 Wraps in #+begin_tool block."
@@ -444,19 +451,21 @@ Wraps in #+begin_tool block."
     (insert (propertize (concat "#+begin_tool " tool-name)
                         'face 'magent-tool-header)
             "\n")
-    (let ((input-str (if (stringp input)
-                         input
-                       (truncate-string-to-width
-                        (json-encode input) magent-ui-tool-input-max-length nil nil "..."))))
+    (let ((input-str (magent-ui--sanitize-tool-text
+                      (if (stringp input)
+                          input
+                        (truncate-string-to-width
+                         (json-encode input) magent-ui-tool-input-max-length nil nil "...")))))
       (insert (propertize input-str 'face 'magent-tool-args) "\n"))))
 
 (defun magent-ui-insert-tool-result (_tool-name result)
   "Insert tool RESULT for _TOOL-NAME into output buffer.
 Closes the #+begin_tool block and auto-folds it."
   (magent-ui--with-insert (magent-ui-get-buffer)
-    (let ((result-str (truncate-string-to-width
-                       (if (stringp result) result (format "%s" result))
-                       magent-ui-result-max-length nil nil "...")))
+    (let ((result-str (magent-ui--sanitize-tool-text
+                       (truncate-string-to-width
+                        (if (stringp result) result (format "%s" result))
+                        magent-ui-result-max-length nil nil "..."))))
       (insert (propertize (concat "-> " result-str) 'face 'magent-tool-result)
               "\n"))
     (insert (propertize "#+end_tool" 'face 'magent-tool-header) "\n")
