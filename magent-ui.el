@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; User interface for Magent including minibuffer commands and output buffer.
+;; User interface for Magent including popup input window and output buffer.
 ;; The output buffer derives from org-mode for native folding support.
 ;; Each message section uses a level-1 heading (*), and LLM content uses
 ;; level-2+ headings (**).
@@ -231,6 +231,88 @@ Called via `kill-buffer-hook' to prevent timers firing on dead buffers."
                   0 font-lock-comment-face)
                  ("\\<\\(ERROR\\|WARNING\\|INFO\\|DEBUG\\)\\>"
                   0 font-lock-keyword-face)))))
+
+;;; Popup input window
+
+(defvar magent--input-buffer-name "*magent-input*"
+  "Name of the popup input buffer.")
+
+(defvar magent-input-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-c") #'magent-input-submit)
+    (define-key map (kbd "C-c C-k") #'magent-input-cancel)
+    map)
+  "Keymap for `magent-input-mode'.")
+
+(define-minor-mode magent-input-mode
+  "Minor mode for the Magent popup input buffer.
+\\<magent-input-mode-map>
+\\[magent-input-submit] to submit, \\[magent-input-cancel] to cancel."
+  :keymap magent-input-mode-map)
+
+(with-eval-after-load 'evil
+  (evil-define-key* 'normal magent-input-mode-map
+    (kbd "C-c C-c") #'magent-input-submit
+    (kbd "C-c C-k") #'magent-input-cancel))
+
+(defun magent-input--get-or-create-buffer ()
+  "Return the magent input buffer, creating and configuring it if needed.
+Reuses an existing buffer without erasing its contents so that
+re-invoking `magent-prompt' while the popup is open preserves
+the user's draft."
+  (let ((buf (get-buffer-create magent--input-buffer-name)))
+    (with-current-buffer buf
+      (unless (derived-mode-p 'org-mode)
+        (org-mode)
+        (magent-input-mode 1)
+        (setq-local org-startup-folded nil)
+        (setq-local header-line-format
+                    (substitute-command-keys
+                     "Magent: \\<magent-input-mode-map>\
+\\[magent-input-submit] submit  \
+\\[magent-input-cancel] cancel"))))
+    buf))
+
+(defun magent-input--display-window (buf)
+  "Display BUF in a bottom side window and select it."
+  (let ((win (display-buffer
+              buf
+              `(display-buffer-in-side-window
+                (side . bottom)
+                (slot . 1)
+                (window-height . ,magent-input-window-height)
+                (window-parameters . ((no-delete-other-windows . t)))))))
+    (when win
+      (select-window win)
+      (when (and (bound-and-true-p evil-mode)
+                 (fboundp 'evil-insert-state))
+        (evil-insert-state)))
+    win))
+
+(defun magent-input-submit ()
+  "Submit the input buffer contents to the magent queue and close the window."
+  (interactive)
+  (let ((text (string-trim
+               (buffer-substring-no-properties (point-min) (point-max)))))
+    (unless (string-blank-p text)
+      (magent--ensure-initialized)
+      (magent-ui-process text 'prompt))
+    (magent-input--close)))
+
+(defun magent-input-cancel ()
+  "Cancel the input and close the window without sending."
+  (interactive)
+  (magent-input--close)
+  (message "Magent: cancelled"))
+
+(defun magent-input--close ()
+  "Close the input window and kill the buffer."
+  (let ((buf (get-buffer magent--input-buffer-name)))
+    (when buf
+      (let ((win (get-buffer-window buf t)))
+        (when win
+          (delete-window win)))
+      (kill-buffer buf))))
 
 ;;; Section folding
 
@@ -476,16 +558,14 @@ When text was streamed, converts markdown to org-mode in the response body."
         (magent-ui--fold-block-at magent-ui--reasoning-start "#\\+begin_think")
         (setq magent-ui--reasoning-start nil)))))
 
-;;; Minibuffer interface
-
 ;;;###autoload
 (defun magent-prompt ()
-  "Prompt for input and send to Magent agent."
+  "Open a popup input window for composing a multi-line prompt.
+The input buffer uses org-mode.  Press \\<magent-input-mode-map>\
+\\[magent-input-submit] to submit, \\[magent-input-cancel] to cancel."
   (interactive)
-  (magent--ensure-initialized)
-  (let ((input (read-string "Ask magent: ")))
-    (when (not (string-blank-p input))
-      (magent-ui-process input 'prompt))))
+  (let ((buf (magent-input--get-or-create-buffer)))
+    (magent-input--display-window buf)))
 
 (defun magent-send-prompt (prompt)
   "Send PROMPT to Magent agent programmatically."
