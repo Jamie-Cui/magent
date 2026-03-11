@@ -190,6 +190,11 @@ rendering to reduce UI updates."
   :type 'float
   :group 'magent)
 
+(defcustom magent-input-window-height 10
+  "Height in lines of the popup input window."
+  :type 'integer
+  :group 'magent)
+
 (defcustom magent-include-reasoning t
   "How to handle LLM reasoning/thinking blocks.
 If t, display reasoning blocks wrapped in #+begin_think/#+end_think.

@@ -381,17 +381,17 @@ RESULTS is a list of plists with :id, :name, :args, :result."
                             tools (magent-fsm-permission fsm))))
 
       (with-current-buffer request-buffer
+        (setq-local gptel-backend backend)
+        (setq-local gptel-model model)
         (setq-local gptel-tools converted-tools)
-        (setq-local gptel-use-tools (if converted-tools t nil))
+        (setq-local gptel-use-tools (and converted-tools t))
         (setq-local gptel-include-reasoning magent-include-reasoning)
-        (setq-local gptel-confirm-tool-calls 'auto))
-
-      ;; Call gptel-request with FSM callback
-      (let ((gptel-backend backend)
-            (gptel-model model))
+        (setq-local gptel-confirm-tool-calls 'auto)
+        ;; Call gptel-request from within request-buffer so
+        ;; gptel--sanitize-model reads correct buffer-locals.
         (gptel-request
             prompt-list
-          :buffer request-buffer
+          :buffer (current-buffer)
           :system system-prompt
           :stream streaming
           :callback (magent-fsm--make-gptel-callback fsm))))))

@@ -60,15 +60,14 @@ Accepts the same keyword arguments as `magent-fsm-create'."
     (magent-ui-start-streaming)
 
     (with-current-buffer request-buffer
+      (setq-local gptel-backend backend)
+      (setq-local gptel-model model)
       (setq-local gptel-tools gptel-tools)
-      (setq-local gptel-use-tools (if gptel-tools t nil))
-      (setq-local gptel-include-reasoning magent-include-reasoning))
-
-    (let ((gptel-backend backend)
-          (gptel-model model))
+      (setq-local gptel-use-tools (and gptel-tools t))
+      (setq-local gptel-include-reasoning magent-include-reasoning)
       (gptel-request
           prompt-list
-        :buffer request-buffer
+        :buffer (current-buffer)
         :system system-prompt
         :stream t
         :callback (lambda (response info)
