@@ -73,7 +73,7 @@
   :group 'magent)
 
 (defvar magent--prompt-file
-  (expand-file-name "prompt.txt"
+  (expand-file-name "prompt.org"
                     (file-name-directory (or load-file-name buffer-file-name)))
   "Path to the system prompt file.")
 
