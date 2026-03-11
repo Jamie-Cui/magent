@@ -8,13 +8,21 @@ An Emacs Lisp AI coding agent with multi-agent architecture, permission-based to
 - **Permission-based tool access** with fine-grained control per agent
 - **Custom agent support** via `.magent/agent/*.md` files
 - **LLM integration via gptel** supporting Anthropic Claude, OpenAI GPT, and compatible APIs
-- **File operations**: read, write, edit, grep, glob
-- **Shell command execution** via bash tool
-- **Emacs Lisp evaluation** via emacs_eval tool
-- **Agent delegation** with explore and general subagents
-- **Claude Code skills** for interacting with the running Emacs instance
-- **Session management** with conversation history and persistence
-- **Minibuffer interface** for quick prompts
+- **10 built-in tools**: file operations, shell, grep, glob, web search, Emacs eval, agent delegation, skill invocation
+- **Skill system** for extending agent capabilities (built-in Emacs skill + custom skills from files)
+- **Prompt queue** for serializing concurrent requests (FIFO with configurable max size)
+- **Session management** with conversation history and JSON persistence
+- **Streaming responses** with chunk batching and async fontification
+- **Markdown-to-Org conversion** for rendering assistant output in org-mode
+- **Context-aware prompting** via `magent-dwim` with automatic buffer context attachment
+
+## Requirements
+
+- Emacs 27.1+
+- [gptel](https://github.com/karthink/gptel) 0.9.8+
+- [spinner](https://github.com/Malabarba/spinner.el) 1.7.4+
+- [transient](https://github.com/magit/transient) 0.4+
+- [ripgrep](https://github.com/BurntSushi/ripgrep) (for `grep` tool)
 
 ## Installation
 
@@ -23,7 +31,7 @@ An Emacs Lisp AI coding agent with multi-agent architecture, permission-based to
 Add the project to your Emacs load path:
 
 ```elisp
-(add-to-list 'load-path "/path/to/magent/lisp")
+(add-to-list 'load-path "/path/to/magent")
 (require 'magent)
 ```
 
@@ -31,7 +39,7 @@ Add the project to your Emacs load path:
 
 ```elisp
 (use-package magent
-  :load-path "/path/to/magent/lisp"
+  :load-path "/path/to/magent"
   :config
   (global-magent-mode 1))
 ```
@@ -52,27 +60,35 @@ See [gptel documentation](https://github.com/karthink/gptel#configuration) for f
 
 ### Magent-Specific Options
 
-Customize with `M-x customize-group RET magent RET`:
+Customize with `M-x customize-group RET magent RET`. Key settings:
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `magent-system-prompt` | (built-in) | Default system prompt for agents |
 | `magent-buffer-name` | `"*magent*"` | Output buffer name |
 | `magent-auto-scroll` | `t` | Auto-scroll output buffer |
-| `magent-enable-streaming` | `t` | Enable streaming responses |
-| `magent-enable-tools` | all 9 tools | Globally enabled tools |
+| `magent-enable-tools` | all 10 tools | Globally enabled tools |
 | `magent-project-root-function` | `nil` | Custom project root finder |
 | `magent-max-history` | `100` | Max messages in history |
+| `magent-request-timeout` | `120` | Timeout in seconds for LLM requests |
 | `magent-default-agent` | `"build"` | Default agent for new sessions |
 | `magent-load-custom-agents` | `t` | Load custom agents from `.magent/agent/*.md` |
 | `magent-enable-logging` | `t` | Enable logging to `*magent-log*` buffer |
-| `magent-assistant-prompt` | `"[AI  ] "` | Prefix for AI messages |
-| `magent-user-prompt` | `"[USER] "` | Prefix for user messages |
-| `magent-tool-call-prompt` | `"[TOOL] "` | Prefix for tool call notifications |
-| `magent-error-prompt` | `"[ERR ] "` | Prefix for error messages |
+| `magent-assistant-prompt` | `"ASSISTANT"` | Tag text in assistant section headers |
+| `magent-user-prompt` | `"USER"` | Tag text in user section headers |
+| `magent-tool-call-prompt` | `"tool"` | Tag text in tool call lines |
+| `magent-error-prompt` | `"error"` | Tag text in error section headers |
 | `magent-agent-directory` | `".magent/agent"` | Relative path to custom agent dir |
 | `magent-session-directory` | `~/.emacs.d/magent-sessions/` | Session persistence directory |
 | `magent-grep-program` | `"rg"` | Path to ripgrep binary |
+| `magent-grep-max-matches` | `100` | Max matches from grep searches |
+| `magent-bash-timeout` | `30` | Timeout in seconds for bash commands |
+| `magent-emacs-eval-timeout` | `10` | Timeout in seconds for emacs_eval |
+| `magent-include-reasoning` | `t` | Display (`t`), hide (`ignore`), or discard (`nil`) reasoning blocks |
+| `magent-queue-max-size` | `20` | Max queued prompts while processing |
+| `magent-auto-context` | `t` | Auto-attach buffer context in `magent-dwim` |
+| `magent-ui-batch-insert-delay` | `0.05` | Delay in seconds for batching streaming chunks |
+| `magent-ui-fontify-threshold` | `500` | Character threshold for async fontification |
 
 ## Usage
 
@@ -80,16 +96,18 @@ Customize with `M-x customize-group RET magent RET`:
 
 | Command | Keybinding | Description |
 |---------|-----------|-------------|
-| `magent-prompt` | `C-c m p` | Prompt for input and send to AI |
+| `magent-dwim` | `C-c m p` | Smart prompt: opens output buffer or prompts for input with auto-context |
 | `magent-prompt-region` | `C-c m r` | Send selected region to AI |
 | `magent-ask-at-point` | `C-c m a` | Ask about symbol at point |
 | `magent-clear-session` | `C-c m c` | Clear current session |
-| `magent-show-session` | `C-c m s` | Show session summary |
 | `magent-show-log` | `C-c m l` | View API request/response log |
 | `magent-clear-log` | `C-c m L` | Clear the log buffer |
+| `magent-ui-toggle-section` | `C-c m t` | Toggle fold/unfold of section at point |
 | `magent-select-agent` | `C-c m A` | Select an agent for this session |
 | `magent-show-current-agent` | `C-c m i` | Show current session's agent |
 | `magent-list-agents` | `C-c m v` | List all available agents |
+
+In the `*magent*` output buffer: `TAB`/`S-TAB` fold sections, `?` opens transient menu, `C-c C-c` submits input, `C-g` interrupts.
 
 ### Quick Example
 
@@ -101,7 +119,7 @@ Customize with `M-x customize-group RET magent RET`:
 (global-magent-mode 1)
 
 ;; Send a prompt
-M-x magent-prompt
+M-x magent-dwim
 
 ;; Or use keybinding
 C-c m p
@@ -200,7 +218,8 @@ The AI agent has access to these tools (can be customized per agent):
 | `bash` | yes | Execute shell commands (default timeout 30s) |
 | `emacs_eval` | yes | Evaluate Emacs Lisp expressions (default timeout 10s) |
 | `delegate` | yes | Spawn a nested request using a named subagent |
-| `skill_invoke` | no | Invoke Claude Code skills (e.g., Emacs interaction) |
+| `skill_invoke` | no | Invoke skills (e.g., Emacs interaction) |
+| `web_search` | no | Search the web via DuckDuckGo |
 
 Tools with side effects prompt the user for confirmation before execution.
 
@@ -212,42 +231,60 @@ Tool availability is controlled by:
 
 ### Core Flow
 
-1. **Entry Point** (`magent.el`): Defines `magent-mode` minor mode with `C-c m` keybinding prefix. Initializes the agent registry, loads custom agents, and loads Claude Code skills.
+1. **Entry Point** (`magent.el`): Defines `magent-mode` minor mode with `C-c m` keybinding prefix. Full initialization (agent registry, skills) is lazy — triggered on first command via `magent--ensure-initialized`.
 
 2. **Agent System**: Multi-agent architecture with permission-based tool access:
    - `magent-agent.el`: Builds gptel prompts, applies per-agent overrides, calls `gptel-request`
-   - `magent-agent-registry.el`: Agent info struct, built-in agent definitions, and central registry (consolidated from previously separate files)
+   - `magent-agent-registry.el`: Agent info struct, built-in agent definitions, and central registry
    - `magent-agent-file.el`: Custom agent loader (`.magent/agent/*.md`)
 
 3. **Permission System** (`magent-permission.el`): Rule-based tool access control per agent with file-pattern matching (glob syntax).
 
-4. **FSM** (`magent-fsm.el`): Finite state machine for the tool-calling loop (INIT → SEND → WAIT → PROCESS → TOOL → DONE/ERROR). Currently delegates HTTP to gptel.
+4. **FSM** (`magent-fsm.el`): Finite state machine for the tool-calling loop (INIT -> SEND -> WAIT -> PROCESS -> TOOL -> DONE/ERROR). Currently delegates HTTP to gptel.
 
 5. **LLM Integration** (via gptel): All LLM communication is handled by [gptel](https://github.com/karthink/gptel). Provider, model, and API key configuration is managed entirely by gptel.
 
-6. **Tools** (`magent-tools.el`): Tool implementations registered as `gptel-tool` structs, filtered per agent based on permission rules.
+6. **Tools** (`magent-tools.el`): 10 tool implementations registered as `gptel-tool` structs, filtered per agent based on permission rules.
 
-7. **Skills** (`magent-skills.el` + `magent-skill-emacs.el`): Skill registry with built-in emacs skill for Emacs interaction. Skills are invoked directly in-process via the `skill_invoke` tool.
+7. **Skills** (`magent-skills.el` + `magent-skill-file.el` + `magent-skill-emacs.el`): Two skill types — `instruction` (markdown injected into system prompt) and `tool` (invoked via `skill_invoke`). Loaded from `~/.emacs.d/magent-skills/<name>/SKILL.md` and `.magent/skills/<name>/SKILL.md`.
 
-8. **Session** (`magent-session.el`): Conversation history management with per-session agent assignment and JSON persistence.
+8. **Session** (`magent-session.el`): Conversation history management with per-session agent assignment and JSON persistence. The `buffer-content` slot stores raw buffer text for lossless restore.
+
+9. **Queue** (`magent-queue.el`): FIFO serialization of concurrent prompts. When a request is in-flight, new prompts are enqueued (up to `magent-queue-max-size`). After completion, the next item auto-dispatches.
+
+10. **UI** (`magent-ui.el`): The `*magent*` buffer derives from `org-mode`. Uses in-buffer input with `* [USER]` sections. Tool calls render as `#+begin_tool`/`#+end_tool` blocks; reasoning blocks as `#+begin_think`/`#+end_think`.
+
+11. **Markdown-to-Org** (`magent-md2org.el`): Converts markdown assistant output to org-mode format for rendering.
+
+12. **Frontmatter** (`magent-frontmatter.el`): Shared YAML frontmatter parser for agent and skill files. Supports booleans, numbers, quoted strings, comma-separated lists.
 
 ### File Structure
 
 ```
-lisp/
-├── magent.el                  # Main entry point and mode definition
-├── magent-config.el           # Configuration (customize group, 17 defcustom vars)
-├── magent-session.el          # Session & message history (JSON persistence)
-├── magent-tools.el            # Tool implementations (9 gptel-tool structs)
-├── magent-agent.el            # Agent logic (gptel integration)
-├── magent-agent-registry.el   # Agent struct, built-in definitions, and registry
-├── magent-agent-file.el       # Custom agent file loader (.magent/agent/*.md)
-├── magent-permission.el       # Permission system (allow/deny/ask with glob patterns)
-├── magent-fsm.el              # FSM for tool-calling loop
-├── magent-skill-emacs.el      # Built-in Emacs interaction skill
-├── magent-skills.el           # Skill registry
-├── magent-ui.el               # Minibuffer UI & output buffer rendering
-└── magent-pkg.el              # Package descriptor
+magent/
+├── magent.el                      # Main entry point and mode definition
+├── magent-config.el               # Configuration (customize group, defcustom vars)
+├── magent-session.el              # Session & message history (JSON persistence)
+├── magent-queue.el                # FIFO prompt serialization
+├── magent-tools.el                # Tool implementations (10 gptel-tool structs)
+├── magent-agent.el                # Agent logic (gptel integration)
+├── magent-agent-registry.el       # Agent struct, built-in definitions, and registry
+├── magent-agent-file.el           # Custom agent file loader (.magent/agent/*.md)
+├── magent-permission.el           # Permission system (allow/deny/ask with glob patterns)
+├── magent-fsm.el                  # FSM API (dispatches to gptel backend)
+├── magent-fsm-backend-gptel.el    # gptel FSM backend implementation
+├── magent-fsm-backend-native.el   # Native FSM backend (struct defs, not active)
+├── magent-frontmatter.el          # Shared YAML frontmatter parser
+├── magent-md2org.el               # Markdown to org-mode converter
+├── magent-skills.el               # Skill registry and dispatch
+├── magent-skill-file.el           # Skill file loader (SKILL.md files)
+├── magent-skill-emacs.el          # Built-in Emacs interaction skill
+├── magent-ui.el                   # In-buffer UI & output buffer (org-mode derived)
+├── magent-pkg.el                  # Package descriptor
+├── prompt.txt                     # Default system prompt
+├── Makefile                       # Build/test/clean targets
+└── test/
+    └── magent-test.el             # ERT test suite
 ```
 
 ### Key Data Structures
@@ -255,7 +292,7 @@ lisp/
 - `magent-agent-info`: Agent configuration struct (name, description, mode, permissions, prompt, temperature, model, etc.)
 - `magent-session`: Conversation state with messages list, assigned agent, and history trimming
 - `magent-fsm`: FSM state for tool-calling loop (state, session, agent, tools, pending-tools, etc.)
-- `magent-skill`: Loaded Claude Code skill (name, description, tools, body, dir)
+- `magent-skill`: Loaded skill definition (name, description, tools, body, dir)
 
 ## Development
 
@@ -263,14 +300,14 @@ lisp/
 
 ```bash
 make compile    # Byte-compile all Elisp files
-make test       # Run tests (requires magent-tests.el)
+make test       # Run ERT tests
 make clean      # Remove compiled .elc files
 ```
 
 ### Single File Compilation
 
 ```bash
-emacs -Q --batch -L lisp -f batch-byte-compile lisp/magent-foo.el
+emacs -Q --batch -L . -L ~/path/to/gptel -f batch-byte-compile magent-foo.el
 ```
 
 ## Session Persistence
@@ -279,6 +316,7 @@ Sessions are automatically saved to `~/.emacs.d/magent-sessions/` (configurable)
 - Conversation history
 - Assigned agent
 - Message metadata
+- Raw buffer content for lossless restore
 
 ## Troubleshooting
 
