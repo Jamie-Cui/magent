@@ -27,7 +27,7 @@ emacs -Q --batch -L . -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'gptel-*' -typ
 
 ### Unit Tests
 
-`test/magent-test.el` contains ~81 ERT tests across 10 suites. Tests mock `gptel-request` and UI functions via `cl-letf`. Key patterns:
+`test/magent-test.el` contains ~92 ERT tests across 10 suites. Tests mock `gptel-request` and UI functions via `cl-letf`. Key patterns:
 - Registry tests bind `magent-agent-registry--agents` to a fresh hash table
 - Skills tests bind `magent-skills--registry` to nil
 - Session tests call `magent-session-reset` to clear global state

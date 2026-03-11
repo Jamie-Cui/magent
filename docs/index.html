@@ -38,9 +38,14 @@
         <li>Shell command execution via bash tool</li>
         <li>Emacs Lisp evaluation via emacs_eval tool</li>
         <li>Agent delegation with explore and general subagents</li>
+        <li>Web search via DuckDuckGo</li>
         <li>Claude Code skills for interacting with the running Emacs instance</li>
-        <li>Session management with conversation history and persistence</li>
-        <li>Minibuffer interface for quick prompts</li>
+        <li>Session management with conversation history and buffer content persistence</li>
+        <li>FIFO prompt queue for serializing concurrent requests</li>
+        <li>Streaming responses with chunk batching and async fontification</li>
+        <li>Markdown-to-Org conversion for rendering assistant output in org-mode</li>
+        <li>Context-aware prompting via <code>magent-dwim</code> with automatic buffer context attachment</li>
+        <li>Transient menu for command discovery</li>
     </ul>
 
     <h2 id="architecture">Architecture Overview</h2>
@@ -53,14 +58,16 @@
 |  magent-ui.el    | magent-agent.el  | magent-tools.el  |
 +------------------+------------------+------------------+
     |                |                |
+    v                v                |
+Queue Layer    Session Layer          |
+magent-queue.el  magent-session.el    |
+    |                |                |
     |                v                |
-    |        Session Layer           |
-    |      magent-session.el         |
-    |                |               |
-    |                v                |
-    |      FSM Layer                 |
-    |       magent-fsm.el            |
-    |                |               |
+    |        FSM Layer                |
+    |       magent-fsm.el             |
+    |          |         \            |
+    |    native backend   gptel       |
+    |                     backend     |
     v                v                v
 +------------------------------------------------------+
 |                 Core Modules                         |
@@ -68,6 +75,7 @@
 |  - Permission System (magent-permission.el)          |
 |  - Skills (magent-skills.el + skills/*.el)           |
 |  - Frontmatter Parsing (magent-frontmatter.el)       |
+|  - Markdown-to-Org (magent-md2org.el)                |
 |  - Config (magent-config.el)                         |
 +------------------------------------------------------+
     |
@@ -77,7 +85,7 @@
     <h2 id="modules">Core Modules</h2>
 
     <h3>Entry Point (magent.el)</h3>
-    <p>The entry point defines <code>magent-mode</code>, a minor mode with <code>C-c m</code> keybinding prefix. When enabled, it initializes the agent registry, loads custom agents, and loads Claude Code skills.</p>
+    <p>The entry point defines <code>magent-mode</code>, a minor mode with <code>C-c m</code> keybinding prefix. When enabled, it adds a modeline lighter showing spinner and queue depth. Agent/skill initialization is deferred until first command use (<code>magent--ensure-initialized</code>).</p>
 
     <h3>Agent System</h3>
     <p>Built-in agents:</p>
@@ -125,7 +133,7 @@
     </table>
 
     <h3>Tool System (magent-tools.el)</h3>
-    <p>9 tools implemented as gptel-tool structs:</p>
+    <p>10 tools implemented as gptel-tool structs:</p>
     <table>
         <tr>
             <th>Tool</th>
@@ -141,6 +149,7 @@
         <tr><td>emacs_eval</td><td>yes</td><td>Evaluate Emacs Lisp expressions</td></tr>
         <tr><td>delegate</td><td>yes</td><td>Spawn nested request using subagent</td></tr>
         <tr><td>skill_invoke</td><td>no</td><td>Invoke Claude Code skills</td></tr>
+        <tr><td>web_search</td><td>no</td><td>Search the web via DuckDuckGo</td></tr>
     </table>
 
     <h3>Finite State Machine (magent-fsm.el)</h3>
@@ -167,11 +176,12 @@
 
     <h3>magent-session</h3>
     <pre>(cl-defstruct (magent-session (:constructor magent-session-create))
-  messages       ; List of messages in chronological order
-  message-count  ; Cached count
-  max-history    ; Max messages to keep
-  id             ; Session identifier
-  agent          ; Assigned agent info
+  messages        ; List of messages in chronological order
+  message-count   ; Cached count
+  max-history     ; Max messages to keep
+  id              ; Session identifier
+  agent           ; Assigned agent info
+  buffer-content  ; Saved buffer text for lossless restore
 )</pre>
 
     <h2 id="design">Key Design Decisions</h2>
