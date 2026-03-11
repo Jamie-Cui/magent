@@ -26,37 +26,25 @@
 ;; FIXME: native FSM backend (magent-fsm-backend-native.el) is disabled.
 ;; Only the gptel backend is currently supported.
 
-;; Forward declarations
-(declare-function magent-fsm-backend-gptel-create "magent-fsm-backend-gptel")
-(declare-function magent-fsm-backend-gptel-start "magent-fsm-backend-gptel")
-(declare-function magent-fsm-backend-gptel-abort "magent-fsm-backend-gptel")
-(declare-function magent-fsm-backend-gptel-destroy "magent-fsm-backend-gptel")
+(require 'magent-config)
+(require 'magent-fsm-backend-gptel)
 
 ;;; Unified FSM API
 
-(defun magent-fsm--require-backend ()
-  "Ensure the configured FSM backend is loaded."
-  (require 'magent-config)
-  (require 'magent-fsm-backend-gptel))
-
 (defun magent-fsm-create (&rest args)
   "Create FSM using configured backend."
-  (magent-fsm--require-backend)
   (apply #'magent-fsm-backend-gptel-create args))
 
 (defun magent-fsm-start (fsm)
   "Start FSM execution."
-  (magent-fsm--require-backend)
   (magent-fsm-backend-gptel-start fsm))
 
 (defun magent-fsm-abort (fsm)
   "Abort FSM execution."
-  (magent-fsm--require-backend)
   (magent-fsm-backend-gptel-abort fsm))
 
 (defun magent-fsm-destroy (fsm)
   "Destroy FSM and clean up resources."
-  (magent-fsm--require-backend)
   (magent-fsm-backend-gptel-destroy fsm))
 
 (provide 'magent-fsm)

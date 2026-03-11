@@ -335,7 +335,7 @@
   (let ((session (magent-session-create)))
     (magent-session-add-message session 'user "Hello")
     (magent-session-add-message session 'assistant "Hi there")
-    (should (= (magent-session-message-count session) 2))
+    (should (= (length (magent-session-messages session)) 2))
     (let ((messages (magent-session-get-messages session)))
       (should (= (length messages) 2))
       (should (eq (magent-msg-role (nth 0 messages)) 'user))
@@ -351,12 +351,12 @@
     (dotimes (i 10)
       (magent-session-add-message session 'user (format "msg %d" i)))
     ;; Should have 10 messages (lazy trim hasn't triggered yet)
-    (should (= (magent-session-message-count session) 10))
+    (should (= (length (magent-session-messages session)) 10))
     ;; Add 6 more to trigger trim (10 + 6 = 16 > 5 + 10)
     (dotimes (i 6)
       (magent-session-add-message session 'user (format "extra %d" i)))
     ;; Now should be trimmed to max-history (5)
-    (should (= (magent-session-message-count session) 5))))
+    (should (= (length (magent-session-messages session)) 5))))
 
 (ert-deftest magent-test-session-trimming-preserves-recent ()
   "Test that trimming keeps the most recent messages."
@@ -365,7 +365,7 @@
     ;; Add enough to trigger trim (3 + 10 = 13, need > 13)
     (dotimes (i 14)
       (magent-session-add-message session 'user (format "msg-%d" i)))
-    (should (= (magent-session-message-count session) 3))
+    (should (= (length (magent-session-messages session)) 3))
     (let* ((messages (magent-session-get-messages session))
            (first-content (magent-msg-content (nth 0 messages))))
       ;; Oldest remaining should be msg-11 (14 - 3 = 11)
@@ -374,7 +374,7 @@
 (ert-deftest magent-test-session-empty ()
   "Test freshly created session has no messages."
   (let ((session (magent-session-create)))
-    (should (= (magent-session-message-count session) 0))
+    (should (= (length (magent-session-messages session)) 0))
     (should (null (magent-session-get-messages session)))))
 
 (ert-deftest magent-test-session-content-to-string ()
@@ -436,9 +436,9 @@
   "Test session agent get/set."
   (require 'magent-session)
   (let ((session (magent-session-create)))
-    (should (null (magent-session-get-agent session)))
+    (should (null (magent-session-agent session)))
     (magent-session-set-agent session "build")
-    (should (equal (magent-session-get-agent session) "build"))))
+    (should (equal (magent-session-agent session) "build"))))
 
 (ert-deftest magent-test-session-summarize ()
   "Test session summarize produces output."
@@ -472,7 +472,7 @@
     (magent-session-reset)
     (let ((s2 (magent-session-get)))
       (should-not (eq s1 s2))
-      (should (= (magent-session-message-count s2) 0)))))
+      (should (= (length (magent-session-messages s2)) 0)))))
 
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Agent registry tests

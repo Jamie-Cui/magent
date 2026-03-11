@@ -39,7 +39,7 @@ The tool calling loop is managed by magent-fsm.  This function:
   4. Records the final response in the session via the callback"
   (let* ((session (magent-session-get))
          (agent (or agent-info
-                    (magent-session-get-agent session)
+                    (magent-session-agent session)
                     (magent-agent-registry-get-default))))
     (magent-session-set-agent session agent)
     (magent-session-add-message session 'user user-prompt)

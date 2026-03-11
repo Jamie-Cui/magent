@@ -25,15 +25,12 @@
 
 ;;; Tool implementations
 
-(defalias 'magent-tools--project-root #'magent-project-root
-  "Return the project root directory for tool operations.")
-
 (defun magent-tools--resolve-path (path)
   "Resolve PATH for tool operations.
 Expands ~ and environment variables first, then resolves relative
 paths against the project root.  Never returns nil."
   (let* ((expanded (expand-file-name (substitute-in-file-name path)))
-         (root (magent-tools--project-root)))
+         (root (magent-project-root)))
     (cond
      ((file-exists-p expanded) expanded)
      (t
@@ -76,7 +73,7 @@ CALLBACK is called with matching lines or error message."
          (default-directory (if (file-directory-p resolved)
                                 resolved
                               (or (file-name-directory resolved)
-                                  (magent-tools--project-root))))
+                                  (magent-project-root))))
          (buf (generate-new-buffer " *magent-grep*"))
          (args (list "--no-heading" "--line-number" "--color=never"
                      (format "--max-count=%d" magent-grep-max-matches))))
@@ -108,7 +105,7 @@ CALLBACK is called with list of matching file paths."
              (default-directory (if (file-directory-p resolved)
                                     resolved
                                   (or (file-name-directory resolved)
-                                      (magent-tools--project-root))))
+                                      (magent-project-root))))
              (matches
               (if (string-match-p "\\*\\*" pattern)
                   ;; ** requires recursive search

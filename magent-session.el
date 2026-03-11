@@ -21,7 +21,6 @@
                (:constructor magent-session-create)
                (:copier nil))
   (messages nil)             ; List of messages in chronological order
-  (message-count 0)          ; Cached count to avoid repeated length calls
   (max-history magent-max-history)
   (id nil)
   (agent nil)
@@ -72,10 +71,6 @@ If CONTENT is a list of content blocks, concatenate their text fields."
         (setf (magent-session-id session) id)
         id)))
 
-(defun magent-session-get-agent (session)
-  "Get the current agent for SESSION."
-  (magent-session-agent session))
-
 (defun magent-session-set-agent (session agent)
   "Set the agent for SESSION to AGENT."
   (setf (magent-session-agent session) agent))
@@ -87,30 +82,21 @@ If CONTENT is a list of content blocks, concatenate their text fields."
 ROLE is either \\='user, \\='assistant, or \\='tool.
 CONTENT can be a string or a list of content blocks."
   (let* ((msg (list (cons 'role role) (cons 'content content)))
-         (messages (magent-session-messages session)))
-    ;; Append to end (maintaining chronological order)
-    (setf (magent-session-messages session)
-          (nconc messages (list msg)))
-    ;; Increment count
-    (cl-incf (magent-session-message-count session))
-    ;; Lazy trim: only when we exceed threshold by 10 messages
-    (when (> (magent-session-message-count session)
-             (+ (magent-session-max-history session) 10))
+         (messages (magent-session-messages session))
+         (new-messages (nconc messages (list msg))))
+    (setf (magent-session-messages session) new-messages)
+    (when (> (length new-messages) (+ (magent-session-max-history session) 10))
       (magent-session--trim-history session)))
   session)
 
 (defun magent-session--trim-history (session)
   "Trim SESSION messages to max-history limit."
   (let* ((messages (magent-session-messages session))
-         (count (magent-session-message-count session))
+         (count (length messages))
          (max (magent-session-max-history session))
          (to-remove (- count max)))
     (when (> to-remove 0)
-      ;; Remove oldest messages
-      (let ((trimmed (nthcdr to-remove messages)))
-        (setf (magent-session-messages session) trimmed)
-        ;; Recount from actual list length to stay in sync
-        (setf (magent-session-message-count session) (length trimmed)))
+      (setf (magent-session-messages session) (nthcdr to-remove messages))
       (magent-log "INFO Trimmed session history: removed %d old messages" to-remove))))
 
 (defun magent-session-get-messages (session)
