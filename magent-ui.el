@@ -363,14 +363,17 @@ single character visually fill the rest of the line."
 (defun magent-ui--insert-separator ()
   "Insert a separator line between conversation turns.
 For graphic characters (e.g. ?─), draws a full-width line using an overlay.
-For whitespace characters (e.g. ?\\n), inserts the character literally.
+For whitespace characters (e.g. ?\\n or ?\\s), inserts a single blank line.
 Skipped at buffer start or when `magent-ui-separator-char' is nil."
   (when (and magent-ui-separator-char (> (point) (point-min)))
-    (insert "\n")
     (if (= (char-syntax magent-ui-separator-char) ?\s)
-        (insert (make-string 1 magent-ui-separator-char))
-      (magent-ui--insert-full-width-line magent-ui-separator-char 'magent-separator))
-    (insert "\n")))
+        ;; Whitespace separator: ensure exactly one blank line before
+        ;; the next heading.  The previous content already ends with
+        ;; a newline, so one more newline produces the blank line.
+        (insert "\n")
+      (insert "\n")
+      (magent-ui--insert-full-width-line magent-ui-separator-char 'magent-separator)
+      (insert "\n"))))
 
 (defun magent-ui--insert-header (label &optional face)
   "Insert \"* LABEL\" heading followed by a dash line extending to window edge.
