@@ -210,25 +210,25 @@ Returns number of skills loaded."
   "Display a list of all registered skills."
   (interactive)
   (let ((skills (mapcar #'cdr magent-skills--registry)))
-    (with-output-to-temp-buffer "*Magent Skills*"
-      (princ "Available Skills:\n\n")
+    (magent--with-display-buffer "*Magent Skills*"
+      (insert "Available Skills:\n\n")
       (dolist (skill (sort skills
                            (lambda (a b)
                              (string< (magent-skill-name a)
                                       (magent-skill-name b)))))
-        (princ (format "- %s [%s]\n"
-                       (magent-skill-name skill)
-                       (magent-skill-type skill)))
+        (insert (format "- %s [%s]\n"
+                        (magent-skill-name skill)
+                        (magent-skill-type skill)))
         (when (magent-skill-description skill)
-          (princ (format "  %s\n" (magent-skill-description skill))))
+          (insert (format "  %s\n" (magent-skill-description skill))))
         (when (magent-skill-tools skill)
-          (princ (format "  Tools: %s\n"
-                         (mapconcat #'symbol-name
-                                    (magent-skill-tools skill) ", "))))
+          (insert (format "  Tools: %s\n"
+                          (mapconcat #'symbol-name
+                                     (magent-skill-tools skill) ", "))))
         (when (magent-skill-file-path skill)
-          (princ (format "  File: %s\n" (magent-skill-file-path skill))))
-        (princ "\n"))
-      (princ (format "Total: %d skill(s)\n" (length skills))))))
+          (insert (format "  File: %s\n" (magent-skill-file-path skill))))
+        (insert "\n"))
+      (insert (format "Total: %d skill(s)\n" (length skills))))))
 
 ;;;###autoload
 (defun magent-reload-skills ()
@@ -247,18 +247,18 @@ Built-in skills are preserved."
   (let ((skill (magent-skills-get skill-name)))
     (if (not skill)
         (message "Skill '%s' not found" skill-name)
-      (with-output-to-temp-buffer (format "*Magent Skill: %s*" skill-name)
-        (princ (format "# Skill: %s\n\n" skill-name))
-        (princ (format "Type: %s\n" (magent-skill-type skill)))
+      (magent--with-display-buffer (format "*Magent Skill: %s*" skill-name)
+        (insert (format "# Skill: %s\n\n" skill-name))
+        (insert (format "Type: %s\n" (magent-skill-type skill)))
         (when (magent-skill-description skill)
-          (princ (format "\n## Description\n\n%s\n" (magent-skill-description skill))))
+          (insert (format "\n## Description\n\n%s\n" (magent-skill-description skill))))
         (when (magent-skill-tools skill)
-          (princ (format "\n## Required Tools\n\n%s\n"
-                         (mapconcat #'symbol-name (magent-skill-tools skill) ", "))))
+          (insert (format "\n## Required Tools\n\n%s\n"
+                          (mapconcat #'symbol-name (magent-skill-tools skill) ", "))))
         (when (magent-skill-prompt skill)
-          (princ (format "\n## Prompt\n\n%s\n" (magent-skill-prompt skill))))
+          (insert (format "\n## Prompt\n\n%s\n" (magent-skill-prompt skill))))
         (when (magent-skill-file-path skill)
-          (princ (format "\n## Source\n\n%s\n" (magent-skill-file-path skill))))))))
+          (insert (format "\n## Source\n\n%s\n" (magent-skill-file-path skill))))))))
 
 (provide 'magent-skill-file)
 ;;; magent-skill-file.el ends here
