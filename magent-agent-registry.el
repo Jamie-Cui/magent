@@ -459,15 +459,13 @@ This does not affect built-in agents that will be reloaded on initialization."
 With prefix argument, include hidden agents."
   (interactive "P")
   (let ((agents (magent-agent-registry-list include-hidden)))
-    (with-output-to-temp-buffer "*Magent Agents*"
-      (princ "Available Agents:\n\n")
+    (magent--with-display-buffer "*Magent Agents*"
+      (insert "Available Agents:\n\n")
       (dolist (agent agents)
-        (princ (magent-agent-info-format-for-display agent))
-        (princ "\n"))
-      (princ (format "\nTotal: %d agent(s)\n" (length agents)))
-      (princ (format "\nDefault agent: %s\n"
-                     (or magent-agent-registry--default-agent "none"))))
-    (display-buffer "*Magent Agents*")))
+        (insert (magent-agent-info-format-for-display agent) "\n"))
+      (insert (format "\nTotal: %d agent(s)\n" (length agents)))
+      (insert (format "\nDefault agent: %s\n"
+                      (or magent-agent-registry--default-agent "none"))))))
 
 ;;;###autoload
 (defun magent-set-default-agent (agent-name)

@@ -20,6 +20,58 @@
   :group 'tools
   :link '(url-link :tag "GitHub" "https://github.com/jamie-cui/magent"))
 
+;;; Faces
+
+(defface magent-user-header
+  '((t :inherit (bold font-lock-keyword-face)))
+  "Face for USER heading labels."
+  :group 'magent)
+
+(defface magent-assistant-header
+  '((t :inherit (bold font-lock-function-name-face)))
+  "Face for ASSISTANT heading labels."
+  :group 'magent)
+
+(defface magent-tool-header
+  '((t :inherit (bold font-lock-type-face)))
+  "Face for `#+begin_tool'/`#+end_tool' lines."
+  :group 'magent)
+
+(defface magent-tool-args
+  '((t :inherit font-lock-comment-face))
+  "Face for tool input arguments."
+  :group 'magent)
+
+(defface magent-tool-result
+  '((t :inherit font-lock-string-face))
+  "Face for `-> result' text in tool blocks."
+  :group 'magent)
+
+(defface magent-error-header
+  '((t :inherit (bold error)))
+  "Face for error heading labels."
+  :group 'magent)
+
+(defface magent-error-body
+  '((t :inherit error))
+  "Face for error body text."
+  :group 'magent)
+
+(defface magent-reasoning-header
+  '((t :inherit (bold font-lock-doc-face)))
+  "Face for `#+begin_think'/`#+end_think' lines."
+  :group 'magent)
+
+(defface magent-separator
+  '((t :inherit shadow :strike-through t))
+  "Face for separator lines between conversation turns."
+  :group 'magent)
+
+(defface magent-strike-through
+  '((t :inherit shadow :strike-through t))
+  "Face for the dash line after section headers."
+  :group 'magent)
+
 (defvar magent--prompt-file
   (expand-file-name "prompt.txt"
                     (file-name-directory (or load-file-name buffer-file-name)))
@@ -151,6 +203,21 @@ If rg is not found, grep tool calls will fail with an informative error."
   :type 'integer
   :group 'magent)
 
+(defcustom magent-ui-header-strike-through nil
+  "Whether to draw a strike-through line after section headers.
+When non-nil, a dash line extends from the header label to the
+right window edge using the `magent-strike-through' face."
+  :type 'boolean
+  :group 'magent)
+
+(defcustom magent-ui-separator-char ?\s
+  "Character for separator lines between conversation turns.
+A whitespace character inserts literal spacing; a graphic character
+draws a full-width line with `magent-separator' face.
+Set to nil to disable separators."
+  :type '(choice character (const :tag "Disabled" nil))
+  :group 'magent)
+
 (defcustom magent-ui-result-max-length 200
   "Maximum length for tool result display before truncation."
   :type 'integer
@@ -190,11 +257,6 @@ rendering to reduce UI updates."
   :type 'float
   :group 'magent)
 
-(defcustom magent-input-window-height 10
-  "Height in lines of the popup input window."
-  :type 'integer
-  :group 'magent)
-
 (defcustom magent-include-reasoning t
   "How to handle LLM reasoning/thinking blocks.
 If t, display reasoning blocks wrapped in #+begin_think/#+end_think.
@@ -220,6 +282,21 @@ When the queue is full, new prompts are rejected with an error."
   :group 'magent)
 
 ;;; Shared utilities
+
+(defmacro magent--with-display-buffer (name &rest body)
+  "Populate buffer NAME with BODY and display it in `special-mode'.
+The buffer is created if needed.  The mode is set before content
+insertion so that `kill-all-local-variables' does not wipe locals
+set by BODY.  BODY runs with `inhibit-read-only' bound to t."
+  (declare (indent 1))
+  `(let ((buf (get-buffer-create ,name)))
+     (with-current-buffer buf
+       (unless (derived-mode-p 'special-mode)
+         (special-mode))
+       (let ((inhibit-read-only t))
+         (erase-buffer)
+         ,@body))
+     (display-buffer buf)))
 
 (defun magent-project-root ()
   "Return the project root directory.

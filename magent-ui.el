@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; User interface for Magent including popup input window and output buffer.
+;; User interface for Magent with in-buffer input and output.
 ;; The output buffer derives from org-mode for native folding support.
 ;; Each message section uses a level-1 heading (*), and LLM content uses
 ;; level-2+ headings (**).
@@ -29,6 +29,11 @@
 
 (defvar magent--current-fsm nil
   "Current active FSM instance, if any.")
+
+;; Forward declarations for buffer-local input state (defined in
+;; "In-buffer input" section below).
+(defvar magent-ui--input-marker)
+(defvar magent-ui--input-section-start)
 
 (defvar magent-ui--request-generation 0
   "Monotonically increasing counter for request dispatch cycles.
@@ -51,31 +56,45 @@ discard stale callbacks from interrupted requests.")
 
 (defmacro magent-ui--with-insert (buffer &rest body)
   "Execute BODY at end of BUFFER with `inhibit-read-only' set.
-After BODY, auto-scroll if `magent-auto-scroll' is non-nil.
+After BODY, marks the newly inserted region as read-only and
+auto-scrolls if `magent-auto-scroll' is non-nil.
 Buffer-boundary signals are suppressed because callbacks from
 gptel process filters can trigger evil-mode cursor adjustments
 that hit buffer edges."
   (declare (indent 1))
-  `(with-current-buffer ,buffer
-     (let ((inhibit-read-only t))
-       (condition-case nil
-           (progn
-             (goto-char (point-max))
-             ,@body
-             (when magent-auto-scroll
+  (let ((ro-start (make-symbol "ro-start")))
+    `(with-current-buffer ,buffer
+       (let ((inhibit-read-only t)
+             (,ro-start (point-max)))
+         (condition-case nil
+             (progn
                (goto-char (point-max))
-               (let ((win (get-buffer-window (current-buffer))))
-                 (when win
-                   (set-window-point win (point-max))))))
-         ((beginning-of-buffer end-of-buffer beginning-of-line end-of-line)
-          nil)))))
+               ,@body
+               (when (> (point-max) ,ro-start)
+                 (add-text-properties ,ro-start (point-max) '(read-only t)))
+               (when magent-auto-scroll
+                 (goto-char (point-max))
+                 (let ((win (get-buffer-window (current-buffer))))
+                   (when win
+                     (set-window-point win (point-max))))))
+           ((beginning-of-buffer end-of-buffer beginning-of-line end-of-line)
+            nil))))))
 
 (defun magent-log (format-string &rest args)
   "Log a message to the Magent log buffer.
-FORMAT-STRING and ARGS are passed to `format'."
-  (magent-ui--with-insert (magent-ui-get-log-buffer)
-    (let ((timestamp (format-time-string "%Y-%m-%d %H:%M:%S")))
-      (insert (format "[%s] %s\n" timestamp (apply #'format format-string args))))))
+FORMAT-STRING and ARGS are passed to `format'.
+Uses a simple insert rather than `magent-ui--with-insert' because
+the log buffer already has `buffer-read-only' and should not get
+per-character `read-only' text properties (they would travel with
+yanked text)."
+  (let ((buf (magent-ui-get-log-buffer)))
+    (with-current-buffer buf
+      (let ((inhibit-read-only t))
+        (goto-char (point-max))
+        (let ((timestamp (format-time-string "%Y-%m-%d %H:%M:%S")))
+          (insert (format "[%s] %s\n"
+                          timestamp
+                          (apply #'format format-string args))))))))
 
 (defun magent-ui-get-buffer ()
   "Get or create the Magent output buffer."
@@ -93,7 +112,7 @@ past messages so the user can see the full conversation."
   (let ((buffer (magent-ui-get-buffer)))
     (when (zerop (buffer-size buffer))
       (magent-ui-render-history))
-    (pop-to-buffer buffer)))
+    (display-buffer buffer)))
 
 (defun magent-ui-render-history ()
   "Render session history into the output buffer.
@@ -117,7 +136,8 @@ session so that future calls can restore it losslessly."
         ;; Restore saved content losslessly
         (with-current-buffer buf
           (let ((inhibit-read-only t))
-            (insert saved))
+            (insert saved)
+            (add-text-properties (point-min) (point-max) '(read-only t)))
           (goto-char (point-max)))
       ;; Fallback: re-render from session messages
       (let ((magent-auto-scroll nil))
@@ -132,14 +152,17 @@ session so that future calls can restore it losslessly."
                (when (and (stringp content) (> (length content) 0))
                  (magent-ui-insert-assistant-message content)))))))
       (with-current-buffer buf
-        (goto-char (point-max))))))
+        (goto-char (point-max))))
+    (magent-ui--maybe-show-input-prompt)))
 
 (defun magent-ui-clear-buffer ()
-  "Clear the Magent output buffer."
+  "Clear the Magent output buffer and reset input state."
   (interactive)
   (with-current-buffer (magent-ui-get-buffer)
     (let ((inhibit-read-only t))
-      (erase-buffer))))
+      (erase-buffer))
+    (setq magent-ui--input-marker nil)
+    (setq magent-ui--input-section-start nil)))
 
 ;;; Interrupt command
 
@@ -158,7 +181,8 @@ request are discarded."
   (magent-ui-insert-error "[Interrupted by user]")
   (magent-log "INFO Request interrupted by user (gen now %d)"
               magent-ui--request-generation)
-  (magent-queue-dequeue-and-run))
+  (magent-queue-dequeue-and-run)
+  (magent-ui--maybe-show-input-prompt))
 
 ;;; Transient menu
 
@@ -189,6 +213,7 @@ request are discarded."
     (set-keymap-parent map org-mode-map)
     (define-key map (kbd "?") #'magent-transient-menu)
     (define-key map (kbd "C-g") #'magent-interrupt)
+    (define-key map (kbd "C-c C-c") #'magent-input-submit)
     map)
   "Keymap for `magent-output-mode'.")
 
@@ -200,11 +225,14 @@ is a level-1 heading (*), and LLM content uses level-2+ headings (**).
 Press \\[magent-interrupt] to interrupt the current request.
 Press \\[magent-transient-menu] for the command menu."
   (visual-line-mode 1)
-  (setq buffer-read-only t)
   (setq-local display-fill-column-indicator-column nil)
   (setq-local revert-buffer-function #'magent-ui--revert-buffer)
   (setq-local evil-move-beyond-eol t)
   (add-hook 'kill-buffer-hook #'magent-ui--cancel-timers nil t))
+
+(with-eval-after-load 'evil
+  (evil-define-key* 'normal magent-output-mode-map
+    (kbd "C-c C-c") #'magent-input-submit))
 
 (defun magent-ui--revert-buffer (_ignore-auto _noconfirm)
   "Revert the Magent buffer by re-rendering from saved content.
@@ -232,87 +260,84 @@ Called via `kill-buffer-hook' to prevent timers firing on dead buffers."
                  ("\\<\\(ERROR\\|WARNING\\|INFO\\|DEBUG\\)\\>"
                   0 font-lock-keyword-face)))))
 
-;;; Popup input window
+;;; In-buffer input
 
-(defvar magent--input-buffer-name "*magent-input*"
-  "Name of the popup input buffer.")
+(defvar-local magent-ui--input-marker nil
+  "Marker at the start of the user input area.
+Non-nil only when an editable input prompt is active.  Everything
+before this marker is read-only; everything at or after it is
+editable by the user.")
 
-(defvar magent-input-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-c") #'magent-input-submit)
-    (define-key map (kbd "C-c C-k") #'magent-input-cancel)
-    map)
-  "Keymap for `magent-input-mode'.")
+(defvar-local magent-ui--input-section-start nil
+  "Buffer position where the input prompt section starts.
+Includes the separator and header that precede the editable area.
+Used by `magent-ui--remove-input-prompt' to delete the entire section.")
 
-(define-minor-mode magent-input-mode
-  "Minor mode for the Magent popup input buffer.
-\\<magent-input-mode-map>
-\\[magent-input-submit] to submit, \\[magent-input-cancel] to cancel."
-  :keymap magent-input-mode-map)
+(defun magent-ui--insert-input-prompt ()
+  "Insert a user input prompt at the end of the output buffer.
+The prompt consists of a separator, a `* [USER]' heading (both
+read-only), and an editable area below where the user can type.
+Sets `magent-ui--input-marker' to the start of the editable area."
+  (with-current-buffer (magent-ui-get-buffer)
+    (let ((inhibit-read-only t)
+          (start (point-max)))
+      (goto-char (point-max))
+      (magent-ui--insert-separator)
+      (magent-ui--insert-header magent-user-prompt 'magent-user-header)
+      ;; Make separator + header read-only, last char rear-nonsticky
+      ;; so user-typed text after it does NOT inherit read-only.
+      (when (> (point-max) start)
+        (add-text-properties start (point-max) '(read-only t))
+        (put-text-property (1- (point-max)) (point-max)
+                           'rear-nonsticky '(read-only)))
+      (setq magent-ui--input-section-start start)
+      (setq magent-ui--input-marker (copy-marker (point-max)))
+      ;; Auto-scroll to input area
+      (let ((win (get-buffer-window (current-buffer))))
+        (when win
+          (set-window-point win (point-max)))))))
 
-(with-eval-after-load 'evil
-  (evil-define-key* 'normal magent-input-mode-map
-    (kbd "C-c C-c") #'magent-input-submit
-    (kbd "C-c C-k") #'magent-input-cancel))
+(defun magent-ui--maybe-show-input-prompt ()
+  "Insert an input prompt unless a queued item is about to run."
+  (unless (magent-queue-processing-p)
+    (magent-ui--insert-input-prompt)))
 
-(defun magent-input--get-or-create-buffer ()
-  "Return the magent input buffer, creating and configuring it if needed.
-Reuses an existing buffer without erasing its contents so that
-re-invoking `magent-prompt' while the popup is open preserves
-the user's draft."
-  (let ((buf (get-buffer-create magent--input-buffer-name)))
-    (with-current-buffer buf
-      (unless (derived-mode-p 'org-mode)
-        (org-mode)
-        (magent-input-mode 1)
-        (setq-local org-startup-folded nil)
-        (setq-local header-line-format
-                    (substitute-command-keys
-                     "Magent: \\<magent-input-mode-map>\
-\\[magent-input-submit] submit  \
-\\[magent-input-cancel] cancel"))))
-    buf))
-
-(defun magent-input--display-window (buf)
-  "Display BUF in a bottom side window and select it."
-  (let ((win (display-buffer
-              buf
-              `(display-buffer-in-side-window
-                (side . bottom)
-                (slot . 1)
-                (window-height . ,magent-input-window-height)
-                (window-parameters . ((no-delete-other-windows . t)))))))
-    (when win
-      (select-window win)
-      (when (and (bound-and-true-p evil-mode)
-                 (fboundp 'evil-insert-state))
-        (evil-insert-state)))
-    win))
+(defun magent-ui--remove-input-prompt ()
+  "Remove the input prompt section (separator + header + any draft text).
+No-op if no input prompt is active."
+  (with-current-buffer (magent-ui-get-buffer)
+    (when magent-ui--input-marker
+      (let ((inhibit-read-only t))
+        (delete-region (or magent-ui--input-section-start
+                           (marker-position magent-ui--input-marker))
+                       (point-max)))
+      (setq magent-ui--input-marker nil)
+      (setq magent-ui--input-section-start nil))))
 
 (defun magent-input-submit ()
-  "Submit the input buffer contents to the magent queue and close the window."
+  "Submit the text in the input area and send it to the agent.
+Makes the input text read-only, clears the input marker, and
+dispatches to the queue.  The `* [USER]' heading already in the
+buffer is reused (the queue skips inserting a duplicate)."
   (interactive)
+  (unless magent-ui--input-marker
+    (user-error "No input area active"))
   (let ((text (string-trim
-               (buffer-substring-no-properties (point-min) (point-max)))))
-    (unless (string-blank-p text)
-      (magent--ensure-initialized)
-      (magent-ui-process text 'prompt))
-    (magent-input--close)))
-
-(defun magent-input-cancel ()
-  "Cancel the input and close the window without sending."
-  (interactive)
-  (magent-input--close)
-  (message "Magent: cancelled"))
-
-(defun magent-input--close ()
-  "Close the input window and kill the buffer."
-  (let ((buf (get-buffer magent--input-buffer-name)))
-    (when buf
-      (let ((win (get-buffer-window buf t)))
-        (when win
-          (delete-window win)))
-      (kill-buffer buf))))
+               (buffer-substring-no-properties
+                magent-ui--input-marker (point-max)))))
+    (when (string-blank-p text)
+      (user-error "Empty input"))
+    (let ((inhibit-read-only t))
+      ;; Ensure trailing newline
+      (goto-char (point-max))
+      (unless (eq (char-before) ?\n)
+        (insert "\n"))
+      ;; Make the user text read-only
+      (add-text-properties magent-ui--input-marker (point-max) '(read-only t)))
+    (setq magent-ui--input-marker nil)
+    (setq magent-ui--input-section-start nil)
+    (magent--ensure-initialized)
+    (magent-ui-process text 'buffer-input)))
 
 ;;; Section folding
 
@@ -325,31 +350,57 @@ the user's draft."
 
 ;;; Rendering functions
 
-(defun magent-ui--insert-header (label)
-  "Insert \"* LABEL\" heading followed by a dash line extending to window edge.
-The line uses an overlay with `display' property `(space :align-to right)'
-so it adapts automatically when the window is resized.  An overlay is
-required because org-mode font-lock overwrites text-property faces on
-heading lines."
-  (insert "* " label " ")
+(defun magent-ui--insert-full-width-line (char face)
+  "Insert CHAR with an overlay stretching to the right window edge using FACE.
+The overlay's `display' property `(space :align-to right)' makes the
+single character visually fill the rest of the line."
   (let ((start (point)))
-    (insert " ")
+    (insert (make-string 1 char))
     (let ((ov (make-overlay start (point))))
       (overlay-put ov 'display '(space :align-to right))
-      (overlay-put ov 'face '(:strike-through t))))
+      (overlay-put ov 'face face))))
+
+(defun magent-ui--insert-separator ()
+  "Insert a separator line between conversation turns.
+For graphic characters (e.g. ?─), draws a full-width line using an overlay.
+For whitespace characters (e.g. ?\\n), inserts the character literally.
+Skipped at buffer start or when `magent-ui-separator-char' is nil."
+  (when (and magent-ui-separator-char (> (point) (point-min)))
+    (insert "\n")
+    (if (= (char-syntax magent-ui-separator-char) ?\s)
+        (insert (make-string 1 magent-ui-separator-char))
+      (magent-ui--insert-full-width-line magent-ui-separator-char 'magent-separator))
+    (insert "\n")))
+
+(defun magent-ui--insert-header (label &optional face)
+  "Insert \"* LABEL\" heading followed by a dash line extending to window edge.
+FACE, when non-nil, is applied to the label text via an overlay.
+The trailing line uses the `magent-strike-through' face.  Overlays are
+required because org-mode font-lock overwrites text-property faces on
+heading lines."
+  (let ((heading-start (point)))
+    (insert "* " label " ")
+    (when face
+      (let ((ov (make-overlay (+ heading-start 2)
+                              (+ heading-start 2 (length label)))))
+        (overlay-put ov 'face face))))
+  (when magent-ui-header-strike-through
+    (magent-ui--insert-full-width-line ?\s 'magent-strike-through))
   (insert "\n"))
 
 (defun magent-ui-insert-user-message (text)
   "Insert user message TEXT into output buffer with level-1 heading."
   (magent-ui--with-insert (magent-ui-get-buffer)
-    (magent-ui--insert-header magent-user-prompt)
+    (magent-ui--insert-separator)
+    (magent-ui--insert-header magent-user-prompt 'magent-user-header)
     (insert text "\n")))
 
 (defun magent-ui-insert-assistant-message (text)
   "Insert assistant message TEXT into output buffer with level-1 heading.
 Converts markdown to org-mode before insertion."
   (magent-ui--with-insert (magent-ui-get-buffer)
-    (magent-ui--insert-header magent-assistant-prompt)
+    (magent-ui--insert-separator)
+    (magent-ui--insert-header magent-assistant-prompt 'magent-assistant-header)
     (let ((body-start (point)))
       (insert text)
       (unless (string-suffix-p "\n" text)
@@ -384,12 +435,14 @@ Set by `magent-ui-insert-tool-call', consumed by
 Wraps in #+begin_tool block."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (setq magent-ui--tool-call-start (point))
-    (insert "#+begin_tool " tool-name "\n")
+    (insert (propertize (concat "#+begin_tool " tool-name)
+                        'face 'magent-tool-header)
+            "\n")
     (let ((input-str (if (stringp input)
                          input
                        (truncate-string-to-width
                         (json-encode input) magent-ui-tool-input-max-length nil nil "..."))))
-      (insert input-str "\n"))))
+      (insert (propertize input-str 'face 'magent-tool-args) "\n"))))
 
 (defun magent-ui-insert-tool-result (_tool-name result)
   "Insert tool RESULT for _TOOL-NAME into output buffer.
@@ -398,8 +451,9 @@ Closes the #+begin_tool block and auto-folds it."
     (let ((result-str (truncate-string-to-width
                        (if (stringp result) result (format "%s" result))
                        magent-ui-result-max-length nil nil "...")))
-      (insert "-> " result-str "\n"))
-    (insert "#+end_tool\n")
+      (insert (propertize (concat "-> " result-str) 'face 'magent-tool-result)
+              "\n"))
+    (insert (propertize "#+end_tool" 'face 'magent-tool-header) "\n")
     (when magent-ui--tool-call-start
       (magent-ui--fold-block-at magent-ui--tool-call-start "#\\+begin_tool")
       (setq magent-ui--tool-call-start nil))))
@@ -407,8 +461,8 @@ Closes the #+begin_tool block and auto-folds it."
 (defun magent-ui-insert-error (error-text)
   "Insert ERROR-TEXT into output buffer with level-1 heading."
   (magent-ui--with-insert (magent-ui-get-buffer)
-    (insert "=" magent-error-prompt "=\n")
-    (insert (propertize error-text 'face 'org-warning))
+    (magent-ui--insert-header magent-error-prompt 'magent-error-header)
+    (insert (propertize error-text 'face 'magent-error-body))
     (insert "\n")))
 
 ;;; Streaming support
@@ -459,8 +513,9 @@ Must be called inside the magent output buffer."
   "Prepare the output buffer for a streaming response.
 Inserts the assistant section heading."
   (magent-ui--with-insert (magent-ui-get-buffer)
+    (magent-ui--insert-separator)
     (setq magent-ui--streaming-section-start (point))
-    (magent-ui--insert-header magent-assistant-prompt)
+    (magent-ui--insert-header magent-assistant-prompt 'magent-assistant-header)
     (setq magent-ui--response-body-start (point-max))
     (magent-ui--reset-streaming-state)))
 
@@ -540,7 +595,7 @@ When text was streamed, converts markdown to org-mode in the response body."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (setq magent-ui--in-reasoning-block t)
     (setq magent-ui--reasoning-start (point))
-    (insert "#+begin_think\n")))
+    (insert (propertize "#+begin_think" 'face 'magent-reasoning-header) "\n")))
 
 (defun magent-ui-insert-reasoning-text (text)
   "Insert reasoning TEXT into the output buffer."
@@ -551,7 +606,7 @@ When text was streamed, converts markdown to org-mode in the response body."
   "Insert the end of a reasoning block and fold it."
   (let ((buf (magent-ui-get-buffer)))
     (magent-ui--with-insert buf
-      (insert "\n#+end_think\n")
+      (insert "\n" (propertize "#+end_think" 'face 'magent-reasoning-header) "\n")
       (setq magent-ui--in-reasoning-block nil)
       (setq magent-ui--streaming-has-text t)
       (when magent-ui--reasoning-start
@@ -560,12 +615,19 @@ When text was streamed, converts markdown to org-mode in the response body."
 
 ;;;###autoload
 (defun magent-prompt ()
-  "Open a popup input window for composing a multi-line prompt.
-The input buffer uses org-mode.  Press \\<magent-input-mode-map>\
-\\[magent-input-submit] to submit, \\[magent-input-cancel] to cancel."
+  "Switch to the Magent buffer and position cursor at the input area.
+If no input prompt exists (e.g. first use or after processing),
+one is inserted at the end of the buffer.  In evil-mode the
+cursor enters insert state for immediate typing."
   (interactive)
-  (let ((buf (magent-input--get-or-create-buffer)))
-    (magent-input--display-window buf)))
+  (magent-ui-display-buffer)
+  (pop-to-buffer (magent-ui-get-buffer))
+  (unless magent-ui--input-marker
+    (magent-ui--insert-input-prompt))
+  (goto-char (point-max))
+  (when (and (bound-and-true-p evil-mode)
+             (fboundp 'evil-insert-state))
+    (evil-insert-state)))
 
 (defun magent-send-prompt (prompt)
   "Send PROMPT to Magent agent programmatically."
@@ -614,7 +676,9 @@ stale callbacks are discarded."
   (let ((input (magent-queue-item-prompt item))
         (gen (cl-incf magent-ui--request-generation)))
     (magent-ui-display-buffer)
-    (magent-ui-insert-user-message (or (magent-queue-item-display item) input))
+    (magent-ui--remove-input-prompt)
+    (unless (eq (magent-queue-item-source item) 'buffer-input)
+      (magent-ui-insert-user-message (or (magent-queue-item-display item) input)))
     (when (and (boundp 'magent--spinner) magent--spinner)
       (spinner-start magent--spinner))
     (magent-log "INFO processing [%s] gen=%d: %s"
@@ -634,7 +698,8 @@ stale callbacks are discarded."
        (setq magent--current-fsm nil)
        (when (and (boundp 'magent--spinner) magent--spinner)
          (spinner-stop magent--spinner))
-       (magent-queue-dequeue-and-run)))))
+       (magent-queue-dequeue-and-run)
+       (magent-ui--maybe-show-input-prompt)))))
 
 (defun magent-ui--finish-processing (response)
   "Finish processing with RESPONSE and advance the queue.
@@ -648,7 +713,8 @@ Handles both streaming and non-streaming completion."
    (t
     (magent-log "ERROR request failed or aborted")
     (magent-ui-insert-error "Request failed or was aborted")))
-  (magent-queue-dequeue-and-run))
+  (magent-queue-dequeue-and-run)
+  (magent-ui--maybe-show-input-prompt))
 
 ;;; Session management commands
 
@@ -658,17 +724,17 @@ Handles both streaming and non-streaming completion."
   (interactive)
   (magent-queue-clear)
   (magent-session-reset)
-  (magent-ui-clear-buffer))
+  (magent-ui-clear-buffer)
+  (magent-ui--insert-input-prompt))
 
 ;;;###autoload
 (defun magent-show-log ()
   "View the Magent log buffer."
   (interactive)
   (let ((buffer (magent-ui-get-log-buffer)))
-    (switch-to-buffer buffer)
-    (goto-char (point-max))
-    (when magent-auto-scroll
-      (recenter -1))))
+    (with-current-buffer buffer
+      (goto-char (point-max)))
+    (display-buffer buffer)))
 
 ;;;###autoload
 (defun magent-clear-log ()
@@ -726,11 +792,11 @@ Handles both streaming and non-streaming completion."
   (let ((items (magent-queue-items)))
     (if (null items)
         (message "Magent: queue is empty")
-      (with-output-to-temp-buffer "*magent-queue*"
-        (princ (format "Magent prompt queue (%d item(s)):\n\n" (length items)))
+      (magent--with-display-buffer "*magent-queue*"
+        (insert (format "Magent prompt queue (%d item(s)):\n\n" (length items)))
         (cl-loop for item in items
                  for i from 0
-                 do (princ
+                 do (insert
                      (format "[%d] (%s) %s\n"
                              i
                              (format-time-string "%H:%M:%S"
