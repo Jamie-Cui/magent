@@ -138,12 +138,13 @@ Key settings: `magent-fsm-backend` (only `gptel` currently), `magent-default-age
 
 | Key | Command |
 |-----|---------|
-| `C-c m p` | `magent-prompt` |
+| `C-c m p` | `magent-dwim` |
 | `C-c m r` | `magent-prompt-region` |
 | `C-c m a` | `magent-ask-at-point` |
 | `C-c m c` | `magent-clear-session` |
 | `C-c m l` | `magent-show-log` |
 | `C-c m L` | `magent-clear-log` |
+| `C-c m t` | `magent-ui-toggle-section` |
 | `C-c m A` | `magent-select-agent` |
 | `C-c m i` | `magent-show-current-agent` |
 | `C-c m v` | `magent-list-agents` |

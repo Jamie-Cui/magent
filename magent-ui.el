@@ -41,7 +41,6 @@ Incremented on each new dispatch and on interrupt.  Callbacks
 capture this value and compare on completion to detect and
 discard stale callbacks from interrupted requests.")
 
-
 ;;; Buffer management
 
 (defvar magent-log-buffer-name "*magent-log*"
@@ -629,21 +628,20 @@ Returns a context string or nil if context should not be captured."
     (let* ((buf-name (buffer-name))
            (file (buffer-file-name))
            (mode (symbol-name major-mode))
-           (line (line-number-at-pos))
+           (line (line-number-at-pos nil t))
            (region-active (or (use-region-p)
                               (and (bound-and-true-p evil-local-mode)
-                                   (fboundp 'evil-visual-state-p)
                                    (funcall 'evil-visual-state-p))))
-           (parts (list (format "buffer=\"%s\"" buf-name))))
-      (when file
-        (push (format "file=\"%s\"" file) parts))
-      (push (format "mode=%s" mode) parts)
-      (push (format "line=%d" line) parts)
-      (when region-active
-        (let ((beg (line-number-at-pos (region-beginning)))
-              (end (line-number-at-pos (region-end))))
-          (push (format "region=%d-%d" beg end) parts)))
-      (format "[Context: %s]" (string-join (nreverse parts) " ")))))
+           (parts `(,(format "buffer=\"%s\"" buf-name)
+                    ,@(when file
+                        (list (format "file=\"%s\"" file)))
+                    ,(format "mode=%s" mode)
+                    ,(format "line=%d" line)
+                    ,@(when region-active
+                        (list (format "region=%d-%d"
+                                      (line-number-at-pos (region-beginning) t)
+                                      (line-number-at-pos (region-end) t)))))))
+      (format "[Context: %s]" (string-join parts " ")))))
 
 ;;;###autoload
 (defun magent-dwim ()
@@ -654,14 +652,18 @@ is non-nil, the calling buffer's metadata is pre-filled as editable
 text that the user can keep or delete.  In evil-mode the cursor
 enters insert state for immediate typing."
   (interactive)
-  (let ((ctx (magent-ui--capture-buffer-context)))
-    (magent-ui-display-buffer)
-    (pop-to-buffer (magent-ui-get-buffer))
-    (unless magent-ui--input-marker
-      (magent-ui--insert-input-prompt))
-    (when ctx
-      (goto-char (point-max))
-      (insert ctx "\n"))
+  (let ((ctx (magent-ui--capture-buffer-context))
+        (buf (magent-ui-get-buffer)))
+    (when (zerop (buffer-size buf))
+      (magent-ui-render-history))
+    (display-buffer buf)
+    (pop-to-buffer buf)
+    (let ((new-prompt (null magent-ui--input-marker)))
+      (when new-prompt
+        (magent-ui--insert-input-prompt))
+      (when (and new-prompt ctx)
+        (goto-char magent-ui--input-marker)
+        (insert ctx "\n")))
     (goto-char (point-max))
     (when (and (bound-and-true-p evil-mode)
                (fboundp 'evil-insert-state))
