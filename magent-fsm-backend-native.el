@@ -23,7 +23,7 @@
 
 ;; Forward declarations
 (declare-function magent-session-add-message "magent-session")
-(declare-function magent-log "magent-ui")
+(declare-function magent-log "magent-config")
 (declare-function magent-ui-insert-tool-call "magent-ui")
 (declare-function magent-ui-insert-tool-result "magent-ui")
 (declare-function magent-ui-start-streaming "magent-ui")

@@ -556,10 +556,23 @@ All buffer-local variable access is done inside the magent output buffer."
   (let ((buf (magent-ui-get-buffer)))
     (with-current-buffer buf
       (when (> (length magent-ui--streaming-batch-buffer) 0)
-        (magent-ui--with-insert buf
-          (insert magent-ui--streaming-batch-buffer)
-          (setq magent-ui--streaming-has-text t)
-          (setq magent-ui--streaming-batch-buffer "")))
+        (let ((inhibit-read-only t)
+              (ro-start (point-max)))
+          (goto-char (point-max))
+          (condition-case nil
+              (progn
+                (insert magent-ui--streaming-batch-buffer)
+                (setq magent-ui--streaming-has-text t)
+                (setq magent-ui--streaming-batch-buffer "")
+                (when (> (point-max) ro-start)
+                  (add-text-properties ro-start (point-max) '(read-only t)))
+                (when magent-auto-scroll
+                  (goto-char (point-max))
+                  (let ((win (get-buffer-window buf)))
+                    (when win
+                      (set-window-point win (point-max))))))
+            ((beginning-of-buffer end-of-buffer beginning-of-line end-of-line)
+             nil))))
       (when magent-ui--streaming-batch-timer
         (cancel-timer magent-ui--streaming-batch-timer)
         (setq magent-ui--streaming-batch-timer nil)))))
@@ -571,11 +584,10 @@ Small chunks are batched to reduce UI updates."
     (with-current-buffer buf
       (setq magent-ui--streaming-batch-buffer
             (concat magent-ui--streaming-batch-buffer text))
-      (when magent-ui--streaming-batch-timer
-        (cancel-timer magent-ui--streaming-batch-timer))
-      (setq magent-ui--streaming-batch-timer
-            (run-with-timer magent-ui-batch-insert-delay nil
-                            #'magent-ui--flush-streaming-batch)))))
+      (unless magent-ui--streaming-batch-timer
+        (setq magent-ui--streaming-batch-timer
+              (run-with-timer magent-ui-batch-insert-delay nil
+                              #'magent-ui--flush-streaming-batch))))))
 
 (defun magent-ui-finish-streaming-fontify ()
   "Finalize streaming section.
@@ -824,7 +836,7 @@ Handles both streaming and non-streaming completion."
   (interactive)
   (magent--ensure-initialized)
   (let* ((session (magent-session-get))
-         (agent (magent-session-get-agent session)))
+         (agent (magent-session-agent session)))
     (if agent
         (message "Magent: agent=%s (%s)"
                  (magent-agent-info-name agent)

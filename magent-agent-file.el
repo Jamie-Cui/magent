@@ -22,12 +22,9 @@
 
 ;;; File paths
 
-(defalias 'magent-agent-file--project-root #'magent-project-root
-  "Get the project root directory for agent files.")
-
 (defun magent-agent-file--agent-dir (&optional directory)
   "Get the agent directory for DIRECTORY or project root."
-  (let* ((root (or directory (magent-agent-file--project-root)))
+  (let* ((root (or directory (magent-project-root)))
          (agent-dir (expand-file-name magent-agent-directory root)))
     agent-dir))
 
