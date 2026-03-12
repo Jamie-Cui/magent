@@ -107,7 +107,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
 
 ### Agent Definitions
 
-Built-in agents: `build` (default), `plan`, `explore`, `general`, `compaction`, `title`, `summary`. Defined in `magent-agent-registry.el` with `cl-defstruct magent-agent-info` (fields: name, description, mode, native, hidden, temperature, top-p, color, model, prompt, options, steps, permission). Agent modes: `primary` (user-facing), `subagent` (internal), `all` (either).
+Built-in agents: `build` (default), `plan`, `explore`, `research`, `general`, `compaction`, `title`, `summary`. Defined in `magent-agent-registry.el` with `cl-defstruct magent-agent-info` (fields: name, description, mode, native, hidden, temperature, top-p, color, model, prompt, options, steps, permission). Agent modes: `primary` (user-facing), `subagent` (internal), `all` (either).
 
 Custom agents: `.magent/agent/*.md` files with YAML frontmatter + markdown body (system prompt). Frontmatter parsed by `magent-frontmatter.el` (supports booleans, numbers, quoted strings, comma-separated lists; converts underscores to hyphens in keys).
 
