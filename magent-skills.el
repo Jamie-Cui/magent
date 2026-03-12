@@ -28,6 +28,14 @@
   "Description of the built-in emacs skill.
 Defined in magent-skill-emacs.el.")
 
+(defvar magent-skill-creator--description nil
+  "Description of the built-in skill-creator skill.
+Defined in magent-skill-creator.el.")
+
+(defvar magent-skill-creator--prompt nil
+  "Prompt for the built-in skill-creator skill.
+Defined in magent-skill-creator.el.")
+
 ;;; Skill data structure
 
 (cl-defstruct (magent-skill (:constructor magent-skill-create))
@@ -152,7 +160,15 @@ If SKILL-NAMES is a list, only include those skills."
                 :tools '(bash)
                 :invoke-function #'magent-skill-emacs-invoke)))
     (magent-skills-register skill)
-    (magent-log "INFO registered built-in skill: emacs (tool-type)")))
+    (magent-log "INFO registered built-in skill: emacs (tool-type)"))
+  (require 'magent-skill-creator)
+  (let ((skill (magent-skill-create
+                :name "skill-creator"
+                :description magent-skill-creator--description
+                :type 'instruction
+                :prompt magent-skill-creator--prompt)))
+    (magent-skills-register skill)
+    (magent-log "INFO registered built-in skill: skill-creator (instruction-type)")))
 
 ;; Auto-register built-in skills when this module is loaded
 (magent-skills--register-builtin)
