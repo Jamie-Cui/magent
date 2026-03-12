@@ -31,6 +31,7 @@ SRCS = magent.el \
        magent-ui.el \
        magent-fsm.el \
        magent-skill-emacs.el \
+       magent-skill-creator.el \
        magent-skills.el \
        magent-skill-file.el
 

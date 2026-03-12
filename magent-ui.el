@@ -217,7 +217,7 @@ request are discarded."
     map)
   "Keymap for `magent-output-mode'.")
 
-(define-derived-mode magent-output-mode org-mode "Magent"
+(define-derived-mode magent-output-mode org-mode "M"
   "Major mode for Magent output.
 Derives from org-mode for native folding.  Each message section
 is a level-1 heading (*), and LLM content uses level-2+ headings (**).

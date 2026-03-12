@@ -96,24 +96,45 @@ Registry and custom agents are loaded when non-nil.")
 (defvar magent--spinner (spinner-create 'rotating-line)
   "Global spinner displayed in the modeline while magent is processing.")
 
+(defun magent--current-agent-name ()
+  "Return the name of the current agent as a string.
+Falls back to `magent-default-agent' if no session agent is set."
+  (let ((agent (when magent--current-session
+                 (magent-session-agent magent--current-session))))
+    (if agent (magent-agent-info-name agent) magent-default-agent)))
+
 (defconst magent--lighter
-  '(" Magent"
-    (:eval (spinner-print magent--spinner))
-    (:eval (let ((n (magent-queue-length)))
-             (when (> n 0)
-               (propertize (format "[+%d]" n)
-                           'face 'warning
-                           'help-echo (format "Magent: %d prompt(s) queued" n))))))
+  '(:eval
+    (let ((n (magent-queue-length)))
+      (concat " [M/" (magent--current-agent-name) "]"
+              (when (> n 0)
+                (propertize (format "(+%d)" n)
+                            'face 'warning
+                            'help-echo (format "Magent: %d prompt(s) queued" n)))
+              (spinner-print magent--spinner))))
   "Modeline lighter for `magent-mode'.
-Shows \" Magent\" plus an animated spinner while processing,
-and \"[+N]\" when N prompts are queued.")
+Shows \" [M/agent]\" with \"(+N)\" when N prompts are queued,
+and an animated spinner while processing.")
 (put 'magent--lighter 'risky-local-variable t)
 
-(defvar magent--mode-line-spinner-construct
-  '(:eval (when (spinner--active-p magent--spinner)
-            (concat " Magent:" (spinner-print magent--spinner))))
+(defun magent--mode-line-construct ()
+  "Return the magent mode-line string for `mode-line-misc-info'.
+Always shows \"[M/agent]\", with \"(+N)\" when N prompts are queued
+and an animated spinner while processing."
+  (let ((n (magent-queue-length)))
+    (concat " [M/" (magent--current-agent-name) "]"
+            (when (> n 0)
+              (propertize (format "(+%d)" n)
+                          'face 'warning
+                          'help-echo (format "Magent: %d prompt(s) queued" n)))
+            (spinner-print magent--spinner))))
+
+(defconst magent--mode-line-spinner-construct
+  '(:eval (magent--mode-line-construct))
   "Mode-line construct added to `global-mode-string'.
-Shows \"Magent:<spinner>\" in `mode-line-misc-info' while processing.")
+Delegates to `magent--mode-line-construct' so the function can be
+redefined on reload without needing to update `global-mode-string'.")
+(put 'magent--mode-line-spinner-construct 'risky-local-variable t)
 
 ;;;###autoload
 (define-minor-mode magent-mode
