@@ -42,7 +42,7 @@
 ;; - Agent system with specialized agents and permission control
 ;;
 ;; Agent System:
-;; - Built-in agents: build (default), plan, explore, general, compaction, title, summary
+;; - Built-in agents: build (default), plan, explore, research, general, compaction, title, summary
 ;; - Permission-based tool access control per agent
 ;; - Custom agent support via .magent/agent/*.md files
 ;; - Agent selection per session

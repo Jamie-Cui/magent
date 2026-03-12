@@ -661,15 +661,16 @@
          (should (= gptel-temperature 1.0)))))))
 
 (ert-deftest magent-test-builtin-agents-count ()
-  "Test that all 7 built-in agents are created."
+  "Test that all 8 built-in agents are created."
   (require 'magent-agent-registry)
   (let ((agents (magent-agent-types-initialize)))
-    (should (= (length agents) 7))
+    (should (= (length agents) 8))
     (let ((names (mapcar #'magent-agent-info-name agents)))
       (should (member "build" names))
       (should (member "plan" names))
       (should (member "general" names))
       (should (member "explore" names))
+      (should (member "research" names))
       (should (member "compaction" names))
       (should (member "title" names))
       (should (member "summary" names)))))

@@ -151,6 +151,28 @@ Guidelines:
 Complete the user's search request efficiently and report your findings clearly."
   "Prompt for the explore agent.")
 
+(defconst magent-agent--prompt-research
+  "You are a deep research specialist. You investigate complex questions by decomposing them into focused sub-tasks, delegating to specialized agents, and synthesizing findings into structured reports.
+
+Your workflow:
+1. DECOMPOSE: Break the research question into specific, answerable sub-questions. Identify which require codebase exploration vs. web/external research.
+2. INVESTIGATE: For each sub-question, choose the most efficient approach:
+   - Use `delegate` with agent=\"explore\" for codebase search, file finding, code tracing, and architecture questions. Specify thoroughness in your prompt.
+   - Use `delegate` with agent=\"general\" for multi-step tasks needing tool access beyond read-only (running commands, writing files, complex reasoning chains).
+   - Use `grep`, `glob`, or `read_file` directly for quick targeted lookups.
+   - Use `web_search` directly for quick external lookups (docs, API references).
+3. SYNTHESIZE: Aggregate findings into a structured report with clear sections, key findings, and conclusions.
+
+Guidelines:
+- Explain your research plan before starting
+- Issue multiple delegate calls when sub-tasks are independent
+- Each delegate prompt must be self-contained (subagents share no context)
+- Cite specific files, line numbers, and URLs in your findings
+- If a sub-task returns insufficient information, refine and retry
+- Structure your report with markdown headings, bullet points, and code blocks
+- Do not create or modify files; your output is the research report itself"
+  "Prompt for the research agent.")
+
 (defconst magent-agent--prompt-compaction
   "You are a helpful AI assistant tasked with summarizing conversations.
 
@@ -271,6 +293,21 @@ Your output must be:
                      (cons 'read magent-permission-allow)
                      (cons 'bash magent-permission-allow))))
 
+(defun magent-agent-types--research ()
+  "Create the research agent (deep research orchestrator)."
+  (magent-agent-info-create
+   :name "research"
+   :description "Deep research agent that decomposes questions, delegates to explore/general subagents, and synthesizes structured reports"
+   :mode 'primary
+   :native t
+   :prompt magent-agent--prompt-research
+   :permission (list (cons '* magent-permission-deny)
+                     (cons 'delegate magent-permission-allow)
+                     (cons 'read magent-permission-allow)
+                     (cons 'grep magent-permission-allow)
+                     (cons 'glob magent-permission-allow)
+                     (cons 'web_search magent-permission-allow))))
+
 (defun magent-agent-types--compaction ()
   "Create the compaction agent (session summarization)."
   (magent-agent-info-create
@@ -315,6 +352,7 @@ Returns list of agent info structures."
    (magent-agent-types--plan)
    (magent-agent-types--general)
    (magent-agent-types--explore)
+   (magent-agent-types--research)
    (magent-agent-types--compaction)
    (magent-agent-types--title)
    (magent-agent-types--summary)))
