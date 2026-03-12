@@ -246,7 +246,7 @@ Tool availability is controlled by:
 
 6. **Tools** (`magent-tools.el`): 10 tool implementations registered as `gptel-tool` structs, filtered per agent based on permission rules.
 
-7. **Skills** (`magent-skills.el` + `magent-skill-file.el` + `magent-skill-emacs.el`): Two skill types — `instruction` (markdown injected into system prompt) and `tool` (invoked via `skill_invoke`). Loaded from `~/.emacs.d/magent-skills/<name>/SKILL.md` and `.magent/skills/<name>/SKILL.md`.
+7. **Skills** (`magent-skills.el` + `magent-skill-file.el` + `magent-skill-emacs.el` + `magent-skill-creator.el`): Two skill types — `instruction` (markdown injected into system prompt) and `tool` (invoked via `skill_invoke`). Loaded in priority order: (1) built-in `skills/` directory bundled with magent, (2) user directory `~/.emacs.d/magent-skills/<name>/SKILL.md`, (3) project-local `.magent/skills/<name>/SKILL.md`.
 
 8. **Session** (`magent-session.el`): Conversation history management with per-session agent assignment and JSON persistence. The `buffer-content` slot stores raw buffer text for lossless restore.
 
@@ -277,12 +277,30 @@ magent/
 ├── magent-frontmatter.el          # Shared YAML frontmatter parser
 ├── magent-md2org.el               # Markdown to org-mode converter
 ├── magent-skills.el               # Skill registry and dispatch
-├── magent-skill-file.el           # Skill file loader (SKILL.md files)
+├── magent-skill-file.el           # Skill file loader (SKILL.md files + built-in skills/ dir)
 ├── magent-skill-emacs.el          # Built-in Emacs interaction skill
+├── magent-skill-creator.el        # Built-in skill-creator skill
 ├── magent-ui.el                   # In-buffer UI & output buffer (org-mode derived)
 ├── magent-pkg.el                  # Package descriptor
-├── prompt.txt                     # Default system prompt
+├── prompt.org                     # Default system prompt
 ├── Makefile                       # Build/test/clean targets
+├── skills/                        # Built-in skills (loaded automatically)
+│   ├── brainstorming/SKILL.md
+│   ├── systematic-debugging/SKILL.md
+│   ├── test-driven-development/SKILL.md
+│   ├── writing-plans/SKILL.md
+│   ├── executing-plans/SKILL.md
+│   ├── subagent-driven-development/SKILL.md
+│   ├── verification-before-completion/SKILL.md
+│   ├── git-workflow/SKILL.md
+│   ├── requesting-code-review/SKILL.md
+│   ├── receiving-code-review/SKILL.md
+│   ├── finishing-a-development-branch/SKILL.md
+│   ├── dispatching-parallel-agents/SKILL.md
+│   ├── research/SKILL.md
+│   ├── research-add/SKILL.md
+│   ├── research-deep/SKILL.md
+│   └── research-report/SKILL.md
 └── test/
     └── magent-test.el             # ERT test suite
 ```
