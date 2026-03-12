@@ -148,6 +148,41 @@ NEVER commit changes unless the user explicitly asks you to. It is VERY IMPORTAN
 
 - Tool results and user messages may include <system-reminder> tags. <system-reminder> tags contain useful information and reminders. They are NOT part of the user's provided input or the tool result.
 
+* Skills
+
+You have workflow skills available as files. Before responding to any non-trivial request, check if a skill applies. If it does, use =read_file= to load it and follow the instructions in it.
+
+** When to check for skills
+
+Check for an applicable skill when the user asks you to:
+- Build, create, or add a feature → ~brainstorming~
+- Fix a bug or unexpected behavior → ~systematic-debugging~
+- Implement a feature or bugfix → ~test-driven-development~
+- Plan a multi-step task → ~writing-plans~
+- Execute a written plan → ~executing-plans~
+- Verify or claim work is done → ~verification-before-completion~
+- Review completed work → ~requesting-code-review~
+- Act on review feedback → ~receiving-code-review~
+- Finish and integrate a branch → ~finishing-a-development-branch~
+- Run multiple independent tasks → ~dispatching-parallel-agents~
+- Execute a plan with independent tasks → ~subagent-driven-development~
+
+** Skill files
+
+| Skill                        | File                                                                          |
+|------------------------------+-------------------------------------------------------------------------------|
+| brainstorming                | ~/.emacs.d/magent-skills/brainstorming/SKILL.md                               |
+| systematic-debugging         | ~/.emacs.d/magent-skills/systematic-debugging/SKILL.md                        |
+| test-driven-development      | ~/.emacs.d/magent-skills/test-driven-development/SKILL.md                     |
+| writing-plans                | ~/.emacs.d/magent-skills/writing-plans/SKILL.md                               |
+| executing-plans              | ~/.emacs.d/magent-skills/executing-plans/SKILL.md                             |
+| verification-before-completion | ~/.emacs.d/magent-skills/verification-before-completion/SKILL.md            |
+| requesting-code-review       | ~/.emacs.d/magent-skills/requesting-code-review/SKILL.md                      |
+| receiving-code-review        | ~/.emacs.d/magent-skills/receiving-code-review/SKILL.md                       |
+| finishing-a-development-branch | ~/.emacs.d/magent-skills/finishing-a-development-branch/SKILL.md            |
+| dispatching-parallel-agents  | ~/.emacs.d/magent-skills/dispatching-parallel-agents/SKILL.md                 |
+| subagent-driven-development  | ~/.emacs.d/magent-skills/subagent-driven-development/SKILL.md                 |
+
 * Tool usage policy
 
 Available Tools:
