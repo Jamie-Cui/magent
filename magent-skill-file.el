@@ -33,6 +33,12 @@
 
 (declare-function magent-log "magent-ui")
 
+;;; Built-in skills directory
+
+(defconst magent-skill-file--builtin-dir
+  (expand-file-name "skills" (file-name-directory (or load-file-name buffer-file-name)))
+  "Directory containing built-in skills bundled with magent.")
+
 ;;; Customization
 
 (defcustom magent-skill-directories
@@ -51,7 +57,8 @@ Each directory can contain subdirectories with SKILL.md files."
 
 (defun magent-skill-file--list-directories ()
   "Get list of skill directories to scan."
-  (append magent-skill-directories
+  (append (list magent-skill-file--builtin-dir)
+          magent-skill-directories
           (magent-skill-file--project-skill-dirs)))
 
 (defun magent-skill-file--project-skill-dirs ()
