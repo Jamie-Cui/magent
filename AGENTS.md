@@ -58,7 +58,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
   ├─ magent-queue.el      (FIFO prompt serialization)
   ├─ magent-tools.el      (10 gptel-tool structs)
   ├─ magent-agent.el      (magent-agent-process: builds gptel prompt, calls gptel-request)
-  ├─ magent-agent-registry.el  (cl-defstruct, 7 built-in agents, hash-table registry)
+  ├─ magent-agent-registry.el  (cl-defstruct, 8 built-in agents, hash-table registry)
   ├─ magent-agent-file.el      (loads custom agents from .magent/agent/*.md)
   ├─ magent-permission.el      (rule-based tool access control per agent)
   ├─ magent-ui.el              (in-buffer input/output, org-mode derived, overlay sections)
@@ -66,8 +66,9 @@ magent.el (entry point: magent-mode, global-magent-mode)
   ├─ magent-frontmatter.el     (shared YAML frontmatter parser for agent/skill files)
   ├─ magent-md2org.el          (markdown → org-mode conversion for assistant output)
   ├─ magent-skills.el          (skill registry and dispatch)
-  ├─ magent-skill-file.el      (loads skills from SKILL.md files)
-  └─ magent-skill-emacs.el     (built-in emacs skill: eval, keys, buffers, etc.)
+  ├─ magent-skill-file.el      (loads skills from SKILL.md files; includes built-in skills/ dir)
+  ├─ magent-skill-emacs.el     (built-in emacs skill: eval, keys, buffers, etc.)
+  └─ magent-skill-creator.el   (built-in skill-creator skill: guides writing new SKILL.md files)
 ```
 
 ### Core Flow
@@ -93,7 +94,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
 
 8. **Session** (`magent-session.el`): Conversation state with messages list and history trimming. Persists to `magent-session-directory` as JSON. The `buffer-content` slot stores raw buffer text for lossless restore (preserving tool/reasoning blocks not in the message list). `magent-session-reset` clears session, permission overrides, and queue together.
 
-9. **Skills** (`magent-skills.el` + `magent-skill-file.el` + `magent-skill-emacs.el`): Two types — `instruction` (markdown injected into system prompt) and `tool` (invoked via `skill_invoke`). Loaded from `~/.emacs.d/magent-skills/<name>/SKILL.md` and `.magent/skills/<name>/SKILL.md`.
+9. **Skills** (`magent-skills.el` + `magent-skill-file.el` + `magent-skill-emacs.el` + `magent-skill-creator.el`): Two types — `instruction` (markdown injected into system prompt) and `tool` (invoked via `skill_invoke`). Loaded in priority order: (1) built-in `skills/` directory bundled with magent (captured via `magent-skill-file--builtin-dir` at load time), (2) user directory `~/.emacs.d/magent-skills/<name>/SKILL.md`, (3) project-local `.magent/skills/<name>/SKILL.md`.
 
 ### Gotchas
 
@@ -154,6 +155,6 @@ In `magent-output-mode`: `TAB` fold/unfold, `S-TAB` toggle all, `?` transient me
 ## Conventions
 
 - All files use `;;; -*- lexical-binding: t; -*-`
-- System prompt loaded from `prompt.txt` adjacent to `magent-config.el`
+- System prompt loaded from `prompt.org` adjacent to `magent-config.el`
 - Tool implementations follow pattern: `magent-tools--<name>` (internal fn) + `magent-tools--<name>-tool` (gptel-tool var)
 - Byte-compile warnings suppressed: `cl-functions`, `obsolete`
