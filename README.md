@@ -10,7 +10,7 @@ An Emacs Lisp AI coding agent with multi-agent architecture, permission-based to
 - **LLM integration via gptel** supporting Anthropic Claude, OpenAI GPT, and compatible APIs
 - **10 built-in tools**: file operations, shell, grep, glob, web search, Emacs eval, agent delegation, skill invocation
 - **Skill system** for extending agent capabilities (built-in Emacs skill + custom skills from files)
-- **Prompt queue** for serializing concurrent requests (FIFO with configurable max size)
+- **Single-request lock** for serializing concurrent requests
 - **Session management** with conversation history and JSON persistence
 - **Streaming responses** with chunk batching and async fontification
 - **Markdown-to-Org conversion** for rendering assistant output in org-mode
@@ -85,7 +85,6 @@ Customize with `M-x customize-group RET magent RET`. Key settings:
 | `magent-bash-timeout` | `30` | Timeout in seconds for bash commands |
 | `magent-emacs-eval-timeout` | `10` | Timeout in seconds for emacs_eval |
 | `magent-include-reasoning` | `t` | Display (`t`), hide (`ignore`), or discard (`nil`) reasoning blocks |
-| `magent-queue-max-size` | `20` | Max queued prompts while processing |
 | `magent-auto-context` | `t` | Auto-attach buffer context in `magent-dwim` |
 | `magent-ui-batch-insert-delay` | `0.05` | Delay in seconds for batching streaming chunks |
 | `magent-ui-fontify-threshold` | `500` | Character threshold for async fontification |
@@ -250,7 +249,7 @@ Tool availability is controlled by:
 
 8. **Session** (`magent-session.el`): Conversation history management with per-session agent assignment and JSON persistence. The `buffer-content` slot stores raw buffer text for lossless restore.
 
-9. **Queue** (`magent-queue.el`): FIFO serialization of concurrent prompts. When a request is in-flight, new prompts are enqueued (up to `magent-queue-max-size`). After completion, the next item auto-dispatches.
+9. **Queue** (`magent-queue.el`): Single-request serialization. When a request is in-flight, additional prompts are rejected with a busy message instead of being buffered.
 
 10. **UI** (`magent-ui.el`): The `*magent*` buffer derives from `org-mode`. Uses in-buffer input with `* [USER]` sections. Tool calls render as `#+begin_tool`/`#+end_tool` blocks; reasoning blocks as `#+begin_think`/`#+end_think`.
 

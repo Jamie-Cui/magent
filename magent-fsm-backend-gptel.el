@@ -50,9 +50,10 @@ Accepts the same keyword arguments as `magent-fsm-create'."
          (backend (plist-get params :gptel-backend))
          (model (plist-get params :model))
          (request-buffer (generate-new-buffer " *magent-gptel-request*"))
-         ;; Don't pass permission — gptel's confirm UI requires an interactive
-         ;; buffer, but the gptel backend uses a hidden request buffer.
-         (gptel-tools (magent-fsm--convert-tools-to-gptel tools nil))
+         ;; Install permission-aware :confirm functions and handle
+         ;; `(tool-call . ...)' callbacks ourselves instead of relying on
+         ;; gptel's default in-buffer confirmation UI.
+         (gptel-tools (magent-fsm--convert-tools-to-gptel tools permission))
          ;; Accumulate streamed text chunks for session storage.
          ;; gptel's :content in info is nil in streaming mode.
          ;; Use a list to avoid O(n^2) string concatenation on each chunk.
@@ -65,6 +66,7 @@ Accepts the same keyword arguments as `magent-fsm-create'."
       (setq-local gptel-model model)
       (setq-local gptel-tools gptel-tools)
       (setq-local gptel-use-tools (and gptel-tools t))
+      (setq-local gptel-confirm-tool-calls 'auto)
       (setq-local gptel-include-reasoning magent-include-reasoning)
       (gptel-request
           prompt-list
@@ -75,9 +77,11 @@ Accepts the same keyword arguments as `magent-fsm-create'."
                     (when (stringp response)
                       (push response accumulated-chunks))
                     (magent-fsm-backend-gptel--callback
-                     response info callback ui-callback request-buffer accumulated-chunks))))))
+                     response info callback ui-callback request-buffer
+                     permission accumulated-chunks))))))
 
-(defun magent-fsm-backend-gptel--callback (response info callback ui-callback buffer &optional accumulated-chunks)
+(defun magent-fsm-backend-gptel--callback (response info callback ui-callback buffer
+                                                    permission &optional accumulated-chunks)
   "Handle gptel response.
 Wraps all UI operations in `condition-case' to suppress benign
 cursor-boundary signals that can leak from evil-mode adjustments
@@ -86,6 +90,11 @@ inside gptel's process filter."
       (cond
        ((stringp response)
         (when ui-callback (funcall ui-callback response)))
+       ((and (consp response) (eq (car response) 'tool-call))
+        (magent-fsm--handle-tool-call-confirmation-with-permission
+         permission (cdr response)))
+       ((and (consp response) (eq (car response) 'tool-result))
+        (magent-ui-continue-streaming))
        ((eq response t)
         (if (plist-get info :tool-use)
             ;; Tool use round: gptel will continue the loop.

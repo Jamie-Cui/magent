@@ -176,7 +176,7 @@ Should match one of the registered agent names."
   :group 'magent)
 
 (defcustom magent-session-directory
-  (expand-file-name "magent-sessions" user-emacs-directory)
+  (expand-file-name "magent/sessions" user-emacs-directory)
   "Directory where session files are stored."
   :type 'directory
   :group 'magent)
