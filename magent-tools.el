@@ -23,6 +23,11 @@
 (declare-function magent-skills-list "magent-skills")
 (declare-function magent-skills-invoke "magent-skills")
 
+;; dom.el functions used for web search result parsing (requires --with-xml2 build)
+(declare-function dom-by-class "dom")
+(declare-function dom-text "dom")
+(declare-function dom-attr "dom")
+
 ;;; Tool implementations
 
 (defun magent-tools--resolve-path (path)

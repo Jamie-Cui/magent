@@ -35,6 +35,22 @@
 (defvar magent-ui--input-marker)
 (defvar magent-ui--input-section-start)
 
+;; Forward declarations for magent-skills (loaded lazily via require)
+(declare-function magent-skills-get "magent-skills")
+(declare-function magent-skills-list "magent-skills")
+(declare-function magent-skills-list-by-type "magent-skills")
+(declare-function magent-skill-type "magent-skills")
+(declare-function magent-skill-description "magent-skills")
+
+;; Forward declarations for evil (loaded via with-eval-after-load)
+(declare-function evil-define-key "evil-core")
+(declare-function evil-define-key* "evil-core")
+(declare-function evil-visual-state-p "evil-states")
+(declare-function evil-insert-state "evil-states")
+
+;; Forward declaration for magent entry point (magent.el loaded first)
+(declare-function magent--ensure-initialized "magent")
+
 (defvar magent-ui--request-generation 0
   "Monotonically increasing counter for request dispatch cycles.
 Incremented on each new dispatch and on interrupt.  Callbacks
@@ -167,8 +183,7 @@ session so that future calls can restore it losslessly."
 ;;; Interrupt command
 
 (defun magent-interrupt ()
-  "Interrupt the current request and advance the queue.
-The queue is preserved; the next queued item starts automatically.
+  "Interrupt the current request.
 Bumps the generation counter so stale callbacks from the aborted
 request are discarded."
   (interactive)
@@ -186,18 +201,57 @@ request are discarded."
 
 ;;; Transient menu
 
+(defun magent-transient-menu--assign-agent-keys (agents)
+  "Return alist of (KEY . AGENT-INFO) for AGENTS with unique single-char keys.
+Skips keys already reserved by the static parts of `magent-transient-menu'."
+  (let ((used (make-hash-table :test #'equal))
+        result)
+    ;; Reserve keys used by static menu entries
+    (dolist (k '("c" "r" "C-g" "l" "L"))
+      (puthash k t used))
+    (dolist (agent agents)
+      (let* ((name (magent-agent-info-name agent))
+             (key (cl-loop for ch across name
+                           for k = (string ch)
+                           unless (gethash k used)
+                           return k
+                           finally return nil)))
+        (unless key
+          (let ((i 1))
+            (while (gethash (number-to-string i) used)
+              (cl-incf i))
+            (setq key (number-to-string i))))
+        (puthash key t used)
+        (push (cons key agent) result)))
+    (nreverse result)))
+
+(defun magent-transient-menu--agent-suffixes (_)
+  "Return transient suffix objects for all primary agents."
+  (magent--ensure-initialized)
+  (mapcar (lambda (pair)
+            (let* ((key   (car pair))
+                   (agent (cdr pair))
+                   (name  (magent-agent-info-name agent)))
+              (transient-parse-suffix
+               'magent-transient-menu
+               (list key name
+                     (let ((agent-name name))
+                       (lambda ()
+                         (interactive)
+                         (let* ((info    (magent-agent-registry-get agent-name))
+                                (session (magent-session-get)))
+                           (magent-session-set-agent session info)
+                           (magent-log "INFO agent selected: %s" agent-name))))))))
+          (magent-transient-menu--assign-agent-keys
+           (magent-agent-registry-primary-agents))))
+
 (transient-define-prefix magent-transient-menu ()
   "Magent command menu."
   ["Session"
-   [("p" "Prompt" magent-dwim)
-    ("c" "Clear session" magent-clear-session)]]
+   [("c" "Clear session" magent-clear-session)]]
   ["Agent"
-   [("A" "Select agent" magent-select-agent)
-    ("i" "Show current agent" magent-show-current-agent)
-    ("v" "List agents" magent-list-agents)]]
-  ["Queue"
-   [("q" "View queue" magent-list-queue)
-    ("Q" "Remove from queue" magent-remove-queue-item)]]
+   [:class transient-column
+           :setup-children magent-transient-menu--agent-suffixes]]
   ["Buffer"
    [("r" "Toggle read-only" magent-toggle-read-only)]]
   ["Control"
@@ -233,6 +287,7 @@ Press \\[magent-transient-menu] for the command menu."
   ;; Prevent org-mode from fontifying content inside tool/think blocks
   (setq-local org-protecting-blocks
               (append '("tool" "think") org-protecting-blocks))
+  (add-hook 'completion-at-point-functions #'magent-ui--slash-capf nil t)
   (add-hook 'kill-buffer-hook #'magent-ui--cancel-timers nil t))
 
 (with-eval-after-load 'evil
@@ -319,6 +374,51 @@ No-op if no input prompt is active."
       (setq magent-ui--input-marker nil)
       (setq magent-ui--input-section-start nil))))
 
+(defun magent-ui--slash-parse (text)
+  "Parse /skill-name tokens from TEXT.
+Returns a cons (SKILL-NAMES . MESSAGE) where SKILL-NAMES is a list
+of recognized skill name strings and MESSAGE is TEXT with those
+tokens removed and whitespace normalized.  Unrecognized /tokens
+are left in the message text unchanged."
+  (require 'magent-skills)
+  (let ((names nil)
+        (pos 0)
+        (parts nil))
+    (while (string-match "/\\([a-zA-Z][a-zA-Z0-9_-]*\\)" text pos)
+      (let* ((match-start (match-beginning 0))
+             (match-end   (match-end 0))
+             (name        (match-string 1 text)))
+        (push (substring text pos match-start) parts)
+        (let ((skill (magent-skills-get name)))
+          (if (and skill (eq (magent-skill-type skill) 'instruction))
+              (push name names)
+            (push (match-string 0 text) parts)))
+        (setq pos match-end)))
+    (push (substring text pos) parts)
+    (cons (nreverse names) (string-trim (apply #'concat (nreverse parts))))))
+
+(defun magent-ui--slash-capf ()
+  "Completion-at-point function for /skill-name in the input area.
+Only active when the input zone is open and point follows a /
+with optional partial skill name."
+  (when (and magent-ui--input-marker
+             (>= (point) (marker-position magent-ui--input-marker)))
+    (save-excursion
+      (when (re-search-backward "/\\([a-zA-Z0-9_-]*\\)\\=" nil t)
+        (let ((word-start (match-beginning 1))
+              (word-end   (match-end 1)))
+          (magent--ensure-initialized)
+          (list word-start word-end
+                (magent-skills-list-by-type 'instruction)
+                :annotation-function
+                (lambda (name)
+                  (when-let* ((skill (magent-skills-get name))
+                              (desc  (magent-skill-description skill)))
+                    (concat "  " (if (listp desc)
+                                     (mapconcat #'identity desc ", ")
+                                   desc))))
+                :exclusive 'no))))))
+
 (defun magent-input-submit ()
   "Submit the text in the input area and send it to the agent.
 Makes the input text read-only, clears the input marker, and
@@ -327,9 +427,13 @@ buffer is reused (the queue skips inserting a duplicate)."
   (interactive)
   (unless magent-ui--input-marker
     (user-error "No input area active"))
-  (let ((text (string-trim
+  (magent--ensure-initialized)
+  (let* ((raw (string-trim
                (buffer-substring-no-properties
-                magent-ui--input-marker (point-max)))))
+                magent-ui--input-marker (point-max))))
+         (parsed      (magent-ui--slash-parse raw))
+         (skill-names (car parsed))
+         (text        (cdr parsed)))
     (when (string-blank-p text)
       (user-error "Empty input"))
     (let ((inhibit-read-only t))
@@ -341,8 +445,7 @@ buffer is reused (the queue skips inserting a duplicate)."
       (add-text-properties magent-ui--input-marker (point-max) '(read-only t)))
     (setq magent-ui--input-marker nil)
     (setq magent-ui--input-section-start nil)
-    (magent--ensure-initialized)
-    (magent-ui-process text 'buffer-input)))
+    (magent-ui-process text 'buffer-input nil skill-names)))
 
 ;;; Section folding
 
@@ -718,16 +821,13 @@ enters insert state for immediate typing."
 
 ;;; Processing
 
-(defun magent-ui-process (prompt &optional source display)
-  "Queue or immediately dispatch PROMPT.
+(defun magent-ui-process (prompt &optional source display skills)
+  "Dispatch PROMPT, rejecting if a request is already in flight.
 SOURCE is a symbol identifying the caller (default: \\='prompt).
 DISPLAY is the text shown in the buffer's user-message heading;
 defaults to PROMPT when nil.
-Shows a minibuffer notification when the item is queued rather
-than dispatched immediately."
-  (let ((queued (magent-queue-enqueue prompt (or source 'prompt) display)))
-    (when queued
-      (message "Magent: queued (%d waiting)" (magent-queue-length)))))
+SKILLS is a list of skill name strings selected via slash commands."
+  (magent-queue-enqueue prompt (or source 'prompt) display skills))
 
 (defun magent-ui--run-item (item)
   "Dispatch ITEM (a `magent-queue-item') to the agent.
@@ -753,7 +853,9 @@ stale callbacks are discarded."
                  (if (= gen magent-ui--request-generation)
                      (magent-ui--finish-processing response)
                    (magent-log "DEBUG discarding stale callback gen=%d (current=%d)"
-                               gen magent-ui--request-generation)))))
+                               gen magent-ui--request-generation)))
+               nil
+               (magent-queue-item-skills item)))
       (error
        (magent-log "ERROR in run-item: %s" (error-message-string err))
        (magent-ui-insert-error (error-message-string err))
@@ -782,7 +884,7 @@ Handles both streaming and non-streaming completion."
 
 ;;;###autoload
 (defun magent-clear-session ()
-  "Clear the current session and discard any queued prompts."
+  "Clear the current session."
   (interactive)
   (magent-queue-clear)
   (magent-session-reset)
@@ -844,40 +946,6 @@ Handles both streaming and non-streaming completion."
                  (magent-agent-info-name agent)
                  (or (magent-agent-info-description agent) "no description"))
       (message "Magent: no agent selected (will use default)"))))
-
-;;; Queue management commands
-
-;;;###autoload
-(defun magent-list-queue ()
-  "Display the current prompt queue in a temporary buffer."
-  (interactive)
-  (let ((items (magent-queue-items)))
-    (if (null items)
-        (message "Magent: queue is empty")
-      (magent--with-display-buffer "*magent-queue*"
-        (insert (format "Magent prompt queue (%d item(s)):\n\n" (length items)))
-        (cl-loop for item in items
-                 for i from 0
-                 do (insert
-                     (format "[%d] (%s) %s\n"
-                             i
-                             (format-time-string "%H:%M:%S"
-                                                 (magent-queue-item-timestamp item))
-                             (truncate-string-to-width
-                              (magent-queue-item-prompt item) 72 nil nil "..."))))))))
-
-;;;###autoload
-(defun magent-remove-queue-item (n)
-  "Remove queued item at 0-based index N."
-  (interactive
-   (list (if (zerop (magent-queue-length))
-             (user-error "Magent: queue is empty")
-           (read-number
-            (format "Remove queue item (0-%d): "
-                    (1- (magent-queue-length)))))))
-  (magent-queue-remove-nth n)
-  (message "Magent: removed item %d (%d remaining)"
-           n (magent-queue-length)))
 
 (provide 'magent-ui)
 ;;; magent-ui.el ends here

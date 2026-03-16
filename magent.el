@@ -42,7 +42,7 @@
 ;; - Agent system with specialized agents and permission control
 ;;
 ;; Agent System:
-;; - Built-in agents: build (default), plan, explore, research, general, compaction, title, summary
+;; - Built-in agents: build (default), plan, explore, general, compaction, title, summary
 ;; - Permission-based tool access control per agent
 ;; - Custom agent support via .magent/agent/*.md files
 ;; - Agent selection per session
@@ -119,16 +119,11 @@ and an animated spinner while processing.")
 
 (defun magent--mode-line-construct ()
   "Return the magent mode-line string for `mode-line-misc-info'.
-Only renders in `magent-output-mode' buffers.  Shows \"[M/agent]\",
-with \"(+N)\" when N prompts are queued and a spinner while processing."
+Only renders in `magent-output-mode' buffers.  Shows \"[M/agent]\"
+and a spinner while processing."
   (when (derived-mode-p 'magent-output-mode)
-    (let ((n (magent-queue-length)))
-      (concat " [M/" (magent--current-agent-name) "]"
-              (when (> n 0)
-                (propertize (format "(+%d)" n)
-                            'face 'warning
-                            'help-echo (format "Magent: %d prompt(s) queued" n)))
-              (spinner-print magent--spinner)))))
+    (concat " [M/" (magent--current-agent-name) "]"
+            (spinner-print magent--spinner))))
 
 (defconst magent--mode-line-spinner-construct
   '(:eval (magent--mode-line-construct))
