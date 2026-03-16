@@ -211,11 +211,13 @@ request are discarded."
 (defvar magent-output-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map org-mode-map)
-    (define-key map (kbd "?") #'magent-transient-menu)
     (define-key map (kbd "C-g") #'magent-interrupt)
     (define-key map (kbd "C-c C-c") #'magent-input-submit)
     map)
   "Keymap for `magent-output-mode'.")
+
+(with-eval-after-load 'evil
+  (evil-define-key 'normal magent-output-mode-map (kbd "?") #'magent-transient-menu))
 
 (define-derived-mode magent-output-mode org-mode "M"
   "Major mode for Magent output.
