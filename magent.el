@@ -58,6 +58,7 @@
 ;;   M-x magent-prompt-region  - Send the selected region to the AI
 ;;   M-x magent-ask-at-point   - Ask about the symbol at point
 ;;   M-x magent-clear-session  - Clear the current session
+;;   M-x magent-resume-session - Resume the last saved session
 ;;   M-x magent-select-agent   - Select an agent for this session
 ;;   M-x magent-list-agents    - List all available agents
 ;;   M-x magent-show-current-agent - Show current session's agent
@@ -105,15 +106,13 @@ Falls back to `magent-default-agent' if no session agent is set."
 
 (defconst magent--lighter
   '(:eval
-    (let ((n (magent-queue-length)))
-      (concat " [M/" (magent--current-agent-name) "]"
-              (when (> n 0)
-                (propertize (format "(+%d)" n)
-                            'face 'warning
-                            'help-echo (format "Magent: %d prompt(s) queued" n)))
-              (spinner-print magent--spinner))))
+    (concat " [M/" (magent--current-agent-name) "]"
+            (when (magent-queue-processing-p)
+              (propertize "[busy]" 'face 'warning
+                          'help-echo "Magent: request in progress"))
+            (spinner-print magent--spinner)))
   "Modeline lighter for `magent-mode'.
-Shows \" [M/agent]\" with \"(+N)\" when N prompts are queued,
+Shows \" [M/agent]\", a busy marker while a request is in flight,
 and an animated spinner while processing.")
 (put 'magent--lighter 'risky-local-variable t)
 
@@ -146,6 +145,7 @@ When enabled, Magent commands are available.
             (define-key map (kbd "C-c m r") #'magent-prompt-region)
             (define-key map (kbd "C-c m a") #'magent-ask-at-point)
             (define-key map (kbd "C-c m c") #'magent-clear-session)
+            (define-key map (kbd "C-c m R") #'magent-resume-session)
             (define-key map (kbd "C-c m l") #'magent-show-log)
             (define-key map (kbd "C-c m L") #'magent-clear-log)
             ;; Section folding

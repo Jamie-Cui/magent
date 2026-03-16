@@ -42,7 +42,11 @@
 ;;; Customization
 
 (defcustom magent-skill-directories
-  (list (expand-file-name "magent-skills" user-emacs-directory))
+  (let ((new-dir (expand-file-name "magent/skills" user-emacs-directory))
+        (old-dir (expand-file-name "magent-skills" user-emacs-directory)))
+    (if (file-directory-p old-dir)
+        (list new-dir old-dir)
+      (list new-dir)))
   "List of directories to scan for skill files.
 Each directory can contain subdirectories with SKILL.md files."
   :type '(repeat directory)

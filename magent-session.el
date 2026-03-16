@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'json)
 (require 'magent-config)
 
 ;;; Session state structure
@@ -48,6 +49,12 @@ If CONTENT is a list of content blocks, concatenate their text fields."
 (defvar magent--current-session nil
   "The current active session.")
 
+(defvar magent-session--last-id-stem nil
+  "Timestamp stem used for the most recently generated session id.")
+
+(defvar magent-session--last-id-seq 0
+  "Sequence number used when multiple sessions are created in one second.")
+
 (defun magent-session-get ()
   "Get the current session, creating one if needed."
   (unless magent--current-session
@@ -64,10 +71,96 @@ If CONTENT is a list of content blocks, concatenate their text fields."
     (magent-queue-clear))
   (magent-log "INFO session cleared"))
 
+;;; Session persistence
+
+(defun magent-session--msg-to-alist (msg)
+  "Convert MSG to a JSON-serializable alist with string role."
+  (let ((role (magent-msg-role msg))
+        (content (magent-msg-content msg)))
+    `((role . ,(symbol-name role))
+      (content . ,(magent-session--content-to-string content)))))
+
+(defun magent-session--alist-to-msg (alist)
+  "Reconstruct a session message from JSON-decoded ALIST."
+  (let ((role (intern (cdr (assq 'role alist))))
+        (content (cdr (assq 'content alist))))
+    `((role . ,role) (content . ,content))))
+
+(defun magent-session-save ()
+  "Save the current session to disk as <session-id>.json.
+Called automatically after each successful LLM response.
+The caller is responsible for updating `magent-session-buffer-content'
+before calling this function."
+  (let ((session magent--current-session))
+    (when (and session (magent-session-messages session))
+      (make-directory magent-session-directory t)
+      (let* ((messages (magent-session-messages session))
+             (id (magent-session-get-id session))
+             (filepath (expand-file-name (concat id ".json") magent-session-directory))
+             (data `((id . ,id)
+                     (messages . ,(vconcat (mapcar #'magent-session--msg-to-alist messages)))
+                     (buffer-content . ,(or (magent-session-buffer-content session) "")))))
+        (with-temp-file filepath
+          (insert (json-encode data)))
+        (magent-log "INFO session saved to %s (%d messages)" id (length messages))))))
+
+(defun magent-session-load (filepath)
+  "Load the session from FILEPATH.
+Restores `magent--current-session'.  Returns the session or nil."
+  (condition-case err
+      (with-temp-buffer
+        (insert-file-contents filepath)
+        (let* ((json-object-type 'alist)
+               (json-array-type 'list)
+               (data (json-read))
+               (id (cdr (assq 'id data)))
+               (msgs-raw (cdr (assq 'messages data)))
+               (bc (cdr (assq 'buffer-content data)))
+               (messages (mapcar #'magent-session--alist-to-msg msgs-raw))
+               (session (magent-session-create
+                         :id id
+                         :messages messages
+                         :buffer-content (when (> (length bc) 0) bc))))
+          (setq magent--current-session session)
+          (magent-log "INFO session loaded from %s (%d messages)" id (length messages))
+          session))
+    (error
+     (magent-log "ERROR loading session %s: %s" filepath (error-message-string err))
+     nil)))
+
+(defun magent-session-list-files ()
+  "Return session JSON file paths sorted by modification time, newest first."
+  (when (file-directory-p magent-session-directory)
+    (let ((files (directory-files magent-session-directory t "\\.json$")))
+      (sort files
+            (lambda (a b)
+              (time-less-p
+               (file-attribute-modification-time (file-attributes b))
+               (file-attribute-modification-time (file-attributes a))))))))
+
+(defun magent-session--format-file (filepath)
+  "Return a human-readable label for session FILEPATH.
+Parses the session-YYYYMMDD-HHMMSS filename pattern into a date string."
+  (let ((name (file-name-sans-extension (file-name-nondirectory filepath))))
+    (if (string-match
+         "session-\\([0-9]\\{4\\}\\)\\([0-9]\\{2\\}\\)\\([0-9]\\{2\\}\\)-\\([0-9]\\{2\\}\\)\\([0-9]\\{2\\}\\)\\([0-9]\\{2\\}\\)"
+         name)
+        (format "%s-%s-%s %s:%s:%s"
+                (match-string 1 name) (match-string 2 name) (match-string 3 name)
+                (match-string 4 name) (match-string 5 name) (match-string 6 name))
+      name)))
+
 (defun magent-session-get-id (session)
   "Get or generate a unique ID for SESSION."
   (or (magent-session-id session)
-      (let ((id (format "session-%s" (format-time-string "%Y%m%d-%H%M%S"))))
+      (let* ((stem (format-time-string "%Y%m%d-%H%M%S"))
+             (seq (if (equal stem magent-session--last-id-stem)
+                      (cl-incf magent-session--last-id-seq)
+                    (setq magent-session--last-id-stem stem
+                          magent-session--last-id-seq 0)))
+             (id (if (zerop seq)
+                     (format "session-%s" stem)
+                   (format "session-%s-%02d" stem seq))))
         (setf (magent-session-id session) id)
         id)))
 

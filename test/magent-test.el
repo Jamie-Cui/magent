@@ -432,6 +432,19 @@
       ;; Same ID on subsequent calls
       (should (equal id (magent-session-get-id session))))))
 
+(ert-deftest magent-test-session-get-id-unique-within-same-second ()
+  "Test session IDs remain unique when created in the same second."
+  (require 'magent-session)
+  (let ((magent-session--last-id-stem nil)
+        (magent-session--last-id-seq 0))
+    (cl-letf (((symbol-function 'format-time-string)
+               (lambda (&rest _args) "20260316-173000")))
+      (let ((id1 (magent-session-get-id (magent-session-create)))
+            (id2 (magent-session-get-id (magent-session-create))))
+        (should (equal id1 "session-20260316-173000"))
+        (should (equal id2 "session-20260316-173000-01"))
+        (should-not (equal id1 id2))))))
+
 (ert-deftest magent-test-session-agent-assignment ()
   "Test session agent get/set."
   (require 'magent-session)
@@ -1022,6 +1035,23 @@
           (should (equal result "file contents here")))
       (delete-file tmpfile))))
 
+(ert-deftest magent-test-tools-read-file-relative-to-project-root ()
+  "Test read_file resolves relative paths against the project root."
+  (require 'magent-tools)
+  (let* ((tmpdir (make-temp-file "magent-root-" t))
+         (default-directory "/tmp/")
+         (relative-path "notes.txt")
+         (target (expand-file-name relative-path tmpdir))
+         (result nil))
+    (unwind-protect
+        (progn
+          (with-temp-file target
+            (insert "root-relative"))
+          (let ((magent-project-root-function (lambda () tmpdir)))
+            (magent-tools--read-file (lambda (r) (setq result r)) relative-path))
+          (should (equal result "root-relative")))
+      (delete-directory tmpdir t))))
+
 (ert-deftest magent-test-tools-read-file-nonexistent ()
   "Test read_file with non-existent file returns error."
   (require 'magent-tools)
@@ -1057,6 +1087,26 @@
                                    filepath "nested content")
           (should (string-match-p "Successfully" result))
           (should (file-exists-p filepath)))
+      (delete-directory tmpdir t))))
+
+(ert-deftest magent-test-tools-write-file-relative-to-project-root ()
+  "Test write_file resolves relative output paths against the project root."
+  (require 'magent-tools)
+  (let* ((tmpdir (make-temp-file "magent-root-" t))
+         (default-directory "/tmp/")
+         (relative-path "nested/out.txt")
+         (target (expand-file-name relative-path tmpdir))
+         (result nil))
+    (unwind-protect
+        (progn
+          (let ((magent-project-root-function (lambda () tmpdir)))
+            (magent-tools--write-file (lambda (r) (setq result r))
+                                      relative-path "root-write"))
+          (should (string-match-p "Successfully" result))
+          (should (equal (with-temp-buffer
+                           (insert-file-contents target)
+                           (buffer-string))
+                         "root-write")))
       (delete-directory tmpdir t))))
 
 (ert-deftest magent-test-tools-edit-file ()
@@ -1105,6 +1155,31 @@
           (should (string-match-p "found 3 times" result)))
       (delete-file tmpfile))))
 
+(ert-deftest magent-test-tools-web-search-callback-cleans-up-buffer ()
+  "Test web_search callback kills the temporary retrieval buffer."
+  (require 'magent-tools)
+  (let ((result nil)
+        (buf (generate-new-buffer " *magent-web-test*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (insert "HTTP/1.1 200 OK\n\n<html></html>")
+          (cl-letf (((symbol-function 'libxml-parse-html-region) (lambda (&rest _args) 'dom))
+                    ((symbol-function 'magent-tools--parse-ddg-results)
+                     (lambda (_dom _max-results)
+                       (list (list :title "Example" :url "https://example.com")))))
+            (magent-tools--web-search-callback nil (lambda (r) (setq result r)) "test" 5))
+          (should (string-match-p "Example" result))
+          (should-not (buffer-live-p buf)))
+      (when (buffer-live-p buf)
+        (kill-buffer buf)))))
+
+(ert-deftest magent-test-mode-line-lighter-does-not-require-queue-length ()
+  "Test the mode-line lighter no longer depends on queue depth APIs."
+  (require 'magent)
+  (let ((magent--spinner (spinner-create 'progress-bar-filled)))
+    (cl-letf (((symbol-function 'magent-queue-processing-p) (lambda () nil)))
+      (should (string-match-p "\\[M/" (eval (cadr magent--lighter)))))))
+
 (ert-deftest magent-test-tools-gptel-to-magent-tool ()
   "Test conversion from gptel-tool to magent tool plist."
   (require 'magent-tools)
@@ -1126,6 +1201,202 @@
       (should (string-match-p "Result 2" formatted))
       (should (string-match-p "1\\." formatted))
       (should (string-match-p "2\\." formatted)))))
+
+(ert-deftest magent-test-gptel-backend-installs-permission-confirmation ()
+  "Test gptel backend keeps permission-aware confirmation active."
+  (require 'magent-fsm-backend-gptel)
+  (let ((captured-permission nil)
+        (captured-confirm-mode nil)
+        (permission '((bash . ask)))
+        (gptel-backend (gptel-make-openai "test" :key "test-key")))
+    (cl-letf (((symbol-function 'magent-fsm--convert-tools-to-gptel)
+               (lambda (_tools arg-permission)
+                 (setq captured-permission arg-permission)
+                 nil))
+              ((symbol-function 'gptel-request)
+               (lambda (&rest _args)
+                 (setq captured-confirm-mode gptel-confirm-tool-calls)))
+              ((symbol-function 'magent-ui-start-streaming) #'ignore))
+      (magent-fsm-backend-gptel-start
+       (list :prompt-list nil
+             :system-prompt "test"
+             :tools nil
+             :permission permission
+             :callback #'ignore
+             :ui-callback nil
+             :gptel-backend gptel-backend
+             :model 'gpt-4o-mini)))
+    (should (equal captured-permission permission))
+    (should (eq captured-confirm-mode 'auto))))
+
+(ert-deftest magent-test-gptel-backend-routes-tool-call-confirmation ()
+  "Test gptel backend routes pending tool calls through magent permissions."
+  (require 'magent-fsm-backend-gptel)
+  (let ((captured nil)
+        (tool-calls '((tool-spec arg-values callback)))
+        (permission '((bash . ask)))
+        (request-buffer (generate-new-buffer " *magent-gptel-test*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-fsm--handle-tool-call-confirmation-with-permission)
+                   (lambda (arg-permission arg-tool-calls)
+                     (setq captured (list arg-permission arg-tool-calls)))))
+          (magent-fsm-backend-gptel--callback
+           (cons 'tool-call tool-calls) nil nil nil request-buffer permission))
+      (when (buffer-live-p request-buffer)
+        (kill-buffer request-buffer)))
+    (should (equal captured (list permission tool-calls)))))
+
+(ert-deftest magent-test-permission-prompt-choice-once-allow ()
+  "Test tool confirmation accepts a one-time allow choice."
+  (require 'magent-fsm-backend-native)
+  (require 'magent-permission)
+  (magent-permission-clear-session-overrides)
+  (let ((result nil)
+        (tool-ran nil)
+        (tool (gptel-make-tool
+               :name "bash"
+               :args (list '(:name "command" :type string))
+               :function (lambda (_command) "ok")
+               :async nil)))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_secs _repeat fn &rest args)
+                 (apply fn args)))
+              ((symbol-function 'read-char-choice)
+               (lambda (&rest _args) ?y))
+              ((symbol-function 'magent-fsm--run-tool)
+               (lambda (_tool-spec cb arg-values)
+                 (setq tool-ran (car arg-values))
+                 (funcall cb "ok"))))
+      (magent-fsm--prompt-tool-calls-serially
+       (list (list tool (list "echo hi") (lambda (r) (setq result r))))))
+    (should (equal tool-ran "echo hi"))
+    (should (equal result "ok"))
+    (should (null (magent-permission-session-override 'bash)))))
+
+(ert-deftest magent-test-permission-prompt-choice-once-deny ()
+  "Test tool confirmation accepts a one-time deny choice."
+  (require 'magent-fsm-backend-native)
+  (require 'magent-permission)
+  (magent-permission-clear-session-overrides)
+  (let ((result nil)
+        (tool-ran nil)
+        (tool (gptel-make-tool
+               :name "bash"
+               :args (list '(:name "command" :type string))
+               :function (lambda (_command)
+                           (setq tool-ran t)
+                           "ok")
+               :async nil)))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_secs _repeat fn &rest args)
+                 (apply fn args)))
+              ((symbol-function 'read-char-choice)
+               (lambda (&rest _args) ?n)))
+      (magent-fsm--prompt-tool-calls-serially
+       (list (list tool (list "echo hi") (lambda (r) (setq result r))))))
+    (should-not tool-ran)
+    (should (string-match-p "denied by user" result))
+    (should (null (magent-permission-session-override 'bash)))))
+
+(ert-deftest magent-test-permission-prompt-choice-always-allow ()
+  "Test tool confirmation persists an always-allow choice."
+  (require 'magent-fsm-backend-native)
+  (require 'magent-permission)
+  (magent-permission-clear-session-overrides)
+  (let ((result nil)
+        (tool-ran nil)
+        (tool (gptel-make-tool
+               :name "bash"
+               :args (list '(:name "command" :type string))
+               :function (lambda (_command) "ok")
+               :async nil)))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_secs _repeat fn &rest args)
+                 (apply fn args)))
+              ((symbol-function 'read-char-choice)
+               (lambda (&rest _args) ?A))
+              ((symbol-function 'magent-fsm--run-tool)
+               (lambda (_tool-spec cb arg-values)
+                 (setq tool-ran (car arg-values))
+                 (funcall cb "ok"))))
+      (magent-fsm--prompt-tool-calls-serially
+       (list (list tool (list "echo hi") (lambda (r) (setq result r))))))
+    (should (equal tool-ran "echo hi"))
+    (should (equal result "ok"))
+    (should (eq (magent-permission-session-override 'bash) 'allow))
+    (magent-permission-clear-session-overrides)))
+
+(ert-deftest magent-test-permission-prompt-choice-always-deny ()
+  "Test tool confirmation persists an always-deny choice."
+  (require 'magent-fsm-backend-native)
+  (require 'magent-permission)
+  (magent-permission-clear-session-overrides)
+  (let ((result nil)
+        (tool-ran nil)
+        (tool (gptel-make-tool
+               :name "bash"
+               :args (list '(:name "command" :type string))
+               :function (lambda (_command)
+                           (setq tool-ran t)
+                           "ok")
+               :async nil)))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_secs _repeat fn &rest args)
+                 (apply fn args)))
+              ((symbol-function 'read-char-choice)
+               (lambda (&rest _args) ?D)))
+      (magent-fsm--prompt-tool-calls-serially
+       (list (list tool (list "echo hi") (lambda (r) (setq result r))))))
+    (should-not tool-ran)
+    (should (string-match-p "denied by user" result))
+    (should (eq (magent-permission-session-override 'bash) 'deny))
+    (magent-permission-clear-session-overrides)))
+
+(ert-deftest magent-test-gptel-backend-streaming-tool-roundtrip-sequence ()
+  "Test gptel backend handles streaming with a tool round-trip in order."
+  (require 'magent-fsm-backend-gptel)
+  (let ((events nil)
+        (final-response nil)
+        (request-callback nil)
+        (gptel-backend (gptel-make-openai "test" :key "test-key")))
+    (cl-letf (((symbol-function 'magent-fsm--convert-tools-to-gptel)
+               (lambda (_tools _permission) nil))
+              ((symbol-function 'magent-ui-start-streaming)
+               (lambda () (push 'start events)))
+              ((symbol-function 'magent-ui-continue-streaming)
+               (lambda () (push 'continue events)))
+              ((symbol-function 'magent-ui-finish-streaming-fontify)
+               (lambda () (push 'finish events)))
+              ((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (setq request-callback (plist-get kwargs :callback))
+                 (funcall request-callback "Hello " nil)
+                 (funcall request-callback
+                          (cons 'tool-call '((tool-spec args cb))) nil)
+                 (funcall request-callback
+                          (cons 'tool-result '((tool-spec args "ok"))) nil)
+                 (funcall request-callback "world" nil)
+                 (funcall request-callback t (list :content "Hello world"))))
+              ((symbol-function 'magent-fsm--handle-tool-call-confirmation-with-permission)
+               (lambda (_permission tool-calls)
+                 (push (list 'tool-call tool-calls) events))))
+      (magent-fsm-backend-gptel-start
+       (list :prompt-list nil
+             :system-prompt "test"
+             :tools nil
+             :permission '((bash . ask))
+             :callback (lambda (r) (setq final-response r))
+             :ui-callback (lambda (chunk) (push (list 'chunk chunk) events))
+             :gptel-backend gptel-backend
+             :model 'gpt-4o-mini)))
+    (should (equal final-response "Hello world"))
+    (should (equal (nreverse events)
+                   (list 'start
+                         (list 'chunk "Hello ")
+                         (list 'tool-call '((tool-spec args cb)))
+                         'continue
+                         (list 'chunk "world")
+                         'finish)))))
 
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; FSM tests
@@ -1221,6 +1492,47 @@
               :ui-callback nil)))
     (should (eq (magent-fsm-state fsm) 'INIT))
     (should (null (magent-fsm-pending-tools fsm)))))
+
+;; ──────────────────────────────────────────────────────────────────────
+;;; UI/session regression tests
+;; ──────────────────────────────────────────────────────────────────────
+
+(ert-deftest magent-test-resume-session-restores-loaded-buffer-content ()
+  "Test resuming a session does not overwrite the loaded snapshot."
+  (require 'magent-ui)
+  (let* ((buffer (magent-ui-get-buffer))
+         (loaded-session (magent-session-create
+                          :id "loaded"
+                          :buffer-content "* [ASSISTANT]\nLoaded session\n")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (let ((inhibit-read-only t))
+              (erase-buffer)
+              (insert "stale buffer content")))
+          (setq magent--current-session (magent-session-create
+                                         :id "current"
+                                         :buffer-content "stale snapshot"))
+          (cl-letf (((symbol-function 'magent-session-list-files)
+                     (lambda () '("/tmp/session.json")))
+                    ((symbol-function 'completing-read)
+                     (lambda (&rest _args) "2026-03-16 10:00:00"))
+                    ((symbol-function 'magent-session--format-file)
+                     (lambda (_filepath) "2026-03-16 10:00:00"))
+                    ((symbol-function 'magent-session-load)
+                     (lambda (_filepath)
+                       (setq magent--current-session loaded-session)
+                       loaded-session))
+                    ((symbol-function 'message) #'ignore))
+            (magent-resume-session))
+          (with-current-buffer buffer
+            (should (string-prefix-p "* [ASSISTANT]\nLoaded session\n"
+                                     (buffer-string)))
+            (should-not (string-prefix-p "stale buffer content"
+                                         (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (magent-session-reset))))
 
 (provide 'magent-test)
 ;;; magent-test.el ends here

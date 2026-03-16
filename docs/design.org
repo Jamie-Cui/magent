@@ -23,7 +23,7 @@ This document provides a comprehensive overview of the magent architecture, desi
 - Web search via DuckDuckGo
 - Claude Code skills for interacting with the running Emacs instance
 - Session management with conversation history and buffer content persistence
-- FIFO prompt queue for serializing concurrent requests
+- Single-request lock for serializing concurrent requests
 - Minibuffer interface for quick prompts
 - Transient menu for command discovery
 
@@ -68,14 +68,14 @@ magent-queue.el  magent-session.el    |
 
 ** Entry Point (magent.el)
 
-The entry point defines ~magent-mode~, a minor mode with ~C-c m~ keybinding prefix. When enabled, it adds a modeline lighter showing spinner and queue depth. Agent/skill initialization is deferred until first command use (~magent--ensure-initialized~).
+The entry point defines ~magent-mode~, a minor mode with ~C-c m~ keybinding prefix. When enabled, it adds a modeline lighter showing spinner and busy state. Agent/skill initialization is deferred until first command use (~magent--ensure-initialized~).
 
 Key components:
 - ~magent-mode~: Minor mode with keybindings for all magent commands
 - ~global-magent-mode~: Global minor mode for automatic activation
 - ~magent--ensure-initialized~: Lazy initialization of agents and skills
 - ~magent--spinner~: Modeline spinner for processing status
-- ~magent--lighter~: Modeline construct showing " Magent", spinner, and "[+N]" queue depth
+- ~magent--lighter~: Modeline construct showing current agent, busy state, and spinner
 
 Package requirements: ~emacs 27.1+~, ~gptel 0.9.8~, ~spinner 1.7.4~, ~transient 0.4~.
 
@@ -127,7 +127,6 @@ UI display settings:
 Advanced settings:
 - ~magent-include-reasoning~: How to handle reasoning blocks (t/ignore/nil)
 - ~magent-fsm-backend~: FSM backend (gptel or magent)
-- ~magent-queue-max-size~: Max queued prompts (default: 20)
 - ~magent-auto-context~: Auto-attach buffer context in ~magent-dwim~ (default: t)
 
 Skill-specific settings (in ~magent-skill-file.el~):
@@ -140,22 +139,19 @@ Also provides shared utilities:
 
 ** Queue System (magent-queue.el)
 
-FIFO prompt queue for serializing concurrent requests. Global singleton because magent has a single output buffer and single processing slot.
+Single-request lock for serializing concurrent requests. Global singleton because magent has a single output buffer and single processing slot.
 
 Data structure:
 - ~magent-queue-item~: Struct with prompt (string), source (symbol), timestamp (float)
 
 Queue behavior:
 - When idle: prompt dispatches immediately
-- When processing: prompt is enqueued (up to ~magent-queue-max-size~)
-- When full: error is signaled
-- After each request completes or is interrupted: next item auto-dispatches via ~run-at-time 0~
+- When processing: prompt is rejected with a busy message
 
 Key functions:
-- ~magent-queue-enqueue~: Enqueue or immediate-dispatch; returns t if queued
-- ~magent-queue-dequeue-and-run~: Release lock and dispatch next item
-- ~magent-queue-clear~: Discard all queued items
-- ~magent-queue-remove-nth~: Remove item at index
+- ~magent-queue-enqueue~: Immediate-dispatch or reject if busy
+- ~magent-queue-dequeue-and-run~: Release the processing lock
+- ~magent-queue-clear~: No-op kept for API compatibility
 
 The queue owns the processing lock (~magent-queue--processing~). ~magent-ui-process~ delegates to ~magent-queue-enqueue~, and ~magent-ui--run-item~ handles actual dispatch.
 
@@ -700,7 +696,7 @@ See [[*Permission System (magent-permission.el)][Permission System]] for the ful
 |            | ~magent-send-prompt~    | Send prompt programmatically             |
 | C-c m r    | ~magent-prompt-region~  | Send selected region to agent            |
 | C-c m a    | ~magent-ask-at-point~   | Ask about the symbol at point            |
-| C-c m c    | ~magent-clear-session~  | Clear session and discard queued prompts |
+| C-c m c    | ~magent-clear-session~  | Clear session and reset processing state |
 
 ** Agent Commands
 
@@ -717,8 +713,6 @@ See [[*Permission System (magent-permission.el)][Permission System]] for the ful
 
 | Command                    | Description                          |
 |----------------------------+--------------------------------------|
-| ~magent-list-queue~        | Display pending queued prompts       |
-| ~magent-remove-queue-item~ | Remove a specific item from queue    |
 
 ** Skill Commands
 
@@ -796,7 +790,7 @@ gptel-api-key  ; Should return your API key
 magent/
 ├── magent.el                      ; Main entry point + minor mode
 ├── magent-config.el               ; Configuration (33 defcustom vars)
-├── magent-queue.el                ; FIFO prompt queue
+├── magent-queue.el                ; Single-request processing lock
 ├── magent-session.el              ; Session management
 ├── magent-tools.el                ; Tool implementations (10 tools)
 ├── magent-agent.el                ; Agent processing
@@ -847,7 +841,7 @@ Magent adds:
 - Permission-based tool access with file-pattern rules
 - Session management with buffer content persistence
 - Org-mode based UI rendering with streaming
-- FIFO prompt queue
+- Single-request processing lock
 - Skill system (instruction and tool types)
 - Interactive tool confirmation with session overrides
 

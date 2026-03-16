@@ -33,21 +33,17 @@
 (defun magent-tools--resolve-path (path)
   "Resolve PATH for tool operations.
 Expands ~ and environment variables first, then resolves relative
-paths against the project root.  Never returns nil."
-  (let* ((expanded (expand-file-name (substitute-in-file-name path)))
-         (root (magent-project-root)))
-    (cond
-     ((file-exists-p expanded) expanded)
-     (t
-      (let ((resolved (expand-file-name path root)))
-        (if (file-exists-p resolved)
-            resolved
-          root))))))
+paths against the project root."
+  (let ((path (substitute-in-file-name path))
+        (root (magent-project-root)))
+    (if (file-name-absolute-p path)
+        (expand-file-name path)
+      (expand-file-name path root))))
 
 (defun magent-tools--read-file (callback path)
   "Read contents of file at PATH asynchronously.
 CALLBACK is called with the file contents or error message."
-  (let ((path (expand-file-name (substitute-in-file-name path))))
+  (let ((path (magent-tools--resolve-path path)))
     (condition-case err
         (with-temp-buffer
           (insert-file-contents path)
@@ -58,7 +54,7 @@ CALLBACK is called with the file contents or error message."
   "Write CONTENT to file at PATH asynchronously.
 Creates parent directories if needed.
 CALLBACK is called with success message or error."
-  (let ((path (expand-file-name (substitute-in-file-name path))))
+  (let ((path (magent-tools--resolve-path path)))
     (condition-case err
         (progn
           (let ((dir (file-name-directory path)))
@@ -130,7 +126,7 @@ CALLBACK is called with list of matching file paths."
   "Edit file at PATH by replacing OLD-TEXT with NEW-TEXT asynchronously.
 OLD-TEXT must match exactly once in the file.
 CALLBACK is called with success message or error."
-  (let ((path (expand-file-name (substitute-in-file-name path))))
+  (let ((path (magent-tools--resolve-path path)))
     (condition-case err
         (let* ((content (with-temp-buffer
                           (insert-file-contents path)
@@ -298,18 +294,22 @@ STATUS is the url-retrieve status list.
 CALLBACK is called with formatted results.
 QUERY is the original search query.
 MAX-RESULTS is the maximum number of results."
-  (condition-case err
-      (let ((error-status (plist-get status :error)))
-        (if error-status
-            (funcall callback (format "HTTP error: %s" error-status))
-          (goto-char (point-min))
-          (when (re-search-forward "\r?\n\r?\n" nil t)
-            (let* ((html (libxml-parse-html-region (point) (point-max)))
-                   (results (magent-tools--parse-ddg-results html max-results)))
-              (if results
-                  (funcall callback (magent-tools--format-search-results query results))
-                (funcall callback (format "No results found for: %s" query)))))))
-    (error (funcall callback (format "Error parsing results: %s" (error-message-string err))))))
+  (let ((url-buffer (current-buffer)))
+    (unwind-protect
+        (condition-case err
+            (let ((error-status (plist-get status :error)))
+              (if error-status
+                  (funcall callback (format "HTTP error: %s" error-status))
+                (goto-char (point-min))
+                (when (re-search-forward "\r?\n\r?\n" nil t)
+                  (let* ((html (libxml-parse-html-region (point) (point-max)))
+                         (results (magent-tools--parse-ddg-results html max-results)))
+                    (if results
+                        (funcall callback (magent-tools--format-search-results query results))
+                      (funcall callback (format "No results found for: %s" query)))))))
+          (error (funcall callback (format "Error parsing results: %s" (error-message-string err)))))
+      (when (buffer-live-p url-buffer)
+        (kill-buffer url-buffer)))))
 
 (defun magent-tools--parse-ddg-results (dom max-results)
   "Parse DuckDuckGo HTML DOM and extract search results.

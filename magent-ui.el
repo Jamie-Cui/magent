@@ -130,23 +130,34 @@ past messages so the user can see the full conversation."
       (magent-ui-render-history))
     (display-buffer buffer)))
 
-(defun magent-ui-render-history ()
+(defun magent-ui--snapshot-buffer-content (session)
+  "Capture the output buffer text into SESSION's buffer-content slot.
+Returns the captured string, or nil if the buffer is empty or SESSION is nil."
+  (when session
+    (let ((buf (magent-ui-get-buffer)))
+      (when (> (buffer-size buf) 0)
+        (let ((content (with-current-buffer buf
+                         (buffer-substring-no-properties (point-min) (point-max)))))
+          (setf (magent-session-buffer-content session) content)
+          content)))))
+
+(defun magent-ui-render-history (&optional skip-snapshot)
   "Render session history into the output buffer.
 If the session has saved buffer content (from a previous render),
 restore it directly to preserve tool calls, reasoning blocks, and
 error messages.  Otherwise fall back to re-rendering from session
 messages (which only contains user/assistant text).
 Before clearing the buffer, the current content is saved to the
-session so that future calls can restore it losslessly."
+session so that future calls can restore it losslessly.
+When SKIP-SNAPSHOT is non-nil, skip snapshotting the current
+buffer before rendering.  This is required when switching to a
+different session; otherwise the old buffer text would overwrite the
+newly loaded session snapshot."
   (let* ((session (magent-session-get))
          (buf (magent-ui-get-buffer))
-         (saved (magent-session-buffer-content session)))
-    ;; Save current buffer content before clearing
-    (with-current-buffer buf
-      (when (> (buffer-size) 0)
-        (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-          (setf (magent-session-buffer-content session) content)
-          (setq saved content))))
+         (saved (or (and (not skip-snapshot)
+                         (magent-ui--snapshot-buffer-content session))
+                    (magent-session-buffer-content session))))
     (magent-ui-clear-buffer)
     (if saved
         ;; Restore saved content losslessly
@@ -207,7 +218,7 @@ Skips keys already reserved by the static parts of `magent-transient-menu'."
   (let ((used (make-hash-table :test #'equal))
         result)
     ;; Reserve keys used by static menu entries
-    (dolist (k '("c" "r" "C-g" "l" "L"))
+    (dolist (k '("c" "R" "r" "l" "L"))
       (puthash k t used))
     (dolist (agent agents)
       (let* ((name (magent-agent-info-name agent))
@@ -248,14 +259,13 @@ Skips keys already reserved by the static parts of `magent-transient-menu'."
 (transient-define-prefix magent-transient-menu ()
   "Magent command menu."
   ["Session"
-   [("c" "Clear session" magent-clear-session)]]
+   [("c" "Clear session" magent-clear-session)
+    ("R" "Resume session" magent-resume-session)]]
   ["Agent"
    [:class transient-column
            :setup-children magent-transient-menu--agent-suffixes]]
   ["Buffer"
    [("r" "Toggle read-only" magent-toggle-read-only)]]
-  ["Control"
-   [("C-g" "Interrupt" magent-interrupt)]]
   ["Logs"
    [("l" "Show log" magent-show-log)
     ("L" "Clear log" magent-clear-log)]])
@@ -288,6 +298,7 @@ Press \\[magent-transient-menu] for the command menu."
   (setq-local org-protecting-blocks
               (append '("tool" "think") org-protecting-blocks))
   (add-hook 'completion-at-point-functions #'magent-ui--slash-capf nil t)
+  (add-hook 'post-self-insert-hook #'magent-ui--maybe-slash-complete nil t)
   (add-hook 'kill-buffer-hook #'magent-ui--cancel-timers nil t))
 
 (with-eval-after-load 'evil
@@ -384,7 +395,7 @@ are left in the message text unchanged."
   (let ((names nil)
         (pos 0)
         (parts nil))
-    (while (string-match "/\\([a-zA-Z][a-zA-Z0-9_-]*\\)" text pos)
+    (while (string-match "/\\([a-zA-Z][a-zA-Z0-9_-]*\\)/?" text pos)
       (let* ((match-start (match-beginning 0))
              (match-end   (match-end 0))
              (name        (match-string 1 text)))
@@ -419,6 +430,13 @@ with optional partial skill name."
                                    desc))))
                 :exclusive 'no))))))
 
+(defun magent-ui--maybe-slash-complete ()
+  "Auto-trigger completion when `/` is typed in the input area."
+  (when (and magent-ui--input-marker
+             (>= (point) (marker-position magent-ui--input-marker))
+             (eq (char-before) ?/))
+    (completion-at-point)))
+
 (defun magent-input-submit ()
   "Submit the text in the input area and send it to the agent.
 Makes the input text read-only, clears the input marker, and
@@ -428,9 +446,19 @@ buffer is reused (the queue skips inserting a duplicate)."
   (unless magent-ui--input-marker
     (user-error "No input area active"))
   (magent--ensure-initialized)
-  (let* ((raw (string-trim
-               (buffer-substring-no-properties
-                magent-ui--input-marker (point-max))))
+  ;; Find the actual start of user-editable content: the first position
+  ;; after the read-only header (separator + "* USER \n").  We use
+  ;; next-single-property-change rather than the marker directly because
+  ;; the marker can drift to point-max when text is inserted before it
+  ;; (e.g. via org-mode electric indent or completion-at-point), making
+  ;; buffer-substring return "" even though the user has typed text.
+  (let* ((input-start (or (when magent-ui--input-section-start
+                            (next-single-property-change
+                             magent-ui--input-section-start 'read-only nil
+                             (point-max)))
+                          (marker-position magent-ui--input-marker)))
+         (raw (string-trim
+               (buffer-substring-no-properties input-start (point-max))))
          (parsed      (magent-ui--slash-parse raw))
          (skill-names (car parsed))
          (text        (cdr parsed)))
@@ -442,7 +470,7 @@ buffer is reused (the queue skips inserting a duplicate)."
       (unless (eq (char-before) ?\n)
         (insert "\n"))
       ;; Make the user text read-only
-      (add-text-properties magent-ui--input-marker (point-max) '(read-only t)))
+      (add-text-properties input-start (point-max) '(read-only t)))
     (setq magent-ui--input-marker nil)
     (setq magent-ui--input-section-start nil)
     (magent-ui-process text 'buffer-input nil skill-names)))
@@ -873,7 +901,9 @@ Handles both streaming and non-streaming completion."
     (spinner-stop magent--spinner))
   (cond
    ((stringp response)
-    (magent-log "INFO done"))
+    (magent-log "INFO done")
+    (magent-ui--snapshot-buffer-content magent--current-session)
+    (magent-session-save))
    (t
     (magent-log "ERROR request failed or aborted")
     (magent-ui-insert-error "Request failed or was aborted")))
@@ -890,6 +920,26 @@ Handles both streaming and non-streaming completion."
   (magent-session-reset)
   (magent-ui-clear-buffer)
   (magent-ui--insert-input-prompt))
+
+;;;###autoload
+(defun magent-resume-session ()
+  "Select and resume a saved session.
+Presents all saved sessions sorted newest-first for selection,
+then loads the chosen one and renders it in the output buffer."
+  (interactive)
+  (let ((files (magent-session-list-files)))
+    (if (null files)
+        (message "Magent: no saved sessions found")
+      (let* ((choices (mapcar (lambda (f)
+                                (cons (magent-session--format-file f) f))
+                              files))
+             (selected (completing-read "Resume session: "
+                                        (mapcar #'car choices) nil t
+                                        nil nil (caar choices)))
+             (filepath (cdr (assoc selected choices))))
+        (when (and filepath (magent-session-load filepath))
+          (magent-ui-render-history t)
+          (message "Magent: session resumed"))))))
 
 ;;;###autoload
 (defun magent-show-log ()
@@ -910,13 +960,21 @@ Handles both streaming and non-streaming completion."
 
 ;;;###autoload
 (defun magent-toggle-read-only ()
-  "Toggle read-only mode in the Magent output buffer."
+  "Toggle read-only mode in the Magent output buffer.
+When making the buffer editable, also strips all per-character
+`read-only' text properties, which are set independently of
+`buffer-read-only' and would otherwise block editing even after
+the buffer flag is cleared."
   (interactive)
   (let ((buffer (magent-ui-get-buffer)))
     (with-current-buffer buffer
-      (setq buffer-read-only (not buffer-read-only))
-      (message "Magent buffer is now %s"
-               (if buffer-read-only "read-only" "editable")))))
+      (if buffer-read-only
+          (let ((inhibit-read-only t))
+            (setq buffer-read-only nil)
+            (remove-text-properties (point-min) (point-max) '(read-only nil))
+            (message "Magent buffer is now editable"))
+        (setq buffer-read-only t)
+        (message "Magent buffer is now read-only")))))
 
 ;;; Agent selection commands
 

@@ -90,7 +90,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
 
 6. **Permissions** (`magent-permission.el`): Rules map tool names to `allow`/`deny`/`ask`, with optional file-pattern sub-rules (glob syntax). Resolution: exact tool match → file-pattern rules → wildcard (`*`) fallback → **default allow**. File-pattern rules are order-dependent (first match wins); more specific patterns must come before less specific ones.
 
-7. **Queue** (`magent-queue.el`): FIFO serialization of concurrent prompts. When a request is in-flight, new prompts are enqueued (up to `magent-queue-max-size`). After completion, the next item auto-dispatches via `run-at-time 0`.
+7. **Queue** (`magent-queue.el`): Single-request serialization. When a request is in-flight, new prompts are rejected with a busy message instead of being buffered.
 
 8. **Session** (`magent-session.el`): Conversation state with messages list and history trimming. Persists to `magent-session-directory` as JSON. The `buffer-content` slot stores raw buffer text for lossless restore (preserving tool/reasoning blocks not in the message list). `magent-session-reset` clears session, permission overrides, and queue together.
 

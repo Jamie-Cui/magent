@@ -676,14 +676,12 @@ Looks for args named \"path\" or \"file\"."
            when (member (plist-get spec :name) '("path" "file"))
            return i))
 
-(defun magent-fsm--handle-tool-call-confirmation (fsm tool-calls)
-  "Handle tool calls that need permission review.
-FSM is the current FSM instance.
+(defun magent-fsm--handle-tool-call-confirmation-with-permission (permission tool-calls)
+  "Handle TOOL-CALLS using PERMISSION rules.
 TOOL-CALLS is a list of (gptel-tool arg-values callback) triples.
 Checks session overrides and file-specific rules before prompting."
   (require 'magent-permission)
-  (let ((permission (magent-fsm-permission fsm))
-        (pending nil))   ; tool-calls that need interactive prompting
+  (let ((pending nil))   ; tool-calls that need interactive prompting
     (dolist (tc tool-calls)
       (let* ((tool-spec (car tc))
              (arg-values (cadr tc))
@@ -726,20 +724,25 @@ Checks session overrides and file-specific rules before prompting."
 
     ;; Prompt user for remaining tool calls
     (when pending
-      (magent-fsm--prompt-tool-calls-serially fsm (nreverse pending)))))
+      (magent-fsm--prompt-tool-calls-serially (nreverse pending)))))
 
-(defun magent-fsm--prompt-tool-calls-serially (fsm tool-calls)
+(defun magent-fsm--handle-tool-call-confirmation (fsm tool-calls)
+  "Handle tool calls that need permission review for FSM.
+TOOL-CALLS is a list of (gptel-tool arg-values callback) triples."
+  (magent-fsm--handle-tool-call-confirmation-with-permission
+   (magent-fsm-permission fsm)
+   tool-calls))
+
+(defun magent-fsm--prompt-tool-calls-serially (tool-calls)
   "Prompt user for each tool call in TOOL-CALLS sequentially.
 Uses `run-at-time' to break out of gptel's process filter context.
-Each prompt offers: [y]es, [n]o, [A]lways allow, [D]eny always.
-FSM is used for logging."
+Each prompt offers: [y]es, [n]o, [A]lways allow, [D]eny always."
   ;; Process one tool call at a time via run-at-time
   (let ((remaining tool-calls))
-    (magent-fsm--prompt-next-tool-call fsm remaining)))
+    (magent-fsm--prompt-next-tool-call remaining)))
 
-(defun magent-fsm--prompt-next-tool-call (fsm tool-calls)
-  "Prompt for the next tool call in TOOL-CALLS.
-FSM is the current FSM instance."
+(defun magent-fsm--prompt-next-tool-call (tool-calls)
+  "Prompt for the next tool call in TOOL-CALLS."
   (if (null tool-calls)
       nil  ; All done
     (run-at-time
@@ -777,7 +780,7 @@ FSM is the current FSM instance."
               (magent-permission-set-session-override perm-key 'deny))
             (funcall cb (format "Error: tool '%s' denied by user" tool-name))))
          ;; Process next tool call
-         (magent-fsm--prompt-next-tool-call fsm rest))))))
+         (magent-fsm--prompt-next-tool-call rest))))))
 
 (defun magent-fsm--run-tool (tool-spec cb arg-values)
   "Execute TOOL-SPEC with ARG-VALUES and call CB with the result.
