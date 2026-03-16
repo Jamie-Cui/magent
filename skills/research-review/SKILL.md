@@ -26,46 +26,29 @@ Core principle: *the same model reviewing its own patterns creates blind spots*.
 - `TARGET_VENUE`: auto-detect from paper content, or accept argument override
   - Detected keywords → venue: `zkSNARK/ZKP/verifiable` → `CRYPTO/CCS`, `TEE/SGX/TDX/CoCo` → `CCS/USENIX`, `LLM/jailbreak/prompt injection` → `CCS/USENIX/S&P`, `MCP/agent security` → `CCS/USENIX`
 
-## Reviewer Setup (Cross-Model)
+## Reviewer Setup
 
-Priority order — use the first available:
+**Option A — magent native (`emacs_eval` tool available):**
 
-**Option A — Claude Code native (`Agent` tool available):**
-
-Dispatch an `Agent` subagent with adversarial reviewer system prompt. This is the preferred path when running inside Claude Code — truly separate context, no shared blind spots.
-
-```
-Agent subagent prompt:
-  system: "You are a senior PC member at {TARGET_VENUE} with expertise in {DOMAIN}.
-           You are known for finding subtle flaws that authors overlooked.
-           Do NOT give benefit of the doubt. If something is unclear, treat it as a weakness."
-  task:   "Review the following paper and provide: ..."
-  model:  opus  (use the most capable available model)
-```
-
-**Option B — magent native (`emacs_eval` tool available, no `Agent` tool):**
-
-Use `emacs_eval` to call `gptel-request` with a non-default backend. This avoids same-model review when running inside magent.
+Use `emacs_eval` to call `gptel-request` using magent's already-configured backend. Do NOT specify `:backend` or `:model` — omitting them lets gptel use the global `gptel-backend` and `gptel-model`, which are exactly the values magent is already using successfully.
 
 ```elisp
-;; Write review request to a temp file, then call gptel with Aliyun backend
+;; Write review request to a temp file using the same gptel backend magent uses
 (let* ((output-file "/tmp/magent-review-output.md")
        (reviewer-prompt "...paper content...")
        (system-prompt "You are a senior PC member at {TARGET_VENUE}..."))
   (gptel-request reviewer-prompt
     :system system-prompt
-    :backend (gptel-get-backend "Aliyun")   ; falls back to "Zhipu" if Aliyun unavailable
-    :model "qwen-max-latest"
     :callback (lambda (res _info)
                 (with-temp-file output-file
                   (insert (or res "ERROR: no response"))))))
 ```
 
-After calling, read `/tmp/magent-review-output.md` for the reviewer's response. If the Aliyun backend is unavailable, try the "Zhipu" backend with model `"glm-4-plus"`.
+After calling, poll until `/tmp/magent-review-output.md` is written (use `emacs_eval` to check `(file-exists-p "/tmp/magent-review-output.md")` and read it with the `read_file` tool), then read its content for the reviewer's response.
 
-**Option C — Dashscope API via curl (universal fallback):**
+**Option B — Dashscope API via curl (last resort):**
 
-Use when neither `Agent` nor `emacs_eval` is available, or when gptel backends are not configured.
+Use only when `emacs_eval` is not available.
 
 ```bash
 # Locate API key
@@ -95,12 +78,11 @@ curl -s https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions \
 
 **Decision table:**
 
-| Environment | `Agent` available? | `emacs_eval` available? | → Use |
-|---|---|---|---|
-| Claude Code | yes | no | **Option A** |
-| magent | no | yes | **Option B** |
-| Other / API key present | no | no | **Option C** |
-| No key, no native tools | no | no | Error — prompt user to configure |
+| Environment | `emacs_eval` available? | → Use |
+|---|---|---|
+| magent | yes | **Option A** (uses magent's configured backend — no API key needed) |
+| Other / API key present | no | **Option B** |
+| No tools, no key | no | Error — prompt user to configure |
 
 ## Workflow
 
@@ -150,7 +132,7 @@ Produce initial score and `WEAKNESSES` list.
 
 ### Phase B — Cross-Model Adversarial Review
 
-Call the reviewer per Reviewer Setup (Option A → B → C in priority order).
+Call the reviewer per Reviewer Setup (Option A → B in priority order).
 
 Reviewer prompt template (fill in paper content):
 ```

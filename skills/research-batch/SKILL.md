@@ -1,12 +1,12 @@
 ---
-name: research-deep
-description: Read research outline, launch independent agent for each item for deep research. Disable task output.
+name: research-batch
+description: Read research outline, launch independent batch agents for each item for data collection. Disable task output.
 ---
 
-# Research Deep - Deep Research
+# Research Batch - Batch Data Collection
 
 ## Trigger
-`/research-deep`
+`/research-batch`
 
 ## Workflow
 

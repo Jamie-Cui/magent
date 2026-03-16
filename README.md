@@ -299,7 +299,8 @@ magent/
 │   ├── dispatching-parallel-agents/SKILL.md
 │   ├── research/SKILL.md
 │   ├── research-add/SKILL.md
-│   ├── research-deep/SKILL.md
+│   ├── research-batch/SKILL.md
+│   ├── research-explore/SKILL.md
 │   └── research-report/SKILL.md
 └── test/
     └── magent-test.el             # ERT test suite

@@ -275,12 +275,6 @@ If nil, discard reasoning content entirely."
   :type '(const gptel)
   :group 'magent)
 
-(defcustom magent-queue-max-size 20
-  "Maximum number of prompts that may be queued while processing.
-When the queue is full, new prompts are rejected with an error."
-  :type 'integer
-  :group 'magent)
-
 (defcustom magent-auto-context t
   "Whether to automatically attach calling buffer context in `magent-dwim'.
 When non-nil, buffer name, file path, major mode, line number,

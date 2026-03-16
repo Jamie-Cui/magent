@@ -27,10 +27,13 @@
 
 ;;; Agent execution
 
-(defun magent-agent-process (user-prompt &optional callback agent-info)
+(defun magent-agent-process (user-prompt &optional callback agent-info skill-names)
   "Process USER-PROMPT through the AI agent using magent FSM.
 CALLBACK is called with the final string response when complete.
 AGENT-INFO is the agent to use (defaults to session agent or registry default).
+SKILL-NAMES is a list of skill name strings to activate for this request.
+When nil, no skills are injected (skills must be explicitly selected
+via slash commands in the prompt).
 
 The tool calling loop is managed by magent-fsm.  This function:
   1. Builds the prompt list from session history
@@ -46,8 +49,8 @@ The tool calling loop is managed by magent-fsm.  This function:
     (let* ((prompt-list (magent-session-to-gptel-prompt-list session))
            (base-system-msg (or (magent-agent-info-prompt agent)
                                 magent-system-prompt))
-           (skill-prompts (when (require 'magent-skills nil t)
-                            (magent-skills-get-instruction-prompts)))
+           (skill-prompts (when (and (require 'magent-skills nil t) skill-names)
+                            (magent-skills-get-instruction-prompts skill-names)))
            (system-msg (if skill-prompts
                            (concat base-system-msg
                                    "\n\n# Active Skills\n\n"
