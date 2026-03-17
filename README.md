@@ -96,6 +96,8 @@ Customize with `M-x customize-group RET magent RET`. Key settings:
 | Command | Keybinding | Description |
 |---------|-----------|-------------|
 | `magent-dwim` | `C-c m p` | Smart prompt: opens output buffer or prompts for input with auto-context |
+| `magent-diagnose-emacs` | `C-c m d` | Start a structured diagnosis of the current Emacs session |
+| `magent-doctor` | `C-c m D` | Run Magent self-check and diagnose Magent-specific issues |
 | `magent-prompt-region` | `C-c m r` | Send selected region to AI |
 | `magent-ask-at-point` | `C-c m a` | Ask about symbol at point |
 | `magent-clear-session` | `C-c m c` | Clear current session |

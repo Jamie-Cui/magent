@@ -140,6 +140,8 @@ Key settings: `magent-fsm-backend` (only `gptel` currently), `magent-default-age
 | Key | Command |
 |-----|---------|
 | `C-c m p` | `magent-dwim` |
+| `C-c m d` | `magent-diagnose-emacs` |
+| `C-c m D` | `magent-doctor` |
 | `C-c m r` | `magent-prompt-region` |
 | `C-c m a` | `magent-ask-at-point` |
 | `C-c m c` | `magent-clear-session` |
