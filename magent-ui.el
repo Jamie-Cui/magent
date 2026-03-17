@@ -18,6 +18,7 @@
 (require 'org)
 (require 'spinner)
 (require 'transient)
+(require 'magent-approval)
 (require 'magent-session)
 (require 'magent-agent)
 (require 'magent-agent-registry)
@@ -221,6 +222,7 @@ request are discarded."
   (when magent--current-fsm
     (magent-fsm-abort magent--current-fsm)
     (setq magent--current-fsm nil))
+  (magent-approval-drop-requests)
   (cl-incf magent-ui--request-generation)
   (when (and (boundp 'magent--spinner) magent--spinner)
     (spinner-stop magent--spinner))
