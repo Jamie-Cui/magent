@@ -2048,6 +2048,40 @@
     (should (equal final-response "Hello world"))
     (should-not (gethash :in-reasoning-block stream-state))))
 
+(ert-deftest magent-test-gptel-backend-emits-llm-request-usage-event ()
+  "Test gptel backend emits machine-readable request usage metadata."
+  (require 'magent-events)
+  (require 'magent-fsm-backend-gptel)
+  (let ((captured nil)
+        (backend (gptel-make-openai "test" :key "test-key"))
+        (stream-state (magent-fsm-backend-gptel--make-stream-state))
+        (request-buffer (generate-new-buffer " *magent-gptel-test*")))
+    (puthash :text-chunks '("world" "Hello ") stream-state)
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+          (magent-events-add-sink (lambda (event) (push event captured)))
+          (magent-fsm-backend-gptel--callback
+           t
+           (list :input-tokens 12
+                 :output-tokens 34
+                 :data '(:model "gpt-test" :messages [(:role "user" :content "hi")]))
+           nil nil request-buffer nil nil stream-state
+           "req-test" backend 'gpt-4o-mini))
+      (magent-events-clear-sinks)
+      (when (buffer-live-p request-buffer)
+        (kill-buffer request-buffer)))
+    (let ((event (cl-find-if (lambda (item)
+                               (eq (plist-get item :type) 'llm-request-end))
+                             captured)))
+      (should event)
+      (should (equal (plist-get event :request-id) "req-test"))
+      (should (= (plist-get event :input-tokens) 12))
+      (should (= (plist-get event :output-tokens) 34))
+      (should (= (plist-get event :total-tokens) 46))
+      (should (numberp (plist-get event :request-bytes)))
+      (should (= (plist-get event :response-chars)
+                 (length "Hello world"))))))
+
 (ert-deftest magent-test-gptel-backend-skips-reasoning-when-disabled ()
   "Test gptel backend ignores reasoning events when reasoning is disabled."
   (require 'magent-fsm-backend-gptel)
@@ -3063,6 +3097,12 @@
                           (eq (plist-get event :type) 'text-delta))
                         captured))
     (should (cl-find-if (lambda (event)
+                          (eq (plist-get event :type) 'llm-request-start))
+                        captured))
+    (should (cl-find-if (lambda (event)
+                          (eq (plist-get event :type) 'llm-request-end))
+                        captured))
+    (should (cl-find-if (lambda (event)
                           (and (eq (plist-get event :type) 'turn-end)
                                (eq (plist-get event :status) 'completed)))
                         captured))))
@@ -3134,6 +3174,55 @@
         :skill-names '("systematic-debugging" "emacs-runtime-inspection" "systematic-debugging"))))
     (should (equal captured-skill-names
                    '("systematic-debugging" "emacs-runtime-inspection")))))
+
+(ert-deftest magent-test-agent-process-emits-capability-resolution-event ()
+  "Test `magent-agent-process' emits capability resolution metadata."
+  (require 'magent-capability)
+  (require 'magent-events)
+  (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+        (gptel-model 'gpt-4o-mini)
+        (magent-capability--registry nil)
+        (magent-enable-capabilities t)
+        (captured nil))
+    (magent-capability-register
+     (magent-capability-create
+      :name "org-structure"
+      :description "Org structure edits"
+      :skills '("auto-skill")
+      :modes '(org-mode)
+      :features '(org)
+      :prompt-keywords '("heading")
+      :disclosure 'active))
+    (cl-letf (((symbol-function 'magent-skills-get-instruction-prompts)
+               (lambda (_skill-names)
+                 '("## Skill: captured\n\nDo things.")))
+              ((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (let ((callback (plist-get kwargs :callback)))
+                   (funcall callback "Hello" nil)
+                   (funcall callback t (list :content "Hello")))))
+              ((symbol-function 'magent-ui-start-streaming) #'ignore)
+              ((symbol-function 'magent-ui-insert-streaming) #'ignore)
+              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+      (unwind-protect
+          (progn
+            (magent-events-add-sink (lambda (event) (push event captured)))
+            (magent-agent-process
+             "Please reorganize this heading"
+             #'ignore
+             nil nil nil
+             '(:major-mode org-mode :features (org))))
+        (magent-events-clear-sinks)))
+    (let* ((event (cl-find-if (lambda (item)
+                                (eq (plist-get item :type)
+                                    'capability-resolution))
+                              captured))
+           (resolution (plist-get event :resolution)))
+      (should event)
+      (should (equal (plist-get resolution :active-capabilities)
+                     '("org-structure")))
+      (should (equal (plist-get resolution :skill-names)
+                     '("auto-skill"))))))
 
 (ert-deftest magent-test-diagnose-emacs-dispatches-structured-prompt ()
   "Test `magent-diagnose-emacs' dispatches a structured diagnosis request."

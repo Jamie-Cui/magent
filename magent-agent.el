@@ -25,6 +25,7 @@
 ;; Forward declarations for UI functions
 (declare-function magent-ui-insert-streaming "magent-ui")
 (declare-function magent-capability-resolution-skill-names "magent-capability")
+(declare-function magent-capability-resolution-to-plist "magent-capability")
 (declare-function magent-capability-resolve-for-turn "magent-capability")
 (declare-function magent-skills-get-instruction-prompts "magent-skills")
 
@@ -90,6 +91,12 @@ The tool calling loop is managed by magent-fsm.  This function:
                                    (mapconcat #'identity skill-prompts "\n\n"))
                          base-system-msg))
            (tools (magent-tools-get-magent-tools agent)))
+      (when capability-resolution
+        (magent-events-emit
+         'capability-resolution
+         :context context
+         :resolution
+         (magent-capability-resolution-to-plist capability-resolution)))
       (magent-agent-info-apply-gptel-overrides
        agent
        (lambda ()

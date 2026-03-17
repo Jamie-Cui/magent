@@ -393,6 +393,44 @@ source for contextual capability resolution."
         (push string seen)
         (push string result)))))
 
+(defun magent-capability-match-to-plist (match)
+  "Return a machine-readable plist for MATCH."
+  (let ((capability (magent-capability-match-capability match)))
+    (list :name (magent-capability-name capability)
+          :title (magent-capability-title capability)
+          :description (magent-capability-description capability)
+          :status (magent-capability-match-status match)
+          :score (magent-capability-match-score match)
+          :reasons (copy-sequence (magent-capability-match-reasons match))
+          :skills (copy-sequence (magent-capability-skills capability))
+          :disclosure (magent-capability-disclosure capability)
+          :risk (magent-capability-risk capability)
+          :source-kind (magent-capability-source-kind capability)
+          :source-name (magent-capability-source-name capability))))
+
+(defun magent-capability-resolution-to-plist (resolution)
+  "Return a machine-readable plist for RESOLUTION."
+  (when resolution
+    (list :prompt (magent-capability-resolution-prompt resolution)
+          :context (copy-tree (magent-capability-resolution-context resolution))
+          :explicit-skills
+          (copy-sequence (magent-capability-resolution-explicit-skills resolution))
+          :skill-names
+          (copy-sequence (magent-capability-resolution-skill-names resolution))
+          :active-capabilities
+          (mapcar (lambda (match)
+                    (magent-capability-name
+                     (magent-capability-match-capability match)))
+                  (magent-capability-resolution-active-capabilities resolution))
+          :suggested-capabilities
+          (mapcar (lambda (match)
+                    (magent-capability-name
+                     (magent-capability-match-capability match)))
+                  (magent-capability-resolution-suggested-capabilities resolution))
+          :matches
+          (mapcar #'magent-capability-match-to-plist
+                  (magent-capability-resolution-matches resolution)))))
+
 (defun magent-capability-resolve (prompt &optional request-context explicit-skills)
   "Resolve capabilities for PROMPT and REQUEST-CONTEXT.
 EXPLICIT-SKILLS are user-selected instruction skills that should

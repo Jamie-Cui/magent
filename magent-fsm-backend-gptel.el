@@ -14,6 +14,7 @@
 
 (require 'cl-lib)
 (require 'gptel)
+(require 'json)
 
 (require 'magent-events)
 (require 'magent-fsm-backend-native)
@@ -35,6 +36,50 @@
     (puthash :reasoning-chunks nil state)
     (puthash :in-reasoning-block nil state)
     state))
+
+(defun magent-fsm-backend-gptel--request-bytes (data)
+  "Return encoded byte size for DATA, or nil when unavailable."
+  (when data
+    (length
+     (encode-coding-string
+      (condition-case nil
+          (json-encode data)
+        (error (format "%s" data)))
+      'utf-8-unix t))))
+
+(defun magent-fsm-backend-gptel--final-text (state info)
+  "Return the final assistant text assembled from STATE and INFO."
+  (or (and (gethash :text-chunks state)
+           (apply #'concat
+                  (reverse (gethash :text-chunks state))))
+      (plist-get info :content)
+      ""))
+
+(defun magent-fsm-backend-gptel--usage-plist (info final-text)
+  "Return a normalized usage plist from INFO and FINAL-TEXT."
+  (let* ((input-tokens (or (plist-get info :input-tokens)
+                           (plist-get info :prompt-tokens)))
+         (output-tokens (or (plist-get info :output-tokens)
+                            (plist-get info :completion-tokens)))
+         (total-tokens (or (plist-get info :total-tokens)
+                           (and (numberp input-tokens)
+                                (numberp output-tokens)
+                                (+ input-tokens output-tokens))))
+         (tool-use (plist-get info :tool-use))
+         (request-bytes (magent-fsm-backend-gptel--request-bytes
+                         (plist-get info :data))))
+    (list :input-tokens input-tokens
+          :output-tokens output-tokens
+          :total-tokens total-tokens
+          :usage-available (or (numberp input-tokens)
+                               (numberp output-tokens)
+                               (numberp total-tokens))
+          :request-bytes request-bytes
+          :response-chars (length final-text)
+          :tool-use-count (length tool-use)
+          :stop-reason (plist-get info :stop-reason)
+          :http-status (plist-get info :http-status)
+          :error (plist-get info :error))))
 
 (defun magent-fsm-backend-gptel-create (&rest args)
   "Create gptel FSM from keyword ARGS (returns plist with parameters).
@@ -63,6 +108,7 @@ Accepts the same keyword arguments as `magent-fsm-create'."
          (ui-callback (plist-get params :ui-callback))
          (backend (plist-get params :gptel-backend))
          (model (plist-get params :model))
+         (request-id (magent-events-generate-id))
          (request-buffer (generate-new-buffer " *magent-gptel-request*"))
          ;; Install permission-aware :confirm functions and handle
          ;; `(tool-call . ...)' callbacks ourselves instead of relying on
@@ -72,6 +118,15 @@ Accepts the same keyword arguments as `magent-fsm-create'."
          (stream-state (magent-fsm-backend-gptel--make-stream-state)))
 
     (magent-ui-start-streaming)
+    (magent-events-emit
+     'llm-request-start
+     :context event-context
+     :request-id request-id
+     :backend (and backend (gptel-backend-name backend))
+     :model (format "%s" model)
+     :prompt-count (length prompt-list)
+     :tool-count (length tools)
+     :system-prompt-length (length (or system-prompt "")))
 
     (with-current-buffer request-buffer
       (setq-local gptel-backend backend)
@@ -88,11 +143,13 @@ Accepts the same keyword arguments as `magent-fsm-create'."
         :callback (lambda (response info)
                     (magent-fsm-backend-gptel--callback
                      response info callback ui-callback request-buffer
-                     permission event-context stream-state))))))
+                     permission event-context stream-state request-id
+                     backend model))))))
 
 (defun magent-fsm-backend-gptel--callback (response info callback ui-callback buffer
                                                     permission event-context
-                                                    &optional stream-state)
+                                                    &optional stream-state
+                                                    request-id backend model)
   "Handle gptel response.
 Wraps all UI operations in `condition-case' to suppress benign
 cursor-boundary signals that can leak from evil-mode adjustments
@@ -137,19 +194,35 @@ inside gptel's process filter."
           (when (gethash :in-reasoning-block state)
             (magent-ui-insert-reasoning-end)
             (puthash :in-reasoning-block nil state))
-          (if (plist-get info :tool-use)
-              ;; Tool use round: gptel will continue the loop.
-              ;; Stay in the same section — don't finalize or create a new heading.
-              (magent-ui-continue-streaming)
-            ;; Final response: finalize the streaming section and finish.
-            (magent-ui-finish-streaming-fontify)
-            (when callback
-              (funcall callback (or (and (gethash :text-chunks state)
-                                         (apply #'concat
-                                                (nreverse (gethash :text-chunks state))))
-                                    (plist-get info :content) "")))
-            (when (buffer-live-p buffer) (kill-buffer buffer))))
+          (let ((final-text (magent-fsm-backend-gptel--final-text state info)))
+            (apply
+             #'magent-events-emit
+             'llm-request-end
+             :context event-context
+             :request-id request-id
+             :status 'completed
+             :backend (and backend (gptel-backend-name backend))
+             :model (format "%s" model)
+             (magent-fsm-backend-gptel--usage-plist info final-text))
+            (if (plist-get info :tool-use)
+                ;; Tool use round: gptel will continue the loop.
+                ;; Stay in the same section — don't finalize or create a new heading.
+                (magent-ui-continue-streaming)
+              ;; Final response: finalize the streaming section and finish.
+              (magent-ui-finish-streaming-fontify)
+              (when callback
+                (funcall callback final-text))
+              (when (buffer-live-p buffer) (kill-buffer buffer)))))
          ((null response)
+          (apply
+           #'magent-events-emit
+           'llm-request-end
+           :context event-context
+           :request-id request-id
+           :status 'failed
+           :backend (and backend (gptel-backend-name backend))
+           :model (format "%s" model)
+           (magent-fsm-backend-gptel--usage-plist info ""))
           (when callback (funcall callback nil))
           (when (buffer-live-p buffer) (kill-buffer buffer))))
       ((beginning-of-buffer end-of-buffer beginning-of-line end-of-line)
