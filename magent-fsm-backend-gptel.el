@@ -20,10 +20,21 @@
 (declare-function magent-ui-start-streaming "magent-ui")
 (declare-function magent-ui-continue-streaming "magent-ui")
 (declare-function magent-ui-insert-streaming "magent-ui")
+(declare-function magent-ui-insert-reasoning-start "magent-ui")
+(declare-function magent-ui-insert-reasoning-text "magent-ui")
+(declare-function magent-ui-insert-reasoning-end "magent-ui")
 (declare-function magent-ui-finish-streaming-fontify "magent-ui")
 (declare-function magent-log "magent-config")
 
 (defvar magent-include-reasoning)
+
+(defun magent-fsm-backend-gptel--make-stream-state ()
+  "Create mutable per-request streaming state for the gptel backend."
+  (let ((state (make-hash-table :test 'eq)))
+    (puthash :text-chunks nil state)
+    (puthash :reasoning-chunks nil state)
+    (puthash :in-reasoning-block nil state)
+    state))
 
 (defun magent-fsm-backend-gptel-create (&rest args)
   "Create gptel FSM from keyword ARGS (returns plist with parameters).
@@ -58,10 +69,7 @@ Accepts the same keyword arguments as `magent-fsm-create'."
          ;; gptel's default in-buffer confirmation UI.
          (gptel-tools (magent-fsm--convert-tools-to-gptel
                        tools permission event-context))
-         ;; Accumulate streamed text chunks for session storage.
-         ;; gptel's :content in info is nil in streaming mode.
-         ;; Use a list to avoid O(n^2) string concatenation on each chunk.
-         (accumulated-chunks '()))
+         (stream-state (magent-fsm-backend-gptel--make-stream-state)))
 
     (magent-ui-start-streaming)
 
@@ -78,46 +86,74 @@ Accepts the same keyword arguments as `magent-fsm-create'."
         :system system-prompt
         :stream t
         :callback (lambda (response info)
-                    (when (stringp response)
-                      (push response accumulated-chunks))
                     (magent-fsm-backend-gptel--callback
                      response info callback ui-callback request-buffer
-                     permission event-context accumulated-chunks))))))
+                     permission event-context stream-state))))))
 
 (defun magent-fsm-backend-gptel--callback (response info callback ui-callback buffer
                                                     permission event-context
-                                                    &optional accumulated-chunks)
+                                                    &optional stream-state)
   "Handle gptel response.
 Wraps all UI operations in `condition-case' to suppress benign
 cursor-boundary signals that can leak from evil-mode adjustments
 inside gptel's process filter."
-  (condition-case nil
-      (cond
-       ((stringp response)
-        (magent-events-emit 'text-delta :context event-context :text response)
-        (when ui-callback (funcall ui-callback response)))
-       ((and (consp response) (eq (car response) 'tool-call))
-        (magent-fsm--handle-tool-call-confirmation-with-permission
-         permission (cdr response)))
-       ((and (consp response) (eq (car response) 'tool-result))
-        (magent-ui-continue-streaming))
-       ((eq response t)
-        (if (plist-get info :tool-use)
-            ;; Tool use round: gptel will continue the loop.
-            ;; Stay in the same section — don't finalize or create a new heading.
-            (magent-ui-continue-streaming)
-          ;; Final response: finalize the streaming section and finish.
-          (magent-ui-finish-streaming-fontify)
-          (when callback
-            (funcall callback (or (and accumulated-chunks
-                                       (apply #'concat (nreverse accumulated-chunks)))
-                                  (plist-get info :content) "")))
+  (let ((state (or stream-state
+                   (magent-fsm-backend-gptel--make-stream-state))))
+    (condition-case nil
+        (cond
+         ((and (consp response) (eq (car response) 'reasoning)
+               magent-include-reasoning)
+          (let ((reasoning-text (cdr response)))
+            (if (eq reasoning-text t)
+                (when (gethash :in-reasoning-block state)
+                  (magent-ui-insert-reasoning-end)
+                  (puthash :in-reasoning-block nil state))
+              (progn
+                (unless (gethash :in-reasoning-block state)
+                  (magent-ui-insert-reasoning-start)
+                  (puthash :in-reasoning-block t state))
+                (magent-ui-insert-reasoning-text reasoning-text)
+                (push reasoning-text (gethash :reasoning-chunks state))
+                (puthash :reasoning-chunks
+                         (gethash :reasoning-chunks state)
+                         state)))))
+         ((stringp response)
+          (push response (gethash :text-chunks state))
+          (puthash :text-chunks (gethash :text-chunks state) state)
+          (magent-events-emit 'text-delta :context event-context :text response)
+          (when ui-callback (funcall ui-callback response)))
+         ((and (consp response) (eq (car response) 'tool-call))
+          (when (gethash :in-reasoning-block state)
+            (magent-ui-insert-reasoning-end)
+            (puthash :in-reasoning-block nil state))
+          (magent-fsm--handle-tool-call-confirmation-with-permission
+           permission (cdr response)))
+         ((and (consp response) (eq (car response) 'tool-result))
+          (when (gethash :in-reasoning-block state)
+            (magent-ui-insert-reasoning-end)
+            (puthash :in-reasoning-block nil state))
+          (magent-ui-continue-streaming))
+         ((eq response t)
+          (when (gethash :in-reasoning-block state)
+            (magent-ui-insert-reasoning-end)
+            (puthash :in-reasoning-block nil state))
+          (if (plist-get info :tool-use)
+              ;; Tool use round: gptel will continue the loop.
+              ;; Stay in the same section — don't finalize or create a new heading.
+              (magent-ui-continue-streaming)
+            ;; Final response: finalize the streaming section and finish.
+            (magent-ui-finish-streaming-fontify)
+            (when callback
+              (funcall callback (or (and (gethash :text-chunks state)
+                                         (apply #'concat
+                                                (nreverse (gethash :text-chunks state))))
+                                    (plist-get info :content) "")))
+            (when (buffer-live-p buffer) (kill-buffer buffer))))
+         ((null response)
+          (when callback (funcall callback nil))
           (when (buffer-live-p buffer) (kill-buffer buffer))))
-       ((null response)
-        (when callback (funcall callback nil))
-        (when (buffer-live-p buffer) (kill-buffer buffer))))
-    ((beginning-of-buffer end-of-buffer beginning-of-line end-of-line)
-     nil)))
+      ((beginning-of-buffer end-of-buffer beginning-of-line end-of-line)
+       nil))))
 
 (defun magent-fsm-backend-gptel-abort (params)
   "Abort gptel request."
