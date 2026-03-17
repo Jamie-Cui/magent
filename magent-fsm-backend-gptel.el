@@ -15,6 +15,7 @@
 (require 'cl-lib)
 (require 'gptel)
 
+(require 'magent-events)
 (require 'magent-fsm-backend-native)
 (declare-function magent-ui-start-streaming "magent-ui")
 (declare-function magent-ui-continue-streaming "magent-ui")
@@ -35,6 +36,7 @@ Accepts the same keyword arguments as `magent-fsm-create'."
         :prompt-list (plist-get args :prompt-list)
         :system-prompt (plist-get args :system-prompt)
         :tools (plist-get args :tools)
+        :event-context (plist-get args :event-context)
         :permission (plist-get args :permission)
         :callback (plist-get args :callback)
         :ui-callback (plist-get args :ui-callback)))
@@ -44,6 +46,7 @@ Accepts the same keyword arguments as `magent-fsm-create'."
   (let* ((prompt-list (plist-get params :prompt-list))
          (system-prompt (plist-get params :system-prompt))
          (tools (plist-get params :tools))
+         (event-context (plist-get params :event-context))
          (permission (plist-get params :permission))
          (callback (plist-get params :callback))
          (ui-callback (plist-get params :ui-callback))
@@ -53,7 +56,8 @@ Accepts the same keyword arguments as `magent-fsm-create'."
          ;; Install permission-aware :confirm functions and handle
          ;; `(tool-call . ...)' callbacks ourselves instead of relying on
          ;; gptel's default in-buffer confirmation UI.
-         (gptel-tools (magent-fsm--convert-tools-to-gptel tools permission))
+         (gptel-tools (magent-fsm--convert-tools-to-gptel
+                       tools permission event-context))
          ;; Accumulate streamed text chunks for session storage.
          ;; gptel's :content in info is nil in streaming mode.
          ;; Use a list to avoid O(n^2) string concatenation on each chunk.
@@ -78,10 +82,11 @@ Accepts the same keyword arguments as `magent-fsm-create'."
                       (push response accumulated-chunks))
                     (magent-fsm-backend-gptel--callback
                      response info callback ui-callback request-buffer
-                     permission accumulated-chunks))))))
+                     permission event-context accumulated-chunks))))))
 
 (defun magent-fsm-backend-gptel--callback (response info callback ui-callback buffer
-                                                    permission &optional accumulated-chunks)
+                                                    permission event-context
+                                                    &optional accumulated-chunks)
   "Handle gptel response.
 Wraps all UI operations in `condition-case' to suppress benign
 cursor-boundary signals that can leak from evil-mode adjustments
@@ -89,6 +94,7 @@ inside gptel's process filter."
   (condition-case nil
       (cond
        ((stringp response)
+        (magent-events-emit 'text-delta :context event-context :text response)
         (when ui-callback (funcall ui-callback response)))
        ((and (consp response) (eq (car response) 'tool-call))
         (magent-fsm--handle-tool-call-confirmation-with-permission
@@ -114,8 +120,9 @@ inside gptel's process filter."
      nil)))
 
 (defun magent-fsm-backend-gptel-abort (params)
-  "Abort gptel request (no-op)."
-  (ignore params))
+  "Abort gptel request."
+  (let ((context (plist-get params :event-context)))
+    (magent-events-end-turn context 'cancelled "User aborted")))
 
 (defun magent-fsm-backend-gptel-destroy (params)
   "Destroy gptel FSM (no-op)."

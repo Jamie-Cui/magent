@@ -11,7 +11,7 @@ An Emacs Lisp AI coding agent with multi-agent architecture, permission-based to
 - **10 built-in tools**: file operations, shell, grep, glob, web search, Emacs eval, agent delegation, skill invocation
 - **Skill system** for extending agent capabilities (built-in Emacs skill + custom skills from files)
 - **Single-request lock** for serializing concurrent requests
-- **Session management** with conversation history and JSON persistence
+- **Project-scoped session management** with conversation history and JSON persistence
 - **Streaming responses** with chunk batching and async fontification
 - **Markdown-to-Org conversion** for rendering assistant output in org-mode
 - **Context-aware prompting** via `magent-dwim` with automatic buffer context attachment
@@ -79,7 +79,7 @@ Customize with `M-x customize-group RET magent RET`. Key settings:
 | `magent-tool-call-prompt` | `"tool"` | Tag text in tool call lines |
 | `magent-error-prompt` | `"error"` | Tag text in error section headers |
 | `magent-agent-directory` | `".magent/agent"` | Relative path to custom agent dir |
-| `magent-session-directory` | `~/.emacs.d/magent-sessions/` | Session persistence directory |
+| `magent-session-directory` | `~/.emacs.d/magent-sessions/` | Base directory for global sessions and per-project session subdirectories |
 | `magent-grep-program` | `"rg"` | Path to ripgrep binary |
 | `magent-grep-max-matches` | `100` | Max matches from grep searches |
 | `magent-bash-timeout` | `30` | Timeout in seconds for bash commands |
@@ -107,6 +107,15 @@ Customize with `M-x customize-group RET magent RET`. Key settings:
 | `magent-list-agents` | `C-c m v` | List all available agents |
 
 In the `*magent*` output buffer: `TAB`/`S-TAB` fold sections, `?` opens transient menu, `C-c C-c` submits input, `C-g` interrupts.
+
+### Session Scope
+
+Magent keeps a single `*magent*` buffer, but session state is scoped by project:
+
+- In a recognized project, prompts, agent selection, clear, and resume operate on that project's current session.
+- Saved project sessions live under `magent-session-directory/projects/<sha1(project-root)>/`.
+- Outside any project, Magent falls back to the legacy global session behavior and saves directly under `magent-session-directory`.
+- `magent-resume-session` shows all sessions grouped by project, with the current project's group first and global sessions in their own group.
 
 ### Quick Example
 
@@ -247,7 +256,7 @@ Tool availability is controlled by:
 
 7. **Skills** (`magent-skills.el` + `magent-skill-file.el` + `magent-skill-emacs.el` + `magent-skill-creator.el`): Two skill types — `instruction` (markdown injected into system prompt) and `tool` (invoked via `skill_invoke`). Loaded in priority order: (1) built-in `skills/` directory bundled with magent, (2) user directory `~/.emacs.d/magent-skills/<name>/SKILL.md`, (3) project-local `.magent/skills/<name>/SKILL.md`.
 
-8. **Session** (`magent-session.el`): Conversation history management with per-session agent assignment and JSON persistence. The `buffer-content` slot stores raw buffer text for lossless restore.
+8. **Session** (`magent-session.el`): Conversation history management with per-project active sessions, global fallback outside projects, and JSON persistence. The `buffer-content` slot stores raw buffer text for lossless restore.
 
 9. **Queue** (`magent-queue.el`): Single-request serialization. When a request is in-flight, additional prompts are rejected with a busy message instead of being buffered.
 

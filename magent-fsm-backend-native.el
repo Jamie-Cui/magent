@@ -20,6 +20,8 @@
 (require 'json)
 (require 'url)
 (require 'gptel-request)
+(require 'magent-approval)
+(require 'magent-events)
 
 ;; Forward declarations
 (declare-function magent-session-add-message "magent-session")
@@ -532,15 +534,28 @@ and only transitions to PROCESS/DONE when the final response
       (setf (magent-fsm--tool-queue-busy queue) t)
       (let ((name     (plist-get item :name))
             (input    (plist-get item :input))
+            (call-id  (plist-get item :call-id))
+            (args-plist (plist-get item :args-plist))
             (fn       (plist-get item :fn))
             (async-p  (plist-get item :async))
             (callback (plist-get item :callback))
             (args     (plist-get item :args)))
         (require 'magent-ui)
+        (magent-events-emit 'tool-call-start
+                            :call-id call-id
+                            :tool-name name
+                            :title name
+                            :summary input
+                            :description input
+                            :args args-plist)
         (magent-ui-insert-tool-call name input)
         (let ((completion
                (lambda (result)
                  (magent-fsm--show-tool-result name result)
+                 (magent-events-emit 'tool-call-end
+                                     :call-id call-id
+                                     :tool-name name
+                                     :result result)
                  (setf (magent-fsm--tool-queue-busy queue) nil)
                  (funcall callback result)
                  (magent-fsm--tool-queue-run queue))))
@@ -561,31 +576,63 @@ is always async (takes CALLBACK as first arg) when a queue is used."
       ;; Queue path: all tools become async; the queue serializes
       ;; #+begin_tool / #+end_tool rendering.
       (lambda (callback &rest arg-values)
+        (let* ((args-plist (magent-fsm--args-to-plist args-spec arg-values))
+               (summary (magent-fsm--show-tool-call-format name args-plist)))
         (magent-fsm--tool-queue-push
          queue
          (list :name name
-               :input (magent-fsm--show-tool-call-format
-                       name (magent-fsm--args-to-plist args-spec arg-values))
+               :call-id (magent-events-generate-id)
+               :input summary
+               :args-plist args-plist
                :fn original-fn
                :async async-p
                :callback callback
-               :args arg-values)))
+               :args arg-values))))
     ;; No queue: original direct rendering (used by native FSM's TOOL handler).
     (if async-p
         (lambda (callback &rest arg-values)
-          (magent-fsm--show-tool-call name (magent-fsm--args-to-plist args-spec arg-values))
-          (apply original-fn
-                 (lambda (result)
-                   (magent-fsm--show-tool-result name result)
-                   (funcall callback result))
-                 arg-values))
+          (let* ((args-plist (magent-fsm--args-to-plist args-spec arg-values))
+                 (call-id (magent-events-generate-id))
+                 (summary (magent-fsm--show-tool-call-format name args-plist)))
+            (magent-events-emit 'tool-call-start
+                                :call-id call-id
+                                :tool-name name
+                                :title name
+                                :summary summary
+                                :description summary
+                                :args args-plist)
+            (magent-fsm--show-tool-call name args-plist)
+            (apply original-fn
+                   (lambda (result)
+                     (magent-fsm--show-tool-result name result)
+                     (magent-events-emit 'tool-call-end
+                                         :call-id call-id
+                                         :tool-name name
+                                         :result result)
+                     (funcall callback result))
+                   arg-values)))
       (lambda (&rest arg-values)
-        (magent-fsm--show-tool-call name (magent-fsm--args-to-plist args-spec arg-values))
-        (let ((result (apply original-fn arg-values)))
+        (let* ((args-plist (magent-fsm--args-to-plist args-spec arg-values))
+               (call-id (magent-events-generate-id))
+               (summary (magent-fsm--show-tool-call-format name args-plist))
+               (result nil))
+          (magent-events-emit 'tool-call-start
+                              :call-id call-id
+                              :tool-name name
+                              :title name
+                              :summary summary
+                              :description summary
+                              :args args-plist)
+          (magent-fsm--show-tool-call name args-plist)
+          (setq result (apply original-fn arg-values))
           (magent-fsm--show-tool-result name result)
+          (magent-events-emit 'tool-call-end
+                              :call-id call-id
+                              :tool-name name
+                              :result result)
           result)))))
 
-(defun magent-fsm--convert-tools-to-gptel (tools &optional permission)
+(defun magent-fsm--convert-tools-to-gptel (tools &optional permission _event-context)
   "Convert magent tool specs to gptel-tool structs.
 TOOLS is a list of plists with :name, :description, :args, :function, :async.
 Each tool function is wrapped to display call/result in the UI.
@@ -745,41 +792,39 @@ Each prompt offers: [y]es, [n]o, [A]lways allow, [D]eny always."
   "Prompt for the next tool call in TOOL-CALLS."
   (if (null tool-calls)
       nil  ; All done
-    (run-at-time
-     0 nil
-     (lambda ()
-       (let* ((tc (car tool-calls))
-              (rest (cdr tool-calls))
-              (tool-spec (car tc))
-              (arg-values (cadr tc))
-              (cb (caddr tc))
-              (tool-name (gptel-tool-name tool-spec))
-              (perm-key (magent-tools-permission-key tool-name))
-              (summary (magent-fsm--summarize-args
-                        arg-values (gptel-tool-args tool-spec)))
-              (prompt (format "magent: allow %s%s? [y]es/[n]o/[A]lways/[D]eny always: "
-                              tool-name
-                              (if (string-empty-p summary) ""
-                                (format " (%s)" summary))))
-              (choice (read-char-choice prompt '(?y ?n ?A ?D))))
-         (pcase choice
-           (?y
+    (let* ((tc (car tool-calls))
+           (rest (cdr tool-calls))
+           (tool-spec (car tc))
+           (arg-values (cadr tc))
+           (cb (caddr tc))
+           (tool-name (gptel-tool-name tool-spec))
+           (perm-key (magent-tools-permission-key tool-name))
+           (summary (magent-fsm--summarize-args
+                     arg-values (gptel-tool-args tool-spec))))
+      (magent-approval-request
+       (list :request-id (magent-events-generate-id)
+             :tool-name tool-name
+             :perm-key perm-key
+             :summary summary
+             :args (magent-fsm--args-to-plist (gptel-tool-args tool-spec) arg-values))
+       (lambda (decision)
+         (pcase decision
+           ('allow-once
             (magent-log "PERM user allowed (once): %s" tool-name)
             (magent-fsm--run-tool tool-spec cb arg-values))
-           (?n
+           ('deny-once
             (magent-log "PERM user denied (once): %s" tool-name)
             (funcall cb (format "Error: tool '%s' denied by user" tool-name)))
-           (?A
+           ('allow-session
             (magent-log "PERM user always-allow: %s" tool-name)
             (when perm-key
               (magent-permission-set-session-override perm-key 'allow))
             (magent-fsm--run-tool tool-spec cb arg-values))
-           (?D
+           ('deny-session
             (magent-log "PERM user always-deny: %s" tool-name)
             (when perm-key
               (magent-permission-set-session-override perm-key 'deny))
             (funcall cb (format "Error: tool '%s' denied by user" tool-name))))
-         ;; Process next tool call
          (magent-fsm--prompt-next-tool-call rest))))))
 
 (defun magent-fsm--run-tool (tool-spec cb arg-values)

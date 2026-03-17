@@ -17,6 +17,7 @@
 (require 'cl-lib)
 (require 'magent-config)
 (require 'magent-agent-registry)
+(require 'magent-events)
 
 (declare-function magent-skill-emacs-invoke "magent-skill-emacs")
 (declare-function magent-skills-get "magent-skills")
@@ -246,7 +247,10 @@ then spawns a nested `gptel-request' with the subagent's configuration."
       (let* ((system-msg (or (magent-agent-info-prompt agent)
                              magent-system-prompt))
              (tools (magent-tools-get-gptel-tools agent))
-             (prompt-list (list (cons 'prompt prompt))))
+             (prompt-list (list (cons 'prompt prompt)))
+             (subagent-context
+              (magent-events-create-subagent-context
+               (format "Agent %s" agent-name))))
         (magent-agent-info-apply-gptel-overrides
          agent
          (lambda ()
@@ -266,6 +270,11 @@ then spawns a nested `gptel-request' with the subagent's configuration."
                                         (lambda ()
                                           (when (buffer-live-p request-buffer)
                                             (kill-buffer request-buffer))))
+                           (when (stringp response)
+                             (magent-events-emit 'text-delta
+                                                 :context subagent-context
+                                                 :text response))
+                           (magent-events-stop-subagent subagent-context)
                            (funcall callback
                                     (cond
                                      ((stringp response) response)

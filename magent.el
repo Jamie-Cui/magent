@@ -77,6 +77,7 @@
 (require 'spinner)
 (require 'transient)
 (require 'magent-config)
+(require 'magent-happy)
 (require 'magent-session)
 (require 'magent-tools)
 (require 'magent-agent)

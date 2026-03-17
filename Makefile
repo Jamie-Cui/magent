@@ -21,6 +21,9 @@ BYTE_COMPILE_FLAGS = --eval "(setq byte-compile-error-on-warn nil)" \
 
 SRCS = magent.el \
        magent-config.el \
+       magent-events.el \
+       magent-approval.el \
+       magent-happy.el \
        magent-frontmatter.el \
        magent-session.el \
        magent-queue.el \
