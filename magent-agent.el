@@ -15,6 +15,7 @@
 
 (require 'cl-lib)
 (require 'gptel)
+(require 'magent-events)
 (require 'magent-fsm)
 (require 'magent-tools)
 (require 'magent-session)
@@ -27,11 +28,12 @@
 
 ;;; Agent execution
 
-(defun magent-agent-process (user-prompt &optional callback agent-info skill-names)
+(defun magent-agent-process (user-prompt &optional callback agent-info skill-names event-context)
   "Process USER-PROMPT through the AI agent using magent FSM.
 CALLBACK is called with the final string response when complete.
 AGENT-INFO is the agent to use (defaults to session agent or registry default).
 SKILL-NAMES is a list of skill name strings to activate for this request.
+EVENT-CONTEXT is an optional existing event context to reuse.
 When nil, no skills are injected (skills must be explicitly selected
 via slash commands in the prompt).
 
@@ -43,7 +45,10 @@ The tool calling loop is managed by magent-fsm.  This function:
   (let* ((session (magent-session-get))
          (agent (or agent-info
                     (magent-session-agent session)
-                    (magent-agent-registry-get-default))))
+                    (magent-agent-registry-get-default)))
+         (context (or event-context
+                      (magent-events-begin-turn
+                       (format "Agent %s" (magent-agent-info-name agent))))))
     (magent-session-set-agent session agent)
     (magent-session-add-message session 'user user-prompt)
     (let* ((prompt-list (magent-session-to-gptel-prompt-list session))
@@ -75,8 +80,13 @@ The tool calling loop is managed by magent-fsm.  This function:
                        :prompt-list prompt-list
                        :system-prompt system-msg
                        :tools tools
+                       :event-context context
                        :permission (magent-agent-info-permission agent)
                        :callback (lambda (response)
+                                   (unless event-context
+                                     (magent-events-end-turn
+                                      context
+                                      (if (stringp response) 'completed 'failed)))
                                    (when (stringp response)
                                      (magent-session-add-message session 'assistant response))
                                    (when callback (funcall callback response)))

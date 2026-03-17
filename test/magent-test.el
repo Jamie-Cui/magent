@@ -1210,7 +1210,7 @@
         (permission '((bash . ask)))
         (gptel-backend (gptel-make-openai "test" :key "test-key")))
     (cl-letf (((symbol-function 'magent-fsm--convert-tools-to-gptel)
-               (lambda (_tools arg-permission)
+               (lambda (_tools arg-permission &optional _event-context)
                  (setq captured-permission arg-permission)
                  nil))
               ((symbol-function 'gptel-request)
@@ -1241,7 +1241,7 @@
                    (lambda (arg-permission arg-tool-calls)
                      (setq captured (list arg-permission arg-tool-calls)))))
           (magent-fsm-backend-gptel--callback
-           (cons 'tool-call tool-calls) nil nil nil request-buffer permission))
+           (cons 'tool-call tool-calls) nil nil nil request-buffer permission nil))
       (when (buffer-live-p request-buffer)
         (kill-buffer request-buffer)))
     (should (equal captured (list permission tool-calls)))))
@@ -1261,8 +1261,9 @@
     (cl-letf (((symbol-function 'run-at-time)
                (lambda (_secs _repeat fn &rest args)
                  (apply fn args)))
-              ((symbol-function 'read-char-choice)
-               (lambda (&rest _args) ?y))
+              ((symbol-function 'magent-approval-request)
+               (lambda (_request cb)
+                 (funcall cb 'allow-once)))
               ((symbol-function 'magent-fsm--run-tool)
                (lambda (_tool-spec cb arg-values)
                  (setq tool-ran (car arg-values))
@@ -1290,8 +1291,9 @@
     (cl-letf (((symbol-function 'run-at-time)
                (lambda (_secs _repeat fn &rest args)
                  (apply fn args)))
-              ((symbol-function 'read-char-choice)
-               (lambda (&rest _args) ?n)))
+              ((symbol-function 'magent-approval-request)
+               (lambda (_request cb)
+                 (funcall cb 'deny-once))))
       (magent-fsm--prompt-tool-calls-serially
        (list (list tool (list "echo hi") (lambda (r) (setq result r))))))
     (should-not tool-ran)
@@ -1313,8 +1315,9 @@
     (cl-letf (((symbol-function 'run-at-time)
                (lambda (_secs _repeat fn &rest args)
                  (apply fn args)))
-              ((symbol-function 'read-char-choice)
-               (lambda (&rest _args) ?A))
+              ((symbol-function 'magent-approval-request)
+               (lambda (_request cb)
+                 (funcall cb 'allow-session)))
               ((symbol-function 'magent-fsm--run-tool)
                (lambda (_tool-spec cb arg-values)
                  (setq tool-ran (car arg-values))
@@ -1343,8 +1346,9 @@
     (cl-letf (((symbol-function 'run-at-time)
                (lambda (_secs _repeat fn &rest args)
                  (apply fn args)))
-              ((symbol-function 'read-char-choice)
-               (lambda (&rest _args) ?D)))
+              ((symbol-function 'magent-approval-request)
+               (lambda (_request cb)
+                 (funcall cb 'deny-session))))
       (magent-fsm--prompt-tool-calls-serially
        (list (list tool (list "echo hi") (lambda (r) (setq result r))))))
     (should-not tool-ran)
@@ -1360,7 +1364,7 @@
         (request-callback nil)
         (gptel-backend (gptel-make-openai "test" :key "test-key")))
     (cl-letf (((symbol-function 'magent-fsm--convert-tools-to-gptel)
-               (lambda (_tools _permission) nil))
+               (lambda (_tools _permission &optional _event-context) nil))
               ((symbol-function 'magent-ui-start-streaming)
                (lambda () (push 'start events)))
               ((symbol-function 'magent-ui-continue-streaming)
@@ -1497,6 +1501,204 @@
 ;;; UI/session regression tests
 ;; ──────────────────────────────────────────────────────────────────────
 
+(ert-deftest magent-test-session-scope-from-directory-falls-back-to-global ()
+  "Test session scope is global when no project root is detected."
+  (let ((magent-project-root-function (lambda () nil)))
+    (should (eq (magent-session-scope-from-directory "/tmp/") 'global))))
+
+(ert-deftest magent-test-session-save-uses-project-storage-directory ()
+  "Test project-scoped sessions save under a hashed project directory."
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (project-root (make-temp-file "magent-project-" t)))
+    (unwind-protect
+        (progn
+          (magent-session-activate (file-truename (directory-file-name project-root)))
+          (magent-session-add-message (magent-session-get) 'user "hello")
+          (magent-session-save)
+          (let* ((storage-dir (expand-file-name
+                               (concat "projects/" (secure-hash 'sha1
+                                                                (file-truename
+                                                                 (directory-file-name project-root))))
+                               magent-session-directory))
+                 (files (directory-files storage-dir nil "\\.json$")))
+            (should (= (length files) 1))
+            (with-temp-buffer
+              (insert-file-contents (expand-file-name (car files) storage-dir))
+              (let* ((json-object-type 'alist)
+                     (json-array-type 'list)
+                     (data (json-read)))
+                (should (equal (cdr (assq 'scope data)) "project"))
+                (should (equal (cdr (assq 'project-root data))
+                               (file-truename (directory-file-name project-root))))))))
+      (delete-directory magent-session-directory t)
+      (delete-directory project-root t))))
+
+(ert-deftest magent-test-session-save-global-uses-legacy-directory ()
+  "Test global sessions still save directly under `magent-session-directory'."
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil))
+    (unwind-protect
+        (progn
+          (magent-session-activate 'global)
+          (magent-session-add-message (magent-session-get) 'user "hello")
+          (magent-session-save)
+          (should (= (length (directory-files magent-session-directory nil "\\.json$")) 1)))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-session-list-files-prefers-project-then-global ()
+  "Test resume ordering groups current project first, then others, then global."
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (project-root (file-truename (directory-file-name (make-temp-file "magent-project-" t))))
+         (other-project (file-truename (directory-file-name (make-temp-file "magent-project-" t))))
+         (project-dir (expand-file-name
+                       (concat "projects/" (secure-hash 'sha1 project-root))
+                       magent-session-directory))
+         (other-project-dir (expand-file-name
+                             (concat "projects/" (secure-hash 'sha1 other-project))
+                             magent-session-directory))
+         (global-file (expand-file-name "session-20260316-100000.json" magent-session-directory))
+         (project-file (expand-file-name "session-20260317-100000.json" project-dir))
+         (other-project-file (expand-file-name "session-20260315-100000.json" other-project-dir))
+         (older-time (date-to-time "2026-03-16 10:00:00"))
+         (newer-time (date-to-time "2026-03-17 10:00:00"))
+         (oldest-time (date-to-time "2026-03-15 10:00:00")))
+    (unwind-protect
+        (progn
+          (make-directory project-dir t)
+          (make-directory other-project-dir t)
+          (with-temp-file global-file
+            (insert "{\"scope\":\"global\",\"summary-title\":\"Global chat\"}"))
+          (with-temp-file project-file
+            (insert (format
+                     "{\"scope\":\"project\",\"project-root\":\"%s\",\"summary-title\":\"Project work item\"}"
+                     project-root)))
+          (with-temp-file other-project-file
+            (insert (format
+                     "{\"scope\":\"project\",\"project-root\":\"%s\",\"summary-title\":\"Other project item\"}"
+                     other-project)))
+          (set-file-times global-file older-time)
+          (set-file-times project-file newer-time)
+          (set-file-times other-project-file oldest-time)
+          (setq magent-session--current-scope project-root)
+          (should (equal (magent-session-list-files)
+                         (list project-file other-project-file global-file)))
+          (should (equal (magent-session--format-file project-file)
+                         (format "2026-03-17 10:00:00  (%s)  Project work item"
+                                 (abbreviate-file-name project-root))))
+          (should (equal (magent-session--file-group project-file)
+                         (format "Current Project: %s"
+                                 (abbreviate-file-name project-root))))
+          (should (equal (magent-session--file-group other-project-file)
+                         (format "Project: %s"
+                                 (abbreviate-file-name other-project))))
+          (should (equal (magent-session--format-file global-file)
+                         "2026-03-16 10:00:00  (global)  Global chat")))
+      (delete-directory magent-session-directory t)
+      (delete-directory project-root t)
+      (delete-directory other-project t))))
+
+(ert-deftest magent-test-session-format-file-derives-summary-title-from-messages ()
+  "Test resume labels derive summary title from stored messages when needed."
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (session-file (expand-file-name "session-20260317-120000.json"
+                                         magent-session-directory)))
+    (unwind-protect
+        (progn
+          (with-temp-file session-file
+            (insert
+             "{\"scope\":\"global\",\"messages\":[{\"role\":\"user\",\"content\":\"   Investigate resume menu title rendering regression   \"}]}"))
+          (should (equal (magent-session--format-file session-file)
+                         "2026-03-17 12:00:00  (global)  Investigate resume menu title rendering regre...")))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-ui-scope-switch-snapshots-outgoing-session ()
+  "Test switching project scopes snapshots the outgoing UI buffer."
+  (require 'magent-ui)
+  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (project-a (make-temp-file "magent-project-a-" t))
+         (project-b (make-temp-file "magent-project-b-" t))
+         (buffer (magent-ui-get-buffer))
+         (magent-project-root-function
+          (lambda ()
+            (cond
+             ((string-prefix-p project-a default-directory) project-a)
+             ((string-prefix-p project-b default-directory) project-b)
+             (t nil)))))
+    (unwind-protect
+        (progn
+          (with-temp-buffer
+            (setq default-directory (file-name-as-directory project-a))
+            (magent-ui--activate-context-session))
+          (with-current-buffer buffer
+            (let ((inhibit-read-only t))
+              (erase-buffer)
+              (insert "project-a snapshot")))
+          (let ((session-a (magent-session-get)))
+            (with-temp-buffer
+              (setq default-directory (file-name-as-directory project-b))
+              (magent-ui--activate-context-session))
+            (should (equal (magent-session-buffer-content session-a)
+                           "project-a snapshot"))
+            (should (equal (magent-session-current-scope)
+                           (file-truename (directory-file-name project-b))))
+            (should-not (equal (with-current-buffer buffer (buffer-string))
+                               "project-a snapshot"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory project-a t)
+      (delete-directory project-b t))))
+
+(ert-deftest magent-test-ui-scope-switch-blocked-while-processing ()
+  "Test scope switching is refused while a request is in flight."
+  (require 'magent-ui)
+  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (project-a (make-temp-file "magent-project-a-" t))
+         (project-b (make-temp-file "magent-project-b-" t)))
+    (unwind-protect
+        (progn
+          (magent-session-activate (file-truename (directory-file-name project-a)))
+          (let ((magent-queue--processing t))
+            (cl-letf (((symbol-function 'magent-ui--context-scope)
+                       (lambda ()
+                         (file-truename (directory-file-name project-b)))))
+              (should-error (magent-ui--activate-context-session)
+                            :type 'user-error)))
+          (should (equal (magent-session-current-scope)
+                         (file-truename (directory-file-name project-a)))))
+      (delete-directory project-a t)
+      (delete-directory project-b t))))
+
+(ert-deftest magent-test-session-reset-clears-only-active-scope ()
+  "Test resetting a session only clears the active scope."
+  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (project-root (file-truename (directory-file-name (make-temp-file "magent-project-" t)))))
+    (unwind-protect
+        (progn
+          (magent-session-activate 'global)
+          (magent-session-add-message (magent-session-get) 'user "global")
+          (magent-session-activate project-root)
+          (magent-session-add-message (magent-session-get) 'user "project")
+          (magent-session-reset)
+          (should-not (gethash project-root magent-session--scoped-sessions))
+          (should (gethash 'global magent-session--scoped-sessions))
+          (magent-session-activate 'global)
+          (should (equal (magent-msg-content
+                          (car (magent-session-get-messages (magent-session-get))))
+                         "global")))
+      (delete-directory project-root t))))
+
 (ert-deftest magent-test-resume-session-restores-loaded-buffer-content ()
   "Test resuming a session does not overwrite the loaded snapshot."
   (require 'magent-ui)
@@ -1516,13 +1718,16 @@
           (cl-letf (((symbol-function 'magent-session-list-files)
                      (lambda () '("/tmp/session.json")))
                     ((symbol-function 'completing-read)
-                     (lambda (&rest _args) "2026-03-16 10:00:00"))
+                     (lambda (&rest _args) "2026-03-16 10:00:00  (global)  Loaded session"))
                     ((symbol-function 'magent-session--format-file)
-                     (lambda (_filepath) "2026-03-16 10:00:00"))
-                    ((symbol-function 'magent-session-load)
+                     (lambda (_filepath) "2026-03-16 10:00:00  (global)  Loaded session"))
+                    ((symbol-function 'magent-session-read-file)
                      (lambda (_filepath)
-                       (setq magent--current-session loaded-session)
-                       loaded-session))
+                       (list :scope 'global :session loaded-session :id "loaded")))
+                    ((symbol-function 'magent-session-install)
+                     (lambda (_scope session)
+                       (setq magent--current-session session)
+                       session))
                     ((symbol-function 'message) #'ignore))
             (magent-resume-session))
           (with-current-buffer buffer
@@ -1533,6 +1738,159 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (magent-session-reset))))
+
+(ert-deftest magent-test-resume-session-snapshots-current-session-before-cross-scope-load ()
+  "Test resuming another scope snapshots the outgoing buffer first."
+  (require 'magent-ui)
+  (let* ((buffer (magent-ui-get-buffer))
+         (current-session (magent-session-create :id "current"))
+         (loaded-session (magent-session-create :id "loaded"
+                                                :buffer-content "* [ASSISTANT]\nLoaded\n"))
+         (captured-snapshot nil))
+    (unwind-protect
+        (progn
+          (setq magent--current-session current-session)
+          (with-current-buffer buffer
+            (let ((inhibit-read-only t))
+              (erase-buffer)
+              (insert "* [USER]\nUnsaved current content\n")))
+          (cl-letf (((symbol-function 'magent-session-list-files)
+                     (lambda () '("/tmp/session.json")))
+                    ((symbol-function 'completing-read)
+                     (lambda (&rest _args) "2026-03-16 10:00:00  (global)  Loaded"))
+                    ((symbol-function 'magent-session--format-file)
+                     (lambda (_filepath) "2026-03-16 10:00:00  (global)  Loaded"))
+                    ((symbol-function 'magent-session-read-file)
+                     (lambda (_filepath)
+                       (setq captured-snapshot
+                             (magent-session-buffer-content current-session))
+                       (list :scope 'global :session loaded-session :id "loaded")))
+                    ((symbol-function 'magent-session-install)
+                     (lambda (_scope session)
+                       (setq magent--current-session session)
+                       session))
+                    ((symbol-function 'message) #'ignore))
+            (magent-resume-session))
+          (should (string-prefix-p "* [USER]\nUnsaved current content\n" captured-snapshot)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (magent-session-reset))))
+
+(ert-deftest magent-test-agent-process-emits-turn-events ()
+  "Test `magent-agent-process' emits turn lifecycle and text events."
+  (require 'magent-events)
+  (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+        (gptel-model 'gpt-4o-mini)
+        (captured nil))
+    (cl-letf (((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (let ((cb (plist-get kwargs :callback)))
+                   (funcall cb "Hello" nil)
+                   (funcall cb t (list :content "Hello")))))
+              ((symbol-function 'magent-ui-start-streaming) #'ignore)
+              ((symbol-function 'magent-ui-insert-streaming) #'ignore)
+              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+      (unwind-protect
+        (progn
+            (magent-events-add-sink (lambda (event) (push event captured)))
+            (magent-agent-process "Hello" #'ignore))
+        (magent-events-clear-sinks)))
+    (should (cl-find-if (lambda (event)
+                          (eq (plist-get event :type) 'turn-start))
+                        captured))
+    (should (cl-find-if (lambda (event)
+                          (eq (plist-get event :type) 'text-delta))
+                        captured))
+    (should (cl-find-if (lambda (event)
+                          (and (eq (plist-get event :type) 'turn-end)
+                               (eq (plist-get event :status) 'completed)))
+                        captured))))
+
+(ert-deftest magent-test-happy-envelope-mapping ()
+  "Test Happy bridge envelope mapping for tool calls."
+  (require 'magent-events)
+  (require 'magent-happy)
+  (let* ((context (magent-events-context-create :turn-id "turn123"))
+         (event (list :type 'tool-call-start
+                      :context context
+                      :turn-id "turn123"
+                      :call-id "call123"
+                      :tool-name "bash"
+                      :summary "echo hi"
+                      :description "echo hi"
+                      :args '(:command "echo hi")))
+         (envelope (magent-happy--event->envelope event)))
+    (should (equal (plist-get envelope :role) "agent"))
+    (should (equal (plist-get envelope :turn) "turn123"))
+    (should (equal (plist-get (plist-get envelope :ev) :t) "tool-call-start"))
+    (should (equal (plist-get (plist-get envelope :ev) :call) "call123"))))
+
+(ert-deftest magent-test-happy-helper-user-message-busy-emits-service ()
+  "Test remote Happy messages respect Magent busy semantics."
+  (require 'magent-events)
+  (require 'magent-happy)
+  (let ((captured nil)
+        (magent-queue--processing t))
+    (unwind-protect
+        (progn
+          (magent-events-add-sink (lambda (event) (push event captured)))
+          (magent-happy--handle-user-message '(:text "hello")))
+      (magent-events-clear-sinks))
+    (should (eq (plist-get (car captured) :type) 'service))
+    (should (string-match-p "busy" (plist-get (car captured) :text)))))
+
+(ert-deftest magent-test-happy-helper-user-message-dispatches-through-unified-entry ()
+  "Test remote Happy messages use the shared prompt dispatch path."
+  (require 'magent-happy)
+  (let (captured)
+    (cl-letf (((symbol-function 'magent-ui-dispatch-prompt)
+               (lambda (prompt &optional source display skills activate-context)
+                 (setq captured (list prompt source display skills activate-context)))))
+      (magent-happy--handle-user-message '(:text "hello from happy")))
+    (should (equal captured
+                   '("hello from happy" happy-remote "hello from happy" nil nil)))))
+
+(ert-deftest magent-test-happy-approval-provider-roundtrip ()
+  "Test Happy approval provider resolves pending callbacks from helper responses."
+  (require 'magent-happy)
+  (let ((magent-happy--session-id "session123")
+        (magent-happy--pending-approvals (make-hash-table :test 'equal))
+        (magent-happy--completed-approvals nil)
+        (sent nil)
+        (decision nil))
+    (cl-letf (((symbol-function 'magent-happy--send)
+               (lambda (payload)
+                 (push payload sent))))
+      (magent-happy--approval-provider
+       '(:request-id "req1" :tool-name "bash" :perm-key bash :summary "echo hi")
+       (lambda (value) (setq decision value)))
+      (magent-happy--handle-approval-response
+       '(:request_id "req1" :decision "allow-session")))
+    (should (eq decision 'allow-session))
+    (should-not (gethash "req1" magent-happy--pending-approvals))
+    (should (cl-find-if (lambda (payload)
+                          (equal (plist-get payload :type) "agent-state"))
+                        sent))))
+
+(ert-deftest magent-test-happy-sentinel-resolves-pending-approvals ()
+  "Test helper exit resolves pending approvals and restores local provider."
+  (require 'magent-happy)
+  (let ((magent-happy--process nil)
+        (magent-happy--connected t)
+        (magent-happy--session-id "session123")
+        (magent-happy--pending-approvals (make-hash-table :test 'equal))
+        (magent-happy--completed-approvals nil)
+        (magent-happy--previous-approval-provider #'ignore)
+        (magent-approval-provider-function #'magent-happy--approval-provider)
+        (decision nil))
+    (puthash "req1" (lambda (value) (setq decision value))
+             magent-happy--pending-approvals)
+    (cl-letf (((symbol-function 'message) #'ignore))
+      (magent-happy--process-sentinel nil "finished\n"))
+    (should (eq decision 'deny-once))
+    (should-not (gethash "req1" magent-happy--pending-approvals))
+    (should (eq magent-approval-provider-function #'ignore))
+    (should-not magent-happy--connected)))
 
 (provide 'magent-test)
 ;;; magent-test.el ends here

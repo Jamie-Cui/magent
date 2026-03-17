@@ -141,6 +141,26 @@ Returns the captured string, or nil if the buffer is empty or SESSION is nil."
           (setf (magent-session-buffer-content session) content)
           content)))))
 
+(defun magent-ui--context-scope ()
+  "Return the session scope implied by the current command context."
+  (if (derived-mode-p 'magent-output-mode)
+      (magent-session-current-scope)
+    (magent-session-scope-from-directory default-directory)))
+
+(defun magent-ui--activate-context-session ()
+  "Activate the session scope for the current command context.
+When switching scopes, snapshot the outgoing buffer before rendering the
+new scope into `magent-buffer-name'.  Returns the active session."
+  (let ((target-scope (magent-ui--context-scope))
+        (current-scope (magent-session-current-scope)))
+    (unless (equal target-scope current-scope)
+      (when (magent-queue-processing-p)
+        (user-error "Magent: cannot switch project while a request is in progress"))
+      (magent-ui--snapshot-buffer-content magent--current-session)
+      (magent-session-activate target-scope)
+      (magent-ui-render-history t))
+    (magent-session-get)))
+
 (defun magent-ui-render-history (&optional skip-snapshot)
   "Render session history into the output buffer.
 If the session has saved buffer content (from a previous render),
@@ -808,6 +828,7 @@ enters insert state for immediate typing."
   (interactive)
   (let ((ctx (magent-ui--capture-buffer-context))
         (buf (magent-ui-get-buffer)))
+    (magent-ui--activate-context-session)
     (when (zerop (buffer-size buf))
       (magent-ui-render-history))
     (display-buffer buf)
@@ -824,30 +845,39 @@ enters insert state for immediate typing."
 
 (defun magent-send-prompt (prompt)
   "Send PROMPT to Magent agent programmatically."
-  (magent--ensure-initialized)
-  (when (not (string-blank-p prompt))
-    (magent-ui-process prompt 'send-prompt)))
+  (magent-ui-dispatch-prompt prompt 'send-prompt nil nil t))
 
 ;;;###autoload
 (defun magent-prompt-region (begin end)
   "Send region from BEGIN to END to Magent agent."
   (interactive "r")
-  (magent--ensure-initialized)
   (let ((input (buffer-substring begin end)))
-    (magent-ui-process input 'prompt-region
-                       (format "[Region] %s" input))))
+    (magent-ui-dispatch-prompt input 'prompt-region
+                               (format "[Region] %s" input)
+                               nil t)))
 
 ;;;###autoload
 (defun magent-ask-at-point ()
   "Ask about the symbol at point."
   (interactive)
-  (magent--ensure-initialized)
   (let ((symbol (thing-at-point 'symbol)))
     (when symbol
       (let ((input (format "Explain this code: %s" symbol)))
-        (magent-ui-process input 'ask-at-point)))))
+        (magent-ui-dispatch-prompt input 'ask-at-point nil nil t)))))
 
 ;;; Processing
+
+(defun magent-ui-dispatch-prompt (prompt &optional source display skills activate-context)
+  "Initialize Magent and dispatch PROMPT through the queue.
+SOURCE identifies the caller, DISPLAY overrides the user-visible text,
+SKILLS is a list of explicit skill names, and ACTIVATE-CONTEXT controls
+whether the current command context should switch session scope first."
+  (magent--ensure-initialized)
+  (when (not (string-blank-p prompt))
+    (if activate-context
+        (magent-ui--activate-context-session)
+      (magent-session-get))
+    (magent-ui-process prompt source display skills)))
 
 (defun magent-ui-process (prompt &optional source display skills)
   "Dispatch PROMPT, rejecting if a request is already in flight.
@@ -916,6 +946,7 @@ Handles both streaming and non-streaming completion."
 (defun magent-clear-session ()
   "Clear the current session."
   (interactive)
+  (magent-ui--activate-context-session)
   (magent-queue-clear)
   (magent-session-reset)
   (magent-ui-clear-buffer)
@@ -927,19 +958,33 @@ Handles both streaming and non-streaming completion."
 Presents all saved sessions sorted newest-first for selection,
 then loads the chosen one and renders it in the output buffer."
   (interactive)
+  (magent-ui--activate-context-session)
   (let ((files (magent-session-list-files)))
     (if (null files)
         (message "Magent: no saved sessions found")
       (let* ((choices (mapcar (lambda (f)
                                 (cons (magent-session--format-file f) f))
                               files))
+             (group-map (mapcar (lambda (choice)
+                                  (cons (car choice)
+                                        (magent-session--file-group (cdr choice))))
+                                choices))
+             (completion-extra-properties
+              `(:group-function
+                ,(lambda (candidate _transform)
+                   (cdr (assoc candidate group-map)))))
              (selected (completing-read "Resume session: "
                                         (mapcar #'car choices) nil t
                                         nil nil (caar choices)))
              (filepath (cdr (assoc selected choices))))
-        (when (and filepath (magent-session-load filepath))
-          (magent-ui-render-history t)
-          (message "Magent: session resumed"))))))
+        (when filepath
+          (magent-ui--snapshot-buffer-content magent--current-session)
+          (when-let* ((loaded (magent-session-read-file filepath))
+                      (scope (plist-get loaded :scope))
+                      (session (plist-get loaded :session)))
+            (magent-session-install scope session)
+            (magent-ui-render-history t)
+            (message "Magent: session resumed")))))))
 
 ;;;###autoload
 (defun magent-show-log ()
@@ -983,6 +1028,7 @@ the buffer flag is cleared."
   "Select an agent for the current session."
   (interactive)
   (magent--ensure-initialized)
+  (magent-ui--activate-context-session)
   (let* ((agents (magent-agent-registry-primary-agents))
          (agent-names (mapcar #'magent-agent-info-name agents))
          (selected (completing-read "Select agent: " agent-names nil t)))
@@ -997,6 +1043,7 @@ the buffer flag is cleared."
   "Show the current agent for this session in message buffer."
   (interactive)
   (magent--ensure-initialized)
+  (magent-ui--activate-context-session)
   (let* ((session (magent-session-get))
          (agent (magent-session-agent session)))
     (if agent
