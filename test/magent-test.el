@@ -962,6 +962,49 @@
       (should (string-match-p "s1" (car prompts))))))
 
 ;; ──────────────────────────────────────────────────────────────────────
+;;; Capability tests
+;; ──────────────────────────────────────────────────────────────────────
+
+(ert-deftest magent-test-capabilities-register-and-get ()
+  "Test capability registration and retrieval."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil))
+    (let ((capability (magent-capability-create
+                       :name "runtime"
+                       :description "Inspect runtime"
+                       :skills '("emacs-runtime-inspection"))))
+      (magent-capability-register capability)
+      (should (magent-capability-get "runtime"))
+      (should (equal (magent-capability-name
+                      (magent-capability-get "runtime"))
+                     "runtime")))))
+
+(ert-deftest magent-test-capability-resolve-activates-matching-skill ()
+  "Test context-aware capability resolution."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil))
+    (magent-capability-register
+     (magent-capability-create
+      :name "org-structure"
+      :description "Org structure edits"
+      :skills '("org-structure-workflow")
+      :modes '(org-mode)
+      :features '(org)
+      :prompt-keywords '("heading")
+      :disclosure 'active))
+    (let* ((resolution (magent-capability-resolve
+                        "Please reorganize this heading"
+                        '(:major-mode org-mode :features (org))
+                        nil))
+           (active (magent-capability-resolution-active-capabilities resolution)))
+      (should (= (length active) 1))
+      (should (equal (magent-capability-resolution-skill-names resolution)
+                     '("org-structure-workflow")))
+      (should (equal (magent-capability-name
+                      (magent-capability-match-capability (car active)))
+                     "org-structure")))))
+
+;; ──────────────────────────────────────────────────────────────────────
 ;;; Skill file parsing tests
 ;; ──────────────────────────────────────────────────────────────────────
 
@@ -1005,6 +1048,38 @@
             (should (eq (magent-skill-type skill) 'instruction))
             (should (equal (magent-skill-tools skill) '(bash read)))
             (should (string-match-p "Do the thing" (magent-skill-prompt skill)))))
+      (delete-directory tmpdir t))))
+
+(ert-deftest magent-test-capability-file-load-from-temp ()
+  "Test loading a capability from a temporary file."
+  (require 'magent-capability-file)
+  (let* ((magent-capability--registry nil)
+         (tmpdir (make-temp-file "capability-" t))
+         (capfile (expand-file-name "CAPABILITY.md" tmpdir)))
+    (unwind-protect
+        (progn
+          (with-temp-file capfile
+            (insert
+             "---\n"
+             "name: org-structure\n"
+             "description: Structured org editing\n"
+             "source: package\n"
+             "package: org\n"
+             "skills: org-structure-workflow\n"
+             "modes: org-mode\n"
+             "features: org\n"
+             "keywords: heading, subtree\n"
+             "disclosure: active\n"
+             "---\n"
+             "Use for org structure.\n"))
+          (let ((capability (magent-capability-file-load capfile)))
+            (should capability)
+            (should (equal (magent-capability-name capability) "org-structure"))
+            (should (eq (magent-capability-source-kind capability) 'package))
+            (should (equal (magent-capability-skills capability)
+                           '("org-structure-workflow")))
+            (should (equal (magent-capability-modes capability) '(org-mode)))
+            (should (equal (magent-capability-features capability) '(org)))))
       (delete-directory tmpdir t))))
 
 ;; ──────────────────────────────────────────────────────────────────────
@@ -2457,6 +2532,44 @@
                                (eq (plist-get event :status) 'completed)))
                         captured))))
 
+(ert-deftest magent-test-agent-process-resolves-capability-skills ()
+  "Test `magent-agent-process' merges capability-derived skills."
+  (require 'magent-capability)
+  (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+        (gptel-model 'gpt-4o-mini)
+        (magent-capability--registry nil)
+        (magent-enable-capabilities t)
+        (captured-skill-names nil))
+    (magent-capability-register
+     (magent-capability-create
+      :name "org-structure"
+      :description "Org structure edits"
+      :skills '("auto-skill")
+      :modes '(org-mode)
+      :features '(org)
+      :prompt-keywords '("heading")
+      :disclosure 'active))
+    (cl-letf (((symbol-function 'magent-skills-get-instruction-prompts)
+               (lambda (skill-names)
+                 (setq captured-skill-names skill-names)
+                 '("## Skill: captured\n\nDo things.")))
+              ((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (let ((callback (plist-get kwargs :callback)))
+                   (funcall callback "Hello" nil)
+                   (funcall callback t (list :content "Hello")))))
+              ((symbol-function 'magent-ui-start-streaming) #'ignore)
+              ((symbol-function 'magent-ui-insert-streaming) #'ignore)
+              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+      (magent-agent-process
+       "Please reorganize this heading"
+       #'ignore
+       nil
+       '("manual-skill")
+       nil
+       '(:major-mode org-mode :features (org))))
+    (should (equal captured-skill-names '("manual-skill" "auto-skill")))))
+
 (ert-deftest magent-test-diagnose-emacs-dispatches-structured-prompt ()
   "Test `magent-diagnose-emacs' dispatches a structured diagnosis request."
   (require 'magent-ui)
@@ -2521,15 +2634,19 @@
         captured)
     (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
               ((symbol-function 'magent-ui--activate-context-session) (lambda () 'session))
+              ((symbol-function 'magent-capability-capture-context)
+               (lambda () '(:buffer-name "*scratch*" :major-mode emacs-lisp-mode)))
               ((symbol-function 'magent-queue-enqueue)
-               (lambda (prompt source &optional display skills agent-info)
-                 (setq captured (list prompt source display skills agent-info)))))
+               (lambda (prompt source &optional display skills agent-info request-context)
+                 (setq captured (list prompt source display skills agent-info request-context)))))
       (magent-ui-dispatch-prompt "diag" 'diagnose "display" '("systematic-debugging") t agent))
     (should (equal (nth 0 captured) "diag"))
     (should (equal (nth 1 captured) 'diagnose))
     (should (equal (nth 2 captured) "display"))
     (should (equal (nth 3 captured) '("systematic-debugging")))
-    (should (eq (nth 4 captured) agent))))
+    (should (eq (nth 4 captured) agent))
+    (should (equal (nth 5 captured)
+                   '(:buffer-name "*scratch*" :major-mode emacs-lisp-mode)))))
 
 (ert-deftest magent-test-mode-map-binds-diagnose-emacs ()
   "Test `magent-mode-map' binds the Emacs diagnosis command."

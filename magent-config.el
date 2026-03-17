@@ -300,6 +300,23 @@ and active region bounds are prepended to the submitted prompt."
   :type 'boolean
   :group 'magent)
 
+(defcustom magent-enable-capabilities t
+  "Whether to resolve context-aware capabilities for each request.
+When non-nil, Magent selects a small set of active capabilities
+and injects the instruction skills linked to them."
+  :type 'boolean
+  :group 'magent)
+
+(defcustom magent-capability-max-active 3
+  "Maximum number of capabilities to auto-activate per request."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-disabled-capabilities nil
+  "List of capability names that should never auto-activate."
+  :type '(repeat string)
+  :group 'magent)
+
 ;;; Shared utilities
 
 (defmacro magent--with-display-buffer (name &rest body)

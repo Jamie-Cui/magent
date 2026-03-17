@@ -89,6 +89,8 @@
 (require 'magent-agent-file)
 (require 'magent-skills)
 (require 'magent-skill-file)
+(require 'magent-capability)
+(require 'magent-capability-file)
 (require 'magent-queue)
 
 (declare-function magent-doctor "magent-ui")
@@ -185,6 +187,8 @@ Called on first use of any magent command.  Loads agents and skills."
     (magent-agent-registry-init)
     ;; Load skills from files (built-in skills auto-register on require)
     (magent-skill-file-load-all)
+    ;; Load capabilities after skills so linked skill prompts are available.
+    (magent-capability-file-load-all)
     (setq magent--initialized t)
     (magent-log "INFO magent initialization complete")))
 

@@ -37,6 +37,7 @@
 (defvar magent-ui--input-section-start)
 
 ;; Forward declarations for magent-skills (loaded lazily via require)
+(declare-function magent-capability-capture-context "magent-capability")
 (declare-function magent-skills-get "magent-skills")
 (declare-function magent-skills-list "magent-skills")
 (declare-function magent-skills-list-by-type "magent-skills")
@@ -1093,7 +1094,11 @@ DISPLAY is the text shown in the buffer's user-message heading;
 defaults to PROMPT when nil.
 SKILLS is a list of skill name strings selected via slash commands.
 AGENT is an optional `magent-agent-info' override for this request."
-  (magent-queue-enqueue prompt (or source 'prompt) display skills agent))
+  (let ((request-context
+         (when (require 'magent-capability nil t)
+           (magent-capability-capture-context))))
+    (magent-queue-enqueue prompt (or source 'prompt)
+                          display skills agent request-context)))
 
 (defun magent-ui--run-item (item)
   "Dispatch ITEM (a `magent-queue-item') to the agent.
@@ -1121,7 +1126,9 @@ stale callbacks are discarded."
                    (magent-log "DEBUG discarding stale callback gen=%d (current=%d)"
                                gen magent-ui--request-generation)))
                (magent-queue-item-agent item)
-               (magent-queue-item-skills item)))
+               (magent-queue-item-skills item)
+               nil
+               (magent-queue-item-request-context item)))
       (error
        (magent-log "ERROR in run-item: %s" (error-message-string err))
        (magent-ui-insert-error (error-message-string err))

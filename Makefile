@@ -37,7 +37,9 @@ SRCS = magent-config.el \
        magent-fsm.el \
        magent-skill-creator.el \
        magent-skills.el \
-       magent-skill-file.el
+       magent-skill-file.el \
+       magent-capability.el \
+       magent-capability-file.el
 
 COMPILED = $(SRCS:.el=.elc)
 
