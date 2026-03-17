@@ -1,0 +1,240 @@
+#+TITLE: Magent Live-in-Emacs Positioning
+#+AUTHOR: Jamie Cui
+#+DATE: 2026
+#+OPTIONS: toc:3 H:3 num:t
+#+PROPERTY: header-args :tangle no
+
+* Purpose
+
+This document records the product positioning for Magent as a =live-in-emacs=
+agent. It complements [[file:design.org][Magent Design Document]]: =design.org= explains
+architecture and implementation, while this document explains where Magent
+should differentiate from CLI coding agents and how the =elisp-first= design
+changes product direction.
+
+This is an internal design note for roadmap, prompting policy, demos, and
+feature prioritization. It does not imply new capabilities beyond the current
+system.
+
+* Core Thesis
+
+CLI coding agents such as Codex or Claude Code primarily operate on
+repositories, shells, processes, and command output. Magent operates on a live
+Emacs session.
+
+That difference matters because a live Emacs session contains information and
+affordances that are not naturally available to CLI agents:
+
+- current buffers and window layout
+- point, mark, region, and buffer-local state
+- active modes, hooks, advices, and commands
+- live message buffers such as =*Messages*=, =*Warnings*=, and =*Backtrace*=
+- editor-native UI state and ongoing interaction history
+
+As a result, Magent should not try to win primarily as a generic repository
+automation tool. It should win as an Emacs-native collaborator that can inspect,
+explain, and change the user's live working environment.
+
+* Structural Advantages Over CLI Agents
+
+** Live Editor State and Runtime Introspection
+
+Magent can reason about the user's current work context rather than a detached
+repository snapshot. For Emacs-heavy workflows, the problem is often not "what
+does this file contain?" but "what is my editor doing right now?"
+
+This creates an advantage in tasks such as:
+
+- explaining why the current buffer behaves unexpectedly
+- inspecting local variables, major/minor mode state, or active keymaps
+- operating on the current point or region rather than only on files
+- understanding failures that only appear in the user's live session
+
+CLI agents usually need the user to describe this state manually or reconstruct
+it indirectly from files and logs.
+
+** Emacs Package and Config Debugging Loop
+
+Many Emacs problems are inherently interactive and stateful. The natural loop
+is:
+
+1. edit a file
+2. reload it into the running Emacs
+3. reproduce the command or interaction
+4. inspect =*Messages*=, =*Warnings*=, or =*Backtrace*=
+5. check symbols, hooks, keymaps, or buffer-local variables
+
+Magent's =emacs_eval= capability, session-scoped UI, and in-buffer interaction
+fit this loop directly. A CLI agent can help with the files, but it remains one
+step removed from the actual editor state.
+
+** Editor-Native Composite Workflows
+
+Magent can treat Emacs objects as first-class inputs and outputs:
+
+- buffers
+- windows
+- regions
+- org subtrees
+- local session history
+
+This enables workflows that are awkward in CLI-first tools, for example:
+
+- compare or summarize several open buffers
+- transform the current region using mode-aware editor APIs
+- jump between code, notes, and scratch buffers as part of one task
+- keep tool output inside the same navigable org-based conversation buffer
+
+The point is not only that Magent can edit files. The stronger point is that it
+can work on editor-native objects and keep the result inside the editor-native
+workflow.
+
+** Interactive Pairing and In-Context Teaching
+
+Magent can explain behavior in terms of what the user is seeing right now. This
+is especially valuable for Emacs and Elisp, where many issues are about runtime
+semantics rather than static source text.
+
+Examples include:
+
+- why a hook did not run
+- why a variable is buffer-local in this buffer
+- why an advice changed command behavior
+- how an interactive operation could be turned into Elisp
+
+This makes Magent suitable not only for execution, but also for guided
+understanding and skill transfer.
+
+** Persistent User Context Inside Emacs
+
+For many Emacs users, important working context already lives inside Emacs:
+
+- org notes
+- agenda items
+- recent buffers
+- registers
+- scratch code
+- project-local editing state
+
+Magent can potentially use these as part of the working context, while a CLI
+agent typically sees only the repository and the shell environment. This does
+not remove the need for permission boundaries, but it does create a meaningful
+product distinction.
+
+* Where CLI Agents Retain the Advantage
+
+CLI agents remain structurally stronger for:
+
+- generic repository automation across many languages and frameworks
+- shell-heavy workflows involving build systems, package managers, and CI
+- tasks whose natural evidence is stdout/stderr and process exit status
+- large-scale repository search, batch editing, and git-oriented automation
+- portable and reproducible flows that should work outside the editor
+
+Magent can still support many of these tasks through =bash= and file tools, but
+they should be treated as secondary capabilities rather than the product center
+of gravity.
+
+* Implications of an Elisp-First Design
+
+** What Elisp-First Enables
+
+Treating Elisp as a first-class tool changes the default problem-solving style.
+Instead of viewing Emacs as a text editor around a shell, Magent can view Emacs
+as the host platform.
+
+Benefits include:
+
+- direct access to editor data structures and runtime objects
+- mode-aware, buffer-aware, and object-aware transformations
+- solutions based on Emacs APIs instead of text-only shell manipulation
+- a shorter edit, reload, inspect, retry loop for package and config work
+
+For Emacs-native tasks, this usually produces more idiomatic solutions than a
+=bash-first= policy.
+
+** Risks of Elisp-First
+
+An =elisp-first= design also introduces predictable failure modes:
+
+- local optimum: the agent may force an Elisp solution where a shell command or
+  external tool would be simpler
+- weaker portability: an Elisp solution may not transfer to CI, terminals, or
+  non-Emacs workflows
+- larger trust surface: live evaluation can touch the user's active session,
+  state, and editor behavior
+- training prior mismatch: many general coding agents have stronger priors for
+  shell, git, Python, or JavaScript workflows than for interactive Emacs Lisp
+
+This means Elisp should be first-class, but not exclusive.
+
+** Tool Selection Policy
+
+The practical goal is not "use Elisp whenever possible." The goal is "use the
+most native tool for the real object of work."
+
+Prefer =emacs_eval= when the task depends on:
+
+- live editor state
+- buffer-local or mode-local semantics
+- inspecting commands, variables, hooks, keymaps, or windows
+- reloading and validating behavior in the running Emacs session
+- manipulating regions, buffers, or org structures as editor objects
+
+Prefer =bash= when the task depends on:
+
+- repository-wide search, build, test, or git operations
+- external programs or toolchains
+- non-Emacs automation that should remain portable
+- reproducible command sequences better expressed as shell commands
+
+Prefer a mixed strategy when the task starts from Emacs context but needs shell
+execution. In that model, Emacs provides the context and coordination while the
+shell handles external tooling.
+
+* Product Guidance
+
+** Primary Scenarios to Emphasize
+
+Magent should present the following as core scenarios:
+
+- live session debugging inside Emacs
+- Emacs package and config development
+- editor-native compound workflows that combine code, notes, and interaction
+- in-context explanation of editor behavior and Elisp runtime behavior
+
+These are the scenarios where =live-in-emacs= is a product advantage, not just
+an implementation detail.
+
+** Secondary Scenarios
+
+The following should remain supported but secondary:
+
+- generic full-stack repository work with no Emacs-specific context
+- shell-dominant automation
+- CI-style or infra-style workflows
+- broad attempts to match every CLI coding agent feature one-for-one
+
+If Magent is evaluated mainly on generic repository automation, it competes on a
+surface where CLI agents start with stronger affordances and training priors.
+
+** Roadmap and Prompting Implications
+
+Future feature and prompt decisions should be filtered through a simple
+question: does this make Magent better at understanding and acting on a live
+Emacs session?
+
+That implies:
+
+- prioritize tools and UI that expose live session context safely
+- keep permission and confirmation flows strong around session mutation
+- teach the agent when to prefer Elisp and when to fall back to shell
+- avoid measuring success only by parity with terminal-first agents
+
+* Canonical Framing
+
+Short positioning lines that can be reused in README copy, demos, or prompting:
+
+- Codex and Claude Code operate on repositories and shells; Magent operates on a live Emacs session.
+- Magent is not only a coding agent inside Emacs. It is an Emacs-native collaborator for inspecting, explaining, and changing live editor state.
+
