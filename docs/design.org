@@ -10,6 +10,10 @@ Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and perm
 
 This document provides a comprehensive overview of the magent architecture, design decisions, data structures, and implementation details.
 
+For product positioning, especially the =live-in-emacs= thesis and the
+=elisp-first= versus =bash-first= tradeoff, see
+[[file:live-in-emacs-positioning.org][Live-in-Emacs Positioning]].
+
 * Key Features
 
 - Multi-agent system with specialized agents (build, plan, explore, general, compaction, title, summary)

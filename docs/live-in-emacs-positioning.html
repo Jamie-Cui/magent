@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Magent Live-in-Emacs Positioning</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <h1>Magent Live-in-Emacs Positioning</h1>
+    <p class="subtitle">Author: Jamie Cui | Date: 2026</p>
+
+    <div class="toc">
+        <p><strong>Table of Contents</strong></p>
+        <ul>
+            <li><a href="#purpose">Purpose</a></li>
+            <li><a href="#thesis">Core Thesis</a></li>
+            <li><a href="#advantages">Structural Advantages</a></li>
+            <li><a href="#cli">Where CLI Agents Retain Advantage</a></li>
+            <li><a href="#elisp-first">Implications of Elisp-First</a></li>
+            <li><a href="#guidance">Product Guidance</a></li>
+            <li><a href="#framing">Canonical Framing</a></li>
+        </ul>
+    </div>
+
+    <p>Related docs: <a href="design.org">Architecture Source</a> | <a href="index.html">Architecture HTML</a></p>
+
+    <hr>
+
+    <h2 id="purpose">Purpose</h2>
+    <p>本文记录 Magent 作为 <code>live-in-emacs</code> agent 的产品定位。它补充现有的架构设计文档：<code>design.org</code> 解释实现和模块结构，这份文档解释 Magent 应该如何与 CLI coding agent 错位竞争，以及 <code>elisp-first</code> 设计会带来的产品含义。</p>
+    <p>本文是面向 roadmap、prompt policy、demo 设计和功能取舍的内部设计说明，不代表当前仓库之外的新能力承诺。</p>
+
+    <h2 id="thesis">Core Thesis</h2>
+    <p>Codex、Claude Code 一类 CLI coding agent 的自然工作对象是 repository、shell、process 和 command output。Magent 的自然工作对象是一个活的 Emacs session。</p>
+    <p>这意味着 Magent 天然能接触到 CLI agent 很难直接拿到的上下文：当前 buffer 与 window 布局、point/mark/region、buffer-local 状态、hooks 和 advices、<code>*Messages*</code>/<code>*Warnings*</code>/<code>*Backtrace*</code> 等运行时痕迹，以及编辑器内部的交互历史。</p>
+    <p>因此，Magent 不应把主要目标设为“成为另一个通用 repo 自动化 agent”，而应把核心价值定义为“一个可以检查、解释并改变 live Emacs 工作现场的 Emacs-native collaborator”。</p>
+
+    <h2 id="advantages">Structural Advantages</h2>
+
+    <h3>Live Editor State and Runtime Introspection</h3>
+    <p>Magent 的优势不只是能改文件，而是能围绕用户此刻的编辑器状态工作。对 Emacs-heavy workflow 来说，真正的问题往往不是“文件里写了什么”，而是“我的编辑器现在为什么这样表现”。</p>
+    <ul>
+        <li>解释当前 buffer 为什么行为异常</li>
+        <li>检查 local variables、minor mode、keymap 或 command state</li>
+        <li>围绕当前 point 或 region 执行操作</li>
+        <li>复现只会在 live session 里出现的问题</li>
+    </ul>
+
+    <h3>Emacs Package and Config Debugging Loop</h3>
+    <p>很多 Emacs 问题天然是交互式、状态化的：编辑一个 <code>.el</code> 文件，重新加载进当前 Emacs，重跑命令，查看 <code>*Messages*</code>、<code>*Warnings*</code>、<code>*Backtrace*</code>，再检查 symbols、hooks、keymaps 或 buffer-local variables。Magent 的 <code>emacs_eval</code>、session-scoped UI 和 in-buffer workflow 与这条链路直接贴合。</p>
+
+    <h3>Editor-Native Composite Workflows</h3>
+    <p>Magent 可以把 buffers、windows、regions、org subtrees 和 session history 当作一等对象，而不是只把文件路径当作唯一工作单元。这让它更适合处理“跨多个编辑器对象但用户感知上是一件事”的任务。</p>
+
+    <h3>Interactive Pairing and In-Context Teaching</h3>
+    <p>Magent 可以结合用户眼前的 live state 解释问题，例如为什么 hook 没跑、为什么变量在当前 buffer 是 buffer-local、为什么 advice 改变了某个命令的行为，以及如何把一段交互操作沉淀成 Elisp。</p>
+
+    <h3>Persistent User Context Inside Emacs</h3>
+    <p>对很多 Emacs 用户来说，长期上下文本来就存在于 Emacs 里，例如 org notes、agenda、recent buffers、registers、scratch code 和 project-local editing state。Magent 有机会把这些变成工作上下文的一部分，而 CLI agent 通常只看到 repo 和 shell。</p>
+
+    <h2 id="cli">Where CLI Agents Retain Advantage</h2>
+    <ul>
+        <li>跨语言、跨框架的通用 repository automation</li>
+        <li>以 build/test/package manager/CI 为主的 shell-heavy workflow</li>
+        <li>证据主要来自 stdout/stderr 和 exit status 的任务</li>
+        <li>大规模搜索、批量改写、git-oriented automation</li>
+        <li>需要脱离编辑器依然可复现、可移植的流程</li>
+    </ul>
+    <p>Magent 可以通过 <code>bash</code> 和文件工具支持其中不少任务，但这些能力不应成为产品中心。</p>
+
+    <h2 id="elisp-first">Implications of Elisp-First</h2>
+
+    <h3>What Elisp-First Enables</h3>
+    <p><code>elisp-first</code> 的核心不是“尽量不用 shell”，而是把 Emacs 视为宿主平台而不是围绕 shell 的文本前端。这样更容易得到 mode-aware、buffer-aware、object-aware 的解法，也更适合 package/config 开发中的 edit-reload-inspect-retry 闭环。</p>
+
+    <h3>Risks of Elisp-First</h3>
+    <ul>
+        <li>局部最优：本该用 shell 或外部工具的任务被硬塞成 Elisp 解法</li>
+        <li>可移植性更弱：解法未必容易迁移到 CI、terminal 或非 Emacs workflow</li>
+        <li>信任面更大：live evaluation 会直接触碰用户当前 session</li>
+        <li>训练先验不匹配：通用 coding agent 往往对 bash/git/Python 的先验比对 Emacs Lisp 更强</li>
+    </ul>
+
+    <h3>Tool Selection Policy</h3>
+    <p>应优先使用 <code>emacs_eval</code> 的场景：任务依赖 live editor state、buffer-local 或 mode-local 语义、需要检查 commands/variables/hooks/keymaps/windows、需要在 running Emacs 中 reload 并验证行为、或者要把 region/buffer/org 结构当作编辑器对象处理。</p>
+    <p>应优先使用 <code>bash</code> 的场景：repo-wide search、build、test、git、外部程序调用、或者需要在 Emacs 之外也能复现的自动化流程。</p>
+    <p>混合策略同样重要：很多任务起点是 Emacs 上下文，但执行主体仍应落在 shell。合理模式是由 Emacs 提供上下文与协调，由 shell 执行外部工具链。</p>
+
+    <h2 id="guidance">Product Guidance</h2>
+
+    <h3>Primary Scenarios</h3>
+    <ul>
+        <li>live session debugging inside Emacs</li>
+        <li>Emacs package and config development</li>
+        <li>editor-native compound workflows that combine code, notes, and interaction</li>
+        <li>in-context explanation of editor and Elisp runtime behavior</li>
+    </ul>
+
+    <h3>Secondary Scenarios</h3>
+    <ul>
+        <li>generic full-stack repository work with no Emacs-specific context</li>
+        <li>shell-dominant automation</li>
+        <li>CI-style or infra-style workflows</li>
+        <li>feature-for-feature parity races with terminal-first agents</li>
+    </ul>
+
+    <h3>Roadmap and Prompting Implications</h3>
+    <p>后续功能与 prompt 设计应优先回答一个问题：它是否让 Magent 更擅长理解和操作 live Emacs session？如果答案是否定的，就不应仅仅因为 CLI agent 已经有了类似能力而跟进。</p>
+    <ul>
+        <li>优先投资能安全暴露 live session context 的工具和 UI</li>
+        <li>围绕 session mutation 保持强权限与确认机制</li>
+        <li>教会 agent 什么时候优先 Elisp、什么时候退回 shell</li>
+        <li>不要只用“是否达到 terminal-first agent 的功能对齐”来衡量成功</li>
+    </ul>
+
+    <h2 id="framing">Canonical Framing</h2>
+    <ul>
+        <li>Codex and Claude Code operate on repositories and shells; Magent operates on a live Emacs session.</li>
+        <li>Magent is not only a coding agent inside Emacs. It is an Emacs-native collaborator for inspecting, explaining, and changing live editor state.</li>
+    </ul>
+</body>
+</html>
