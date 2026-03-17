@@ -2457,6 +2457,50 @@
                                (eq (plist-get event :status) 'completed)))
                         captured))))
 
+(ert-deftest magent-test-happy-envelope-mapping ()
+  "Test Happy bridge envelope mapping for tool calls."
+  (require 'magent-events)
+  (require 'magent-happy)
+  (let* ((context (magent-events-context-create :turn-id "turn123"))
+         (event (list :type 'tool-call-start
+                      :context context
+                      :turn-id "turn123"
+                      :call-id "call123"
+                      :tool-name "bash"
+                      :summary "echo hi"
+                      :description "echo hi"
+                      :args '(:command "echo hi")))
+         (envelope (magent-happy--event->envelope event)))
+    (should (equal (plist-get envelope :role) "agent"))
+    (should (equal (plist-get envelope :turn) "turn123"))
+    (should (equal (plist-get (plist-get envelope :ev) :t) "tool-call-start"))
+    (should (equal (plist-get (plist-get envelope :ev) :call) "call123"))))
+
+(ert-deftest magent-test-happy-helper-user-message-busy-emits-service ()
+  "Test remote Happy messages respect Magent busy semantics."
+  (require 'magent-events)
+  (require 'magent-happy)
+  (let ((captured nil)
+        (magent-queue--processing t))
+    (unwind-protect
+        (progn
+          (magent-events-add-sink (lambda (event) (push event captured)))
+          (magent-happy--handle-user-message '(:text "hello")))
+      (magent-events-clear-sinks))
+    (should (eq (plist-get (car captured) :type) 'service))
+    (should (string-match-p "busy" (plist-get (car captured) :text)))))
+
+(ert-deftest magent-test-happy-helper-user-message-dispatches-through-unified-entry ()
+  "Test remote Happy messages use the shared prompt dispatch path."
+  (require 'magent-happy)
+  (let (captured)
+    (cl-letf (((symbol-function 'magent-ui-dispatch-prompt)
+               (lambda (prompt &optional source display skills activate-context)
+                 (setq captured (list prompt source display skills activate-context)))))
+      (magent-happy--handle-user-message '(:text "hello from happy")))
+    (should (equal captured
+                   '("hello from happy" happy-remote "hello from happy" nil nil)))))
+
 (ert-deftest magent-test-diagnose-emacs-dispatches-structured-prompt ()
   "Test `magent-diagnose-emacs' dispatches a structured diagnosis request."
   (require 'magent-ui)
@@ -2542,6 +2586,59 @@
   (require 'magent)
   (should (eq (lookup-key magent-mode-map (kbd "C-c m D"))
               'magent-doctor)))
+
+(ert-deftest magent-test-happy-approval-provider-roundtrip ()
+  "Test Happy approval provider resolves pending callbacks from helper responses."
+  (require 'magent-happy)
+  (require 'magent-approval)
+  (let ((magent-happy--session-id "session123")
+        (magent-happy--connected t)
+        (magent-approval--pending-requests (make-hash-table :test 'equal))
+        (magent-approval--completed-requests (make-hash-table :test 'equal))
+        (magent-approval-state-change-functions nil)
+        (magent-approval-provider-function #'magent-happy--approval-provider)
+        (sent nil)
+        (decision nil))
+    (cl-letf (((symbol-function 'magent-happy--send)
+               (lambda (payload)
+                 (push payload sent))))
+      (add-hook 'magent-approval-state-change-functions
+                #'magent-happy--approval-state-changed)
+      (magent-approval-request
+       '(:request-id "req1" :tool-name "bash" :perm-key bash :summary "echo hi")
+       (lambda (value) (setq decision value)))
+      (magent-happy--handle-approval-response
+       '(:request_id "req1" :decision "allow-session")))
+    (should (eq decision 'allow-session))
+    (should-not (magent-approval-pending-request "req1"))
+    (should (equal (plist-get (magent-approval-completed-request "req1") :decision)
+                   'allow-session))
+    (should (cl-find-if (lambda (payload)
+                          (equal (plist-get payload :type) "agent-state"))
+                        sent))))
+
+(ert-deftest magent-test-happy-sentinel-resolves-pending-approvals ()
+  "Test helper exit resolves pending approvals and restores local provider."
+  (require 'magent-happy)
+  (require 'magent-approval)
+  (let ((magent-happy--process nil)
+        (magent-happy--connected t)
+        (magent-happy--session-id "session123")
+        (magent-approval--pending-requests (make-hash-table :test 'equal))
+        (magent-approval--completed-requests (make-hash-table :test 'equal))
+        (magent-happy--previous-approval-provider #'ignore)
+        (magent-approval-provider-function #'magent-happy--approval-provider)
+        (decision nil))
+    (magent-approval-request
+     '(:request-id "req1" :tool-name "bash" :summary "echo hi")
+     (lambda (value) (setq decision value)))
+    (cl-letf (((symbol-function 'message) #'ignore))
+      (magent-happy--process-sentinel nil "finished\n"))
+    (should (eq decision 'deny-once))
+    (should-not (magent-approval-pending-request "req1"))
+    (should-not (magent-approval-completed-request "req1"))
+    (should (eq magent-approval-provider-function #'ignore))
+    (should-not magent-happy--connected)))
 
 (provide 'magent-test)
 ;;; magent-test.el ends here

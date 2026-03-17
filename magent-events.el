@@ -28,7 +28,7 @@ Each sink receives a plist describing one event.")
   "Current top-level turn context.")
 
 (defun magent-events-generate-id ()
-  "Generate a lowercase identifier suitable for Magent events."
+  "Generate a lowercase identifier suitable for Happy-style events."
   (let ((alphabet "abcdefghijklmnopqrstuvwxyz0123456789")
         (result (make-string 24 ?a)))
     (dotimes (i 24 result)
