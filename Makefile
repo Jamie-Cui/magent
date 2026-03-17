@@ -24,6 +24,7 @@ SRCS = magent-config.el \
        magent.el \
        magent-events.el \
        magent-approval.el \
+       magent-happy.el \
        magent-frontmatter.el \
        magent-session.el \
        magent-queue.el \
