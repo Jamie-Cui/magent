@@ -31,6 +31,7 @@
   (display nil :type (or string null))
   (source 'prompt :type symbol)
   (skills nil :type list)
+  agent
   (timestamp 0.0 :type float))
 
 ;;; Module state
@@ -49,11 +50,12 @@
 
 ;;; Public mutators
 
-(defun magent-queue-enqueue (prompt source &optional display skills)
+(defun magent-queue-enqueue (prompt source &optional display skills agent)
   "Dispatch PROMPT immediately, or reject with a message if busy.
 SOURCE is a symbol identifying the calling command.
 DISPLAY is the text to show in the user message heading; defaults to PROMPT.
 SKILLS is a list of skill name strings selected via slash commands.
+AGENT is an optional `magent-agent-info' override for this request.
 Returns nil always (never queued)."
   (if magent-queue--processing
       (message "Magent: busy — wait for the current request to finish")
@@ -62,6 +64,7 @@ Returns nil always (never queued)."
                              :display display
                              :source source
                              :skills skills
+                             :agent agent
                              :timestamp (float-time))))
   nil)
 

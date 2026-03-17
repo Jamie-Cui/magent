@@ -55,6 +55,8 @@
 ;;
 ;; Usage:
 ;;   M-x magent                - Send a prompt to the AI
+;;   M-x magent-diagnose-emacs - Diagnose the current Emacs session
+;;   M-x magent-doctor         - Run Magent self-check and diagnose Magent issues
 ;;   M-x magent-prompt-region  - Send the selected region to the AI
 ;;   M-x magent-ask-at-point   - Ask about the symbol at point
 ;;   M-x magent-clear-session  - Clear the current session
@@ -88,6 +90,8 @@
 (require 'magent-skills)
 (require 'magent-skill-file)
 (require 'magent-queue)
+
+(declare-function magent-doctor "magent-ui")
 
 ;;; Initialization
 
@@ -143,6 +147,8 @@ When enabled, Magent commands are available.
   :keymap (let ((map (make-sparse-keymap)))
             ;; Keybindings
             (define-key map (kbd "C-c m p") #'magent-dwim)
+            (define-key map (kbd "C-c m d") #'magent-diagnose-emacs)
+            (define-key map (kbd "C-c m D") #'magent-doctor)
             (define-key map (kbd "C-c m r") #'magent-prompt-region)
             (define-key map (kbd "C-c m a") #'magent-ask-at-point)
             (define-key map (kbd "C-c m c") #'magent-clear-session)
@@ -161,6 +167,11 @@ When enabled, Magent commands are available.
     (unless (member magent--mode-line-spinner-construct global-mode-string)
       (push magent--mode-line-spinner-construct global-mode-string)
       (magent-log "INFO magent mode enabled (lazy init)"))))
+
+;; `define-minor-mode' does not refresh an existing keymap on reload, so
+;; add new bindings explicitly to support live reloading during development.
+(define-key magent-mode-map (kbd "C-c m d") #'magent-diagnose-emacs)
+(define-key magent-mode-map (kbd "C-c m D") #'magent-doctor)
 
 (defun magent--ensure-initialized ()
   "Ensure magent is fully initialized.

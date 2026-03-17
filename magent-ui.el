@@ -240,7 +240,7 @@ Skips keys already reserved by the static parts of `magent-transient-menu'."
   (let ((used (make-hash-table :test #'equal))
         result)
     ;; Reserve keys used by static menu entries
-    (dolist (k '("c" "R" "r" "l" "L"))
+    (dolist (k '("c" "d" "D" "R" "r" "l" "L"))
       (puthash k t used))
     (dolist (agent agents)
       (let* ((name (magent-agent-info-name agent))
@@ -282,6 +282,8 @@ Skips keys already reserved by the static parts of `magent-transient-menu'."
   "Magent command menu."
   ["Session"
    [("c" "Clear session" magent-clear-session)
+    ("d" "Diagnose Emacs" magent-diagnose-emacs)
+    ("D" "Magent doctor" magent-doctor)
     ("R" "Resume session" magent-resume-session)]]
   ["Agent"
    [:class transient-column
@@ -819,6 +821,60 @@ Returns a context string or nil if context should not be captured."
                                       (line-number-at-pos (region-end) t)))))))
       (format "[Context: %s]" (string-join parts " ")))))
 
+(defconst magent-ui--emacs-diagnosis-display
+  "Diagnose the current Emacs session."
+  "Display text used for `magent-diagnose-emacs' user messages.")
+
+(defconst magent-ui--emacs-diagnosis-instructions
+  (concat
+   "Diagnose problems in the current Emacs session.\n\n"
+   "Start by collecting evidence instead of guessing.\n"
+   "Inspect the live Emacs state with emacs_eval and skill_invoke when useful.\n"
+   "Check *Messages*, *Warnings*, *Backtrace*, the current buffer state, and minibuffer state when relevant.\n"
+   "If no concrete failure is visible yet, summarize the suspicious signals you can observe and ask for the smallest missing reproduction detail.\n"
+   "Do not edit files or make state-changing changes until you have a concrete hypothesis.")
+  "Base instructions used by `magent-diagnose-emacs'.")
+
+(defconst magent-ui--doctor-display
+  "Run Magent doctor."
+  "Display text used for `magent-doctor' user messages.")
+
+(defconst magent-ui--doctor-instructions
+  (concat
+   "Run a Magent self-check and diagnose Magent-related problems in the current Emacs session.\n\n"
+   "Start by collecting evidence instead of guessing.\n"
+   "Focus on Magent's own runtime state, commands, buffers, and logs.\n"
+   "Inspect the live Emacs state with emacs_eval and skill_invoke when useful.\n"
+   "Check whether Magent features are loaded, whether `magent-mode' is enabled, the current session scope and agent, queue/FSM state, and whether there are pending approvals or recent errors.\n"
+   "Inspect `*magent*`, `*magent-log*`, `*Messages*`, `*Warnings*`, and `*Backtrace*` when available.\n"
+   "If the problem seems request-specific, inspect the latest Magent conversation and log entries to identify the failing step.\n"
+   "If no concrete failure is visible yet, summarize the suspicious signals you can observe and ask for the smallest missing reproduction detail.\n"
+   "Do not edit files or make state-changing changes until you have a concrete hypothesis.")
+  "Base instructions used by `magent-doctor'.")
+
+(defun magent-ui--diagnosis-agent ()
+  "Return the preferred agent for `magent-diagnose-emacs'."
+  (or (magent-agent-registry-get "build")
+      (magent-agent-registry-get-default)))
+
+(defun magent-ui--build-diagnosis-prompt (instructions)
+  "Build a diagnosis prompt from INSTRUCTIONS and current buffer context."
+  (let ((context (magent-ui--capture-buffer-context)))
+    (mapconcat #'identity
+               (delq nil (list instructions
+                               context))
+               "\n\n")))
+
+(defun magent-ui--dispatch-diagnosis (instructions source display)
+  "Dispatch a diagnosis prompt with INSTRUCTIONS, SOURCE, and DISPLAY."
+  (magent-ui-dispatch-prompt
+   (magent-ui--build-diagnosis-prompt instructions)
+   source
+   display
+   '("systematic-debugging")
+   t
+   (magent-ui--diagnosis-agent)))
+
 ;;;###autoload
 (defun magent-dwim ()
   "Switch to the Magent buffer and position cursor at the input area.
@@ -867,27 +923,48 @@ enters insert state for immediate typing."
       (let ((input (format "Explain this code: %s" symbol)))
         (magent-ui-dispatch-prompt input 'ask-at-point nil nil t)))))
 
+;;;###autoload
+(defun magent-diagnose-emacs ()
+  "Launch a Magent diagnosis of the current Emacs session."
+  (interactive)
+  (magent-ui--dispatch-diagnosis
+   magent-ui--emacs-diagnosis-instructions
+   'diagnose-emacs
+   magent-ui--emacs-diagnosis-display))
+
+;;;###autoload
+(defun magent-doctor ()
+  "Run Magent self-check and diagnose Magent-related issues."
+  (interactive)
+  (magent-ui--dispatch-diagnosis
+   magent-ui--doctor-instructions
+   'doctor
+   magent-ui--doctor-display))
+
 ;;; Processing
 
-(defun magent-ui-dispatch-prompt (prompt &optional source display skills activate-context)
+(defun magent-ui-dispatch-prompt
+    (prompt &optional source display skills activate-context agent)
   "Initialize Magent and dispatch PROMPT through the queue.
 SOURCE identifies the caller, DISPLAY overrides the user-visible text,
 SKILLS is a list of explicit skill names, and ACTIVATE-CONTEXT controls
-whether the current command context should switch session scope first."
+whether the current command context should switch session scope first.
+AGENT is an optional `magent-agent-info' override for this request."
   (magent--ensure-initialized)
   (when (not (string-blank-p prompt))
     (if activate-context
         (magent-ui--activate-context-session)
       (magent-session-get))
-    (magent-ui-process prompt source display skills)))
+    (magent-ui-process prompt source display skills agent)))
 
-(defun magent-ui-process (prompt &optional source display skills)
+(defun magent-ui-process (prompt &optional source display skills agent)
   "Dispatch PROMPT, rejecting if a request is already in flight.
 SOURCE is a symbol identifying the caller (default: \\='prompt).
 DISPLAY is the text shown in the buffer's user-message heading;
 defaults to PROMPT when nil.
-SKILLS is a list of skill name strings selected via slash commands."
-  (magent-queue-enqueue prompt (or source 'prompt) display skills))
+SKILLS is a list of skill name strings selected via slash commands.
+AGENT is an optional `magent-agent-info' override for this request."
+  (magent-queue-enqueue prompt (or source 'prompt) display skills agent))
 
 (defun magent-ui--run-item (item)
   "Dispatch ITEM (a `magent-queue-item') to the agent.
@@ -914,7 +991,7 @@ stale callbacks are discarded."
                      (magent-ui--finish-processing response)
                    (magent-log "DEBUG discarding stale callback gen=%d (current=%d)"
                                gen magent-ui--request-generation)))
-               nil
+               (magent-queue-item-agent item)
                (magent-queue-item-skills item)))
       (error
        (magent-log "ERROR in run-item: %s" (error-message-string err))
