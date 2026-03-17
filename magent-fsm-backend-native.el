@@ -41,9 +41,11 @@
 (declare-function gptel-tool-confirm "gptel-request")
 (declare-function gptel-tool-name "gptel-request")
 (declare-function gptel-tool-args "gptel-request")
+(declare-function magent-permission-bypass-p "magent-permission")
 (declare-function magent-permission-resolve "magent-permission")
 (declare-function magent-permission-session-override "magent-permission")
 (declare-function magent-permission-set-session-override "magent-permission")
+(declare-function magent-audit-record-permission-decision "magent-audit")
 (declare-function magent-tools-permission-key "magent-tools")
 (defvar gptel-backend)
 (defvar gptel-model)
@@ -673,46 +675,47 @@ confirmation (fully allowed, no nested rules).  Returns a
 function that receives positional arg values and returns t when
 the tool call should be sent to the FSM for review."
   (require 'magent-permission)
-  (let* ((base-perm (magent-permission-resolve permission perm-key))
-         (file-arg-index (magent-fsm--find-file-arg-index args-spec)))
-    (cond
-     ;; Tool-level permission is 'ask
-     ((eq base-perm 'ask)
-      (if file-arg-index
-          ;; Has file arg — check session override AND file-specific deny
-          (lambda (&rest arg-values)
-            (let ((override (magent-permission-session-override perm-key)))
-              (if (eq override 'allow)
-                  ;; Session says allow, but still check file-specific deny
-                  (let ((file-path (nth file-arg-index arg-values)))
-                    (when file-path
-                      (eq (magent-permission-resolve permission perm-key file-path)
-                          'deny)))
-                ;; No allow override — always confirm
-                t)))
-        ;; No file arg — confirm unless session override allows
-        (lambda (&rest _arg-values)
-          (not (eq (magent-permission-session-override perm-key) 'allow)))))
+  (unless (magent-permission-bypass-p)
+    (let* ((base-perm (magent-permission-resolve permission perm-key))
+           (file-arg-index (magent-fsm--find-file-arg-index args-spec)))
+      (cond
+       ;; Tool-level permission is 'ask
+       ((eq base-perm 'ask)
+        (if file-arg-index
+            ;; Has file arg — check session override AND file-specific deny
+            (lambda (&rest arg-values)
+              (let ((override (magent-permission-session-override perm-key)))
+                (if (eq override 'allow)
+                    ;; Session says allow, but still check file-specific deny
+                    (let ((file-path (nth file-arg-index arg-values)))
+                      (when file-path
+                        (eq (magent-permission-resolve permission perm-key file-path)
+                            'deny)))
+                  ;; No allow override — always confirm
+                  t)))
+          ;; No file arg — confirm unless session override allows
+          (lambda (&rest _arg-values)
+            (not (eq (magent-permission-session-override perm-key) 'allow)))))
 
-     ;; Tool-level permission is 'allow — check for nested file rules
-     ((eq base-perm 'allow)
-      (if file-arg-index
-          ;; Has a file arg — check file-specific deny rules
-          (lambda (&rest arg-values)
-            (let ((file-path (nth file-arg-index arg-values)))
-              (when file-path
-                (not (eq (magent-permission-resolve permission perm-key file-path)
-                         'allow)))))
-        ;; No file arg — fully allowed
-        nil))
+       ;; Tool-level permission is 'allow — check for nested file rules
+       ((eq base-perm 'allow)
+        (if file-arg-index
+            ;; Has a file arg — check file-specific deny rules
+            (lambda (&rest arg-values)
+              (let ((file-path (nth file-arg-index arg-values)))
+                (when file-path
+                  (not (eq (magent-permission-resolve permission perm-key file-path)
+                           'allow)))))
+          ;; No file arg — fully allowed
+          nil))
 
-     ;; Tool-level permission is 'deny — shouldn't be in tool list,
-     ;; but if it is (nested allow rules), always confirm
-     ((eq base-perm 'deny)
-      (lambda (&rest _arg-values) t))
+       ;; Tool-level permission is 'deny — shouldn't be in tool list,
+       ;; but if it is (nested allow rules), always confirm
+       ((eq base-perm 'deny)
+        (lambda (&rest _arg-values) t))
 
-     ;; Fallback: no confirmation
-     (t nil))))
+       ;; Fallback: no confirmation
+       (t nil)))))
 
 (defun magent-fsm--find-file-arg-index (args-spec)
   "Find the index of the file path argument in ARGS-SPEC.
@@ -723,55 +726,87 @@ Looks for args named \"path\" or \"file\"."
            when (member (plist-get spec :name) '("path" "file"))
            return i))
 
+(defun magent-fsm--audit-permission-decision (tool-spec arg-values decision source)
+  "Record a permission DECISION for TOOL-SPEC with ARG-VALUES.
+SOURCE describes how the decision was reached."
+  (when (fboundp 'magent-audit-record-permission-decision)
+    (let* ((tool-name (gptel-tool-name tool-spec))
+           (perm-key (magent-tools-permission-key tool-name))
+           (args-plist (magent-fsm--args-to-plist (gptel-tool-args tool-spec)
+                                                  arg-values))
+           (summary (magent-fsm--show-tool-call-format tool-name args-plist)))
+      (magent-audit-record-permission-decision
+       tool-name perm-key decision source
+       :context (magent-events-current-context)
+       :summary summary
+       :args args-plist))))
+
 (defun magent-fsm--handle-tool-call-confirmation-with-permission (permission tool-calls)
   "Handle TOOL-CALLS using PERMISSION rules.
 TOOL-CALLS is a list of (gptel-tool arg-values callback) triples.
 Checks session overrides and file-specific rules before prompting."
   (require 'magent-permission)
-  (let ((pending nil))   ; tool-calls that need interactive prompting
-    (dolist (tc tool-calls)
-      (let* ((tool-spec (car tc))
-             (arg-values (cadr tc))
-             (cb (caddr tc))
-             (tool-name (gptel-tool-name tool-spec))
-             (perm-key (magent-tools-permission-key tool-name))
-             (file-path (when perm-key
-                          (let ((idx (magent-fsm--find-file-arg-index
-                                      (gptel-tool-args tool-spec))))
-                            (when idx (nth idx arg-values)))))
-             (resolved (when (and permission perm-key)
-                         (magent-permission-resolve permission perm-key file-path)))
-             (override (when perm-key
-                         (magent-permission-session-override perm-key))))
-        (cond
-         ;; Session override: always allow
-         ((eq override 'allow)
-          (magent-log "PERM auto-allow (session override): %s" tool-name)
-          (magent-fsm--run-tool tool-spec cb arg-values))
+  (if (magent-permission-bypass-p)
+      (dolist (tc tool-calls)
+        (let* ((tool-spec (car tc))
+               (arg-values (cadr tc))
+               (cb (caddr tc))
+               (tool-name (gptel-tool-name tool-spec)))
+          (magent-log "PERM bypass allow: %s" tool-name)
+          (magent-fsm--audit-permission-decision tool-spec arg-values 'allow 'bypass)
+          (magent-fsm--run-tool tool-spec cb arg-values)))
+    (let ((pending nil))   ; tool-calls that need interactive prompting
+      (dolist (tc tool-calls)
+        (let* ((tool-spec (car tc))
+               (arg-values (cadr tc))
+               (cb (caddr tc))
+               (tool-name (gptel-tool-name tool-spec))
+               (perm-key (magent-tools-permission-key tool-name))
+               (file-path (when perm-key
+                            (let ((idx (magent-fsm--find-file-arg-index
+                                        (gptel-tool-args tool-spec))))
+                              (when idx (nth idx arg-values)))))
+               (resolved (when (and permission perm-key)
+                           (magent-permission-resolve permission perm-key file-path)))
+               (override (when perm-key
+                           (magent-permission-session-override perm-key))))
+          (cond
+           ;; Session override: always allow
+           ((eq override 'allow)
+            (magent-log "PERM auto-allow (session override): %s" tool-name)
+            (magent-fsm--audit-permission-decision
+             tool-spec arg-values 'allow 'session-override-allow)
+            (magent-fsm--run-tool tool-spec cb arg-values))
 
-         ;; Session override: always deny
-         ((eq override 'deny)
-          (magent-log "PERM auto-deny (session override): %s" tool-name)
-          (funcall cb (format "Error: tool '%s' denied by session policy" tool-name)))
+           ;; Session override: always deny
+           ((eq override 'deny)
+            (magent-log "PERM auto-deny (session override): %s" tool-name)
+            (magent-fsm--audit-permission-decision
+             tool-spec arg-values 'deny 'session-override-deny)
+            (funcall cb (format "Error: tool '%s' denied by session policy" tool-name)))
 
-         ;; File-specific deny (e.g., .env files)
-         ((eq resolved 'deny)
-          (magent-log "PERM auto-deny (file rule): %s %s" tool-name (or file-path ""))
-          (funcall cb (format "Error: access denied for %s on %s"
-                              tool-name (or file-path "this resource"))))
+           ;; File-specific deny (e.g., .env files)
+           ((eq resolved 'deny)
+            (magent-log "PERM auto-deny (file rule): %s %s" tool-name (or file-path ""))
+            (magent-fsm--audit-permission-decision
+             tool-spec arg-values 'deny 'file-rule-deny)
+            (funcall cb (format "Error: access denied for %s on %s"
+                                tool-name (or file-path "this resource"))))
 
-         ;; File-specific allow (nested rule matched)
-         ((and file-path (eq resolved 'allow))
-          (magent-log "PERM auto-allow (file rule): %s %s" tool-name file-path)
-          (magent-fsm--run-tool tool-spec cb arg-values))
+           ;; File-specific allow (nested rule matched)
+           ((and file-path (eq resolved 'allow))
+            (magent-log "PERM auto-allow (file rule): %s %s" tool-name file-path)
+            (magent-fsm--audit-permission-decision
+             tool-spec arg-values 'allow 'file-rule-allow)
+            (magent-fsm--run-tool tool-spec cb arg-values))
 
-         ;; Needs interactive prompting
-         (t
-          (push tc pending)))))
+           ;; Needs interactive prompting
+           (t
+            (push tc pending)))))
 
-    ;; Prompt user for remaining tool calls
-    (when pending
-      (magent-fsm--prompt-tool-calls-serially (nreverse pending)))))
+      ;; Prompt user for remaining tool calls
+      (when pending
+        (magent-fsm--prompt-tool-calls-serially (nreverse pending))))))
 
 (defun magent-fsm--handle-tool-call-confirmation (fsm tool-calls)
   "Handle tool calls that need permission review for FSM.
@@ -803,6 +838,7 @@ Each prompt offers: [y]es, [n]o, [A]lways allow, [D]eny always."
                      arg-values (gptel-tool-args tool-spec))))
       (magent-approval-request
        (list :request-id (magent-events-generate-id)
+             :context (magent-events-current-context)
              :tool-name tool-name
              :perm-key perm-key
              :summary summary

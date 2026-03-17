@@ -19,8 +19,9 @@ LOADPATH = -L . \
 BYTE_COMPILE_FLAGS = --eval "(setq byte-compile-error-on-warn nil)" \
 	--eval "(setq byte-compile-warnings '(not cl-functions obsolete))"
 
-SRCS = magent.el \
-       magent-config.el \
+SRCS = magent-config.el \
+       magent-audit.el \
+       magent.el \
        magent-events.el \
        magent-approval.el \
        magent-happy.el \
@@ -35,7 +36,6 @@ SRCS = magent.el \
        magent-permission.el \
        magent-ui.el \
        magent-fsm.el \
-       magent-skill-emacs.el \
        magent-skill-creator.el \
        magent-skills.el \
        magent-skill-file.el

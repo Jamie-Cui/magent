@@ -139,6 +139,12 @@ When enabled, API requests and responses are logged for debugging."
   :type 'boolean
   :group 'magent)
 
+(defcustom magent-enable-audit-log t
+  "Enable persistent audit logging for permission and sensitive actions.
+When enabled, Magent writes a compact JSONL audit trail to disk."
+  :type 'boolean
+  :group 'magent)
+
 (defcustom magent-default-agent "build"
   "The default agent to use for new sessions.
 Should match one of the registered agent names."
@@ -179,6 +185,18 @@ Should match one of the registered agent names."
   (expand-file-name "magent/sessions" user-emacs-directory)
   "Directory where session files are stored."
   :type 'directory
+  :group 'magent)
+
+(defcustom magent-audit-directory nil
+  "Directory where persistent audit log files are stored.
+When nil, audit logs are written under `magent-session-directory'/audit."
+  :type '(choice (const :tag "Use magent-session-directory/audit" nil)
+                 directory)
+  :group 'magent)
+
+(defcustom magent-audit-preview-length 120
+  "Maximum display width for persisted audit previews."
+  :type 'integer
   :group 'magent)
 
 (defcustom magent-grep-program (or (executable-find "rg") "rg")
@@ -318,12 +336,13 @@ and project.el, falling back to `default-directory'."
 ;;; Logging stub
 ;; Defined here so all modules can call magent-log unconditionally.
 ;; magent-ui.el overrides this with the real implementation that writes
-;; to *magent-log*.  The stub is a no-op so tests and early-load contexts
-;; never raise void-function errors.
+;; to *magent-log*.  Guard the stub so reloading this file later does not
+;; clobber the real logger in live Emacs sessions.
 
-(defun magent-log (format-string &rest args)
-  "Log FORMAT-STRING with ARGS.  No-op until magent-ui is loaded."
-  (ignore format-string args))
+(unless (fboundp 'magent-log)
+  (defun magent-log (format-string &rest args)
+    "Log FORMAT-STRING with ARGS.  No-op until magent-ui is loaded."
+    (ignore format-string args)))
 
 (provide 'magent-config)
 ;;; magent-config.el ends here

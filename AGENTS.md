@@ -67,7 +67,6 @@ magent.el (entry point: magent-mode, global-magent-mode)
   ├─ magent-md2org.el          (markdown → org-mode conversion for assistant output)
   ├─ magent-skills.el          (skill registry and dispatch)
   ├─ magent-skill-file.el      (loads skills from SKILL.md files; includes built-in skills/ dir)
-  ├─ magent-skill-emacs.el     (built-in emacs skill: eval, keys, buffers, etc.)
   └─ magent-skill-creator.el   (built-in skill-creator skill: guides writing new SKILL.md files)
 ```
 
@@ -94,7 +93,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
 
 8. **Session** (`magent-session.el`): Conversation state with messages list and history trimming. Persists to `magent-session-directory` as JSON. The `buffer-content` slot stores raw buffer text for lossless restore (preserving tool/reasoning blocks not in the message list). `magent-session-reset` clears session, permission overrides, and queue together.
 
-9. **Skills** (`magent-skills.el` + `magent-skill-file.el` + `magent-skill-emacs.el` + `magent-skill-creator.el`): Two types — `instruction` (markdown injected into system prompt) and `tool` (invoked via `skill_invoke`). Loaded in priority order: (1) built-in `skills/` directory bundled with magent (captured via `magent-skill-file--builtin-dir` at load time), (2) user directory `~/.emacs.d/magent-skills/<name>/SKILL.md`, (3) project-local `.magent/skills/<name>/SKILL.md`.
+9. **Skills** (`magent-skills.el` + `magent-skill-file.el` + `magent-skill-creator.el`): Two types — `instruction` (markdown injected into system prompt) and `tool` (invoked via `skill_invoke`). Magent registers the built-in `skill-creator` instruction skill in code, then loads file-based skills in priority order: (1) built-in `skills/` directory bundled with magent (captured via `magent-skill-file--builtin-dir` at load time), (2) user directory `~/.emacs.d/magent-skills/<name>/SKILL.md`, (3) project-local `.magent/skills/<name>/SKILL.md`. Live Emacs inspection uses `emacs_eval`.
 
 ### Gotchas
 

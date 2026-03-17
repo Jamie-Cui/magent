@@ -191,13 +191,4 @@ Available Tools:
 - bash: Shell command execution
 - emacs_eval: Evaluate Emacs Lisp expressions
 - delegate: Delegate tasks to specialized subagents (explore, general)
-- skill_invoke: Invoke skills for Emacs interaction
-
-Emacs Skill (via skill_invoke):
-Use skill_invoke with skill_name="emacs" to interact with the running Emacs instance:
-- list-functions [PREFIX]: List interactive commands matching prefix
-- describe-function [NAME]: Get function documentation
-- eval-expression [EXPR]: Evaluate arbitrary elisp
-- execute-keys [KEYS]: Simulate keystrokes (kbd format, e.g., "C-x C-s")
-- minibuffer-prompt: Read current minibuffer state
-- current-buffer-state: Get buffer name, mode, and content
+- skill_invoke: Invoke tool-type skills
