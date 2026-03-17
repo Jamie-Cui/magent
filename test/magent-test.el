@@ -1329,6 +1329,140 @@
         (kill-buffer request-buffer)))
     (should (equal captured (list permission tool-calls)))))
 
+(ert-deftest magent-test-gptel-backend-streams-reasoning-blocks ()
+  "Test gptel backend forwards reasoning chunks to the Magent UI."
+  (require 'magent-fsm-backend-gptel)
+  (let ((events nil)
+        (stream-state (magent-fsm-backend-gptel--make-stream-state))
+        (request-buffer (generate-new-buffer " *magent-gptel-test*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-ui-insert-reasoning-start)
+                   (lambda ()
+                     (push 'reasoning-start events)))
+                  ((symbol-function 'magent-ui-insert-reasoning-text)
+                   (lambda (text)
+                     (push (list 'reasoning-text text) events)))
+                  ((symbol-function 'magent-ui-insert-reasoning-end)
+                   (lambda ()
+                     (push 'reasoning-end events))))
+          (magent-fsm-backend-gptel--callback
+           (cons 'reasoning "alpha") nil nil nil request-buffer nil nil
+           stream-state)
+          (magent-fsm-backend-gptel--callback
+           (cons 'reasoning "beta") nil nil nil request-buffer nil nil
+           stream-state)
+          (magent-fsm-backend-gptel--callback
+           (cons 'reasoning t) nil nil nil request-buffer nil nil
+           stream-state))
+      (when (buffer-live-p request-buffer)
+        (kill-buffer request-buffer)))
+    (should (equal (nreverse events)
+                   '(reasoning-start
+                     (reasoning-text "alpha")
+                     (reasoning-text "beta")
+                     reasoning-end)))
+    (should-not (gethash :in-reasoning-block stream-state))))
+
+(ert-deftest magent-test-gptel-backend-closes-reasoning-before-tool-call ()
+  "Test gptel backend closes reasoning blocks before prompting for tools."
+  (require 'magent-fsm-backend-gptel)
+  (let ((events nil)
+        (tool-calls '((tool-spec arg-values callback)))
+        (permission '((bash . ask)))
+        (stream-state (magent-fsm-backend-gptel--make-stream-state))
+        (request-buffer (generate-new-buffer " *magent-gptel-test*")))
+    (puthash :in-reasoning-block t stream-state)
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-ui-insert-reasoning-end)
+                   (lambda ()
+                     (push 'reasoning-end events)))
+                  ((symbol-function 'magent-fsm--handle-tool-call-confirmation-with-permission)
+                   (lambda (arg-permission arg-tool-calls)
+                     (push (list 'tool-call arg-permission arg-tool-calls) events))))
+          (magent-fsm-backend-gptel--callback
+           (cons 'tool-call tool-calls) nil nil nil request-buffer permission nil
+           stream-state))
+      (when (buffer-live-p request-buffer)
+        (kill-buffer request-buffer)))
+    (should (equal (nreverse events)
+                   (list 'reasoning-end
+                         (list 'tool-call permission tool-calls))))
+    (should-not (gethash :in-reasoning-block stream-state))))
+
+(ert-deftest magent-test-gptel-backend-closes-reasoning-on-tool-result ()
+  "Test gptel backend closes reasoning blocks before continuing after tool use."
+  (require 'magent-fsm-backend-gptel)
+  (let ((events nil)
+        (stream-state (magent-fsm-backend-gptel--make-stream-state))
+        (request-buffer (generate-new-buffer " *magent-gptel-test*")))
+    (puthash :in-reasoning-block t stream-state)
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-ui-insert-reasoning-end)
+                   (lambda ()
+                     (push 'reasoning-end events)))
+                  ((symbol-function 'magent-ui-continue-streaming)
+                   (lambda ()
+                     (push 'continue events))))
+          (magent-fsm-backend-gptel--callback
+           (cons 'tool-result '((tool-spec args "ok"))) nil nil nil request-buffer nil nil
+           stream-state))
+      (when (buffer-live-p request-buffer)
+        (kill-buffer request-buffer)))
+    (should (equal (nreverse events) '(reasoning-end continue)))
+    (should-not (gethash :in-reasoning-block stream-state))))
+
+(ert-deftest magent-test-gptel-backend-closes-reasoning-on-final-response ()
+  "Test gptel backend auto-closes reasoning when streaming ends."
+  (require 'magent-fsm-backend-gptel)
+  (let ((events nil)
+        (final-response nil)
+        (stream-state (magent-fsm-backend-gptel--make-stream-state))
+        (request-buffer (generate-new-buffer " *magent-gptel-test*")))
+    (puthash :text-chunks '("world" "Hello ") stream-state)
+    (puthash :in-reasoning-block t stream-state)
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-ui-insert-reasoning-end)
+                   (lambda ()
+                     (push 'reasoning-end events)))
+                  ((symbol-function 'magent-ui-finish-streaming-fontify)
+                   (lambda ()
+                     (push 'finish events))))
+          (magent-fsm-backend-gptel--callback
+           t (list :content "ignored")
+           (lambda (response)
+             (setq final-response response))
+           nil request-buffer nil nil stream-state))
+      (when (buffer-live-p request-buffer)
+        (kill-buffer request-buffer)))
+    (should (equal (nreverse events) '(reasoning-end finish)))
+    (should (equal final-response "Hello world"))
+    (should-not (gethash :in-reasoning-block stream-state))))
+
+(ert-deftest magent-test-gptel-backend-skips-reasoning-when-disabled ()
+  "Test gptel backend ignores reasoning events when reasoning is disabled."
+  (require 'magent-fsm-backend-gptel)
+  (let ((magent-include-reasoning nil)
+        (events nil)
+        (stream-state (magent-fsm-backend-gptel--make-stream-state))
+        (request-buffer (generate-new-buffer " *magent-gptel-test*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-ui-insert-reasoning-start)
+                   (lambda ()
+                     (push 'reasoning-start events)))
+                  ((symbol-function 'magent-ui-insert-reasoning-text)
+                   (lambda (_text)
+                     (push 'reasoning-text events)))
+                  ((symbol-function 'magent-ui-insert-reasoning-end)
+                   (lambda ()
+                     (push 'reasoning-end events))))
+          (magent-fsm-backend-gptel--callback
+           (cons 'reasoning "alpha") nil nil nil request-buffer nil nil
+           stream-state))
+      (when (buffer-live-p request-buffer)
+        (kill-buffer request-buffer)))
+    (should-not events)
+    (should-not (gethash :in-reasoning-block stream-state))))
+
 (ert-deftest magent-test-permission-prompt-choice-once-allow ()
   "Test tool confirmation accepts a one-time allow choice."
   (require 'magent-fsm-backend-native)
