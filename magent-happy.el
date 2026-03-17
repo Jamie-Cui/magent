@@ -45,12 +45,6 @@ The process must speak line-delimited JSON over stdio."
 (defvar magent-happy--session-id nil
   "Current Happy session identifier.")
 
-(defvar magent-happy--pending-approvals (make-hash-table :test 'equal)
-  "Pending approval callbacks keyed by request id.")
-
-(defvar magent-happy--completed-approvals nil
-  "Completed approval decisions keyed by request id.")
-
 (defvar magent-happy--previous-approval-provider nil
   "Approval provider active before Happy remote control was enabled.")
 
@@ -72,14 +66,21 @@ The process must speak line-delimited JSON over stdio."
     (process-send-string magent-happy--process
                          (concat (magent-happy--json-encode payload) "\n"))))
 
+(defun magent-happy--approval-state-changed (&rest _args)
+  "Refresh helper state when approval state changes."
+  (when (and magent-happy--connected
+             magent-happy--session-id)
+    (magent-happy--update-agent-state)))
+
 (defun magent-happy--update-agent-state ()
   "Push the current remote-control state to the helper."
   (magent-happy--send
    (list :type "agent-state"
          :session_id magent-happy--session-id
          :controlled_by_user (if magent-happy--connected t :false)
-         :requests (hash-table-count magent-happy--pending-approvals)
-         :completed_requests (length magent-happy--completed-approvals))))
+         :requests (magent-approval-pending-count #'magent-happy--approval-owned-p)
+         :completed_requests (magent-approval-completed-count
+                              #'magent-happy--approval-owned-p))))
 
 (defun magent-happy--event-title (event)
   "Return a short title for EVENT."
@@ -147,12 +148,13 @@ The process must speak line-delimited JSON over stdio."
       (magent-happy--send (list :type "ready"
                                 :session_id magent-happy--session-id)))))
 
-(defun magent-happy--approval-provider (request callback)
-  "Forward REQUEST to the Happy helper and resolve via CALLBACK."
-  (let ((request-id (or (plist-get request :request-id)
-                        (magent-events-generate-id))))
-    (puthash request-id callback magent-happy--pending-approvals)
-    (push (cons request-id nil) magent-happy--completed-approvals)
+(defun magent-happy--approval-owned-p (_request-id entry)
+  "Return non-nil when ENTRY belongs to the Happy approval provider."
+  (eq (plist-get entry :provider) #'magent-happy--approval-provider))
+
+(defun magent-happy--approval-provider (request)
+  "Forward REQUEST to the Happy helper."
+  (let ((request-id (plist-get request :request-id)))
     (magent-happy--send
      (list :type "approval-request"
            :session_id magent-happy--session-id
@@ -161,55 +163,34 @@ The process must speak line-delimited JSON over stdio."
            :perm_key (when-let ((perm-key (plist-get request :perm-key)))
                        (symbol-name perm-key))
            :summary (plist-get request :summary)
-           :args (plist-get request :args)))
-    (magent-happy--update-agent-state)))
+           :args (plist-get request :args)))))
 
 (defun magent-happy--handle-approval-response (payload)
   "Handle approval response PAYLOAD from the helper."
   (let* ((request-id (plist-get payload :request_id))
-         (decision (intern (or (plist-get payload :decision) "deny-once")))
-         (callback (gethash request-id magent-happy--pending-approvals)))
-    (when callback
-      (remhash request-id magent-happy--pending-approvals)
-      (setf (alist-get request-id magent-happy--completed-approvals nil nil #'equal)
-            decision)
-      (magent-happy--update-agent-state)
-      (funcall callback decision))))
-
-(defun magent-happy--resolve-pending-approvals (decision)
-  "Resolve all pending approvals with DECISION."
-  (let (pending)
-    (maphash (lambda (request-id callback)
-               (push (cons request-id callback) pending))
-             magent-happy--pending-approvals)
-    (dolist (entry pending)
-      (let ((request-id (car entry))
-            (callback (cdr entry)))
-        (remhash request-id magent-happy--pending-approvals)
-        (setf (alist-get request-id magent-happy--completed-approvals nil nil #'equal)
-              decision)
-        (when callback
-          (condition-case err
-              (funcall callback decision)
-            (error
-             (message "Magent Happy approval cleanup failed: %s"
-                      (error-message-string err)))))))))
+         (decision (intern (or (plist-get payload :decision) "deny-once"))))
+    (when (eq (magent-approval-request-provider request-id)
+              #'magent-happy--approval-provider)
+      (magent-approval-resolve-request request-id decision)
+      t)))
 
 (defun magent-happy--cleanup (&optional resolve-decision)
   "Tear down Happy remote-control state.
 When RESOLVE-DECISION is non-nil, resolve all pending approvals first."
   (when resolve-decision
-    (magent-happy--resolve-pending-approvals resolve-decision))
+    (magent-approval-cancel-requests #'magent-happy--approval-owned-p
+                                     resolve-decision))
+  (magent-approval-clear-completed #'magent-happy--approval-owned-p)
   (setq magent-happy--connected nil)
   (magent-events-remove-sink #'magent-happy--event-sink)
+  (remove-hook 'magent-approval-state-change-functions
+               #'magent-happy--approval-state-changed)
   (when magent-happy--previous-approval-provider
     (setq magent-approval-provider-function magent-happy--previous-approval-provider)
     (setq magent-happy--previous-approval-provider nil))
   (setq magent-happy--process nil
         magent-happy--session-id nil
-        magent-happy--buffer "")
-  (clrhash magent-happy--pending-approvals)
-  (setq magent-happy--completed-approvals nil))
+        magent-happy--buffer ""))
 
 (defun magent-happy--handle-user-message (payload)
   "Handle remote user message PAYLOAD."
@@ -288,6 +269,8 @@ When RESOLVE-DECISION is non-nil, resolve all pending approvals first."
     (setq magent-happy--connected t)
     (setq magent-happy--previous-approval-provider magent-approval-provider-function)
     (setq magent-approval-provider-function #'magent-happy--approval-provider)
+    (add-hook 'magent-approval-state-change-functions
+              #'magent-happy--approval-state-changed)
     (magent-events-add-sink #'magent-happy--event-sink))
   (magent-happy--send
    (if session-id

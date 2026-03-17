@@ -31,3 +31,5 @@ coverage/
 .emacs.desktop.lock
 auto-save-list
 /.agent-shell/
+/helper/node_modules/
+/helper/package-lock.json
