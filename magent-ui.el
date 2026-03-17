@@ -17,6 +17,7 @@
 
 (require 'org)
 (require 'spinner)
+(require 'subr-x)
 (require 'transient)
 (require 'magent-approval)
 (require 'magent-session)
@@ -38,6 +39,11 @@
 
 ;; Forward declarations for magent-skills (loaded lazily via require)
 (declare-function magent-capability-capture-context "magent-capability")
+(declare-function magent-explain-last-capability-resolution "magent-capability")
+(declare-function magent-list-capabilities-for-current-context "magent-capability")
+(declare-function magent-capability-resolution-summary "magent-capability")
+(declare-function magent-capability-resolve-for-turn "magent-capability")
+(declare-function magent-toggle-capability-locally "magent-capability")
 (declare-function magent-skills-get "magent-skills")
 (declare-function magent-skills-list "magent-skills")
 (declare-function magent-skills-list-by-type "magent-skills")
@@ -366,7 +372,7 @@ Skips keys already reserved by the static parts of `magent-transient-menu'."
   (let ((used (make-hash-table :test #'equal))
         result)
     ;; Reserve keys used by static menu entries
-    (dolist (k '("c" "d" "D" "R" "r" "l" "L"))
+    (dolist (k '("c" "d" "D" "R" "r" "l" "L" "x" "e" "k"))
       (puthash k t used))
     (dolist (agent agents)
       (let* ((name (magent-agent-info-name agent))
@@ -414,6 +420,10 @@ Skips keys already reserved by the static parts of `magent-transient-menu'."
   ["Agent"
    [:class transient-column
            :setup-children magent-transient-menu--agent-suffixes]]
+  ["Capabilities"
+   [("x" "Current context" magent-list-capabilities-for-current-context)
+    ("e" "Last resolution" magent-explain-last-capability-resolution)
+    ("k" "Toggle local" magent-toggle-capability-locally)]]
   ["Buffer"
    [("r" "Toggle read-only" magent-toggle-read-only)]]
   ["Logs"
@@ -767,6 +777,14 @@ Closes the #+begin_tool block and auto-folds it."
     (insert (propertize error-text 'face 'magent-error-body))
     (insert "\n")))
 
+(defun magent-ui-insert-capability-summary (summary)
+  "Insert capability SUMMARY into the output buffer."
+  (when (and summary (not (string-empty-p summary)))
+    (magent-ui--with-insert (magent-ui-get-buffer)
+      (insert "#+begin_quote\n")
+      (insert (format "Capability resolver: %s\n" summary))
+      (insert "#+end_quote\n"))))
+
 ;;; Streaming support
 
 (defvar-local magent-ui--streaming-start nil
@@ -1094,11 +1112,14 @@ DISPLAY is the text shown in the buffer's user-message heading;
 defaults to PROMPT when nil.
 SKILLS is a list of skill name strings selected via slash commands.
 AGENT is an optional `magent-agent-info' override for this request."
-  (let ((request-context
-         (when (require 'magent-capability nil t)
-           (magent-capability-capture-context))))
+  (let* ((request-context
+          (when (require 'magent-capability nil t)
+            (magent-capability-capture-context)))
+         (capability-resolution
+          (when (require 'magent-capability nil t)
+            (magent-capability-resolve-for-turn prompt request-context skills))))
     (magent-queue-enqueue prompt (or source 'prompt)
-                          display skills agent request-context)))
+                          display skills agent request-context capability-resolution)))
 
 (defun magent-ui--run-item (item)
   "Dispatch ITEM (a `magent-queue-item') to the agent.
@@ -1116,6 +1137,12 @@ stale callbacks are discarded."
       (spinner-start magent--spinner))
     (magent-log "INFO processing [%s] gen=%d: %s"
                 (magent-queue-item-source item) gen input)
+    (when-let ((summary
+                (and (require 'magent-capability nil t)
+                     (magent-capability-resolution-summary
+                      (magent-queue-item-capability-resolution item)))))
+      (magent-log "INFO %s" summary)
+      (magent-ui-insert-capability-summary summary))
     (condition-case err
         (setq magent--current-fsm
               (magent-agent-process
@@ -1128,7 +1155,8 @@ stale callbacks are discarded."
                (magent-queue-item-agent item)
                (magent-queue-item-skills item)
                nil
-               (magent-queue-item-request-context item)))
+               (magent-queue-item-request-context item)
+               (magent-queue-item-capability-resolution item)))
       (error
        (magent-log "ERROR in run-item: %s" (error-message-string err))
        (magent-ui-insert-error (error-message-string err))

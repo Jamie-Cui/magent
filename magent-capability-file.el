@@ -9,6 +9,16 @@
 ;;; Commentary:
 
 ;; Load capability definitions from directories using YAML frontmatter.
+;;
+;; Governance model:
+;; - Maintainer-owned policy fields decide activation behavior:
+;;   family, disclosure, and risk.
+;; - Contributor-owned metadata fields describe facts Magent can score:
+;;   skills, modes, features, files, and keywords.
+;; - Future package-local capability metadata is intentionally disabled by
+;;   default.  When enabled later, package-provided facts can be projected
+;;   into Magent's resolver while maintainer-owned policy stays under
+;;   Magent control.
 
 ;;; Code:
 
@@ -36,6 +46,22 @@ Each directory can contain subdirectories with CAPABILITY.md files."
   :type 'string
   :group 'magent)
 
+(defcustom magent-enable-package-capability-metadata nil
+  "Whether to ingest package-local capability metadata.
+This future-facing path is disabled by default.  When nil, Magent only
+loads built-in, user, and project capability files that it controls
+directly."
+  :type 'boolean
+  :group 'magent)
+
+(defconst magent-capability-file--maintainer-policy-keys
+  '(:family :disclosure :risk)
+  "Capability frontmatter keys controlled by Magent maintainers.")
+
+(defconst magent-capability-file--contributor-metadata-keys
+  '(:skills :modes :features :feature :files :prompt-keywords :keywords)
+  "Capability frontmatter keys contributed as matchable metadata facts.")
+
 (defun magent-capability-file--project-capability-dirs ()
   "Return project-local capability directories."
   (let ((root (magent-project-root)))
@@ -44,11 +70,38 @@ Each directory can contain subdirectories with CAPABILITY.md files."
         (when (file-directory-p cap-dir)
           (list cap-dir))))))
 
+(defun magent-capability-file--package-metadata-dirs ()
+  "Return package-local capability metadata directories.
+Currently disabled by default until governance and trust boundaries are
+better defined."
+  (when magent-enable-package-capability-metadata
+    nil))
+
 (defun magent-capability-file--list-directories ()
   "Return directories to scan for capability files."
   (append (list magent-capability-file--builtin-dir)
           magent-capability-directories
-          (magent-capability-file--project-capability-dirs)))
+          (magent-capability-file--project-capability-dirs)
+          (magent-capability-file--package-metadata-dirs)))
+
+(defun magent-capability-file--source-owner (filepath)
+  "Classify FILEPATH for capability governance purposes."
+  (let ((truename (file-truename filepath)))
+    (cl-labels
+        ((under-any-dir-p (dirs)
+           (cl-some (lambda (dir)
+                      (string-prefix-p (file-name-as-directory
+                                        (file-truename dir))
+                                       truename))
+                    (delq nil dirs))))
+    (cond
+     ((under-any-dir-p (list magent-capability-file--builtin-dir))
+      'maintainer)
+     ((under-any-dir-p (magent-capability-file--project-capability-dirs))
+      'project)
+     ((under-any-dir-p magent-capability-directories)
+      'user)
+     (t 'external-metadata)))))
 
 (defun magent-capability-file--list-files (&optional directories)
   "List all capability files in DIRECTORIES."
@@ -72,29 +125,30 @@ Each directory can contain subdirectories with CAPABILITY.md files."
     ("package" 'package)
     (_ 'builtin)))
 
-(defun magent-capability-file--parse-symbol-list (value)
-  "Parse VALUE into a list of symbols."
+(defun magent-capability-file--normalize-list (value)
+  "Normalize VALUE into a flat list of strings."
   (cond
    ((null value) nil)
-   ((symbolp value) (list value))
-   ((stringp value) (list (intern (string-trim value))))
    ((listp value)
-    (mapcar (lambda (item)
-              (if (symbolp item) item (intern (string-trim item))))
-            value))
-   (t nil)))
+    (apply #'append
+           (mapcar #'magent-capability-file--normalize-list value)))
+   ((symbolp value)
+    (list (symbol-name value)))
+   ((stringp value)
+    (let* ((trimmed (string-trim value))
+           (parts (split-string trimmed "," t "[[:space:]\n]*")))
+      (if (> (length parts) 1)
+          (mapcar #'string-trim parts)
+        (list trimmed))))
+   (t (list (string-trim (format "%s" value))))))
+
+(defun magent-capability-file--parse-symbol-list (value)
+  "Parse VALUE into a list of symbols."
+  (mapcar #'intern (magent-capability-file--normalize-list value)))
 
 (defun magent-capability-file--parse-string-list (value)
   "Parse VALUE into a list of strings."
-  (cond
-   ((null value) nil)
-   ((stringp value) (list (string-trim value)))
-   ((symbolp value) (list (symbol-name value)))
-   ((listp value)
-    (mapcar (lambda (item)
-              (string-trim (if (symbolp item) (symbol-name item) item)))
-            value))
-   (t nil)))
+  (magent-capability-file--normalize-list value))
 
 (defun magent-capability-file--parse-disclosure (value)
   "Parse disclosure VALUE."
@@ -110,6 +164,29 @@ Each directory can contain subdirectories with CAPABILITY.md files."
     ("high" 'high)
     (_ 'low)))
 
+(defun magent-capability-file--policy-family (frontmatter source-kind source-name owner)
+  "Return the policy family for FRONTMATTER under SOURCE-KIND and OWNER."
+  (if (eq owner 'external-metadata)
+      (or (and source-name (format "%s" source-name))
+          (symbol-name source-kind))
+    (or (plist-get frontmatter :family)
+        (and source-name (format "%s" source-name))
+        (symbol-name source-kind))))
+
+(defun magent-capability-file--policy-disclosure (frontmatter owner)
+  "Return maintainer-controlled disclosure from FRONTMATTER for OWNER."
+  (if (eq owner 'external-metadata)
+      'suggested
+    (magent-capability-file--parse-disclosure
+     (plist-get frontmatter :disclosure))))
+
+(defun magent-capability-file--policy-risk (frontmatter owner)
+  "Return maintainer-controlled risk from FRONTMATTER for OWNER."
+  (if (eq owner 'external-metadata)
+      'low
+    (magent-capability-file--parse-risk
+     (plist-get frontmatter :risk))))
+
 (defun magent-capability-file-load (filepath)
   "Load a capability definition from FILEPATH."
   (condition-case err
@@ -123,16 +200,20 @@ Each directory can contain subdirectories with CAPABILITY.md files."
                              (file-name-nondirectory
                               (directory-file-name
                                (file-name-directory filepath)))))
+                   (source-kind (magent-capability-file--parse-source-kind
+                                 (plist-get frontmatter :source)))
                    (source-name (or (plist-get frontmatter :source-name)
                                     (plist-get frontmatter :feature)
                                     (plist-get frontmatter :package)))
+                   (owner (magent-capability-file--source-owner filepath))
                    (capability
                     (magent-capability-create
                      :name name
                      :title (or (plist-get frontmatter :title) name)
                      :description (plist-get frontmatter :description)
-                     :source-kind (magent-capability-file--parse-source-kind
-                                   (plist-get frontmatter :source))
+                     :family (magent-capability-file--policy-family
+                              frontmatter source-kind source-name owner)
+                     :source-kind source-kind
                      :source-name (when source-name
                                     (format "%s" source-name))
                      :skills (magent-capability-file--parse-string-list
@@ -147,14 +228,14 @@ Each directory can contain subdirectories with CAPABILITY.md files."
                      :prompt-keywords (magent-capability-file--parse-string-list
                                        (or (plist-get frontmatter :prompt-keywords)
                                            (plist-get frontmatter :keywords)))
-                     :disclosure (magent-capability-file--parse-disclosure
-                                  (plist-get frontmatter :disclosure))
-                     :risk (magent-capability-file--parse-risk
-                            (plist-get frontmatter :risk))
+                     :disclosure (magent-capability-file--policy-disclosure
+                                  frontmatter owner)
+                     :risk (magent-capability-file--policy-risk
+                            frontmatter owner)
                      :notes (unless (string-empty-p body) body)
                      :file-path filepath)))
               (magent-capability-register capability)
-              (magent-log "INFO loaded capability: %s" name)
+              (magent-log "INFO loaded capability: %s owner=%s" name owner)
               capability))))
     (error
      (magent-log "ERROR loading capability file %s: %s"
@@ -175,9 +256,10 @@ Each directory can contain subdirectories with CAPABILITY.md files."
 (defun magent-capability-file-reload ()
   "Reload all file-backed capabilities."
   (interactive)
-  (dolist (entry magent-capability--registry)
-    (when (magent-capability-file-path (cdr entry))
-      (magent-capability-unregister (car entry))))
+  (setq magent-capability--registry
+        (cl-remove-if (lambda (entry)
+                        (magent-capability-file-path (cdr entry)))
+                      magent-capability--registry))
   (magent-capability-file-load-all))
 
 ;;;###autoload

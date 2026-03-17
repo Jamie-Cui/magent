@@ -94,6 +94,9 @@
 (require 'magent-queue)
 
 (declare-function magent-doctor "magent-ui")
+(declare-function magent-list-capabilities-for-current-context "magent-capability")
+(declare-function magent-explain-last-capability-resolution "magent-capability")
+(declare-function magent-toggle-capability-locally "magent-capability")
 
 ;;; Initialization
 
@@ -157,6 +160,9 @@ When enabled, Magent commands are available.
             (define-key map (kbd "C-c m a") #'magent-ask-at-point)
             (define-key map (kbd "C-c m c") #'magent-clear-session)
             (define-key map (kbd "C-c m R") #'magent-resume-session)
+            (define-key map (kbd "C-c m x") #'magent-list-capabilities-for-current-context)
+            (define-key map (kbd "C-c m e") #'magent-explain-last-capability-resolution)
+            (define-key map (kbd "C-c m k") #'magent-toggle-capability-locally)
             (define-key map (kbd "C-c m l") #'magent-show-log)
             (define-key map (kbd "C-c m L") #'magent-clear-log)
             ;; Section folding
@@ -176,6 +182,9 @@ When enabled, Magent commands are available.
 ;; add new bindings explicitly to support live reloading during development.
 (define-key magent-mode-map (kbd "C-c m d") #'magent-diagnose-emacs)
 (define-key magent-mode-map (kbd "C-c m D") #'magent-doctor)
+(define-key magent-mode-map (kbd "C-c m x") #'magent-list-capabilities-for-current-context)
+(define-key magent-mode-map (kbd "C-c m e") #'magent-explain-last-capability-resolution)
+(define-key magent-mode-map (kbd "C-c m k") #'magent-toggle-capability-locally)
 
 (defun magent--ensure-initialized ()
   "Ensure magent is fully initialized.

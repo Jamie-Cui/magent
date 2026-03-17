@@ -75,6 +75,10 @@ Customize with `M-x customize-group RET magent RET`. Key settings:
 | `magent-load-custom-agents` | `t` | Load custom agents from `.magent/agent/*.md` |
 | `magent-enable-logging` | `t` | Enable logging to `*magent-log*` buffer |
 | `magent-enable-audit-log` | `t` | Persist compact audit logs for permission and sensitive actions |
+| `magent-enable-capabilities` | `t` | Enable context-aware capability resolution for each turn |
+| `magent-capability-max-active` | `3` | Max number of auto-activated capabilities per request |
+| `magent-disabled-capabilities` | `nil` | Capability names disabled globally via Customize |
+| `magent-disabled-capability-families` | `nil` | Capability family names disabled globally via Customize |
 | `magent-assistant-prompt` | `"ASSISTANT"` | Tag text in assistant section headers |
 | `magent-user-prompt` | `"USER"` | Tag text in user section headers |
 | `magent-tool-call-prompt` | `"tool"` | Tag text in tool call lines |
@@ -104,6 +108,9 @@ Customize with `M-x customize-group RET magent RET`. Key settings:
 | `magent-prompt-region` | `C-c m r` | Send selected region to AI |
 | `magent-ask-at-point` | `C-c m a` | Ask about symbol at point |
 | `magent-clear-session` | `C-c m c` | Clear current session |
+| `magent-list-capabilities-for-current-context` | `C-c m x` | Inspect all capability matches for the current buffer context |
+| `magent-explain-last-capability-resolution` | `C-c m e` | Explain the most recent capability resolution in detail |
+| `magent-toggle-capability-locally` | `C-c m k` | Toggle one capability on/off for the current Emacs session |
 | `magent-show-log` | `C-c m l` | View API request/response log |
 | `magent-clear-log` | `C-c m L` | Clear the log buffer |
 | `magent-ui-toggle-section` | `C-c m t` | Toggle fold/unfold of section at point |
@@ -113,6 +120,118 @@ Customize with `M-x customize-group RET magent RET`. Key settings:
 | `magent-toggle-by-pass-permission` | `M-x` | Toggle permission bypass for tool filtering and approval prompts |
 
 In the `*magent*` output buffer: `TAB`/`S-TAB` fold sections, `?` opens transient menu, `C-c C-c` submits input, `C-g` interrupts.
+
+### Capability Controls
+
+When capability resolution is enabled, Magent can auto-activate a small set of instruction skills for the current turn and will insert a short resolver summary into `*magent*` when that happens.
+
+Use these controls when tuning or debugging auto-activation:
+
+- `C-c m x` shows all capability matches for the current buffer context, including hidden ones.
+- `C-c m e` shows the last recorded resolution, including score contributions and final injected skills.
+- `C-c m k` locally toggles a capability without editing any capability files on disk.
+- `M-x customize-group RET magent RET` lets you disable specific capabilities or whole capability families persistently.
+
+Explicit `/skill-name` selections still take priority in final skill ordering. Capability-derived skills are appended after explicit skills and deduplicated.
+
+### Builtin And Curated Capability Examples
+
+Builtin capability families are grouped by workflow domain, not by raw Elisp API lists. Current builtin families include:
+
+- Hook/keymap/advice debugging
+- Config reload workflow
+- Command/variable introspection
+- Runtime inspection
+- Buffer editing
+
+Curated package capabilities stay intentionally small. Current package set includes:
+
+- `org` for structured Org editing
+- `magit` for live Magit workflow
+- `project` for project.el navigation and project-scoped commands
+- `lsp-mode`/`eglot` for workspace code-intelligence workflows
+
+Examples:
+
+- In an `emacs-lisp-mode` buffer, `Diagnose why this hook is not running` should auto-activate the hook/keymap/advice debugging capability.
+- In a Magit status buffer, `help me stage this hunk and commit it` should auto-activate the Magit workflow capability.
+- In a plain buffer with generic wording like `hello`, installed package features alone should not auto-activate curated package capabilities.
+
+Curated package capabilities are maintainer-authored and typically gated by a combination of prompt wording plus mode, file, or loaded-feature context. They are not meant to mirror every installed package automatically.
+
+### Capability Authoring Pattern
+
+New capabilities should describe a user-facing workflow and point to one or more instruction skills.
+
+```markdown
+---
+name: project-workflow
+title: Project Navigation Workflow
+description: Work with project roots, project switching, indexed files, and project-scoped commands inside Emacs.
+family: project
+source: package
+package: project
+skills: project-workflow
+features: project
+keywords: project root, current project, switch project, project file
+disclosure: active
+risk: low
+---
+
+Use this capability for project.el-style navigation and execution workflows.
+```
+
+Prefer workflow-oriented names and descriptions such as `project-workflow` or `lsp-workspace-workflow`, not raw function catalogs.
+
+### Capability Governance
+
+Capability metadata is split into two roles:
+
+- Maintainer-owned policy: `family`, `disclosure`, and `risk`
+- Contributor metadata facts: `skills`, `modes`, `features`, `files`, and `keywords`
+
+Current behavior:
+
+- Builtin, user, and project capability files are loaded directly by Magent.
+- Future package-local capability metadata is intentionally disabled by default.
+- If package-local metadata is enabled later, Magent should still project package-provided facts through maintainer-controlled policy defaults instead of trusting external `risk` or activation policy values.
+
+Diagnosis commands and explicit `/skill-name` selections still compose with auto-capabilities. Final skill ordering is deduplicated so specialized commands such as `magent-diagnose-emacs` do not inject the same debugging skill twice.
+
+### Live Emacs Verification
+
+For maintainers testing capability resolution in a running Emacs:
+
+1. Reload updated code:
+
+```elisp
+(load "/path/to/magent/magent-capability.el" nil t)
+(load "/path/to/magent/magent-capability-file.el" nil t)
+(load "/path/to/magent/magent-ui.el" nil t)
+(magent-reload-skills)
+(magent-reload-capabilities)
+```
+
+2. Org buffer -> Org capability activates:
+
+- Visit a `.org` buffer.
+- Run `M-x magent-dwim`.
+- Submit: `Please reorganize this subtree and preserve the heading structure`.
+- Expect the `*magent*` buffer to show a resolver summary mentioning `org-structure-workflow` or the matching Org capability.
+
+3. Magit buffer -> Magit capability activates:
+
+- Open `M-x magit-status`.
+- Run `M-x magent-dwim`.
+- Submit: `Help me stage this hunk and commit it`.
+- Expect the resolver summary to mention the Magit workflow capability.
+
+4. Plain code buffer with no matching context -> no auto capability:
+
+- Visit a generic code buffer with no relevant project/package workflow context.
+- Run `M-x magent-dwim`.
+- Submit: `hello`.
+- Expect no capability summary or only an empty/neutral capability resolution with no auto-activated capability skills.
 
 ### Session Scope
 

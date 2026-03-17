@@ -14,6 +14,16 @@
 ;; problem-oriented ability surfaces such as "runtime inspection" or
 ;; "magit workflow" without exposing raw Emacs functions or every
 ;; installed package directly to the model.
+;;
+;; Capability lifecycle:
+;; 1. Discovery: file-backed and built-in capability definitions are
+;;    registered into `magent-capability--registry'.
+;; 2. Scoring: each request is resolved against structured turn context
+;;    and prompt text via deterministic additive match helpers.
+;; 3. Suggestion: matches above the suggestion threshold become visible
+;;    in resolver output for inspection and UI/debug surfaces.
+;; 4. Activation: top scoring `active' disclosure matches up to
+;;    `magent-capability-max-active' contribute linked skills.
 
 ;;; Code:
 
@@ -29,6 +39,7 @@
   name
   title
   description
+  family
   (source-kind 'builtin)
   source-name
   skills
@@ -43,15 +54,28 @@
 
 (cl-defstruct (magent-capability-match
                (:constructor magent-capability-match-create))
-  "Match result for a capability resolution pass."
+  "Match result for a capability resolution pass.
+
+`reasons' is a stable list of human-readable score contributions.
+`details' is a plist for tests and debug surfaces, for example:
+  (:enabled t
+   :contributions ((:kind mode-family :value org-mode :score 3)
+                   (:kind keyword :value \"heading\" :score 1)))."
   capability
   (score 0)
   reasons
+  details
   (status 'hidden))
 
 (cl-defstruct (magent-capability-resolution
                (:constructor magent-capability-resolution-create))
-  "Progressive disclosure result for one request."
+  "Progressive disclosure result for one request.
+
+The output shape is intentionally inspectable:
+- `context' is the normalized plist the resolver scored against.
+- `matches' is the full sorted list of `magent-capability-match'.
+- `active-capabilities' and `suggested-capabilities' are filtered views.
+- `skill-names' is the final deduplicated instruction skill list."
   prompt
   context
   explicit-skills
@@ -66,11 +90,29 @@
 (defvar magent-capability--last-resolution nil
   "Last `magent-capability-resolution' returned by the resolver.")
 
+(defvar magent-capability--local-disabled-capabilities nil
+  "Capability names disabled for the current Emacs session only.")
+
+(defvar magent-capability--local-enabled-capabilities nil
+  "Capability names explicitly enabled for the current Emacs session only.")
+
 (defconst magent-capability--suggest-threshold 2
   "Minimum score required for a capability to be suggested.")
 
 (defconst magent-capability--activate-threshold 4
   "Minimum score required for a capability to auto-activate.")
+
+(defconst magent-capability--mode-match-score 3
+  "Score contribution for a mode or mode-family match.")
+
+(defconst magent-capability--feature-match-score 2
+  "Score contribution for a loaded feature match.")
+
+(defconst magent-capability--file-match-score 2
+  "Score contribution for a file or project glob match.")
+
+(defconst magent-capability--keyword-match-score 1
+  "Score contribution for a prompt keyword match.")
 
 (defun magent-capability-register (capability)
   "Register CAPABILITY in the registry."
@@ -101,8 +143,53 @@
 
 (defun magent-capability-enabled-p (capability)
   "Return non-nil when CAPABILITY is enabled."
-  (not (member (magent-capability-name capability)
-               magent-disabled-capabilities)))
+  (let ((name (magent-capability-name capability))
+        (family (magent-capability-family capability)))
+    (cond
+     ((member name magent-capability--local-enabled-capabilities) t)
+     ((member name magent-capability--local-disabled-capabilities) nil)
+     ((member name magent-disabled-capabilities) nil)
+     ((and family
+           (member family magent-disabled-capability-families))
+      nil)
+     (t t))))
+
+(defun magent-capability-clear-local-overrides ()
+  "Clear non-persistent capability overrides for the current Emacs session."
+  (interactive)
+  (setq magent-capability--local-disabled-capabilities nil
+        magent-capability--local-enabled-capabilities nil))
+
+(defun magent-capability-locally-disabled-p (capability-name)
+  "Return non-nil when CAPABILITY-NAME is locally disabled."
+  (member capability-name magent-capability--local-disabled-capabilities))
+
+(defun magent-capability-toggle-locally (capability-name)
+  "Toggle CAPABILITY-NAME for the current Emacs session only.
+Returns the new symbolic state: either `enabled' or `disabled'."
+  (if (magent-capability-enabled-p (or (magent-capability-get capability-name)
+                                       (error "Capability '%s' not found" capability-name)))
+      (progn
+        (setq magent-capability--local-enabled-capabilities
+              (delete capability-name magent-capability--local-enabled-capabilities))
+        (cl-pushnew capability-name magent-capability--local-disabled-capabilities
+                    :test #'equal)
+        'disabled)
+    (progn
+      (setq magent-capability--local-disabled-capabilities
+            (delete capability-name magent-capability--local-disabled-capabilities))
+      (cl-pushnew capability-name magent-capability--local-enabled-capabilities
+                  :test #'equal)
+      'enabled)))
+
+(defun magent-capability--mode-family (mode)
+  "Return MODE and its derived-mode parents as a list."
+  (let ((family nil)
+        (current mode))
+    (while (and current (symbolp current) (not (memq current family)))
+      (push current family)
+      (setq current (get current 'derived-mode-parent)))
+    (nreverse family)))
 
 (defun magent-capability-capture-context ()
   "Capture a structured request context from the current buffer.
@@ -110,30 +197,42 @@ Returns a plist or nil when the current buffer is not a useful
 source for contextual capability resolution."
   (unless (or (derived-mode-p 'magent-output-mode)
               (minibufferp))
-    (list :buffer-name (buffer-name)
-          :file-path (buffer-file-name)
-          :major-mode major-mode
-          :project-root (ignore-errors (magent-project-root))
-          :region-active (use-region-p)
-          :features features)))
+    (let* ((file-path (buffer-file-name))
+           (major-mode-family (magent-capability--mode-family major-mode)))
+      (list :buffer-name (buffer-name)
+            :file-path file-path
+            :file-extension (when file-path
+                              (file-name-extension file-path))
+            :major-mode major-mode
+            :major-mode-family major-mode-family
+            :project-root (ignore-errors (magent-project-root))
+            :region-active (use-region-p)
+            :buffer-modified-p (buffer-modified-p)
+            :features features))))
 
 (defun magent-capability--parse-context-prompt (prompt)
   "Extract a structured context plist from PROMPT, if present."
   (when (and (stringp prompt)
              (string-match "\\[Context: \\([^]]+\\)\\]" prompt))
-    (let ((payload (match-string 1 prompt)))
+    (let* ((payload (match-string 1 prompt))
+           (file-path (when (string-match "file=\"\\([^\"]+\\)\"" payload)
+                        (match-string 1 payload)))
+           (mode-sym (when (string-match "mode=\\([^] ]+\\)" payload)
+                       (intern (match-string 1 payload)))))
       (list
        :buffer-name
        (when (string-match "buffer=\"\\([^\"]+\\)\"" payload)
          (match-string 1 payload))
-       :file-path
-       (when (string-match "file=\"\\([^\"]+\\)\"" payload)
-         (match-string 1 payload))
-       :major-mode
-       (when (string-match "mode=\\([^] ]+\\)" payload)
-         (intern (match-string 1 payload)))
+       :file-path file-path
+       :file-extension (when file-path (file-name-extension file-path))
+       :major-mode mode-sym
+       :major-mode-family (when mode-sym
+                            (magent-capability--mode-family mode-sym))
        :region-active
-       (and (string-match "region=[0-9]+-[0-9]+" payload) t)))))
+       (and (string-match "region=[0-9]+-[0-9]+" payload) t)
+       :buffer-modified-p
+       (and (string-match "modified=\\(true\\|false\\)" payload)
+            (string= (match-string 1 payload) "true"))))))
 
 (defun magent-capability--merge-context (request-context prompt)
   "Merge REQUEST-CONTEXT with structured context extracted from PROMPT."
@@ -142,11 +241,24 @@ source for contextual capability resolution."
                            (plist-get prompt-context :buffer-name))
           :file-path (or (plist-get request-context :file-path)
                          (plist-get prompt-context :file-path))
+          :file-extension (or (plist-get request-context :file-extension)
+                              (plist-get prompt-context :file-extension)
+                              (when-let* ((path (or (plist-get request-context :file-path)
+                                                    (plist-get prompt-context :file-path))))
+                                (file-name-extension path)))
           :major-mode (or (plist-get request-context :major-mode)
                           (plist-get prompt-context :major-mode))
+          :major-mode-family (or (plist-get request-context :major-mode-family)
+                                 (plist-get prompt-context :major-mode-family)
+                                 (when-let* ((mode (or (plist-get request-context :major-mode)
+                                                       (plist-get prompt-context :major-mode))))
+                                   (magent-capability--mode-family mode)))
           :project-root (plist-get request-context :project-root)
           :region-active (or (plist-get request-context :region-active)
                              (plist-get prompt-context :region-active))
+          :buffer-modified-p (if (plist-member request-context :buffer-modified-p)
+                                 (plist-get request-context :buffer-modified-p)
+                               (plist-get prompt-context :buffer-modified-p))
           :features (or (plist-get request-context :features)
                         features))))
 
@@ -162,54 +274,93 @@ source for contextual capability resolution."
        (string-match-p (regexp-quote (downcase keyword))
                        (downcase prompt))))
 
-(defun magent-capability--score (capability prompt context)
-  "Return a `magent-capability-match' for CAPABILITY."
-  (let ((score 0)
-        reasons
-        (mode (plist-get context :major-mode))
-        (file (plist-get context :file-path))
-        (project-root (plist-get context :project-root))
-        (loaded-features (plist-get context :features))
-        matched-keyword)
-    (when (and mode
-               (memq mode (magent-capability-modes capability)))
-      (cl-incf score 3)
-      (push (format "mode=%s" mode) reasons))
-    (when-let* ((matched-feature
-                 (cl-find-if (lambda (feature)
-                               (memq feature loaded-features))
-                             (magent-capability-features capability))))
-      (cl-incf score 2)
-      (push (format "feature=%s" matched-feature) reasons))
+(defun magent-capability--mode-match (capability context)
+  "Return a plist describing the mode contribution for CAPABILITY and CONTEXT."
+  (let* ((mode (plist-get context :major-mode))
+         (mode-family (plist-get context :major-mode-family))
+         (exact (and mode
+                     (memq mode (magent-capability-modes capability))))
+         (family (and (not exact)
+                      mode-family
+                      (cl-find-if (lambda (candidate)
+                                    (memq candidate mode-family))
+                                  (magent-capability-modes capability)))))
+    (cond
+     (exact
+      (list :kind 'mode
+            :value mode
+            :score magent-capability--mode-match-score
+            :label (format "mode=%s" mode)))
+     (family
+      (list :kind 'mode-family
+            :value family
+            :score magent-capability--mode-match-score
+            :label (format "mode-family=%s" family))))))
+
+(defun magent-capability--feature-match (capability context)
+  "Return a plist describing the feature contribution for CAPABILITY and CONTEXT."
+  (when-let* ((matched-feature
+               (cl-find-if (lambda (feature)
+                             (memq feature (plist-get context :features)))
+                           (magent-capability-features capability))))
+    (list :kind 'feature
+          :value matched-feature
+          :score magent-capability--feature-match-score
+          :label (format "feature=%s" matched-feature))))
+
+(defun magent-capability--file-match (capability context)
+  "Return a plist describing the file contribution for CAPABILITY and CONTEXT."
+  (let ((file (plist-get context :file-path))
+        (project-root (plist-get context :project-root)))
     (when-let* ((matched-file
                  (cl-find-if (lambda (pattern)
                                (or (magent-capability--glob-match-p pattern file)
                                    (magent-capability--glob-match-p pattern project-root)))
                              (magent-capability-files capability))))
-      (cl-incf score 2)
-      (push (format "path~=%s" matched-file) reasons))
-    (dolist (keyword (magent-capability-prompt-keywords capability))
-      (when (and (not matched-keyword)
-                 (magent-capability--keyword-match-p keyword prompt))
-        (setq matched-keyword keyword)
-        (cl-incf score 1)
-        (push (format "keyword=%s" keyword) reasons)))
-    (let ((status
-           (cond
-            ((or (not (magent-capability-enabled-p capability))
-                 (< score magent-capability--suggest-threshold))
-             'hidden)
-            ((and (>= score magent-capability--activate-threshold)
-                  (eq (magent-capability-disclosure capability) 'active))
-             'active)
-            ((memq (magent-capability-disclosure capability) '(active suggested))
-             'suggested)
-            (t 'hidden))))
+      (list :kind 'file
+            :value matched-file
+            :score magent-capability--file-match-score
+            :label (format "path~=%s" matched-file)))))
+
+(defun magent-capability--keyword-match (capability prompt)
+  "Return a plist describing the prompt keyword contribution for CAPABILITY."
+  (when-let* ((matched-keyword
+               (cl-find-if (lambda (keyword)
+                             (magent-capability--keyword-match-p keyword prompt))
+                           (magent-capability-prompt-keywords capability))))
+    (list :kind 'keyword
+          :value matched-keyword
+          :score magent-capability--keyword-match-score
+          :label (format "keyword=%s" matched-keyword))))
+
+(defun magent-capability--score (capability prompt context)
+  "Return a `magent-capability-match' for CAPABILITY."
+  (let* ((contributions (delq nil
+                              (list (magent-capability--mode-match capability context)
+                                    (magent-capability--feature-match capability context)
+                                    (magent-capability--file-match capability context)
+                                    (magent-capability--keyword-match capability prompt))))
+         (score (apply #'+ 0 (mapcar (lambda (entry) (plist-get entry :score))
+                                     contributions)))
+         (enabled (magent-capability-enabled-p capability))
+         (status
+          (cond
+           ((or (not enabled)
+                (< score magent-capability--suggest-threshold))
+            'hidden)
+           ((and (>= score magent-capability--activate-threshold)
+                 (eq (magent-capability-disclosure capability) 'active))
+            'active)
+           ((memq (magent-capability-disclosure capability) '(active suggested))
+            'suggested)
+           (t 'hidden))))
       (magent-capability-match-create
        :capability capability
        :score score
-       :reasons (nreverse reasons)
-       :status status))))
+       :reasons (mapcar (lambda (entry) (plist-get entry :label)) contributions)
+       :details (list :enabled enabled
+                      :contributions contributions)
+       :status status)))
 
 (defun magent-capability--sort-matches (matches)
   "Sort MATCHES by status, score, then capability name."
@@ -309,6 +460,8 @@ Returns nil when capability auto-disclosure is disabled."
                     (magent-capability-match-status match)
                     (magent-capability-match-score match)))
     (insert (format "  %s\n" source))
+    (when (magent-capability-family capability)
+      (insert (format "  Family: %s\n" (magent-capability-family capability))))
     (when (magent-capability-description capability)
       (insert (format "  %s\n" (magent-capability-description capability))))
     (when (magent-capability-skills capability)
@@ -318,7 +471,77 @@ Returns nil when capability auto-disclosure is disabled."
       (insert (format "  Reasons: %s\n"
                       (mapconcat #'identity
                                  (magent-capability-match-reasons match)
-                                 ", "))))))
+                                 ", "))))
+    (when-let* ((details (magent-capability-match-details match))
+                (contributions (plist-get details :contributions)))
+      (insert "  Debug: ")
+      (insert (mapconcat (lambda (entry)
+                           (format "%s:+%d"
+                                   (plist-get entry :kind)
+                                   (plist-get entry :score)))
+                         contributions
+                         ", "))
+      (insert "\n"))))
+
+(defun magent-capability--insert-resolution (resolution &optional include-hidden)
+  "Insert RESOLUTION into current buffer.
+When INCLUDE-HIDDEN is non-nil, include hidden matches too."
+  (let ((context (magent-capability-resolution-context resolution)))
+    (insert (format "Buffer: %s\n"
+                    (or (plist-get context :buffer-name) "<none>")))
+    (insert (format "File: %s\n"
+                    (or (plist-get context :file-path) "<none>")))
+    (insert (format "Mode: %s\n"
+                    (or (plist-get context :major-mode) "<none>")))
+    (insert (format "Mode family: %s\n"
+                    (or (when-let* ((family (plist-get context :major-mode-family)))
+                          (mapconcat #'symbol-name family ", "))
+                        "<none>")))
+    (insert (format "File extension: %s\n"
+                    (or (plist-get context :file-extension) "<none>")))
+    (insert (format "Modified: %s\n\n"
+                    (if (plist-get context :buffer-modified-p) "yes" "no")))
+    (insert (format "Explicit skills: %s\n"
+                    (or (and (magent-capability-resolution-explicit-skills resolution)
+                             (mapconcat #'identity
+                                        (magent-capability-resolution-explicit-skills resolution)
+                                        ", "))
+                        "<none>")))
+    (insert (format "Final skills: %s\n\n"
+                    (or (and (magent-capability-resolution-skill-names resolution)
+                             (mapconcat #'identity
+                                        (magent-capability-resolution-skill-names resolution)
+                                        ", "))
+                        "<none>")))
+    (if (null (magent-capability-resolution-matches resolution))
+        (insert "No capabilities registered.\n")
+      (dolist (match (magent-capability-resolution-matches resolution))
+        (when (or include-hidden
+                  (not (eq (magent-capability-match-status match) 'hidden)))
+          (magent-capability--insert-match match)
+          (insert "\n"))))))
+
+(defun magent-capability-resolution-summary (resolution)
+  "Return a short human-readable summary for RESOLUTION, or nil."
+  (when resolution
+    (let ((active (mapcar (lambda (match)
+                            (magent-capability-name
+                             (magent-capability-match-capability match)))
+                          (magent-capability-resolution-active-capabilities resolution)))
+          (suggested (mapcar (lambda (match)
+                               (magent-capability-name
+                                (magent-capability-match-capability match)))
+                             (magent-capability-resolution-suggested-capabilities resolution))))
+      (when (or active suggested)
+        (string-join
+         (delq nil
+               (list (when active
+                       (format "Auto capabilities: %s"
+                               (mapconcat #'identity active ", ")))
+                     (when suggested
+                       (format "Suggested: %s"
+                               (mapconcat #'identity suggested ", ")))))
+         " | ")))))
 
 ;;;###autoload
 (defun magent-list-capabilities ()
@@ -405,21 +628,48 @@ Returns nil when capability auto-disclosure is disabled."
                       (or prompt "")
                       (magent-capability-capture-context)
                       nil))
-         (context (magent-capability-resolution-context resolution)))
-    (magent--with-display-buffer "*Magent Capability Resolution*"
+         (buffer-name "*Magent Capability Resolution*"))
+    (setq magent-capability--last-resolution resolution)
+    (magent--with-display-buffer buffer-name
       (insert "Capability Resolution\n\n")
-      (insert (format "Buffer: %s\n"
-                      (or (plist-get context :buffer-name) "<none>")))
-      (insert (format "File: %s\n"
-                      (or (plist-get context :file-path) "<none>")))
-      (insert (format "Mode: %s\n\n"
-                      (or (plist-get context :major-mode) "<none>")))
-      (if (null (magent-capability-resolution-matches resolution))
-          (insert "No capabilities registered.\n")
-        (dolist (match (magent-capability-resolution-matches resolution))
-          (when (not (eq (magent-capability-match-status match) 'hidden))
-            (magent-capability--insert-match match)
-            (insert "\n")))))))
+      (magent-capability--insert-resolution resolution nil))))
+
+;;;###autoload
+(defun magent-list-capabilities-for-current-context (&optional prompt)
+  "List all capabilities for the current context and optional PROMPT."
+  (interactive)
+  (let ((resolution (magent-capability-resolve
+                     (or prompt "")
+                     (magent-capability-capture-context)
+                     nil)))
+    (magent--with-display-buffer "*Magent Capability Resolution*"
+      (insert "Capabilities For Current Context\n\n")
+      (magent-capability--insert-resolution resolution t))))
+
+;;;###autoload
+(defun magent-explain-last-capability-resolution ()
+  "Show the most recently recorded capability resolution in detail."
+  (interactive)
+  (if (not magent-capability--last-resolution)
+      (message "Magent: no capability resolution recorded yet")
+    (magent--with-display-buffer "*Magent Last Capability Resolution*"
+      (insert "Last Capability Resolution\n\n")
+      (magent-capability--insert-resolution
+       magent-capability--last-resolution
+       t))))
+
+;;;###autoload
+(defun magent-toggle-capability-locally (capability-name)
+  "Toggle CAPABILITY-NAME on or off for the current Emacs session only."
+  (interactive
+   (list (completing-read "Toggle capability locally: "
+                          (magent-capability-list) nil t)))
+  (let ((state (magent-capability-toggle-locally capability-name)))
+    (message "Magent: capability '%s' locally %s"
+             capability-name
+             (pcase state
+               ('enabled "enabled")
+               (_ "disabled")))))
 
 ;;;###autoload
 (defun magent-show-active-capabilities ()

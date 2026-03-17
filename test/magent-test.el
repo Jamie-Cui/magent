@@ -546,6 +546,15 @@
       (should-not (eq s1 s2))
       (should (= (length (magent-session-messages s2)) 0)))))
 
+(ert-deftest magent-test-session-reset-clears-capability-local-overrides ()
+  "Test session reset clears local capability toggles."
+  (require 'magent-capability)
+  (let ((magent-capability--local-disabled-capabilities '("org-structure"))
+        (magent-capability--local-enabled-capabilities '("magit-workflow")))
+    (magent-session-reset)
+    (should-not magent-capability--local-disabled-capabilities)
+    (should-not magent-capability--local-enabled-capabilities)))
+
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Agent registry tests
 ;; ──────────────────────────────────────────────────────────────────────
@@ -1004,6 +1013,249 @@
                       (magent-capability-match-capability (car active)))
                      "org-structure")))))
 
+(ert-deftest magent-test-capability-parse-context-prompt-derives-fields ()
+  "Test prompt context parsing derives normalized resolver fields."
+  (require 'magent-capability)
+  (let ((context (magent-capability--parse-context-prompt
+                  "[Context: buffer=\"notes.org\" file=\"/tmp/notes.org\" mode=org-mode modified=true region=1-4]")))
+    (should (equal (plist-get context :buffer-name) "notes.org"))
+    (should (equal (plist-get context :file-path) "/tmp/notes.org"))
+    (should (equal (plist-get context :file-extension) "org"))
+    (should (eq (plist-get context :major-mode) 'org-mode))
+    (should (memq 'org-mode (plist-get context :major-mode-family)))
+    (should (eq (plist-get context :buffer-modified-p) t))
+    (should (eq (plist-get context :region-active) t))))
+
+(ert-deftest magent-test-capability-resolve-tie-breaks-by-name ()
+  "Test equal-score active capabilities are sorted by name."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil)
+        (magent-capability-max-active 3))
+    (dolist (name '("zeta" "alpha"))
+      (magent-capability-register
+       (magent-capability-create
+        :name name
+        :skills (list (concat name "-skill"))
+        :modes '(org-mode)
+        :features '(org)
+        :disclosure 'active)))
+    (let* ((resolution (magent-capability-resolve
+                        "Refile this subtree"
+                        '(:major-mode org-mode
+                          :major-mode-family (org-mode text-mode)
+                          :features (org))
+                        nil))
+           (active (magent-capability-resolution-active-capabilities resolution)))
+      (should (equal (mapcar (lambda (match)
+                               (magent-capability-name
+                                (magent-capability-match-capability match)))
+                             active)
+                     '("alpha" "zeta"))))))
+
+(ert-deftest magent-test-capability-resolve-respects-disabled-capabilities ()
+  "Test disabled capabilities stay hidden even when they match."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil)
+        (magent-disabled-capabilities '("org-structure")))
+    (magent-capability-register
+     (magent-capability-create
+      :name "org-structure"
+      :skills '("org-structure-workflow")
+      :modes '(org-mode)
+      :features '(org)
+      :prompt-keywords '("heading")
+      :disclosure 'active))
+    (let* ((resolution (magent-capability-resolve
+                        "Please reorganize this heading"
+                        '(:major-mode org-mode
+                          :major-mode-family (org-mode text-mode)
+                          :features (org))
+                        nil))
+           (match (car (magent-capability-resolution-matches resolution))))
+      (should (eq (magent-capability-match-status match) 'hidden))
+      (should-not (magent-capability-resolution-active-capabilities resolution))
+      (should-not (plist-get (magent-capability-match-details match) :enabled)))))
+
+(ert-deftest magent-test-capability-resolve-respects-disabled-family ()
+  "Test disabled capability families suppress auto-activation."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil)
+        (magent-disabled-capability-families '("org")))
+    (magent-capability-register
+     (magent-capability-create
+      :name "org-structure"
+      :family "org"
+      :skills '("org-structure-workflow")
+      :modes '(org-mode)
+      :features '(org)
+      :disclosure 'active))
+    (let* ((resolution (magent-capability-resolve
+                        "Refactor this subtree"
+                        '(:major-mode org-mode
+                          :major-mode-family (org-mode outline-mode text-mode)
+                          :features (org))
+                        nil))
+           (match (car (magent-capability-resolution-matches resolution))))
+      (should (eq (magent-capability-match-status match) 'hidden))
+      (should-not (plist-get (magent-capability-match-details match) :enabled)))))
+
+(ert-deftest magent-test-capability-toggle-locally-overrides-disabled-state ()
+  "Test local capability toggles override disabled capability settings."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil)
+        (magent-disabled-capabilities '("org-structure"))
+        (magent-capability--local-disabled-capabilities nil)
+        (magent-capability--local-enabled-capabilities nil))
+    (magent-capability-register
+     (magent-capability-create
+      :name "org-structure"
+      :family "org"))
+    (should-not (magent-capability-enabled-p
+                 (magent-capability-get "org-structure")))
+    (should (eq (magent-capability-toggle-locally "org-structure") 'enabled))
+    (should (magent-capability-enabled-p
+             (magent-capability-get "org-structure")))
+    (should (eq (magent-capability-toggle-locally "org-structure") 'disabled))
+    (should-not (magent-capability-enabled-p
+                 (magent-capability-get "org-structure")))))
+
+(ert-deftest magent-test-capability-resolution-summary-includes-active-and-suggested ()
+  "Test capability resolution summary remains concise and inspectable."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil))
+    (magent-capability-register
+     (magent-capability-create
+      :name "org-structure"
+      :family "org"
+      :skills '("org-structure-workflow")
+      :modes '(org-mode)
+      :features '(org)
+      :disclosure 'active))
+    (magent-capability-register
+     (magent-capability-create
+      :name "git-workflow"
+      :family "git"
+      :skills '("git-workflow")
+      :files '("*COMMIT_EDITMSG")
+      :prompt-keywords '("commit")
+      :disclosure 'suggested))
+    (let ((summary (magent-capability-resolution-summary
+                    (magent-capability-resolve
+                     "Commit after reorganizing this subtree"
+                     '(:major-mode org-mode
+                       :major-mode-family (org-mode outline-mode text-mode)
+                       :file-path "/tmp/COMMIT_EDITMSG"
+                       :features (org))
+                     nil))))
+      (should (string-match-p "Auto capabilities: org-structure" summary))
+      (should (string-match-p "Suggested: git-workflow" summary)))))
+
+(ert-deftest magent-test-capability-resolve-zero-max-active-keeps-explicit-skills ()
+  "Test zero auto-activation limit suppresses capability skill injection."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil)
+        (magent-capability-max-active 0))
+    (magent-capability-register
+     (magent-capability-create
+      :name "org-structure"
+      :skills '("auto-skill")
+      :modes '(org-mode)
+      :features '(org)
+      :prompt-keywords '("heading")
+      :disclosure 'active))
+    (let ((resolution (magent-capability-resolve
+                       "Please reorganize this heading"
+                       '(:major-mode org-mode
+                         :major-mode-family (org-mode text-mode)
+                         :features (org))
+                       '("manual-skill"))))
+      (should-not (magent-capability-resolution-active-capabilities resolution))
+      (should (equal (magent-capability-resolution-skill-names resolution)
+                     '("manual-skill"))))))
+
+(ert-deftest magent-test-capability-resolve-records-debug-contributions ()
+  "Test resolver debug details preserve individual score contributions."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil))
+    (magent-capability-register
+     (magent-capability-create
+      :name "org-structure"
+      :skills '("org-structure-workflow")
+      :modes '(org-mode)
+      :features '(org)
+      :files '("*.org")
+      :prompt-keywords '("heading")
+      :disclosure 'active))
+    (let* ((resolution (magent-capability-resolve
+                        "Please reorganize this heading"
+                        '(:major-mode org-mode
+                          :major-mode-family (org-mode text-mode)
+                          :file-path "/tmp/notes.org"
+                          :file-extension "org"
+                          :features (org))
+                        nil))
+           (match (car (magent-capability-resolution-active-capabilities resolution)))
+           (contributions (plist-get (magent-capability-match-details match)
+                                     :contributions)))
+      (should (= (magent-capability-match-score match) 8))
+      (should (equal (mapcar (lambda (entry) (plist-get entry :kind)) contributions)
+                     '(mode feature file keyword))))))
+
+(ert-deftest magent-test-capability-resolve-mixed-org-and-git-context ()
+  "Test org context plus git wording does not hide the org capability."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil))
+    (magent-capability-register
+     (magent-capability-create
+      :name "git-workflow"
+      :skills '("git-workflow")
+      :prompt-keywords '("commit")
+      :disclosure 'suggested))
+    (magent-capability-register
+     (magent-capability-create
+      :name "org-structure"
+      :skills '("org-structure-workflow")
+      :modes '(org-mode)
+      :features '(org)
+      :disclosure 'active))
+    (let* ((resolution (magent-capability-resolve
+                        "Please commit the result after reorganizing this subtree"
+                        '(:major-mode org-mode
+                          :major-mode-family (org-mode text-mode)
+                          :features (org))
+                        nil))
+           (matches (magent-capability-resolution-matches resolution)))
+      (should (equal (magent-capability-name
+                      (magent-capability-match-capability (car matches)))
+                     "org-structure"))
+      (should (eq (magent-capability-match-status (car matches)) 'active))
+      (should (equal (magent-capability-name
+                      (magent-capability-match-capability (cadr matches)))
+                     "git-workflow"))
+      (should (eq (magent-capability-match-status (cadr matches)) 'hidden)))))
+
+(ert-deftest magent-test-capability-resolve-magit-mode-family-and-keyword ()
+  "Test a Magit family match combines with commit wording deterministically."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil))
+    (magent-capability-register
+     (magent-capability-create
+      :name "magit-workflow"
+      :skills '("magit-workflow")
+      :modes '(magit-mode)
+      :prompt-keywords '("commit")
+      :disclosure 'active))
+    (let* ((resolution (magent-capability-resolve
+                        "Help me commit these changes"
+                        '(:major-mode magit-status-mode
+                          :major-mode-family (magit-status-mode magit-mode special-mode fundamental-mode))
+                        nil))
+           (match (car (magent-capability-resolution-active-capabilities resolution))))
+      (should match)
+      (should (= (magent-capability-match-score match) 4))
+      (should (equal (mapcar #'identity (magent-capability-match-reasons match))
+                     '("mode-family=magit-mode" "keyword=commit"))))))
+
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Skill file parsing tests
 ;; ──────────────────────────────────────────────────────────────────────
@@ -1081,6 +1333,289 @@
             (should (equal (magent-capability-modes capability) '(org-mode)))
             (should (equal (magent-capability-features capability) '(org)))))
       (delete-directory tmpdir t))))
+
+(ert-deftest magent-test-capability-file-load-normalizes-list-metadata ()
+  "Test capability file loader normalizes strings, CSV fields, and lists."
+  (require 'magent-capability-file)
+  (let* ((magent-capability--registry nil)
+         (tmpdir (make-temp-file "capability-" t))
+         (capfile (expand-file-name "CAPABILITY.md" tmpdir)))
+    (unwind-protect
+        (progn
+          (with-temp-file capfile
+            (insert
+             "---\n"
+             "name: package-reload\n"
+             "skills: reload-workflow, diagnose-workflow\n"
+             "modes: emacs-lisp-mode, lisp-interaction-mode\n"
+             "features: emacs-lisp, lisp-mode\n"
+             "files: *.el, init.el\n"
+             "keywords: reload, package, config\n"
+             "---\n"))
+          (let ((capability (magent-capability-file-load capfile)))
+            (should capability)
+            (should (equal (magent-capability-skills capability)
+                           '("reload-workflow" "diagnose-workflow")))
+            (should (equal (magent-capability-modes capability)
+                           '(emacs-lisp-mode lisp-interaction-mode)))
+            (should (equal (magent-capability-features capability)
+                           '(emacs-lisp lisp-mode)))
+            (should (equal (magent-capability-files capability)
+                           '("*.el" "init.el")))
+            (should (equal (magent-capability-prompt-keywords capability)
+                           '("reload" "package" "config")))))
+      (delete-directory tmpdir t))))
+
+(ert-deftest magent-test-capability-file-load-derives-family ()
+  "Test capability files carry explicit or derived family metadata."
+  (require 'magent-capability-file)
+  (let* ((magent-capability--registry nil)
+         (tmpdir (make-temp-file "capability-" t))
+         (capfile (expand-file-name "CAPABILITY.md" tmpdir)))
+    (unwind-protect
+        (progn
+          (with-temp-file capfile
+            (insert
+             "---\n"
+             "name: org-structure\n"
+             "source: package\n"
+             "package: org\n"
+             "---\n"))
+          (let ((capability (magent-capability-file-load capfile)))
+            (should capability)
+            (should (equal (magent-capability-family capability) "org"))))
+      (delete-directory tmpdir t))))
+
+(ert-deftest magent-test-capability-file-external-metadata-does-not_override_policy ()
+  "Test external metadata cannot override maintainer-controlled policy fields."
+  (require 'magent-capability-file)
+  (let* ((magent-capability--registry nil)
+         (magent-capability-directories nil)
+         (tmpdir (make-temp-file "capability-external-" t))
+         (capdir (expand-file-name "pkg-cap" tmpdir))
+         (capfile (expand-file-name "CAPABILITY.md" capdir)))
+    (unwind-protect
+        (progn
+          (make-directory capdir t)
+          (with-temp-file capfile
+            (insert
+             "---\n"
+             "name: package-cap\n"
+             "source: package\n"
+             "package: pkg-demo\n"
+             "family: attacker-family\n"
+             "disclosure: active\n"
+             "risk: high\n"
+             "skills: project-workflow\n"
+             "keywords: package demo\n"
+             "---\n"))
+          (let ((capability (magent-capability-file-load capfile)))
+            (should capability)
+            (should (equal (magent-capability-family capability) "pkg-demo"))
+            (should (eq (magent-capability-disclosure capability) 'suggested))
+            (should (eq (magent-capability-risk capability) 'low))))
+      (delete-directory tmpdir t))))
+
+(ert-deftest magent-test-capability-reload-updates-running-registry ()
+  "Test reloading capabilities updates file-backed definitions in place."
+  (require 'magent-capability-file)
+  (let* ((magent-capability--registry nil)
+         (magent-capability-directories nil)
+         (tmpdir (make-temp-file "capability-reload-" t))
+         (capdir (expand-file-name "reload-cap" tmpdir))
+         (capfile (expand-file-name "CAPABILITY.md" capdir)))
+    (unwind-protect
+        (progn
+          (setq magent-capability-directories (list tmpdir))
+          (make-directory capdir t)
+          (with-temp-file capfile
+            (insert
+             "---\n"
+             "name: reload-cap\n"
+             "description: First description\n"
+             "skills: project-workflow\n"
+             "keywords: first\n"
+             "---\n"))
+          (magent-capability-file-load-all (list tmpdir))
+          (should (equal (magent-capability-description
+                          (magent-capability-get "reload-cap"))
+                         "First description"))
+          (with-temp-file capfile
+            (insert
+             "---\n"
+             "name: reload-cap\n"
+             "description: Updated description\n"
+             "skills: project-workflow\n"
+             "keywords: second\n"
+             "---\n"))
+          (magent-capability-file-reload)
+          (should (equal (magent-capability-description
+                          (magent-capability-get "reload-cap"))
+                         "Updated description"))
+          (should (equal (magent-capability-prompt-keywords
+                          (magent-capability-get "reload-cap"))
+                         '("second"))))
+      (delete-directory tmpdir t))))
+
+(ert-deftest magent-test-capability-reload-drops-removed-file-backed-entry ()
+  "Test reloading capabilities drops removed file-backed entries."
+  (require 'magent-capability-file)
+  (let* ((magent-capability--registry nil)
+         (magent-capability-directories nil)
+         (tmpdir (make-temp-file "capability-reload-" t))
+         (capdir (expand-file-name "reload-cap" tmpdir))
+         (capfile (expand-file-name "CAPABILITY.md" capdir)))
+    (unwind-protect
+        (progn
+          (setq magent-capability-directories (list tmpdir))
+          (make-directory capdir t)
+          (with-temp-file capfile
+            (insert
+             "---\n"
+             "name: reload-cap\n"
+             "skills: project-workflow\n"
+             "---\n"))
+          (magent-capability-file-load-all (list tmpdir))
+          (should (magent-capability-get "reload-cap"))
+          (delete-file capfile)
+          (magent-capability-file-reload)
+          (should-not (magent-capability-get "reload-cap")))
+      (delete-directory tmpdir t))))
+
+(ert-deftest magent-test-capability-file-load-all-includes-new-builtin-families ()
+  "Test builtin capability loading includes new builtin and curated package families."
+  (require 'magent-capability-file)
+  (let ((magent-capability--registry nil))
+    (magent-capability-file-load-all (list magent-capability-file--builtin-dir))
+    (dolist (name '("emacs-hook-debugging"
+                    "emacs-config-reload"
+                    "emacs-command-variable-introspection"
+                    "project-workflow"
+                    "lsp-workspace-workflow"))
+      (should (magent-capability-get name)))))
+
+(ert-deftest magent-test-builtin-capability-activates-for-hook-debugging ()
+  "Test builtin hook debugging capability activates in Emacs Lisp buffers."
+  (require 'magent-capability-file)
+  (let ((magent-capability--registry nil))
+    (magent-capability-file-load-all (list magent-capability-file--builtin-dir))
+    (let* ((resolution (magent-capability-resolve
+                        "Diagnose why this hook and key binding are shadowed"
+                        '(:major-mode emacs-lisp-mode
+                          :major-mode-family (emacs-lisp-mode prog-mode)
+                          :features (emacs))
+                        nil))
+           (active-names (mapcar (lambda (match)
+                                   (magent-capability-name
+                                    (magent-capability-match-capability match)))
+                                 (magent-capability-resolution-active-capabilities resolution))))
+      (should (member "emacs-hook-debugging" active-names)))))
+
+(ert-deftest magent-test-builtin-capability-activates-for-command-variable-introspection ()
+  "Test builtin command and variable introspection activates in scratch-like contexts."
+  (require 'magent-capability-file)
+  (let ((magent-capability--registry nil))
+    (magent-capability-file-load-all (list magent-capability-file--builtin-dir))
+    (let* ((resolution (magent-capability-resolve
+                        "Inspect this command and variable binding for me"
+                        '(:major-mode lisp-interaction-mode
+                          :major-mode-family (lisp-interaction-mode emacs-lisp-mode prog-mode)
+                          :features (emacs))
+                        nil))
+           (active-names (mapcar (lambda (match)
+                                   (magent-capability-name
+                                    (magent-capability-match-capability match)))
+                                 (magent-capability-resolution-active-capabilities resolution))))
+      (should (member "emacs-command-variable-introspection" active-names)))))
+
+(ert-deftest magent-test-builtin-capability-activates-for-config-reload-diagnosis ()
+  "Test builtin config reload capability activates for diagnosis-style reload prompts."
+  (require 'magent-capability-file)
+  (let ((magent-capability--registry nil))
+    (magent-capability-file-load-all (list magent-capability-file--builtin-dir))
+    (let* ((resolution (magent-capability-resolve
+                        "Diagnose why reloading init.el leaves stale package state"
+                        '(:major-mode emacs-lisp-mode
+                          :major-mode-family (emacs-lisp-mode prog-mode)
+                          :file-path "/tmp/init.el"
+                          :features (emacs))
+                        nil))
+           (active-names (mapcar (lambda (match)
+                                   (magent-capability-name
+                                    (magent-capability-match-capability match)))
+                                 (magent-capability-resolution-active-capabilities resolution))))
+      (should (member "emacs-config-reload" active-names)))))
+
+(ert-deftest magent-test-curated-project-capability-activates-with-project-wording ()
+  "Test curated project capability activates from explicit project workflow wording."
+  (require 'magent-capability-file)
+  (let ((magent-capability--registry nil))
+    (magent-capability-file-load-all (list magent-capability-file--builtin-dir))
+    (let* ((resolution (magent-capability-resolve
+                        "Switch project and show me the current project root"
+                        '(:major-mode emacs-lisp-mode
+                          :major-mode-family (emacs-lisp-mode prog-mode)
+                          :features (project))
+                        nil))
+           (active-names (mapcar (lambda (match)
+                                   (magent-capability-name
+                                    (magent-capability-match-capability match)))
+                                 (magent-capability-resolution-active-capabilities resolution))))
+      (should (member "project-workflow" active-names)))))
+
+(ert-deftest magent-test-curated-lsp-capability-activates-with-lsp-context ()
+  "Test curated LSP capability activates only in programming/LSP contexts."
+  (require 'magent-capability-file)
+  (let ((magent-capability--registry nil))
+    (magent-capability-file-load-all (list magent-capability-file--builtin-dir))
+    (let* ((resolution (magent-capability-resolve
+                        "Use diagnostics and rename symbol across the workspace"
+                        '(:major-mode python-mode
+                          :major-mode-family (python-mode prog-mode)
+                          :features (lsp-mode))
+                        nil))
+           (active-names (mapcar (lambda (match)
+                                   (magent-capability-name
+                                    (magent-capability-match-capability match)))
+                                 (magent-capability-resolution-active-capabilities resolution))))
+      (should (member "lsp-workspace-workflow" active-names)))))
+
+(ert-deftest magent-test-curated-package-features-do-not_auto_activate_irrelevant_prompt ()
+  "Test installed package features alone do not force curated capability activation."
+  (require 'magent-capability-file)
+  (let ((magent-capability--registry nil))
+    (magent-capability-file-load-all (list magent-capability-file--builtin-dir))
+    (let* ((resolution (magent-capability-resolve
+                        "Hello there"
+                        '(:major-mode fundamental-mode
+                          :major-mode-family (fundamental-mode)
+                          :features (project lsp-mode org magit))
+                        nil))
+           (active-names (mapcar (lambda (match)
+                                   (magent-capability-name
+                                    (magent-capability-match-capability match)))
+                                 (magent-capability-resolution-active-capabilities resolution))))
+    (should-not (member "project-workflow" active-names))
+    (should-not (member "lsp-workspace-workflow" active-names))
+    (should-not (member "magit-workflow" active-names))
+    (should-not (member "org-structure-workflow" active-names)))))
+
+(ert-deftest magent-test-ensure-initialized-loads-skills-before-capabilities ()
+  "Test Magent initialization loads skills before capabilities."
+  (let ((magent--initialized nil)
+        calls)
+    (cl-letf (((symbol-function 'magent-audit-enable)
+               (lambda () (push 'audit calls)))
+              ((symbol-function 'magent-agent-registry-init)
+               (lambda () (push 'agent-registry calls)))
+              ((symbol-function 'magent-skill-file-load-all)
+               (lambda (&optional _dirs) (push 'skills calls)))
+              ((symbol-function 'magent-capability-file-load-all)
+               (lambda (&optional _dirs) (push 'capabilities calls)))
+              ((symbol-function 'magent-log) #'ignore))
+      (magent--ensure-initialized))
+    (should (equal (nreverse calls)
+                   '(audit agent-registry skills capabilities)))))
 
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Tools tests
@@ -2570,6 +3105,36 @@
        '(:major-mode org-mode :features (org))))
     (should (equal captured-skill-names '("manual-skill" "auto-skill")))))
 
+(ert-deftest magent-test-agent-process-dedupes-explicit-and-capability-skills ()
+  "Test diagnosis-style explicit skills and capability skills are deduplicated."
+  (require 'magent-capability)
+  (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+        (gptel-model 'gpt-4o-mini)
+        (captured-skill-names nil))
+    (cl-letf (((symbol-function 'magent-skills-get-instruction-prompts)
+               (lambda (skill-names)
+                 (setq captured-skill-names skill-names)
+                 '("## Skill: captured\n\nDo things.")))
+              ((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (let ((callback (plist-get kwargs :callback)))
+                   (funcall callback "Hello" nil)
+                   (funcall callback t (list :content "Hello")))))
+              ((symbol-function 'magent-ui-start-streaming) #'ignore)
+              ((symbol-function 'magent-ui-insert-streaming) #'ignore)
+              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+      (magent-agent-process
+       "Diagnose why this hook is not running"
+       #'ignore
+       nil
+       '("systematic-debugging")
+       nil
+       '(:major-mode emacs-lisp-mode :major-mode-family (emacs-lisp-mode prog-mode))
+       (magent-capability-resolution-create
+        :skill-names '("systematic-debugging" "emacs-runtime-inspection" "systematic-debugging"))))
+    (should (equal captured-skill-names
+                   '("systematic-debugging" "emacs-runtime-inspection")))))
+
 (ert-deftest magent-test-diagnose-emacs-dispatches-structured-prompt ()
   "Test `magent-diagnose-emacs' dispatches a structured diagnosis request."
   (require 'magent-ui)
@@ -2636,9 +3201,12 @@
               ((symbol-function 'magent-ui--activate-context-session) (lambda () 'session))
               ((symbol-function 'magent-capability-capture-context)
                (lambda () '(:buffer-name "*scratch*" :major-mode emacs-lisp-mode)))
+              ((symbol-function 'magent-capability-resolve-for-turn)
+               (lambda (_prompt _request-context _skills)
+                 'resolution))
               ((symbol-function 'magent-queue-enqueue)
-               (lambda (prompt source &optional display skills agent-info request-context)
-                 (setq captured (list prompt source display skills agent-info request-context)))))
+               (lambda (prompt source &optional display skills agent-info request-context capability-resolution)
+                 (setq captured (list prompt source display skills agent-info request-context capability-resolution)))))
       (magent-ui-dispatch-prompt "diag" 'diagnose "display" '("systematic-debugging") t agent))
     (should (equal (nth 0 captured) "diag"))
     (should (equal (nth 1 captured) 'diagnose))
@@ -2646,7 +3214,35 @@
     (should (equal (nth 3 captured) '("systematic-debugging")))
     (should (eq (nth 4 captured) agent))
     (should (equal (nth 5 captured)
-                   '(:buffer-name "*scratch*" :major-mode emacs-lisp-mode)))))
+                   '(:buffer-name "*scratch*" :major-mode emacs-lisp-mode)))
+    (should (eq (nth 6 captured) 'resolution))))
+
+(ert-deftest magent-test-ui-run-item-shows-capability-summary ()
+  "Test `magent-ui--run-item' renders a capability summary for the turn."
+  (require 'magent-ui)
+  (let* ((buffer (magent-ui-get-buffer))
+         (resolution (magent-capability-resolution-create
+                      :active-capabilities
+                      (list (magent-capability-match-create
+                             :capability (magent-capability-create :name "org-structure")
+                             :status 'active))
+                      :suggested-capabilities
+                      (list (magent-capability-match-create
+                             :capability (magent-capability-create :name "git-workflow")
+                             :status 'suggested))))
+         (item (magent-queue-item-create
+                :prompt "hello"
+                :source 'prompt
+                :capability-resolution resolution)))
+    (magent-ui-clear-buffer)
+    (cl-letf (((symbol-function 'magent-ui-display-buffer) #'ignore)
+              ((symbol-function 'spinner-start) #'ignore)
+              ((symbol-function 'magent-agent-process)
+               (lambda (&rest _args) 'fsm)))
+      (magent-ui--run-item item))
+    (with-current-buffer buffer
+      (should (string-match-p "Capability resolver: Auto capabilities: org-structure | Suggested: git-workflow"
+                              (buffer-string))))))
 
 (ert-deftest magent-test-mode-map-binds-diagnose-emacs ()
   "Test `magent-mode-map' binds the Emacs diagnosis command."
@@ -2659,6 +3255,24 @@
   (require 'magent)
   (should (eq (lookup-key magent-mode-map (kbd "C-c m D"))
               'magent-doctor)))
+
+(ert-deftest magent-test-mode-map-binds-capability-context-list ()
+  "Test `magent-mode-map' binds current-context capability listing."
+  (require 'magent)
+  (should (eq (lookup-key magent-mode-map (kbd "C-c m x"))
+              'magent-list-capabilities-for-current-context)))
+
+(ert-deftest magent-test-mode-map-binds-capability-last-resolution ()
+  "Test `magent-mode-map' binds last capability resolution explanation."
+  (require 'magent)
+  (should (eq (lookup-key magent-mode-map (kbd "C-c m e"))
+              'magent-explain-last-capability-resolution)))
+
+(ert-deftest magent-test-mode-map-binds-capability-local-toggle ()
+  "Test `magent-mode-map' binds local capability toggling."
+  (require 'magent)
+  (should (eq (lookup-key magent-mode-map (kbd "C-c m k"))
+              'magent-toggle-capability-locally)))
 
 (provide 'magent-test)
 ;;; magent-test.el ends here

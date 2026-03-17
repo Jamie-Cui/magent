@@ -313,7 +313,18 @@ and injects the instruction skills linked to them."
   :group 'magent)
 
 (defcustom magent-disabled-capabilities nil
-  "List of capability names that should never auto-activate."
+  "List of capability names that should never auto-activate.
+These names are checked by the capability resolver before any
+automatic activation happens."
+  :type '(repeat string)
+  :group 'magent)
+
+(defcustom magent-disabled-capability-families nil
+  "List of capability family names that should never auto-activate.
+Families are maintainer-defined strings carried by capability
+metadata, for example a package workflow family or a debugging
+family.  A locally enabled capability can still override this for
+that one capability."
   :type '(repeat string)
   :group 'magent)
 

@@ -381,6 +381,64 @@ Skills loaded from:
 
 Tool-type skills can have companion ~.el~ files defining ~magent-skill-<name>-invoke~ function. The companion file is discovered automatically (~SKILL.el~ or ~<skill-name>.el~ in the same directory).
 
+** Capability System (magent-capability.el + capability files)
+
+Capabilities are a progressive-disclosure layer between user intent and
+instruction skills. They let Magent expose workflow-shaped guidance
+such as runtime inspection, Org structure editing, or Magit workflow
+without permanently injecting every skill into the system prompt.
+
+Lifecycle:
+1. Discovery: ~magent-capability-file-load-all~ loads builtin, user, and project capability files and registers them in ~magent-capability--registry~.
+2. Scoring: ~magent-capability-resolve~ builds a normalized context plist and applies deterministic additive match helpers.
+3. Suggestion: matches above the suggestion threshold stay visible in the resolver output even if they are not auto-activated.
+4. Activation: the highest-ranked ~active~ disclosure matches up to ~magent-capability-max-active~ contribute their linked instruction skills.
+
+Resolver context currently includes:
+- Buffer name
+- File path and file extension
+- Major mode and derived mode family
+- Project root
+- Active region flag
+- Buffer modified flag
+- Loaded features
+
+Supported match helpers:
+- Mode match: exact ~major-mode~ or a derived-mode-family hit
+- Feature match: capability ~features~ intersect loaded ~features~
+- File match: capability ~files~ glob against file path or project root
+- Prompt keyword match: case-insensitive substring lookup against the submitted prompt
+
+Scoring stays deterministic and additive:
+- mode or mode-family: +3
+- feature: +2
+- file glob: +2
+- prompt keyword: +1
+
+Resolver output shape (~magent-capability-resolution~):
+- ~context~: normalized plist that was scored
+- ~matches~: full sorted list of ~magent-capability-match~
+- ~active-capabilities~: matches selected for skill injection
+- ~suggested-capabilities~: visible but inactive matches
+- ~skill-names~: final deduplicated skill list after merging explicit skills and active capability skills
+
+Each ~magent-capability-match~ stores both:
+- ~reasons~: stable human-readable strings for logs and UI
+- ~details~: a plist with structured contribution entries for tests and debug tooling
+
+Capability file frontmatter normalizes list-like metadata consistently across ~skills~, ~modes~, ~features~, ~files~, and ~keywords~. Maintainers can therefore use a single item, comma-separated string, or YAML-style list without changing resolver semantics.
+
+Governance model:
+- Maintainer-owned policy fields: ~family~, ~disclosure~, ~risk~
+- Contributor-owned metadata facts: ~skills~, ~modes~, ~features~, ~files~, ~keywords~
+- Current ingestion sources are maintainer-shipped builtin files plus user/project-local files that Magent loads directly.
+- Future package-local capability metadata is represented as a disabled-by-default ingestion path so package-provided facts can be projected without delegating activation policy to external packages.
+
+Prompt composition rules:
+- Explicit slash-selected skills stay first.
+- Capability-derived skills are appended after explicit skills.
+- Final skill ordering is deduplicated before Magent builds the ~# Active Skills~ system-prompt section, which keeps diagnosis commands and auto-capabilities from repeating the same debugging skill.
+
 ** Markdown-to-Org Conversion (magent-md2org.el)
 
 Converts markdown syntax from LLM output into org-mode syntax for rendering in the output buffer. Called during streaming to convert assistant responses in-place.

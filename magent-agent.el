@@ -30,8 +30,16 @@
 
 ;;; Agent execution
 
+(defun magent-agent--dedupe-skill-names (skill-names)
+  "Return SKILL-NAMES without duplicates, preserving order."
+  (let (seen result)
+    (dolist (name skill-names (nreverse result))
+      (when (and name (not (member name seen)))
+        (push name seen)
+        (push name result)))))
+
 (defun magent-agent-process
-    (user-prompt &optional callback agent-info skill-names event-context request-context)
+    (user-prompt &optional callback agent-info skill-names event-context request-context capability-resolution)
   "Process USER-PROMPT through the AI agent using magent FSM.
 CALLBACK is called with the final string response when complete.
 AGENT-INFO is the agent to use (defaults to session agent or registry default).
@@ -39,6 +47,8 @@ SKILL-NAMES is a list of skill name strings to activate for this request.
 EVENT-CONTEXT is an optional existing event context to reuse.
 REQUEST-CONTEXT is an optional structured context plist captured at
 dispatch time.
+CAPABILITY-RESOLUTION is an optional precomputed capability resolver
+result for this turn.
 When nil, no skills are injected (skills must be explicitly selected
 via slash commands in the prompt).
 
@@ -60,14 +70,16 @@ The tool calling loop is managed by magent-fsm.  This function:
            (base-system-msg (or (magent-agent-info-prompt agent)
                                 magent-system-prompt))
            (capability-resolution
-            (when (require 'magent-capability nil t)
-              (magent-capability-resolve-for-turn
-               user-prompt request-context skill-names)))
+            (or capability-resolution
+                (when (require 'magent-capability nil t)
+                  (magent-capability-resolve-for-turn
+                   user-prompt request-context skill-names))))
            (resolved-skill-names
-            (or (and capability-resolution
-                     (magent-capability-resolution-skill-names
-                      capability-resolution))
-                skill-names))
+            (magent-agent--dedupe-skill-names
+             (or (and capability-resolution
+                      (magent-capability-resolution-skill-names
+                       capability-resolution))
+                 skill-names)))
            (skill-prompts (when (and (require 'magent-skills nil t)
                                      resolved-skill-names)
                             (magent-skills-get-instruction-prompts
