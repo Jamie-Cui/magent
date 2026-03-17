@@ -80,7 +80,6 @@
 (require 'transient)
 (require 'magent-config)
 (require 'magent-audit)
-(require 'magent-happy)
 (require 'magent-session)
 (require 'magent-tools)
 (require 'magent-agent)
