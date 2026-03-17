@@ -19,7 +19,6 @@
 (require 'magent-agent-registry)
 (require 'magent-events)
 
-(declare-function magent-skill-emacs-invoke "magent-skill-emacs")
 (declare-function magent-skills-get "magent-skills")
 (declare-function magent-skills-list "magent-skills")
 (declare-function magent-skills-invoke "magent-skills")

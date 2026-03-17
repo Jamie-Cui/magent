@@ -41,6 +41,29 @@ Examples:
 (defconst magent-permission-deny 'deny)
 (defconst magent-permission-ask 'ask)
 
+(defvar magent-by-pass-permission nil
+  "Non-nil means Magent bypasses permission filtering and confirmation.")
+
+;;;###autoload
+(defun magent-toggle-by-pass-permission (&optional arg)
+  "Toggle Magent permission bypass mode.
+With prefix ARG, enable bypass when ARG is positive and disable it
+otherwise.  When bypass is enabled, Magent ignores per-agent
+allow/deny/ask rules, session overrides, and file-specific
+permission rules."
+  (interactive "P")
+  (setq magent-by-pass-permission
+        (if arg
+            (> (prefix-numeric-value arg) 0)
+          (not magent-by-pass-permission)))
+  (message "Magent permission bypass %s"
+           (if magent-by-pass-permission "enabled" "disabled"))
+  magent-by-pass-permission)
+
+(defun magent-permission-bypass-p ()
+  "Return non-nil when Magent should bypass permission checks."
+  magent-by-pass-permission)
+
 ;;; Default permissions
 
 (defun magent-permission-defaults ()
@@ -197,19 +220,20 @@ Unlike `magent-permission-allow-p', this returns t for tools with
 \\='ask permission and for tools with nested file rules where at
 least one pattern grants access (e.g., plan agent where edit
 defaults to \\='deny but specific paths are \\='allow)."
-  (let* ((effective (if (magent-permission-p rules)
-                        (magent-permission-rules rules)
-                      rules))
-         (tool-rule (and (listp effective) (assq tool effective)))
-         (tool-value (and tool-rule (cdr tool-rule))))
-    (if (and (consp tool-value)
-             (not (memq tool-value '(allow deny ask))))
-        ;; Nested file rules: available if ANY sub-rule grants access
-        (cl-some (lambda (sub-rule)
-                   (memq (cdr sub-rule) '(allow ask)))
-                 tool-value)
-      ;; Simple case: delegate to existing resolver
-      (memq (magent-permission-resolve rules tool) '(allow ask)))))
+  (or (magent-permission-bypass-p)
+      (let* ((effective (if (magent-permission-p rules)
+                            (magent-permission-rules rules)
+                          rules))
+             (tool-rule (and (listp effective) (assq tool effective)))
+             (tool-value (and tool-rule (cdr tool-rule))))
+        (if (and (consp tool-value)
+                 (not (memq tool-value '(allow deny ask))))
+            ;; Nested file rules: available if ANY sub-rule grants access
+            (cl-some (lambda (sub-rule)
+                       (memq (cdr sub-rule) '(allow ask)))
+                     tool-value)
+          ;; Simple case: delegate to existing resolver
+          (memq (magent-permission-resolve rules tool) '(allow ask))))))
 
 ;;; Permission merging
 

@@ -162,11 +162,139 @@ new scope into `magent-buffer-name'.  Returns the active session."
       (magent-ui-render-history t))
     (magent-session-get)))
 
+(defun magent-ui--header-specs ()
+  "Return Magent heading labels and the faces used to render them."
+  `((,magent-user-prompt . magent-user-header)
+    (,magent-assistant-prompt . magent-assistant-header)
+    (,magent-error-prompt . magent-error-header)))
+
+(defun magent-ui--header-regexp ()
+  "Return a regexp matching Magent's level-1 heading lines."
+  (concat "^\\* "
+          (regexp-opt (mapcar #'car (magent-ui--header-specs)))
+          " +$"))
+
+(defun magent-ui--header-spec-for-line (line)
+  "Return the `(LABEL . FACE)' spec for heading LINE, or nil."
+  (catch 'match
+    (dolist (spec (magent-ui--header-specs))
+      (when (string-match-p
+             (concat "\\`\\* " (regexp-quote (car spec)) " +\\'")
+             line)
+        (throw 'match spec)))
+    nil))
+
+(defun magent-ui--rehydrate-header-line (line-start line-end spec)
+  "Rebuild Magent heading overlays for SPEC between LINE-START and LINE-END."
+  (let* ((label (car spec))
+         (face (cdr spec))
+         (label-start (+ line-start 2))
+         (label-end (+ label-start (length label))))
+    (when (<= label-end line-end)
+      (let ((ov (make-overlay label-start label-end)))
+        (overlay-put ov 'face face)
+        (overlay-put ov 'magent-ui-overlay t)))
+    (when (and magent-ui-header-strike-through
+               (> line-end (1+ label-end)))
+      (let ((ov (make-overlay (1- line-end) line-end)))
+        (overlay-put ov 'display '(space :align-to right))
+        (overlay-put ov 'face 'magent-strike-through)
+        (overlay-put ov 'magent-ui-overlay t)))))
+
+(defun magent-ui--rehydrate-separator-line (line-start line-end)
+  "Rebuild a full-width separator overlay between LINE-START and LINE-END."
+  (when (and magent-ui-separator-char
+             (/= (char-syntax magent-ui-separator-char) ?\s)
+             (= (- line-end line-start) 1)
+             (= (char-after line-start) magent-ui-separator-char))
+    (let ((ov (make-overlay line-start line-end)))
+      (overlay-put ov 'display '(space :align-to right))
+      (overlay-put ov 'face 'magent-separator)
+      (overlay-put ov 'magent-ui-overlay t))))
+
+(defun magent-ui--rehydrate-visual-state ()
+  "Rebuild Magent overlays after restoring a plain-text buffer snapshot."
+  (save-excursion
+    (goto-char (point-min))
+    (while (< (point) (point-max))
+      (let* ((line-start (point))
+             (line-end (line-end-position))
+             (line (buffer-substring-no-properties line-start line-end))
+             (spec (magent-ui--header-spec-for-line line)))
+        (when spec
+          (magent-ui--rehydrate-header-line line-start line-end spec))
+        (magent-ui--rehydrate-separator-line line-start line-end)
+        (forward-line 1)))))
+
+(defun magent-ui--last-session-message-role (session)
+  "Return the role of SESSION's last message, or nil when empty."
+  (when-let ((last-msg (car (last (magent-session-get-messages session)))))
+    (magent-msg-role last-msg)))
+
+(defun magent-ui--input-section-start-from-heading (heading-start)
+  "Infer the prompt section start from trailing prompt HEADING-START."
+  (cond
+   ((= heading-start (point-min))
+    heading-start)
+   ((null magent-ui-separator-char)
+    heading-start)
+   ((= (char-syntax magent-ui-separator-char) ?\s)
+    (max (point-min) (1- heading-start)))
+   (t
+    (let ((candidate (max (point-min) (- heading-start 3))))
+      (if (and (< (1+ candidate) heading-start)
+               (= (char-after (1+ candidate)) magent-ui-separator-char))
+          candidate
+        heading-start)))))
+
+(defun magent-ui--restore-input-prompt-state (session)
+  "Restore prompt markers and editability from a trailing prompt in SESSION."
+  (setq magent-ui--input-marker nil)
+  (setq magent-ui--input-section-start nil)
+  (when (and (not (magent-queue-processing-p))
+             (> (point-max) (point-min)))
+    (save-excursion
+      (goto-char (point-max))
+      (when (re-search-backward (magent-ui--header-regexp) nil t)
+        (let* ((line-start (line-beginning-position))
+               (line (buffer-substring-no-properties
+                      line-start (line-end-position)))
+               (spec (magent-ui--header-spec-for-line line)))
+          (when (and spec
+                     (string= (car spec) magent-user-prompt)
+                     (not (eq (magent-ui--last-session-message-role session) 'user)))
+            (let* ((section-start
+                    (magent-ui--input-section-start-from-heading line-start))
+                   (input-start
+                    (save-excursion
+                      (goto-char line-start)
+                      (forward-line 1)
+                      (point))))
+              (let ((inhibit-read-only t))
+                (remove-text-properties input-start (point-max) '(read-only t))
+                (when (> input-start section-start)
+                  (add-text-properties section-start input-start '(read-only t))
+                  (put-text-property (1- input-start) input-start
+                                     'rear-nonsticky '(read-only))))
+              (setq magent-ui--input-section-start section-start)
+              (setq magent-ui--input-marker (copy-marker input-start)))))))))
+
+(defun magent-ui--restore-buffer-snapshot (buffer session saved)
+  "Restore SAVED into BUFFER and rebuild Magent UI state for SESSION."
+  (with-current-buffer buffer
+    (let ((inhibit-read-only t))
+      (insert saved)
+      (add-text-properties (point-min) (point-max) '(read-only t)))
+    (magent-ui--rehydrate-visual-state)
+    (magent-ui--restore-input-prompt-state session)
+    (goto-char (point-max))))
+
 (defun magent-ui-render-history (&optional skip-snapshot)
   "Render session history into the output buffer.
 If the session has saved buffer content (from a previous render),
 restore it directly to preserve tool calls, reasoning blocks, and
-error messages.  Otherwise fall back to re-rendering from session
+error messages, then rebuild Magent-specific overlays and prompt
+editability.  Otherwise fall back to re-rendering from session
 messages (which only contains user/assistant text).
 Before clearing the buffer, the current content is saved to the
 session so that future calls can restore it losslessly.
@@ -181,12 +309,8 @@ newly loaded session snapshot."
                     (magent-session-buffer-content session))))
     (magent-ui-clear-buffer)
     (if saved
-        ;; Restore saved content losslessly
-        (with-current-buffer buf
-          (let ((inhibit-read-only t))
-            (insert saved)
-            (add-text-properties (point-min) (point-max) '(read-only t)))
-          (goto-char (point-max)))
+        ;; Restore saved content losslessly, then rebuild UI overlays/state.
+        (magent-ui--restore-buffer-snapshot buf session saved)
       ;; Fallback: re-render from session messages
       (let ((magent-auto-scroll nil))
         (dolist (msg (magent-session-get-messages session))
@@ -208,6 +332,7 @@ newly loaded session snapshot."
   (interactive)
   (with-current-buffer (magent-ui-get-buffer)
     (let ((inhibit-read-only t))
+      (remove-overlays (point-min) (point-max) 'magent-ui-overlay t)
       (erase-buffer))
     (setq magent-ui--input-marker nil)
     (setq magent-ui--input-section-start nil)))
@@ -394,8 +519,10 @@ Sets `magent-ui--input-marker' to the start of the editable area."
 
 (defun magent-ui--maybe-show-input-prompt ()
   "Insert an input prompt unless a queued item is about to run."
-  (unless (magent-queue-processing-p)
-    (magent-ui--insert-input-prompt)))
+  (with-current-buffer (magent-ui-get-buffer)
+    (unless (or (magent-queue-processing-p)
+                magent-ui--input-marker)
+      (magent-ui--insert-input-prompt))))
 
 (defun magent-ui--remove-input-prompt ()
   "Remove the input prompt section (separator + header + any draft text).
@@ -518,7 +645,8 @@ single character visually fill the rest of the line."
     (insert (make-string 1 char))
     (let ((ov (make-overlay start (point))))
       (overlay-put ov 'display '(space :align-to right))
-      (overlay-put ov 'face face))))
+      (overlay-put ov 'face face)
+      (overlay-put ov 'magent-ui-overlay t))))
 
 (defun magent-ui--insert-separator ()
   "Insert a separator line between conversation turns.
@@ -546,7 +674,8 @@ heading lines."
     (when face
       (let ((ov (make-overlay (+ heading-start 2)
                               (+ heading-start 2 (length label)))))
-        (overlay-put ov 'face face))))
+        (overlay-put ov 'face face)
+        (overlay-put ov 'magent-ui-overlay t))))
   (when magent-ui-header-strike-through
     (magent-ui--insert-full-width-line ?\s 'magent-strike-through))
   (insert "\n"))
@@ -829,7 +958,7 @@ Returns a context string or nil if context should not be captured."
   (concat
    "Diagnose problems in the current Emacs session.\n\n"
    "Start by collecting evidence instead of guessing.\n"
-   "Inspect the live Emacs state with emacs_eval and skill_invoke when useful.\n"
+   "Inspect the live Emacs state with emacs_eval when useful.\n"
    "Check *Messages*, *Warnings*, *Backtrace*, the current buffer state, and minibuffer state when relevant.\n"
    "If no concrete failure is visible yet, summarize the suspicious signals you can observe and ask for the smallest missing reproduction detail.\n"
    "Do not edit files or make state-changing changes until you have a concrete hypothesis.")
@@ -844,7 +973,7 @@ Returns a context string or nil if context should not be captured."
    "Run a Magent self-check and diagnose Magent-related problems in the current Emacs session.\n\n"
    "Start by collecting evidence instead of guessing.\n"
    "Focus on Magent's own runtime state, commands, buffers, and logs.\n"
-   "Inspect the live Emacs state with emacs_eval and skill_invoke when useful.\n"
+   "Inspect the live Emacs state with emacs_eval when useful.\n"
    "Check whether Magent features are loaded, whether `magent-mode' is enabled, the current session scope and agent, queue/FSM state, and whether there are pending approvals or recent errors.\n"
    "Inspect `*magent*`, `*magent-log*`, `*Messages*`, `*Warnings*`, and `*Backtrace*` when available.\n"
    "If the problem seems request-specific, inspect the latest Magent conversation and log entries to identify the failing step.\n"

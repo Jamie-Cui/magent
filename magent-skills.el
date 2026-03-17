@@ -22,11 +22,6 @@
 (require 'cl-lib)
 
 (declare-function magent-log "magent-ui")
-(declare-function magent-skill-emacs-invoke "magent-skill-emacs")
-
-(defvar magent-skill-emacs--description nil
-  "Description of the built-in emacs skill.
-Defined in magent-skill-emacs.el.")
 
 (defvar magent-skill-creator--description nil
   "Description of the built-in skill-creator skill.
@@ -152,15 +147,6 @@ If SKILL-NAMES is a list, only include those skills."
 
 (defun magent-skills--register-builtin ()
   "Register built-in skills."
-  (require 'magent-skill-emacs)
-  (let ((skill (magent-skill-create
-                :name "emacs"
-                :description magent-skill-emacs--description
-                :type 'tool
-                :tools '(bash)
-                :invoke-function #'magent-skill-emacs-invoke)))
-    (magent-skills-register skill)
-    (magent-log "INFO registered built-in skill: emacs (tool-type)"))
   (require 'magent-skill-creator)
   (let ((skill (magent-skill-create
                 :name "skill-creator"

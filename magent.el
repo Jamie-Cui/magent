@@ -79,6 +79,7 @@
 (require 'spinner)
 (require 'transient)
 (require 'magent-config)
+(require 'magent-audit)
 (require 'magent-happy)
 (require 'magent-session)
 (require 'magent-tools)
@@ -101,6 +102,8 @@ Registry and custom agents are loaded when non-nil.")
 
 (defvar magent--spinner (spinner-create 'rotating-line)
   "Global spinner displayed in the modeline while magent is processing.")
+
+(declare-function magent-audit-enable "magent-audit")
 
 (defun magent--current-agent-name ()
   "Return the name of the current agent as a string.
@@ -178,6 +181,7 @@ When enabled, Magent commands are available.
 Called on first use of any magent command.  Loads agents and skills."
   (unless magent--initialized
     (magent-log "INFO Initializing magent agents and skills...")
+    (magent-audit-enable)
     ;; Initialize agent registry (also loads custom agents)
     (magent-agent-registry-init)
     ;; Load skills from files (built-in skills auto-register on require)

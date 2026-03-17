@@ -372,13 +372,8 @@ Two skill types:
 - ~instruction~ type: Markdown body injected into system prompt via ~magent-skills-get-instruction-prompts~
 - ~tool~ type: Invoked via ~skill_invoke~ tool with predefined operations
 
-Built-in ~emacs~ skill provides 6 operations:
-- ~list-functions~: List interactive commands matching prefix
-- ~describe-function~: Get function documentation
-- ~eval-expression~: Evaluate arbitrary elisp
-- ~execute-keys~: Simulate keystrokes (kbd format)
-- ~minibuffer-prompt~: Read current minibuffer state
-- ~current-buffer-state~: Get buffer name, mode, and content
+Built-in instruction skills such as ~skill-creator~ are registered in code.
+Live Emacs inspection uses ~emacs_eval~ rather than a tool-type ~emacs~ skill.
 
 Skills loaded from:
 - Global: ~~/.emacs.d/magent-skills/<name>/SKILL.md~
@@ -807,7 +802,6 @@ magent/
 ├── magent-ui.el                   ; UI, output buffer, streaming, transient menu
 ├── magent-md2org.el               ; Markdown to org-mode converter
 ├── magent-skills.el               ; Skill registry
-├── magent-skill-emacs.el          ; Built-in emacs skill (6 operations)
 ├── magent-skill-file.el           ; Skill file loader + interactive commands
 ├── magent-frontmatter.el          ; YAML frontmatter parsing
 ├── magent-pkg.el                  ; Package descriptor

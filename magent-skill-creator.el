@@ -96,8 +96,8 @@ After writing, reload skills:
 (magent-reload-skills)
 ```
 
-Use the `emacs_eval` skill (eval-expression operation) to reload without leaving
-the chat. Then test: start a new session or prompt magent with a request that
+Use the `emacs_eval` tool to reload without leaving the chat. Then test: start
+a new session or prompt magent with a request that
 should trigger the skill. Check `M-x magent-list-skills` to confirm registration.
 
 For tool-type skills, test each operation:

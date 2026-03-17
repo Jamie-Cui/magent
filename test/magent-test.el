@@ -10,6 +10,41 @@
 (require 'magent)
 (require 'magent-fsm-backend-native)
 
+(defun magent-test--read-audit-records (directory)
+  "Return all JSONL audit records stored under DIRECTORY."
+  (let (records)
+    (dolist (file (directory-files directory t "\\.jsonl$"))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (dolist (line (split-string (buffer-string) "\n" t))
+          (let ((json-object-type 'alist)
+                (json-array-type 'list))
+            (push (json-read-from-string line) records)))))
+    (nreverse records)))
+
+(defconst magent-test--root-directory
+  (expand-file-name ".."
+                    (file-name-directory (or load-file-name buffer-file-name)))
+  "Repository root used by reload-oriented tests.")
+
+(defun magent-test--count-heading-lines (buffer label)
+  "Return the number of top-level Magent headings matching LABEL in BUFFER."
+  (with-current-buffer buffer
+    (save-excursion
+      (goto-char (point-min))
+      (let ((count 0)
+            (regexp (concat "^\\* " (regexp-quote label) " +$")))
+        (while (re-search-forward regexp nil t)
+          (cl-incf count))
+        count))))
+
+(defun magent-test--count-overlays-with-face (buffer face)
+  "Return the number of overlays using FACE in BUFFER."
+  (with-current-buffer buffer
+    (cl-count-if (lambda (ov)
+                   (eq (overlay-get ov 'face) face))
+                 (overlays-in (point-min) (point-max)))))
+
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Integration tests
 ;; ──────────────────────────────────────────────────────────────────────
@@ -258,6 +293,30 @@
                            (* . deny))))))
     ;; edit has nested rules where at least one grants access
     (should (magent-permission-tool-available-p rules 'edit))))
+
+(ert-deftest magent-test-permission-bypass-makes-tools-available ()
+  "Test bypass config exposes tools even when permissions deny them."
+  (require 'magent-permission)
+  (let ((magent-by-pass-permission t)
+        (rules '((bash . deny)
+                 (* . deny))))
+    (should (magent-permission-tool-available-p rules 'bash))
+    (should (magent-permission-tool-available-p rules 'write))))
+
+(ert-deftest magent-test-toggle-by-pass-permission-command ()
+  "Test the interactive permission bypass toggle command."
+  (require 'magent-permission)
+  (let ((magent-by-pass-permission nil)
+        (messages nil))
+    (cl-letf (((symbol-function 'message)
+               (lambda (fmt &rest args)
+                 (push (apply #'format fmt args) messages))))
+      (should (eq (magent-toggle-by-pass-permission) t))
+      (should magent-by-pass-permission)
+      (should (equal (car messages) "Magent permission bypass enabled"))
+      (should (eq (magent-toggle-by-pass-permission 0) nil))
+      (should-not magent-by-pass-permission)
+      (should (equal (car messages) "Magent permission bypass disabled")))))
 
 (ert-deftest magent-test-permission-merge-simple ()
   "Test merging two simple rulesets."
@@ -834,6 +893,17 @@
     (magent-skills-clear)
     (should (null magent-skills--registry))))
 
+(ert-deftest magent-test-skills-register-builtin ()
+  "Test builtin skill registration excludes the removed emacs tool skill."
+  (require 'magent-skills)
+  (let ((magent-skills--registry nil))
+    (cl-letf (((symbol-function 'magent-log) #'ignore))
+      (magent-skills--register-builtin))
+    (should (null (magent-skills-get "emacs")))
+    (let ((skill (magent-skills-get "skill-creator")))
+      (should skill)
+      (should (eq (magent-skill-type skill) 'instruction)))))
+
 (ert-deftest magent-test-skills-invoke-not-found ()
   "Test invoking a non-existent skill returns error."
   (require 'magent-skills)
@@ -1021,6 +1091,19 @@
                                        (* . deny)))))
          (tools (magent-tools-get-gptel-tools agent)))
     (should (cl-find-if (lambda (tool) (string= (gptel-tool-name tool) "bash")) tools))))
+
+(ert-deftest magent-test-tools-filtering-bypass-permission ()
+  "Test bypass config ignores per-agent permission filtering."
+  (require 'magent-tools)
+  (require 'magent-agent-registry)
+  (let* ((magent-by-pass-permission t)
+         (magent-enable-tools magent-tools--permission-keys)
+         (agent (magent-agent-info-create
+                 :name "no-tools"
+                 :permission (magent-permission-create
+                              :rules '((* . deny)))))
+         (tools (magent-tools-get-gptel-tools agent)))
+    (should (= (length tools) (length magent-tools--all-gptel-tools)))))
 
 (ert-deftest magent-test-tools-read-file ()
   "Test read_file tool implementation."
@@ -1356,6 +1439,47 @@
     (should (eq (magent-permission-session-override 'bash) 'deny))
     (magent-permission-clear-session-overrides)))
 
+(ert-deftest magent-test-permission-bypass-disables-confirm-function ()
+  "Test bypass config removes permission confirm hooks."
+  (require 'magent-fsm-backend-native)
+  (let ((magent-by-pass-permission t))
+    (should-not
+     (magent-fsm--make-confirm-function
+      'bash
+      '((bash . ask))
+      (list '(:name "command" :type string))))))
+
+(ert-deftest magent-test-permission-bypass-skips-deny-and-prompt ()
+  "Test bypass config executes tool calls without prompting."
+  (require 'magent-fsm-backend-native)
+  (require 'magent-permission)
+  (magent-permission-clear-session-overrides)
+  (let ((magent-by-pass-permission t)
+        (result nil)
+        (tool-ran nil)
+        (tool (gptel-make-tool
+               :name "bash"
+               :args (list '(:name "command" :type string))
+               :function (lambda (_command) "ok")
+               :async nil)))
+    (unwind-protect
+        (progn
+          (magent-permission-set-session-override 'bash 'deny)
+          (cl-letf (((symbol-function 'magent-approval-request)
+                     (lambda (&rest _)
+                       (ert-fail "bypass should not prompt for approval")))
+                    ((symbol-function 'magent-fsm--run-tool)
+                     (lambda (_tool-spec cb arg-values)
+                       (setq tool-ran (car arg-values))
+                       (funcall cb "ok"))))
+            (magent-fsm--handle-tool-call-confirmation-with-permission
+             '((bash . ask))
+             (list (list tool (list "echo hi")
+                         (lambda (r) (setq result r)))))))
+      (magent-permission-clear-session-overrides))
+    (should (equal tool-ran "echo hi"))
+    (should (equal result "ok"))))
+
 (ert-deftest magent-test-local-approval-drop-cancels-stale-prompt ()
   "Test dropping a queued local approval prevents any later prompt."
   (require 'magent-approval)
@@ -1536,6 +1660,211 @@
 ;;; UI/session regression tests
 ;; ──────────────────────────────────────────────────────────────────────
 
+(ert-deftest magent-test-audit-record-appends-jsonl ()
+  "Test audit records append into one daily JSONL file."
+  (require 'magent-audit)
+  (let* ((magent-enable-audit-log t)
+         (magent-audit-directory (make-temp-file "magent-audit-" t))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session (magent-session-create)))
+    (unwind-protect
+        (progn
+          (magent-audit-record 'permission-decision
+                               :decision 'allow
+                               :decision-source 'bypass)
+          (magent-audit-record 'permission-decision
+                               :decision 'deny
+                               :decision-source 'file-rule-deny)
+          (should (= (length (directory-files magent-audit-directory nil "\\.jsonl$")) 1))
+          (should (= (length (magent-test--read-audit-records magent-audit-directory)) 2)))
+      (delete-directory magent-audit-directory t))))
+
+(ert-deftest magent-test-audit-record-disabled-skips-write ()
+  "Test disabled audit logging does not create any files."
+  (require 'magent-audit)
+  (let ((magent-enable-audit-log nil)
+        (magent-audit-directory (make-temp-file "magent-audit-" t)))
+    (unwind-protect
+        (progn
+          (magent-audit-record 'permission-decision
+                               :decision 'allow
+                               :decision-source 'bypass)
+          (should-not (directory-files magent-audit-directory nil "\\.jsonl$")))
+      (delete-directory magent-audit-directory t))))
+
+(ert-deftest magent-test-audit-tool-events-redact-write-and-edit-payloads ()
+  "Test persisted tool audit records redact write/edit file bodies."
+  (require 'magent-audit)
+  (let* ((magent-enable-audit-log t)
+         (magent-audit-directory (make-temp-file "magent-audit-" t))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session (magent-session-create))
+         (context (magent-events-context-create :turn-id "turn-audit")))
+    (unwind-protect
+        (progn
+          (magent-audit-enable)
+          (magent-events-emit 'tool-call-start
+                              :context context
+                              :call-id "call-write"
+                              :tool-name "write_file"
+                              :summary "secret.txt"
+                              :args '(:path "secret.txt" :content "super secret body"))
+          (magent-events-emit 'tool-call-start
+                              :context context
+                              :call-id "call-edit"
+                              :tool-name "edit_file"
+                              :summary "secret.txt"
+                              :args '(:path "secret.txt"
+                                      :old_text "old secret"
+                                      :new_text "new secret value"))
+          (let* ((records (magent-test--read-audit-records magent-audit-directory))
+                 (write-record (car records))
+                 (edit-record (cadr records))
+                 (write-preview (cdr (assq 'args_preview write-record)))
+                 (edit-preview (cdr (assq 'args_preview edit-record))))
+            (should (equal (cdr (assq 'tool_name write-record)) "write_file"))
+            (should (equal (cdr (assq 'path write-preview)) "secret.txt"))
+            (should (= (cdr (assq 'content_length write-preview))
+                       (length "super secret body")))
+            (should-not (assq 'content write-preview))
+            (should (equal (cdr (assq 'tool_name edit-record)) "edit_file"))
+            (should (equal (cdr (assq 'path edit-preview)) "secret.txt"))
+            (should (= (cdr (assq 'old_text_length edit-preview))
+                       (length "old secret")))
+            (should (= (cdr (assq 'new_text_length edit-preview))
+                       (length "new secret value")))
+            (should-not (assq 'old_text edit-preview))
+            (should-not (assq 'new_text edit-preview))))
+      (magent-audit-disable)
+      (delete-directory magent-audit-directory t))))
+
+(ert-deftest magent-test-audit-approval-hooks-persist-request-and-resolution ()
+  "Test approval lifecycle events are persisted with decision metadata."
+  (require 'magent-audit)
+  (let* ((magent-enable-audit-log t)
+         (magent-audit-directory (make-temp-file "magent-audit-" t))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session (magent-session-create))
+         (magent-approval-provider-function (lambda (_request) nil))
+         (magent-approval--pending-requests (make-hash-table :test 'equal))
+         (magent-approval--completed-requests (make-hash-table :test 'equal))
+         (magent-approval-state-change-functions nil)
+         (context (magent-events-context-create :turn-id "turn-approval")))
+    (unwind-protect
+        (progn
+          (magent-audit-enable)
+          (magent-approval-request
+           (list :request-id "req-1"
+                 :context context
+                 :tool-name "bash"
+                 :perm-key 'bash
+                 :summary "echo hi"
+                 :args '(:command "echo hi"))
+           #'ignore)
+          (magent-approval-resolve-request "req-1" 'allow-session)
+          (let ((records (magent-test--read-audit-records magent-audit-directory)))
+            (should (= (length records) 2))
+            (should (equal (mapcar (lambda (record) (cdr (assq 'event record))) records)
+                           '("approval-requested" "approval-resolved")))
+            (should (equal (cdr (assq 'turn_id (car records))) "turn-approval"))
+            (should (equal (cdr (assq 'decision_source (cadr records)))
+                           "user-allow-session"))
+            (should (equal (cdr (assq 'decision (cadr records))) "allow"))))
+      (magent-audit-disable)
+      (delete-directory magent-audit-directory t))))
+
+(ert-deftest magent-test-audit-permission-session-override-is-persisted ()
+  "Test session override permission decisions are persisted."
+  (require 'magent-audit)
+  (require 'magent-permission)
+  (let* ((magent-enable-audit-log t)
+         (magent-audit-directory (make-temp-file "magent-audit-" t))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session (magent-session-create))
+         (magent-permission--session-overrides (make-hash-table :test 'eq))
+         (tool (gptel-make-tool
+                :name "bash"
+                :args (list '(:name "command" :type string))
+                :function (lambda (_command) "ok")
+                :async nil))
+         result)
+    (unwind-protect
+        (progn
+          (magent-audit-enable)
+          (magent-permission-set-session-override 'bash 'allow)
+          (cl-letf (((symbol-function 'magent-fsm--run-tool)
+                     (lambda (_tool-spec cb arg-values)
+                       (funcall cb (format "ran %s" (car arg-values))))))
+            (magent-fsm--handle-tool-call-confirmation-with-permission
+             '((bash . ask))
+             (list (list tool (list "echo hi") (lambda (value) (setq result value))))))
+          (should (equal result "ran echo hi"))
+          (let* ((records (magent-test--read-audit-records magent-audit-directory))
+                 (record (car records)))
+            (should (= (length records) 1))
+            (should (equal (cdr (assq 'event record)) "permission-decision"))
+            (should (equal (cdr (assq 'tool_name record)) "bash"))
+            (should (equal (cdr (assq 'decision record)) "allow"))
+            (should (equal (cdr (assq 'decision_source record))
+                           "session-override-allow"))))
+      (magent-audit-disable)
+      (delete-directory magent-audit-directory t))))
+
+(ert-deftest magent-test-audit-permission-file-rule-deny-is-persisted ()
+  "Test file-rule deny permission decisions are persisted."
+  (require 'magent-audit)
+  (let* ((magent-enable-audit-log t)
+         (magent-audit-directory (make-temp-file "magent-audit-" t))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session (magent-session-create))
+         (tool (gptel-make-tool
+                :name "read_file"
+                :args (list '(:name "path" :type string))
+                :function (lambda (_path) "ok")
+                :async nil))
+         result)
+    (unwind-protect
+        (progn
+          (magent-audit-enable)
+          (magent-fsm--handle-tool-call-confirmation-with-permission
+           '((read . (("*.env" . deny)
+                      (* . ask))))
+           (list (list tool (list ".env") (lambda (value) (setq result value)))))
+          (should (string-match-p "access denied" result))
+          (let* ((records (magent-test--read-audit-records magent-audit-directory))
+                 (record (car records))
+                 (args-preview (cdr (assq 'args_preview record))))
+            (should (= (length records) 1))
+            (should (equal (cdr (assq 'decision record)) "deny"))
+            (should (equal (cdr (assq 'decision_source record)) "file-rule-deny"))
+            (should (equal (cdr (assq 'path args-preview)) ".env"))))
+      (magent-audit-disable)
+      (delete-directory magent-audit-directory t))))
+
+(ert-deftest magent-test-audit-write-failure-does-not-signal ()
+  "Test audit persistence failures never interrupt Magent execution."
+  (require 'magent-audit)
+  (let ((magent-enable-audit-log t)
+        (magent-audit-directory (make-temp-file "magent-audit-" t)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'append-to-file)
+                   (lambda (&rest _args)
+                     (error "disk full"))))
+          (should-not
+           (condition-case nil
+               (progn
+                 (magent-audit-record 'permission-decision
+                                      :decision 'allow
+                                      :decision-source 'bypass)
+                 nil)
+             (error t))))
+      (delete-directory magent-audit-directory t))))
+
 (ert-deftest magent-test-session-scope-from-directory-falls-back-to-global ()
   "Test session scope is global when no project root is detected."
   (let ((magent-project-root-function (lambda () nil)))
@@ -1691,6 +2020,30 @@
       (delete-directory project-a t)
       (delete-directory project-b t))))
 
+(ert-deftest magent-test-config-reload-preserves-ui-logger ()
+  "Test reloading config does not clobber the UI log implementation."
+  (require 'magent-ui)
+  (let* ((config-file (expand-file-name "magent-config.el"
+                                        magent-test--root-directory))
+         (buffer (magent-ui-get-log-buffer))
+         (before-file (symbol-file 'magent-log 'defun))
+         (before-fn (symbol-function 'magent-log)))
+    (unwind-protect
+        (progn
+          (should (string-match-p "magent-ui\\.elc?$" (or before-file "")))
+          (with-current-buffer buffer
+            (let ((inhibit-read-only t))
+              (erase-buffer)))
+          (load config-file nil t)
+          (should (eq (symbol-function 'magent-log) before-fn))
+          (should (string-match-p "magent-ui\\.elc?$"
+                                  (or (symbol-file 'magent-log 'defun) "")))
+          (magent-log "reload-safe %s" 1)
+          (with-current-buffer buffer
+            (should (string-match-p "reload-safe 1" (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest magent-test-ui-scope-switch-blocked-while-processing ()
   "Test scope switching is refused while a request is in flight."
   (require 'magent-ui)
@@ -1730,9 +2083,78 @@
           (should (gethash 'global magent-session--scoped-sessions))
           (magent-session-activate 'global)
           (should (equal (magent-msg-content
-                          (car (magent-session-get-messages (magent-session-get))))
+                         (car (magent-session-get-messages (magent-session-get))))
                          "global")))
       (delete-directory project-root t))))
+
+(ert-deftest magent-test-ui-render-history-rehydrates-saved-headings ()
+  "Test restoring a saved snapshot rebuilds heading overlays and a fresh prompt."
+  (require 'magent-ui)
+  (let* ((buffer (magent-ui-get-buffer))
+         (session (magent-session-create :id "rehydrate")))
+    (unwind-protect
+        (progn
+          (setq magent--current-session session)
+          (magent-session-add-message session 'user "hello")
+          (magent-session-add-message session 'assistant "world")
+          (setf (magent-session-buffer-content session)
+                (with-current-buffer buffer
+                  (let ((inhibit-read-only t))
+                    (erase-buffer))
+                  (magent-ui-insert-user-message "hello")
+                  (magent-ui-insert-assistant-message "world")
+                  (prog1 (buffer-substring-no-properties (point-min) (point-max))
+                    (let ((inhibit-read-only t))
+                      (erase-buffer)))))
+          (magent-ui-render-history t)
+          (should (= (magent-test--count-heading-lines buffer magent-user-prompt) 2))
+          (should (= (magent-test--count-heading-lines buffer magent-assistant-prompt) 1))
+          (should (= (magent-test--count-overlays-with-face buffer 'magent-user-header) 2))
+          (should (= (magent-test--count-overlays-with-face buffer 'magent-assistant-header) 1))
+          (with-current-buffer buffer
+            (should magent-ui--input-marker)
+            (should (= (marker-position magent-ui--input-marker) (point-max)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (magent-session-reset))))
+
+(ert-deftest magent-test-ui-revert-buffer-preserves-draft-without-duplicate-prompt ()
+  "Test `revert-buffer' restores a single editable prompt with the draft intact."
+  (require 'magent-ui)
+  (let* ((buffer (magent-ui-get-buffer))
+         (session (magent-session-create :id "revert")))
+    (unwind-protect
+        (progn
+          (setq magent--current-session session)
+          (magent-session-add-message session 'user "hello")
+          (magent-session-add-message session 'assistant "world")
+          (with-current-buffer buffer
+            (let ((inhibit-read-only t))
+              (erase-buffer))
+            (magent-ui-insert-user-message "hello")
+            (magent-ui-insert-assistant-message "world")
+            (magent-ui--insert-input-prompt)
+            (let ((inhibit-read-only t))
+              (goto-char (point-max))
+              (insert "draft")))
+          (magent-ui--revert-buffer nil nil)
+          (should (= (magent-test--count-heading-lines buffer magent-user-prompt) 2))
+          (should (= (magent-test--count-heading-lines buffer magent-assistant-prompt) 1))
+          (should (= (magent-test--count-overlays-with-face buffer 'magent-user-header) 2))
+          (should (= (magent-test--count-overlays-with-face buffer 'magent-assistant-header) 1))
+          (with-current-buffer buffer
+            (should magent-ui--input-marker)
+            (should (string= (buffer-substring-no-properties
+                              (marker-position magent-ui--input-marker)
+                              (point-max))
+                             "draft"))
+            (should-not (get-text-property (marker-position magent-ui--input-marker)
+                                           'read-only))
+            (should (get-text-property (1- (marker-position magent-ui--input-marker))
+                                       'read-only))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (magent-session-reset))))
 
 (ert-deftest magent-test-resume-session-restores-loaded-buffer-content ()
   "Test resuming a session does not overwrite the loaded snapshot."
@@ -1768,6 +2190,66 @@
           (with-current-buffer buffer
             (should (string-prefix-p "* [ASSISTANT]\nLoaded session\n"
                                      (buffer-string)))
+            (should-not (string-prefix-p "stale buffer content"
+                                         (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (magent-session-reset))))
+
+(ert-deftest magent-test-resume-session-restores-loaded-prompt-state ()
+  "Test resuming a session with a saved prompt restores one editable draft."
+  (require 'magent-ui)
+  (let* ((buffer (magent-ui-get-buffer))
+         (loaded-session (magent-session-create :id "loaded"))
+         (current-session (magent-session-create :id "current"
+                                                 :buffer-content "stale snapshot")))
+    (unwind-protect
+        (progn
+          (magent-session-add-message loaded-session 'user "hello")
+          (magent-session-add-message loaded-session 'assistant "world")
+          (setf (magent-session-buffer-content loaded-session)
+                (with-current-buffer buffer
+                  (let ((inhibit-read-only t))
+                    (erase-buffer))
+                  (magent-ui-insert-user-message "hello")
+                  (magent-ui-insert-assistant-message "world")
+                  (magent-ui--insert-input-prompt)
+                  (let ((inhibit-read-only t))
+                    (goto-char (point-max))
+                    (insert "draft"))
+                  (prog1 (buffer-substring-no-properties (point-min) (point-max))
+                    (let ((inhibit-read-only t))
+                      (erase-buffer)))))
+          (with-current-buffer buffer
+            (let ((inhibit-read-only t))
+              (erase-buffer)
+              (insert "stale buffer content")))
+          (setq magent--current-session current-session)
+          (cl-letf (((symbol-function 'magent-session-list-files)
+                     (lambda () '("/tmp/session.json")))
+                    ((symbol-function 'completing-read)
+                     (lambda (&rest _args) "2026-03-16 10:00:00  (global)  Loaded session"))
+                    ((symbol-function 'magent-session--format-file)
+                     (lambda (_filepath) "2026-03-16 10:00:00  (global)  Loaded session"))
+                    ((symbol-function 'magent-session-read-file)
+                     (lambda (_filepath)
+                       (list :scope 'global :session loaded-session :id "loaded")))
+                    ((symbol-function 'magent-session-install)
+                     (lambda (_scope session)
+                       (setq magent--current-session session)
+                       session))
+                    ((symbol-function 'message) #'ignore))
+            (magent-resume-session))
+          (should (= (magent-test--count-heading-lines buffer magent-user-prompt) 2))
+          (should (= (magent-test--count-heading-lines buffer magent-assistant-prompt) 1))
+          (should (= (magent-test--count-overlays-with-face buffer 'magent-user-header) 2))
+          (should (= (magent-test--count-overlays-with-face buffer 'magent-assistant-header) 1))
+          (with-current-buffer buffer
+            (should magent-ui--input-marker)
+            (should (string= (buffer-substring-no-properties
+                              (marker-position magent-ui--input-marker)
+                              (point-max))
+                             "draft"))
             (should-not (string-prefix-p "stale buffer content"
                                          (buffer-string)))))
       (when (buffer-live-p buffer)

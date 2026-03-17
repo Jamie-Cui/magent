@@ -74,16 +74,19 @@ Customize with `M-x customize-group RET magent RET`. Key settings:
 | `magent-default-agent` | `"build"` | Default agent for new sessions |
 | `magent-load-custom-agents` | `t` | Load custom agents from `.magent/agent/*.md` |
 | `magent-enable-logging` | `t` | Enable logging to `*magent-log*` buffer |
+| `magent-enable-audit-log` | `t` | Persist compact audit logs for permission and sensitive actions |
 | `magent-assistant-prompt` | `"ASSISTANT"` | Tag text in assistant section headers |
 | `magent-user-prompt` | `"USER"` | Tag text in user section headers |
 | `magent-tool-call-prompt` | `"tool"` | Tag text in tool call lines |
 | `magent-error-prompt` | `"error"` | Tag text in error section headers |
 | `magent-agent-directory` | `".magent/agent"` | Relative path to custom agent dir |
 | `magent-session-directory` | `~/.emacs.d/magent-sessions/` | Base directory for global sessions and per-project session subdirectories |
+| `magent-audit-directory` | `nil` | Override directory for audit JSONL files; defaults to `magent-session-directory/audit/` |
 | `magent-grep-program` | `"rg"` | Path to ripgrep binary |
 | `magent-grep-max-matches` | `100` | Max matches from grep searches |
 | `magent-bash-timeout` | `30` | Timeout in seconds for bash commands |
 | `magent-emacs-eval-timeout` | `10` | Timeout in seconds for emacs_eval |
+| `magent-audit-preview-length` | `120` | Max width for persisted audit summaries and previews |
 | `magent-include-reasoning` | `t` | Display (`t`), hide (`ignore`), or discard (`nil`) reasoning blocks |
 | `magent-auto-context` | `t` | Auto-attach buffer context in `magent-dwim` |
 | `magent-ui-batch-insert-delay` | `0.05` | Delay in seconds for batching streaming chunks |
@@ -107,6 +110,7 @@ Customize with `M-x customize-group RET magent RET`. Key settings:
 | `magent-select-agent` | `C-c m A` | Select an agent for this session |
 | `magent-show-current-agent` | `C-c m i` | Show current session's agent |
 | `magent-list-agents` | `C-c m v` | List all available agents |
+| `magent-toggle-by-pass-permission` | `M-x` | Toggle permission bypass for tool filtering and approval prompts |
 
 In the `*magent*` output buffer: `TAB`/`S-TAB` fold sections, `?` opens transient menu, `C-c C-c` submits input, `C-g` interrupts.
 
@@ -117,6 +121,7 @@ Magent keeps a single `*magent*` buffer, but session state is scoped by project:
 - In a recognized project, prompts, agent selection, clear, and resume operate on that project's current session.
 - Saved project sessions live under `magent-session-directory/projects/<sha1(project-root)>/`.
 - Outside any project, Magent falls back to the legacy global session behavior and saves directly under `magent-session-directory`.
+- Compact audit logs for permission decisions and sensitive tools are written as daily JSONL files under `magent-session-directory/audit/` unless `magent-audit-directory` is set.
 - `magent-resume-session` shows all sessions grouped by project, with the current project's group first and global sessions in their own group.
 
 ### Quick Example
@@ -228,10 +233,10 @@ The AI agent has access to these tools (can be customized per agent):
 | `bash` | yes | Execute shell commands (default timeout 30s) |
 | `emacs_eval` | yes | Evaluate Emacs Lisp expressions (default timeout 10s) |
 | `delegate` | yes | Spawn a nested request using a named subagent |
-| `skill_invoke` | no | Invoke skills (e.g., Emacs interaction) |
+| `skill_invoke` | no | Invoke tool-type skills |
 | `web_search` | no | Search the web via DuckDuckGo |
 
-Tools with side effects prompt the user for confirmation before execution.
+Tools with side effects prompt the user for confirmation before execution unless permission bypass is enabled with `M-x magent-toggle-by-pass-permission`.
 
 Tool availability is controlled by:
 1. Global `magent-enable-tools` setting
@@ -256,17 +261,19 @@ Tool availability is controlled by:
 
 6. **Tools** (`magent-tools.el`): 10 tool implementations registered as `gptel-tool` structs, filtered per agent based on permission rules.
 
-7. **Skills** (`magent-skills.el` + `magent-skill-file.el` + `magent-skill-emacs.el` + `magent-skill-creator.el`): Two skill types — `instruction` (markdown injected into system prompt) and `tool` (invoked via `skill_invoke`). Loaded in priority order: (1) built-in `skills/` directory bundled with magent, (2) user directory `~/.emacs.d/magent-skills/<name>/SKILL.md`, (3) project-local `.magent/skills/<name>/SKILL.md`.
+7. **Skills** (`magent-skills.el` + `magent-skill-file.el` + `magent-skill-creator.el`): Two skill types — `instruction` (markdown injected into system prompt) and `tool` (invoked via `skill_invoke`). Magent registers the built-in `skill-creator` instruction skill in code, then loads file-based skills in priority order: (1) built-in `skills/` directory bundled with magent, (2) user directory `~/.emacs.d/magent-skills/<name>/SKILL.md`, (3) project-local `.magent/skills/<name>/SKILL.md`. Live Emacs inspection uses `emacs_eval`.
 
 8. **Session** (`magent-session.el`): Conversation history management with per-project active sessions, global fallback outside projects, and JSON persistence. The `buffer-content` slot stores raw buffer text for lossless restore.
 
-9. **Queue** (`magent-queue.el`): Single-request serialization. When a request is in-flight, additional prompts are rejected with a busy message instead of being buffered.
+9. **Audit** (`magent-audit.el`): Persistent JSONL audit logging for permission prompts/decisions and sensitive actions such as `bash`, `emacs_eval`, `write_file`, `edit_file`, and `delegate`. Payloads are redacted to metadata and truncated previews.
 
-10. **UI** (`magent-ui.el`): The `*magent*` buffer derives from `org-mode`. Uses in-buffer input with `* [USER]` sections. Tool calls render as `#+begin_tool`/`#+end_tool` blocks; reasoning blocks as `#+begin_think`/`#+end_think`.
+10. **Queue** (`magent-queue.el`): Single-request serialization. When a request is in-flight, additional prompts are rejected with a busy message instead of being buffered.
 
-11. **Markdown-to-Org** (`magent-md2org.el`): Converts markdown assistant output to org-mode format for rendering.
+11. **UI** (`magent-ui.el`): The `*magent*` buffer derives from `org-mode`. Uses in-buffer input with `* [USER]` sections. Tool calls render as `#+begin_tool`/`#+end_tool` blocks; reasoning blocks as `#+begin_think`/`#+end_think`.
 
-12. **Frontmatter** (`magent-frontmatter.el`): Shared YAML frontmatter parser for agent and skill files. Supports booleans, numbers, quoted strings, comma-separated lists.
+12. **Markdown-to-Org** (`magent-md2org.el`): Converts markdown assistant output to org-mode format for rendering.
+
+13. **Frontmatter** (`magent-frontmatter.el`): Shared YAML frontmatter parser for agent and skill files. Supports booleans, numbers, quoted strings, comma-separated lists.
 
 ### File Structure
 
@@ -288,7 +295,6 @@ magent/
 ├── magent-md2org.el               # Markdown to org-mode converter
 ├── magent-skills.el               # Skill registry and dispatch
 ├── magent-skill-file.el           # Skill file loader (SKILL.md files + built-in skills/ dir)
-├── magent-skill-emacs.el          # Built-in Emacs interaction skill
 ├── magent-skill-creator.el        # Built-in skill-creator skill
 ├── magent-ui.el                   # In-buffer UI & output buffer (org-mode derived)
 ├── magent-pkg.el                  # Package descriptor
