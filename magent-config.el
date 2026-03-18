@@ -278,7 +278,7 @@ rendering to reduce UI updates."
 (defcustom magent-include-reasoning t
   "How to handle LLM reasoning/thinking blocks.
 If t, display reasoning blocks wrapped in #+begin_think/#+end_think.
-If 'ignore, insert reasoning text but hide it with org folding.
+If `ignore', keep reasoning blocks out of the Magent UI.
 If nil, discard reasoning content entirely."
   :type '(choice (const :tag "Display reasoning" t)
                  (const :tag "Hide reasoning" ignore)

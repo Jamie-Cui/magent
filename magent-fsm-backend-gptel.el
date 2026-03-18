@@ -35,7 +35,39 @@
     (puthash :text-chunks nil state)
     (puthash :reasoning-chunks nil state)
     (puthash :in-reasoning-block nil state)
+    (puthash :saw-reasoning nil state)
     state))
+
+(defsubst magent-fsm-backend-gptel--render-reasoning-p ()
+  "Return non-nil when reasoning blocks should be shown in the UI."
+  (eq magent-include-reasoning t))
+
+(defun magent-fsm-backend-gptel--note-reasoning-seen
+    (state request-id backend model)
+  "Record that reasoning was seen in STATE for REQUEST-ID.
+BACKEND and MODEL are used for diagnostic logging."
+  (unless (gethash :saw-reasoning state)
+    (puthash :saw-reasoning t state)
+    (magent-log "DEBUG reasoning received request=%s backend=%s model=%s ui=%S"
+                request-id
+                (and backend (gptel-backend-name backend))
+                (format "%s" model)
+                magent-include-reasoning)))
+
+(defun magent-fsm-backend-gptel--remember-reasoning (state reasoning-text)
+  "Append REASONING-TEXT to STATE when Magent keeps reasoning."
+  (when (and magent-include-reasoning
+             (stringp reasoning-text))
+    (push reasoning-text (gethash :reasoning-chunks state))
+    (puthash :reasoning-chunks
+             (gethash :reasoning-chunks state)
+             state)))
+
+(defun magent-fsm-backend-gptel--close-reasoning-block (state)
+  "Close the current reasoning block tracked in STATE when needed."
+  (when (gethash :in-reasoning-block state)
+    (magent-ui-insert-reasoning-end)
+    (puthash :in-reasoning-block nil state)))
 
 (defun magent-fsm-backend-gptel--request-bytes (data)
   "Return encoded byte size for DATA, or nil when unavailable."
@@ -158,42 +190,39 @@ inside gptel's process filter."
                    (magent-fsm-backend-gptel--make-stream-state))))
     (condition-case nil
         (cond
-         ((and (consp response) (eq (car response) 'reasoning)
-               magent-include-reasoning)
+         ((and (consp response) (eq (car response) 'reasoning))
           (let ((reasoning-text (cdr response)))
+            (magent-fsm-backend-gptel--note-reasoning-seen
+             state request-id backend model)
+            (magent-fsm-backend-gptel--remember-reasoning state reasoning-text)
             (if (eq reasoning-text t)
-                (when (gethash :in-reasoning-block state)
-                  (magent-ui-insert-reasoning-end)
-                  (puthash :in-reasoning-block nil state))
-              (progn
+                (magent-fsm-backend-gptel--close-reasoning-block state)
+              (when (magent-fsm-backend-gptel--render-reasoning-p)
                 (unless (gethash :in-reasoning-block state)
                   (magent-ui-insert-reasoning-start)
                   (puthash :in-reasoning-block t state))
-                (magent-ui-insert-reasoning-text reasoning-text)
-                (push reasoning-text (gethash :reasoning-chunks state))
-                (puthash :reasoning-chunks
-                         (gethash :reasoning-chunks state)
-                         state)))))
+                (magent-ui-insert-reasoning-text reasoning-text)))))
          ((stringp response)
           (push response (gethash :text-chunks state))
           (puthash :text-chunks (gethash :text-chunks state) state)
           (magent-events-emit 'text-delta :context event-context :text response)
           (when ui-callback (funcall ui-callback response)))
          ((and (consp response) (eq (car response) 'tool-call))
-          (when (gethash :in-reasoning-block state)
-            (magent-ui-insert-reasoning-end)
-            (puthash :in-reasoning-block nil state))
+          (magent-fsm-backend-gptel--close-reasoning-block state)
           (magent-fsm--handle-tool-call-confirmation-with-permission
            permission (cdr response)))
          ((and (consp response) (eq (car response) 'tool-result))
-          (when (gethash :in-reasoning-block state)
-            (magent-ui-insert-reasoning-end)
-            (puthash :in-reasoning-block nil state))
+          (magent-fsm-backend-gptel--close-reasoning-block state)
           (magent-ui-continue-streaming))
          ((eq response t)
-          (when (gethash :in-reasoning-block state)
-            (magent-ui-insert-reasoning-end)
-            (puthash :in-reasoning-block nil state))
+          (magent-fsm-backend-gptel--close-reasoning-block state)
+          (when (and magent-include-reasoning
+                     (not (gethash :saw-reasoning state)))
+            (magent-log "DEBUG no reasoning received request=%s backend=%s model=%s ui=%S"
+                        request-id
+                        (and backend (gptel-backend-name backend))
+                        (format "%s" model)
+                        magent-include-reasoning))
           (let ((final-text (magent-fsm-backend-gptel--final-text state info)))
             (apply
              #'magent-events-emit
@@ -214,6 +243,14 @@ inside gptel's process filter."
                 (funcall callback final-text))
               (when (buffer-live-p buffer) (kill-buffer buffer)))))
          ((null response)
+          (magent-fsm-backend-gptel--close-reasoning-block state)
+          (when (and magent-include-reasoning
+                     (not (gethash :saw-reasoning state)))
+            (magent-log "DEBUG no reasoning received request=%s backend=%s model=%s ui=%S"
+                        request-id
+                        (and backend (gptel-backend-name backend))
+                        (format "%s" model)
+                        magent-include-reasoning))
           (apply
            #'magent-events-emit
            'llm-request-end

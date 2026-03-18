@@ -426,20 +426,21 @@ and only transitions to PROCESS/DONE when the final response
             (cond
              ;; Reasoning block chunk
              ((and (consp response) (eq (car response) 'reasoning)
-                   (magent-fsm-streaming-p fsm)
-                   magent-include-reasoning)
+                   (magent-fsm-streaming-p fsm))
               (let ((reasoning-text (cdr response)))
+                (when (and magent-include-reasoning
+                           (stringp reasoning-text))
+                  (setf (magent-fsm-reasoning-text fsm)
+                        (concat (magent-fsm-reasoning-text fsm) reasoning-text)))
                 (if (eq reasoning-text t)
-                    (progn
+                    (when (magent-fsm-in-reasoning-block fsm)
                       (magent-ui-insert-reasoning-end)
                       (setf (magent-fsm-in-reasoning-block fsm) nil))
-                  (progn
+                  (when (eq magent-include-reasoning t)
                     (unless (magent-fsm-in-reasoning-block fsm)
                       (magent-ui-insert-reasoning-start)
                       (setf (magent-fsm-in-reasoning-block fsm) t))
-                    (magent-ui-insert-reasoning-text reasoning-text)
-                    (setf (magent-fsm-reasoning-text fsm)
-                          (concat (magent-fsm-reasoning-text fsm) reasoning-text))))))
+                    (magent-ui-insert-reasoning-text reasoning-text)))))
 
              ;; Streaming text chunk
              ((and (magent-fsm-streaming-p fsm) (stringp response))

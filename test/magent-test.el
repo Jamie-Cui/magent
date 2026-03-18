@@ -2105,6 +2105,39 @@
       (when (buffer-live-p request-buffer)
         (kill-buffer request-buffer)))
     (should-not events)
+    (should (gethash :saw-reasoning stream-state))
+    (should-not (gethash :reasoning-chunks stream-state))
+    (should-not (gethash :in-reasoning-block stream-state))))
+
+(ert-deftest magent-test-gptel-backend-hides-reasoning-when-ignored ()
+  "Test gptel backend keeps ignored reasoning out of the Magent UI."
+  (require 'magent-fsm-backend-gptel)
+  (let ((magent-include-reasoning 'ignore)
+        (events nil)
+        (stream-state (magent-fsm-backend-gptel--make-stream-state))
+        (request-buffer (generate-new-buffer " *magent-gptel-test*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-ui-insert-reasoning-start)
+                   (lambda ()
+                     (push 'reasoning-start events)))
+                  ((symbol-function 'magent-ui-insert-reasoning-text)
+                   (lambda (_text)
+                     (push 'reasoning-text events)))
+                  ((symbol-function 'magent-ui-insert-reasoning-end)
+                   (lambda ()
+                     (push 'reasoning-end events))))
+          (magent-fsm-backend-gptel--callback
+           (cons 'reasoning "alpha") nil nil nil request-buffer nil nil
+           stream-state)
+          (magent-fsm-backend-gptel--callback
+           (cons 'reasoning t) nil nil nil request-buffer nil nil
+           stream-state))
+      (when (buffer-live-p request-buffer)
+        (kill-buffer request-buffer)))
+    (should-not events)
+    (should (gethash :saw-reasoning stream-state))
+    (should (equal (nreverse (gethash :reasoning-chunks stream-state))
+                   '("alpha")))
     (should-not (gethash :in-reasoning-block stream-state))))
 
 (ert-deftest magent-test-permission-prompt-choice-once-allow ()
@@ -3331,6 +3364,22 @@
       (magent-ui--run-item item))
     (with-current-buffer buffer
       (should (string-match-p "Capability resolver: Auto capabilities: org-structure | Suggested: git-workflow"
+                              (buffer-string))))))
+
+(ert-deftest magent-test-ui-capability-summary-folds-quote-block ()
+  "Test capability summaries default-fold their quote block in the UI."
+  (require 'magent-ui)
+  (let ((fold-call nil))
+    (magent-ui-clear-buffer)
+    (cl-letf (((symbol-function 'magent-ui--fold-block-at)
+               (lambda (pos block-re)
+                 (setq fold-call (list pos block-re)))))
+      (magent-ui-insert-capability-summary "Auto capabilities: org-structure"))
+    (should fold-call)
+    (should (equal (cadr fold-call) "#\\+begin_quote"))
+    (with-current-buffer (magent-ui-get-buffer)
+      (should (eq (car fold-call) (point-min)))
+      (should (string-match-p "#\\+begin_quote\nCapability resolver: Auto capabilities: org-structure\n#\\+end_quote\n"
                               (buffer-string))))))
 
 (ert-deftest magent-test-mode-map-binds-diagnose-emacs ()

@@ -88,7 +88,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-bash-timeout~          | ~30~                          | Timeout in seconds for bash commands                                                  |
 | ~magent-emacs-eval-timeout~    | ~10~                          | Timeout in seconds for ~emacs_eval~                                                     |
 | ~magent-audit-preview-length~  | ~120~                         | Max width for persisted audit summaries and previews                                  |
-| ~magent-include-reasoning~     | ~t~                           | Display (~t~), hide (~ignore~), or discard (~nil~) reasoning blocks                         |
+| ~magent-include-reasoning~     | ~t~                           | Display (~t~), keep out of the UI (~ignore~), or discard (~nil~) reasoning blocks           |
 | ~magent-auto-context~          | ~t~                           | Auto-attach buffer context in ~magent-dwim~                                             |
 | ~magent-ui-batch-insert-delay~ | ~0.05~                        | Delay in seconds for batching streaming chunks                                        |
 | ~magent-ui-fontify-threshold~  | ~500~                         | Character threshold for async fontification                                           |

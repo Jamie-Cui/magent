@@ -781,9 +781,11 @@ Closes the #+begin_tool block and auto-folds it."
   "Insert capability SUMMARY into the output buffer."
   (when (and summary (not (string-empty-p summary)))
     (magent-ui--with-insert (magent-ui-get-buffer)
-      (insert "#+begin_quote\n")
-      (insert (format "Capability resolver: %s\n" summary))
-      (insert "#+end_quote\n"))))
+      (let ((quote-start (point)))
+        (insert "#+begin_quote\n")
+        (insert (format "Capability resolver: %s\n" summary))
+        (insert "#+end_quote\n")
+        (magent-ui--fold-block-at quote-start "#\\+begin_quote")))))
 
 ;;; Streaming support
 
