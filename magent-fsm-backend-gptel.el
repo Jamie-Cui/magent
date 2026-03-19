@@ -287,6 +287,29 @@ inside gptel's process filter."
   "Destroy gptel FSM (no-op)."
   (ignore params))
 
+;;; Advice to reset :reasoning-block between tool-use turns
+
+(defun magent--reset-reasoning-block-a (fsm)
+  "Reset :reasoning-block in FSM info before firing a new HTTP request.
+
+gptel's `gptel--handle-wait' clears :tool-success, :tool-use, :error,
+:http-status, and :reasoning between turns but does NOT clear
+:reasoning-block.  For models that stream reasoning via a separate JSON
+field (e.g. qwen3-max with :enable_thinking t), when turn 1 contains
+reasoning followed by a tool call with no text content, :reasoning-block
+is left as \\='in.  On the second turn the stream-filter's
+`((not (eq reasoning-block t)) ...)' branch then mis-classifies incoming
+text content as reasoning, leaving :text-chunks empty and producing a
+silent empty final response (Variant A of the qwen3-max empty-response
+bug documented in project.org)."
+  (let ((info (gptel-fsm-info fsm)))
+    (when (plist-get info :reasoning-block)
+      (magent-log "DEBUG reset :reasoning-block (was %S) before new HTTP request"
+                  (plist-get info :reasoning-block))
+      (plist-put info :reasoning-block nil))))
+
+(advice-add 'gptel--handle-wait :before #'magent--reset-reasoning-block-a)
+
 ;;; Unknown-tool advice for gptel FSM
 
 (defun magent--handle-unknown-tools-a (orig-fn fsm)

@@ -43,7 +43,7 @@ Logged as:
 : INFO fixed 'read_file' arguments in assistant message
 : INFO patched assistant message: removed 1 empty tool_call(s)
 
-** Problem 2 — second turn produces =chunks=0= / empty text response  [UNDER INVESTIGATION]
+** Problem 2 — second turn produces =chunks=0= / empty text response  [FIXED]
 
 After problem 1 is fixed the API no longer returns 400 and the second
 request is accepted.  However the model's second-turn response arrives
@@ -103,29 +103,33 @@ Two observed variants:
    session= does not cancel the in-flight gptel FSM, so old sessions
    accumulate and produce confusing interleaved logs.
 
-*** Next steps
+*** Root cause (confirmed: Hypothesis 3)
 
-1. *Isolate variant A cleanly*: run a single request against a small
-   file (e.g. =Makefile=, not =CLAUDE.md=), ensure all previous FSMs are
-   dead first (kill curl procs), then capture the *complete* gptel
-   debug log for the second-turn response body.  Confirm whether:
-   - The HTTP response has =content: ""= (model truly produced no text), or
-   - The response has =content: "..."= but gptel drops it due to
-     =:reasoning-block= mis-state.
+=gptel--handle-wait= resets =:tool-success=, =:tool-use=, =:error=,
+=:http-status=, =:reasoning= between turns but does NOT reset
+=:reasoning-block=.
 
-2. *Check =:reasoning-block= state at turn boundary*: add a log line
-   just before gptel sends the second request that prints
-   =(plist-get info :reasoning-block)=.  If it is ='in= instead of
-   =nil=, hypothesis 3 is confirmed.
+For qwen3-max with =enable_thinking: t=, turn 1 sends reasoning via a
+separate JSON field (=:reasoning_content=), which sets =:reasoning-block=
+to ='in=.  The turn ends with a tool call and no text content, so the
+block never transitions to ='done=.
 
-3. *Try =thinking_budget: 1024=* in request-params alongside
-   =enable_thinking: t= to cap reasoning tokens and force a text
-   response.
+On turn 2, the stream filter's =((and (not (eq reasoning-block t))
+(length> response 0))= branch catches all incoming text chunks (since
+='in= satisfies the condition) and treats them as =(cons 'reasoning
+response)=.  Magent's callback then accumulates them in
+=:reasoning-chunks= instead of =:text-chunks=, leaving =final-text= empty.
 
-4. *Handle empty text gracefully*: if =final-text=""= and =:saw-reasoning=
-   is set, either (a) expose reasoning text as the response, or (b)
-   retry with a short follow-up prompt "Please summarise your findings
-   in one sentence."
+Variant B (model loops with more tool calls) is the same bug occurring
+at turn 3, 4, etc.
+
+*** Fix (committed)
+
+Added =magent--reset-reasoning-block-a= as =:before= advice on
+=gptel--handle-wait= in =magent-fsm-backend-gptel.el=.  Before each new
+HTTP request the advice checks if =:reasoning-block= is non-nil and resets
+it to =nil=, logging the previous value for observability.  This is
+self-contained in magent and requires no changes to the gptel package.
 
 * Uncommitted Changes
 
