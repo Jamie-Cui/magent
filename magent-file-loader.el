@@ -62,17 +62,23 @@ If no frontmatter is found, returns (nil . CONTENT)."
     val))
 
 (defun magent-file-loader--parse-frontmatter-regex (header-str)
-  "Parse simple key-value frontmatter from HEADER-STR."
+  "Parse simple key-value frontmatter from HEADER-STR.
+Returns nil if any non-blank line is not a simple scalar key-value pair,
+allowing the caller to fall back to a full YAML parser."
   (let (result)
-    (dolist (line (split-string header-str "\n"))
-      (when (string-match "^\\s-*\\([^:]+\\):\\s-*\\(.+\\)$" line)
-        (let* ((key (string-trim (match-string 1 line)))
-               (val (string-trim (match-string 2 line))))
-          (setq result
-                (plist-put result
-                           (intern (concat ":" key))
-                           (magent-file-loader--parse-frontmatter-scalar val))))))
-    result))
+    (catch 'complex
+      (dolist (line (split-string header-str "\n"))
+        (cond
+         ((string-blank-p line))
+         ((string-match "^\\s-*\\([^:]+\\):\\s-*\\(.+\\)$" line)
+          (let* ((key (string-trim (match-string 1 line)))
+                 (val (string-trim (match-string 2 line))))
+            (setq result
+                  (plist-put result
+                             (intern (concat ":" key))
+                             (magent-file-loader--parse-frontmatter-scalar val)))))
+         (t (throw 'complex nil))))
+      result)))
 
 (defun magent-file-loader--parse-frontmatter-scalar (str)
   "Parse scalar frontmatter STR into a boolean, number, or string."

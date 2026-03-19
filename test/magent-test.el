@@ -208,6 +208,17 @@
     (should (= (length (plist-get fm :tools)) 3))
     (should (equal (plist-get fm :tools) '("bash" "read" "write")))))
 
+(ert-deftest magent-test-frontmatter-multiline-yaml-list ()
+  "Test multiline YAML frontmatter falls back to the YAML parser."
+  (require 'magent-file-loader)
+  (let* ((content "---\nname: test-agent\ntools:\n  - read\n  - write\nskills:\n  - skill-a\n  - skill-b\n---\nBody text")
+         (result (magent-file-loader-parse-frontmatter content))
+         (fm (car result)))
+    (should (equal (plist-get fm :name) "test-agent"))
+    (should (equal (plist-get fm :tools) '("read" "write")))
+    (should (equal (plist-get fm :skills) '("skill-a" "skill-b")))
+    (should (equal (string-trim (cdr result)) "Body text"))))
+
 (ert-deftest magent-test-frontmatter-no-frontmatter ()
   "Test content without frontmatter."
   (require 'magent-file-loader)
@@ -232,6 +243,14 @@
          (fm (car result)))
     (should (= (plist-get fm :top-p) 0.9))
     (should (= (plist-get fm :max-tokens) 100))))
+
+(ert-deftest magent-test-md2org-convert-inline-restores-bold-markers ()
+  "Test inline markdown conversion restores Org bold markers."
+  (require 'magent-ui)
+  (let ((converted (magent-md2org-convert-string "Plain **foo** and *bar* with `baz`.")))
+    (should (equal converted "Plain *foo* and /bar/ with ~baz~."))
+    (should-not (string-match-p (regexp-quote (string 1)) converted))
+    (should-not (string-match-p (regexp-quote (string 2)) converted))))
 
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Permission system tests

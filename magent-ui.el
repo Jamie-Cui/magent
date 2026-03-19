@@ -192,7 +192,13 @@ Handles: `code` -> ~code~, **bold** -> *bold*, *italic* -> /italic/."
         (replace-match (concat bold-open (match-string 1) bold-close) t t))
       (goto-char (point-min))
       (while (re-search-forward "\\*\\([^*\n]+\\)\\*" nil t)
-        (replace-match (concat "/" (match-string 1) "/") t t)))))
+        (replace-match (concat "/" (match-string 1) "/") t t))
+      (goto-char (point-min))
+      (while (search-forward bold-open nil t)
+        (replace-match "*" t t))
+      (goto-char (point-min))
+      (while (search-forward bold-close nil t)
+        (replace-match "*" t t)))))
 
 (defun magent-md2org-convert-string (text)
   "Return TEXT converted from markdown to org-mode."

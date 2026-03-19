@@ -193,12 +193,12 @@ git commit -m "fix(fsm): patch qwen3-max split tool_calls in injected assistant 
 
 * Key File Locations
 
-| File | Purpose |
-|------+---------|
-| =magent-fsm-backend-gptel.el= | gptel backend, streaming callback, =magent--handle-unknown-tools-a= advice |
-| =~/.emacs.d/elpa/gptel-20251214.2047/gptel-openai.el= | =[DONE]= handler (line ~210), streaming parser |
-| =~/.emacs.d/elpa/gptel-20251214.2047/gptel-request.el= | =:reasoning-block= state machine (lines ~2715–2766) |
-| =~/opt/emacs.d/lisp/init-llm.el= | Aliyun backend definition; qwen3-max has =(:enable_thinking t)= |
+| File                                                 | Purpose                                                                  |
+|------------------------------------------------------+--------------------------------------------------------------------------|
+| =magent-fsm-backend-gptel.el=                          | gptel backend, streaming callback, =magent--handle-unknown-tools-a= advice |
+| =~/.emacs.d/elpa/gptel-20251214.2047/gptel-openai.el=  | =[DONE]= handler (line ~210), streaming parser                             |
+| =~/.emacs.d/elpa/gptel-20251214.2047/gptel-request.el= | =:reasoning-block= state machine (lines ~2715–2766)                        |
+| =~/opt/emacs.d/lisp/init-llm.el=                       | Aliyun backend definition; qwen3-max has =(:enable_thinking t)=            |
 
 * Logging Helpers
 
