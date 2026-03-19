@@ -284,6 +284,33 @@ preventing the FSM from hanging when the model hallucinates tool names."
          (patched nil))
     (when-let* ((all-tool-use (plist-get info :tool-use))
                 (tools (plist-get info :tools)))
+      ;; Debug: log all tool calls and their args to diagnose arg-splitting issues
+      (magent-log "DEBUG tool-use entries: %s"
+                  (mapconcat (lambda (tc)
+                               (format "'%s'(args=%s)"
+                                       (plist-get tc :name)
+                                       (if (plist-get tc :args) "present" "nil")))
+                             all-tool-use ", "))
+      ;; Fix: when an empty-named tool call precedes a known tool with nil args,
+      ;; merge the empty tool's args into the known tool. This works around a
+      ;; qwen3-max streaming quirk where the first chunk arrives with name=""
+      ;; causing gptel to split one tool call into two entries.
+      (let ((all-list all-tool-use))
+        (while (cdr all-list)
+          (let* ((tc (car all-list))
+                 (next (cadr all-list)))
+            (when (and (string= (plist-get tc :name) "")
+                       (null (plist-get tc :result))
+                       (plist-get tc :args)
+                       (null (plist-get next :args))
+                       (cl-find-if (lambda (ts)
+                                     (equal (gptel-tool-name ts)
+                                            (plist-get next :name)))
+                                   tools))
+              (plist-put next :args (plist-get tc :args))
+              (magent-log "INFO merged args from empty-named tool into '%s'"
+                          (plist-get next :name))))
+          (setq all-list (cdr all-list))))
       (let ((avail (mapconcat #'gptel-tool-name tools ", ")))
         (dolist (tc all-tool-use)
           (unless (plist-get tc :result)

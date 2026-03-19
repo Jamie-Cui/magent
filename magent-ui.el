@@ -24,7 +24,6 @@
 (require 'magent-agent)
 (require 'magent-agent-registry)
 (require 'magent-fsm)
-(require 'magent-queue)
 (require 'magent-md2org)
 
 (defvar magent--spinner)
@@ -50,6 +49,7 @@
 (declare-function magent-skills-list-by-type "magent-skills")
 (declare-function magent-skill-type "magent-skills")
 (declare-function magent-skill-description "magent-skills")
+(declare-function magent-show-audit "magent-audit")
 (declare-function magent-session--session-for-scope "magent-session")
 
 ;; Forward declarations for evil (loaded via with-eval-after-load)
@@ -60,6 +60,66 @@
 
 ;; Forward declaration for magent entry point (magent.el loaded first)
 (declare-function magent--ensure-initialized "magent")
+
+;;; Request dispatch
+
+(cl-defstruct (magent-ui--request
+               (:constructor magent-ui--request-create)
+               (:copier nil))
+  "A prompt being dispatched or about to be dispatched."
+  (prompt nil :type string)
+  (display nil :type (or string null))
+  (source 'prompt :type symbol)
+  (skills nil :type list)
+  agent
+  request-context
+  capability-resolution
+  (timestamp 0.0 :type float))
+
+(defvar magent-ui--processing nil
+  "Non-nil while an LLM request is in flight.")
+
+(defun magent-ui-processing-p ()
+  "Return non-nil if a request is currently being processed."
+  magent-ui--processing)
+
+(defun magent-ui--enqueue
+    (prompt source &optional display skills agent request-context capability-resolution)
+  "Dispatch PROMPT immediately, or reject with a message if busy.
+SOURCE is a symbol identifying the calling command.
+DISPLAY is the text to show in the user message heading; defaults to PROMPT.
+SKILLS is a list of skill name strings selected via slash commands.
+AGENT is an optional `magent-agent-info' override for this request.
+REQUEST-CONTEXT is an optional structured context plist captured from
+the originating buffer.
+CAPABILITY-RESOLUTION is an optional precomputed resolver result for
+this turn.
+Returns nil always (never queued)."
+  (if magent-ui--processing
+      (message "Magent: busy — wait for the current request to finish")
+    (magent-ui--dispatch (magent-ui--request-create
+                          :prompt prompt
+                          :display display
+                          :source source
+                          :skills skills
+                          :agent agent
+                          :request-context request-context
+                          :capability-resolution capability-resolution
+                          :timestamp (float-time))))
+  nil)
+
+(defun magent-ui--clear-processing ()
+  "Release the processing lock.
+Called by `magent-ui--finish-processing' and `magent-interrupt'."
+  (setq magent-ui--processing nil))
+
+(defun magent-ui--dispatch (item)
+  "Set the processing lock and hand ITEM off to the UI layer.
+Must only be called when `magent-ui--processing' is nil.
+Uses `run-at-time' to defer dispatch so callers finish their
+stack frame before UI mutations happen."
+  (setq magent-ui--processing t)
+  (run-at-time 0 nil #'magent-ui--run-item item))
 
 (defvar magent-ui--request-generation 0
   "Monotonically increasing counter for request dispatch cycles.
@@ -217,7 +277,7 @@ renders history into it on first use.  Returns the active session."
   (let ((target-scope (magent-ui--context-scope))
         (current-scope (magent-session-current-scope)))
     (unless (equal target-scope current-scope)
-      (when (magent-queue-processing-p)
+      (when (magent-ui-processing-p)
         (user-error "Magent: cannot switch project while a request is in progress"))
       (magent-ui--snapshot-buffer-content magent--current-session current-scope)
       (magent-session-activate target-scope))
@@ -315,7 +375,7 @@ renders history into it on first use.  Returns the active session."
   "Restore prompt markers and editability from a trailing prompt in SESSION."
   (setq magent-ui--input-marker nil)
   (setq magent-ui--input-section-start nil)
-  (when (and (not (magent-queue-processing-p))
+  (when (and (not (magent-ui-processing-p))
              (> (point-max) (point-min)))
     (save-excursion
       (goto-char (point-max))
@@ -419,7 +479,7 @@ request are discarded."
   (magent-ui-insert-error "[Interrupted by user]")
   (magent-log "INFO Request interrupted by user (gen now %d)"
               magent-ui--request-generation)
-  (magent-queue-dequeue-and-run)
+  (magent-ui--clear-processing)
   (magent-ui--maybe-show-input-prompt))
 
 ;;; Transient menu
@@ -430,7 +490,7 @@ Skips keys already reserved by the static parts of `magent-transient-menu'."
   (let ((used (make-hash-table :test #'equal))
         result)
     ;; Reserve keys used by static menu entries
-    (dolist (k '("c" "d" "D" "R" "r" "l" "L" "x" "e" "k"))
+    (dolist (k '("c" "d" "D" "R" "r" "l" "a" "L" "x" "e" "k"))
       (puthash k t used))
     (dolist (agent agents)
       (let* ((name (magent-agent-info-name agent))
@@ -486,6 +546,7 @@ Skips keys already reserved by the static parts of `magent-transient-menu'."
    [("r" "Toggle read-only" magent-toggle-read-only)]]
   ["Logs"
    [("l" "Show log" magent-show-log)
+    ("a" "Show audit" magent-show-audit)
     ("L" "Clear log" magent-clear-log)]])
 
 ;;; Output mode
@@ -595,7 +656,7 @@ Sets `magent-ui--input-marker' to the start of the editable area."
 (defun magent-ui--maybe-show-input-prompt (&optional scope)
   "Insert an input prompt for SCOPE unless a queued item is about to run."
   (with-current-buffer (magent-ui-get-buffer scope)
-    (unless (or (magent-queue-processing-p)
+    (unless (or (magent-ui-processing-p)
                 magent-ui--input-marker)
       (magent-ui--insert-input-prompt scope))))
 
@@ -1186,30 +1247,30 @@ AGENT is an optional `magent-agent-info' override for this request."
          (capability-resolution
           (when (require 'magent-capability nil t)
             (magent-capability-resolve-for-turn prompt request-context skills))))
-    (magent-queue-enqueue prompt (or source 'prompt)
-                          display skills agent request-context capability-resolution)))
+    (magent-ui--enqueue prompt (or source 'prompt)
+                        display skills agent request-context capability-resolution)))
 
 (defun magent-ui--run-item (item)
-  "Dispatch ITEM (a `magent-queue-item') to the agent.
-Called exclusively by `magent-queue--dispatch' after the lock is held.
+  "Dispatch ITEM (a `magent-ui--request') to the agent.
+Called exclusively by `magent-ui--dispatch' after the lock is held.
 Inserts the user message into the output buffer, starts the spinner,
 and creates the FSM.  Captures the current request generation so
 stale callbacks are discarded."
-  (let ((input (magent-queue-item-prompt item))
+  (let ((input (magent-ui--request-prompt item))
         (gen (cl-incf magent-ui--request-generation))
         (scope (magent-session-current-scope)))
     (magent-ui-display-buffer)
     (magent-ui--remove-input-prompt scope)
-    (unless (eq (magent-queue-item-source item) 'buffer-input)
-      (magent-ui-insert-user-message (or (magent-queue-item-display item) input)))
+    (unless (eq (magent-ui--request-source item) 'buffer-input)
+      (magent-ui-insert-user-message (or (magent-ui--request-display item) input)))
     (when (and (boundp 'magent--spinner) magent--spinner)
       (spinner-start magent--spinner))
     (magent-log "INFO processing [%s] gen=%d: %s"
-                (magent-queue-item-source item) gen input)
+                (magent-ui--request-source item) gen input)
     (when-let ((summary
                 (and (require 'magent-capability nil t)
                      (magent-capability-resolution-summary
-                      (magent-queue-item-capability-resolution item)))))
+                      (magent-ui--request-capability-resolution item)))))
       (magent-log "INFO %s" summary)
       (magent-ui-insert-capability-summary summary))
     (condition-case err
@@ -1221,18 +1282,18 @@ stale callbacks are discarded."
                      (magent-ui--finish-processing response)
                    (magent-log "DEBUG discarding stale callback gen=%d (current=%d)"
                                gen magent-ui--request-generation)))
-               (magent-queue-item-agent item)
-               (magent-queue-item-skills item)
+               (magent-ui--request-agent item)
+               (magent-ui--request-skills item)
                nil
-               (magent-queue-item-request-context item)
-               (magent-queue-item-capability-resolution item)))
+               (magent-ui--request-request-context item)
+               (magent-ui--request-capability-resolution item)))
       (error
        (magent-log "ERROR in run-item: %s" (error-message-string err))
        (magent-ui-insert-error (error-message-string err))
        (setq magent--current-fsm nil)
        (when (and (boundp 'magent--spinner) magent--spinner)
          (spinner-stop magent--spinner))
-       (magent-queue-dequeue-and-run)
+       (magent-ui--clear-processing)
        (magent-ui--maybe-show-input-prompt scope)))))
 
 (defun magent-ui--finish-processing (response)
@@ -1249,7 +1310,7 @@ Handles both streaming and non-streaming completion."
    (t
     (magent-log "ERROR request failed or aborted")
     (magent-ui-insert-error "Request failed or was aborted")))
-  (magent-queue-dequeue-and-run)
+  (magent-ui--clear-processing)
   (magent-ui--maybe-show-input-prompt (magent-session-current-scope)))
 
 ;;; Session management commands
@@ -1259,7 +1320,6 @@ Handles both streaming and non-streaming completion."
   "Clear the current session."
   (interactive)
   (magent-ui--activate-context-session)
-  (magent-queue-clear)
   (magent-session-reset)
   (magent-ui-clear-buffer)
   (magent-ui--insert-input-prompt))

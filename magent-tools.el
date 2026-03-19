@@ -55,14 +55,19 @@ CALLBACK is called with the file contents or error message."
 Creates parent directories if needed.
 CALLBACK is called with success message or error."
   (condition-case err
-      (let ((path (magent-tools--resolve-path path)))
-        (let ((dir (file-name-directory path)))
-          (when (and dir (not (file-exists-p dir)))
-            (make-directory dir t)))
-        (with-temp-buffer
-          (insert content)
-          (write-region (point-min) (point-max) path nil 0))
-        (funcall callback (format "Successfully wrote %s" path)))
+      (progn
+        (unless (stringp path)
+          (error "Missing required argument 'path' (got %S)" path))
+        (unless (stringp content)
+          (error "Missing required argument 'content' (got %S)" content))
+        (let ((path (magent-tools--resolve-path path)))
+          (let ((dir (file-name-directory path)))
+            (when (and dir (not (file-exists-p dir)))
+              (make-directory dir t)))
+          (with-temp-buffer
+            (insert content)
+            (write-region (point-min) (point-max) path nil 0))
+          (funcall callback (format "Successfully wrote %s" path))))
     (error (funcall callback (format "Error writing file: %s" (error-message-string err))))))
 
 (defun magent-tools--grep (callback pattern path &optional case-sensitive)

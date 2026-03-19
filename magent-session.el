@@ -146,8 +146,6 @@ SCOPE must be either `global' or a normalized project root string."
     (magent-permission-clear-session-overrides))
   (when (fboundp 'magent-capability-clear-local-overrides)
     (magent-capability-clear-local-overrides))
-  (when (fboundp 'magent-queue-clear)
-    (magent-queue-clear))
   (magent-log "INFO session cleared for scope %s" magent-session--current-scope))
 
 (defun magent-session--scope-storage-directory (scope)

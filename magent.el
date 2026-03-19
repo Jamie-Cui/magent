@@ -91,7 +91,6 @@
 (require 'magent-skill-file)
 (require 'magent-capability)
 (require 'magent-capability-file)
-(require 'magent-queue)
 
 (declare-function magent-doctor "magent-ui")
 (declare-function magent-list-capabilities-for-current-context "magent-capability")
@@ -119,7 +118,7 @@ Falls back to `magent-default-agent' if no session agent is set."
 (defconst magent--lighter
   '(:eval
     (concat " [M/" (magent--get-current-agent-name) "] "
-            (when (magent-queue-processing-p)
+            (when (magent-ui-processing-p)
               (propertize "[busy]" 'face 'warning
                           'help-echo "Magent: request in progress"))
             (spinner-print magent--spinner)))

@@ -22,6 +22,14 @@
             (push (json-read-from-string line) records)))))
     (nreverse records)))
 
+(defun magent-test--write-audit-record-file (directory filename records)
+  "Write RECORDS as JSONL into DIRECTORY/FILENAME."
+  (make-directory directory t)
+  (with-temp-file (expand-file-name filename directory)
+    (dolist (record records)
+      (insert (json-encode record))
+      (insert "\n"))))
+
 (defconst magent-test--root-directory
   (expand-file-name ".."
                     (file-name-directory (or load-file-name buffer-file-name)))
@@ -1913,7 +1921,7 @@
   "Test the mode-line lighter no longer depends on queue depth APIs."
   (require 'magent)
   (let ((magent--spinner (spinner-create 'progress-bar-filled)))
-    (cl-letf (((symbol-function 'magent-queue-processing-p) (lambda () nil)))
+    (cl-letf (((symbol-function 'magent-ui-processing-p) (lambda () nil)))
       (should (string-match-p "\\[M/" (eval (cadr magent--lighter)))))))
 
 (ert-deftest magent-test-tools-gptel-to-magent-tool ()
@@ -2719,6 +2727,118 @@
              (error t))))
       (delete-directory magent-audit-directory t))))
 
+(ert-deftest magent-test-audit-browser-respects-default-time-window ()
+  "Test the audit browser only shows records inside the default day window."
+  (require 'magent-audit)
+  (let* ((magent-audit-directory (make-temp-file "magent-audit-ui-" t))
+         (magent-audit-default-days 1)
+         (magent-audit-max-records 50)
+         (recent-time (format-time-string "%Y-%m-%dT%H:%M:%S%z" (current-time)))
+         (old-time (format-time-string
+                    "%Y-%m-%dT%H:%M:%S%z"
+                    (time-subtract (current-time) (days-to-time 3))))
+         buffer)
+    (unwind-protect
+        (progn
+          (magent-test--write-audit-record-file
+           magent-audit-directory
+           "audit-test.jsonl"
+           `(((timestamp . ,recent-time)
+              (event . "permission-decision")
+              (decision . "allow")
+              (tool_name . "bash")
+              (summary . "recent audit record"))
+             ((timestamp . ,old-time)
+              (event . "permission-decision")
+              (decision . "deny")
+              (tool_name . "read_file")
+              (summary . "stale audit record"))))
+          (setq buffer (magent-show-audit))
+          (with-current-buffer buffer
+            (should (derived-mode-p 'magent-audit-mode))
+            (should (= (length magent-audit--all-records) 1))
+            (should (= (length magent-audit--visible-records) 1))
+            (should (string-match-p "recent audit record" (buffer-string)))
+            (should-not (string-match-p "stale audit record" (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory magent-audit-directory t))))
+
+(ert-deftest magent-test-audit-browser-filters-and-expands-details ()
+  "Test audit browser filters records and expands inline details."
+  (require 'magent-audit)
+  (let* ((magent-audit-directory (make-temp-file "magent-audit-ui-" t))
+         (magent-audit-default-days 7)
+         (magent-audit-max-records 50)
+         (timestamp (format-time-string "%Y-%m-%dT%H:%M:%S%z" (current-time)))
+         buffer)
+    (unwind-protect
+        (progn
+          (magent-test--write-audit-record-file
+           magent-audit-directory
+           "audit-test.jsonl"
+           `(((timestamp . ,timestamp)
+              (event . "permission-decision")
+              (decision . "allow")
+              (tool_name . "bash")
+              (request_id . "req-allow")
+              (summary . "allowed command"))
+             ((timestamp . ,timestamp)
+              (event . "permission-decision")
+              (decision . "deny")
+              (tool_name . "read_file")
+              (request_id . "req-deny")
+              (summary . "blocked env read")
+              (args_preview . ((path . ".env"))))))
+          (setq buffer (magent-show-audit))
+          (with-current-buffer buffer
+            (magent-audit--set-filter-value :decision "deny")
+            (should (= (length magent-audit--visible-records) 1))
+            (should (string-match-p "blocked env read" (buffer-string)))
+            (should-not (string-match-p "allowed command" (buffer-string)))
+            (goto-char (point-min))
+            (re-search-forward "blocked env read")
+            (beginning-of-line)
+            (magent-audit-toggle-entry)
+            (should (string-match-p "request-id: req-deny" (buffer-string)))
+            (should (string-match-p "args-preview:" (buffer-string)))
+            (should (string-match-p "\\(path \\. \".env\"\\)" (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory magent-audit-directory t))))
+
+(ert-deftest magent-test-audit-browser-skips-malformed-jsonl ()
+  "Test malformed audit lines are ignored without breaking the browser."
+  (require 'magent-audit)
+  (let* ((magent-audit-directory (make-temp-file "magent-audit-ui-" t))
+         (magent-audit-default-days 7)
+         (magent-audit-max-records 50)
+         (timestamp (format-time-string "%Y-%m-%dT%H:%M:%S%z" (current-time)))
+         (file (expand-file-name "audit-test.jsonl" magent-audit-directory))
+         buffer)
+    (unwind-protect
+        (progn
+          (make-directory magent-audit-directory t)
+          (with-temp-file file
+            (insert "{not-json}\n")
+            (insert
+             (json-encode
+              `((timestamp . ,timestamp)
+                (event . "tool-call-end")
+                (status . "ok")
+                (tool_name . "bash")
+                (summary . "valid record after malformed line"))))
+            (insert "\n"))
+          (setq buffer (magent-show-audit))
+          (with-current-buffer buffer
+            (should (= magent-audit--load-errors 1))
+            (should (= (length magent-audit--visible-records) 1))
+            (should (string-match-p "valid record after malformed line"
+                                    (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory magent-audit-directory t))))
+
 (ert-deftest magent-test-session-scope-from-directory-falls-back-to-global ()
   "Test session scope is global when no project root is detected."
   (let ((magent-project-root-function (lambda () nil)))
@@ -3013,7 +3133,7 @@
     (unwind-protect
         (progn
           (magent-session-activate (file-truename (directory-file-name project-a)))
-          (let ((magent-queue--processing t))
+          (let ((magent-ui--processing t))
             (cl-letf (((symbol-function 'magent-ui--context-scope)
                        (lambda ()
                          (file-truename (directory-file-name project-b)))))
@@ -3576,7 +3696,7 @@
               ((symbol-function 'magent-capability-resolve-for-turn)
                (lambda (_prompt _request-context _skills)
                  'resolution))
-              ((symbol-function 'magent-queue-enqueue)
+              ((symbol-function 'magent-ui--enqueue)
                (lambda (prompt source &optional display skills agent-info request-context capability-resolution)
                  (setq captured (list prompt source display skills agent-info request-context capability-resolution)))))
       (magent-ui-dispatch-prompt "diag" 'diagnose "display" '("systematic-debugging") t agent))
@@ -3602,7 +3722,7 @@
                       (list (magent-capability-match-create
                              :capability (magent-capability-create :name "git-workflow")
                              :status 'suggested))))
-         (item (magent-queue-item-create
+         (item (magent-ui--request-create
                 :prompt "hello"
                 :source 'prompt
                 :capability-resolution resolution)))

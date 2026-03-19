@@ -196,8 +196,28 @@ When nil, audit logs are written under `magent-session-directory'/audit."
                  directory)
   :group 'magent)
 
+(defcustom magent-audit-buffer-name "*magent-audit*"
+  "Name of the buffer used for the Magent audit browser."
+  :type 'string
+  :group 'magent)
+
 (defcustom magent-audit-preview-length 120
   "Maximum display width for persisted audit previews."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-audit-default-days 1
+  "Number of recent days loaded by default in the audit browser.
+When nil or non-positive, show all available audit records."
+  :type '(choice (const :tag "All available audit records" nil)
+                 integer)
+  :group 'magent)
+
+(defcustom magent-audit-max-records 200
+  "Maximum number of audit records rendered in the audit browser.
+Older matching records remain on disk and can be reached by
+widening the time window or lowering filters in future UI
+extensions."
   :type 'integer
   :group 'magent)
 

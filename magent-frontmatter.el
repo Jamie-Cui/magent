@@ -23,21 +23,26 @@
 (defun magent-frontmatter-parse (content)
   "Parse frontmatter from CONTENT.
 Returns (FRONTMATTER . BODY) where FRONTMATTER is a plist.
-If no frontmatter found, returns (nil . CONTENT)."
+If no frontmatter found, returns (nil . CONTENT).
+
+Uses a fast regex parser for the simple key: value format used by all
+magent definition files.  Falls back to yaml.el only when the regex
+parser produces an empty result (e.g. nested objects or YAML lists)."
   (if (string-match "\\`---\n\\(\\(?:.\\|\n\\)*?\\)\n---\n?" content)
       (let* ((yaml-text (match-string 1 content))
              (body (substring content (match-end 0)))
-             (raw (condition-case err
-                      (yaml-parse-string yaml-text
-                                         :object-type 'plist
-                                         :object-key-type 'keyword
-                                         :sequence-type 'list
-                                         :false-object nil
-                                         :null-object nil)
-                    (error
-                     (magent-log "WARN frontmatter yaml parse failed (%s), using regex fallback"
-                                 (error-message-string err))
-                     (magent-frontmatter--parse-regex yaml-text))))
+             (raw (or (magent-frontmatter--parse-regex yaml-text)
+                      (condition-case err
+                          (yaml-parse-string yaml-text
+                                             :object-type 'plist
+                                             :object-key-type 'keyword
+                                             :sequence-type 'list
+                                             :false-object nil
+                                             :null-object nil)
+                        (error
+                         (magent-log "WARN frontmatter yaml parse failed (%s)"
+                                     (error-message-string err))
+                         nil))))
              (normalized (magent-frontmatter--normalize-plist raw)))
         (cons normalized body))
     (cons nil content)))
