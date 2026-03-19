@@ -379,13 +379,23 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
 
 (require 'gptel)
 
+(defconst magent-tools--reason-arg
+  '(:name "reason"
+    :type string
+    :description "Brief reason for this tool call (shown in UI)"
+    :optional t)
+  "Display-only arg appended to every tool's :args list.
+The value is shown in the UI but stripped before the tool function is called.
+See `magent-fsm--filter-display-args'.")
+
 (defvar magent-tools--read-file-tool
   (gptel-make-tool
    :name "read_file"
    :description "Read the contents of a file at the given path. Use this to inspect file contents before making changes."
    :args (list '(:name "path"
                        :type string
-                       :description "Absolute or relative path to the file"))
+                       :description "Absolute or relative path to the file")
+               magent-tools--reason-arg)
    :function #'magent-tools--read-file
    :async t
    :category "magent")
@@ -400,7 +410,8 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
                        :description "Absolute or relative path to the file")
                '(:name "content"
                        :type string
-                       :description "The full content to write to the file"))
+                       :description "The full content to write to the file")
+               magent-tools--reason-arg)
    :function #'magent-tools--write-file
    :async t
    :confirm t
@@ -419,7 +430,8 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
                        :description "The exact text to find and replace (must match exactly once)")
                '(:name "new_text"
                        :type string
-                       :description "The text to replace old_text with"))
+                       :description "The text to replace old_text with")
+               magent-tools--reason-arg)
    :function #'magent-tools--edit-file
    :async t
    :confirm t
@@ -439,7 +451,8 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
                '(:name "case_sensitive"
                        :type boolean
                        :description "Whether the search is case-sensitive"
-                       :optional t))
+                       :optional t)
+               magent-tools--reason-arg)
    :function #'magent-tools--grep
    :async t
    :category "magent")
@@ -454,7 +467,8 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
                        :description "Glob pattern, e.g. *.el or **/*.ts")
                '(:name "path"
                        :type string
-                       :description "Root directory to search in"))
+                       :description "Root directory to search in")
+               magent-tools--reason-arg)
    :function #'magent-tools--glob
    :async t
    :category "magent")
@@ -470,7 +484,8 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
                '(:name "timeout"
                        :type integer
                        :description "Timeout in seconds, defaults to 30"
-                       :optional t))
+                       :optional t)
+               magent-tools--reason-arg)
    :function #'magent-tools--bash
    :async t
    :confirm t
@@ -480,14 +495,15 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
 (defvar magent-tools--emacs-eval-tool
   (gptel-make-tool
    :name "emacs_eval"
-   :description "Evaluate an Emacs Lisp expression. Returns the result as a string. Use for buffer inspection, Emacs state queries, running compilation, navigating code with xref, etc."
+   :description "Evaluate an Emacs Lisp expression. Returns the result as a string. Use for buffer inspection, Emacs state queries, running compilation, navigating code with xref, etc. When you need multiple pieces of Emacs state, batch them in a single call using (let ...) or (list ...) rather than making separate calls — but only after you have gathered enough context to know what you need."
    :args (list '(:name "sexp"
                        :type string
                        :description "Emacs Lisp s-expression to evaluate")
                '(:name "timeout"
                        :type integer
                        :description "Timeout in seconds, defaults to 10"
-                       :optional t))
+                       :optional t)
+               magent-tools--reason-arg)
    :function #'magent-tools--emacs-eval
    :async t
    :confirm t
@@ -503,7 +519,8 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
                        :description "Name of the subagent to delegate to (e.g. 'explore', 'general')")
                '(:name "prompt"
                        :type string
-                       :description "Task description for the subagent"))
+                       :description "Task description for the subagent")
+               magent-tools--reason-arg)
    :function #'magent-tools--delegate
    :async t
    :category "magent")
@@ -530,7 +547,8 @@ automatically included in the system prompt."
                '(:name "args"
                        :type array
                        :description "Arguments for the operation (varies by operation)"
-                       :optional t))
+                       :optional t)
+               magent-tools--reason-arg)
    :function #'magent-tools--skill-invoke
    :async t
    :category "magent")
@@ -546,7 +564,8 @@ automatically included in the system prompt."
                '(:name "max_results"
                        :type integer
                        :description "Maximum number of results to return (default 5)"
-                       :optional t))
+                       :optional t)
+               magent-tools--reason-arg)
    :function #'magent-tools--web-search
    :async t
    :category "magent")

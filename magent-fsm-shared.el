@@ -62,37 +62,45 @@
   aborted)
 
 (defun magent-fsm--show-tool-call-format (name args)
-  "Format tool call NAME with ARGS into a display string."
-  (cond
-   ((string= name "skill_invoke")
-    (let ((skill-name (plist-get args :skill_name))
-          (operation (plist-get args :operation)))
-      (format "%s/%s" (or skill-name "?") (or operation "?"))))
-   ((string= name "delegate")
-    (let ((agent (plist-get args :agent)))
-      (format "agent: %s" (or agent "?"))))
-   ((string= name "bash")
-    (let ((cmd (plist-get args :command)))
-      (if cmd
-          (truncate-string-to-width cmd magent-ui-tool-input-max-length nil nil "...")
-        "?")))
-   ((member name '("read_file" "write_file" "edit_file"))
-    (or (plist-get args :path) "?"))
-   ((string= name "grep")
-    (let ((pattern (plist-get args :pattern))
-          (path (plist-get args :path)))
-      (format "%s in %s" (or pattern "?") (or path "?"))))
-   ((string= name "glob")
-    (or (plist-get args :pattern) "?"))
-   ((string= name "emacs_eval")
-    (let ((sexp (plist-get args :sexp)))
-      (if sexp
-          (truncate-string-to-width sexp magent-ui-tool-input-max-length nil nil "...")
-        "?")))
-   (t
-    (if args
-        (truncate-string-to-width (format "%s" args) 60 nil nil "...")
-      ""))))
+  "Format tool call NAME with ARGS into a display string.
+When ARGS contains a :reason key, prepend it as [reason] to the summary."
+  ;; FIXME: add `magent-tool-show-reason' defcustom (default t) to suppress
+  ;; reason display without removing the arg from tool definitions.
+  (let* ((reason (plist-get args :reason))
+         (base
+          (cond
+           ((string= name "skill_invoke")
+            (let ((skill-name (plist-get args :skill_name))
+                  (operation (plist-get args :operation)))
+              (format "%s/%s" (or skill-name "?") (or operation "?"))))
+           ((string= name "delegate")
+            (let ((agent (plist-get args :agent)))
+              (format "agent: %s" (or agent "?"))))
+           ((string= name "bash")
+            (let ((cmd (plist-get args :command)))
+              (if cmd
+                  (truncate-string-to-width cmd magent-ui-tool-input-max-length nil nil "...")
+                "?")))
+           ((member name '("read_file" "write_file" "edit_file"))
+            (or (plist-get args :path) "?"))
+           ((string= name "grep")
+            (let ((pattern (plist-get args :pattern))
+                  (path (plist-get args :path)))
+              (format "%s in %s" (or pattern "?") (or path "?"))))
+           ((string= name "glob")
+            (or (plist-get args :pattern) "?"))
+           ((string= name "emacs_eval")
+            (let ((sexp (plist-get args :sexp)))
+              (if sexp
+                  (truncate-string-to-width sexp magent-ui-tool-input-max-length nil nil "...")
+                "?")))
+           (t
+            (if args
+                (truncate-string-to-width (format "%s" args) 60 nil nil "...")
+              "")))))
+    (if (and reason (not (string-empty-p reason)))
+        (format "[%s] %s" reason base)
+      base)))
 
 (defun magent-fsm--show-tool-call (name args)
   "Show tool call NAME with ARGS in the UI."
@@ -174,13 +182,29 @@
                        (error (format "Error: Tool execution failed: %s"
                                       (error-message-string err)))))))))))
 
+(defun magent-fsm--filter-display-args (args-spec arg-values)
+  "Remove display-only args from ARG-VALUES before invoking the tool function.
+Currently strips the \\='reason\\=' arg which is used for UI display only and
+must not be forwarded to the actual tool implementation."
+  ;; FIXME: when `magent-tool-show-reason' defcustom is added, this function
+  ;; can be removed when the feature is disabled (no reason arg → no filtering).
+  (if (cl-find "reason" args-spec
+               :key (lambda (s) (plist-get s :name))
+               :test #'string=)
+      (cl-loop for spec in args-spec
+               for val in arg-values
+               unless (string= (plist-get spec :name) "reason")
+               collect val)
+    arg-values))
+
 (defun magent-fsm--wrap-tool-function (name args-spec original-fn async-p
                                            &optional queue)
   "Wrap ORIGINAL-FN to render tool UI and events before/after execution."
   (if queue
       (lambda (callback &rest arg-values)
         (let* ((args-plist (magent-fsm--args-to-plist args-spec arg-values))
-               (summary (magent-fsm--show-tool-call-format name args-plist)))
+               (summary (magent-fsm--show-tool-call-format name args-plist))
+               (fn-args (magent-fsm--filter-display-args args-spec arg-values)))
           (magent-fsm--tool-queue-push
            queue
            (list :name name
@@ -190,12 +214,13 @@
                  :fn original-fn
                  :async async-p
                  :callback callback
-                 :args arg-values))))
+                 :args fn-args))))
     (if async-p
         (lambda (callback &rest arg-values)
           (let* ((args-plist (magent-fsm--args-to-plist args-spec arg-values))
                  (call-id (magent-events-generate-id))
-                 (summary (magent-fsm--show-tool-call-format name args-plist)))
+                 (summary (magent-fsm--show-tool-call-format name args-plist))
+                 (fn-args (magent-fsm--filter-display-args args-spec arg-values)))
             (magent-events-emit 'tool-call-start
                                 :call-id call-id
                                 :tool-name name
@@ -212,11 +237,12 @@
                                          :tool-name name
                                          :result result)
                      (funcall callback result))
-                   arg-values)))
+                   fn-args)))
       (lambda (&rest arg-values)
         (let* ((args-plist (magent-fsm--args-to-plist args-spec arg-values))
                (call-id (magent-events-generate-id))
                (summary (magent-fsm--show-tool-call-format name args-plist))
+               (fn-args (magent-fsm--filter-display-args args-spec arg-values))
                result)
           (magent-events-emit 'tool-call-start
                               :call-id call-id
@@ -226,7 +252,7 @@
                               :description summary
                               :args args-plist)
           (magent-fsm--show-tool-call name args-plist)
-          (setq result (apply original-fn arg-values))
+          (setq result (apply original-fn fn-args))
           (magent-fsm--show-tool-result name result)
           (magent-events-emit 'tool-call-end
                               :call-id call-id
