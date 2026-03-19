@@ -219,11 +219,19 @@ CALLBACK is called with the command output (stdout + stderr)."
                               (format "Command timed out. Partial output:\n%s"
                                       (string-trim-right output)))))))))))
     (condition-case err
-        (setq proc
-              (make-process
-               :name "magent-bash"
-               :buffer buf
-               :command (list shell-file-name shell-command-switch command)
+        (let ((process-environment
+               (append '("PAGER=cat"
+                         "GIT_PAGER=cat"
+                         "MANPAGER=cat"
+                         "SYSTEMD_PAGER=cat"
+                         "GIT_TERMINAL_PROMPT=0"
+                         "DEBIAN_FRONTEND=noninteractive")
+                       process-environment)))
+          (setq proc
+                (make-process
+                 :name "magent-bash"
+                 :buffer buf
+                 :command (list shell-file-name shell-command-switch command)
                :sentinel
                (lambda (p _event)
                  (when (and (memq (process-status p) '(exit signal))
@@ -234,7 +242,7 @@ CALLBACK is called with the command output (stdout + stderr)."
                      (funcall callback
                               (if (string-blank-p output)
                                   "Command completed with no output"
-                                (string-trim-right output))))))))
+                                (string-trim-right output)))))))))
       (error
        (funcall cleanup)
        (funcall callback (format "Error starting process: %s"
