@@ -284,18 +284,24 @@ preventing the FSM from hanging when the model hallucinates tool names."
          (patched nil))
     (when-let* ((all-tool-use (plist-get info :tool-use))
                 (tools (plist-get info :tools)))
-      ;; Debug: log all tool calls and their args to diagnose arg-splitting issues
+      ;; Debug: log all tool calls with name, id, and args to diagnose splitting issues
       (magent-log "DEBUG tool-use entries: %s"
                   (mapconcat (lambda (tc)
-                               (format "'%s'(args=%s)"
+                               (format "'%s'(id=%S args=%s)"
                                        (plist-get tc :name)
+                                       (plist-get tc :id)
                                        (if (plist-get tc :args) "present" "nil")))
                              all-tool-use ", "))
       ;; Fix: when an empty-named tool call precedes a known tool with nil args,
-      ;; merge the empty tool's args into the known tool. This works around a
+      ;; merge the empty tool's args and id into the known tool, then remove
+      ;; the empty entry from the tool-use list entirely.  This works around a
       ;; qwen3-max streaming quirk where the first chunk arrives with name=""
-      ;; causing gptel to split one tool call into two entries.
-      (let ((all-list all-tool-use))
+      ;; causing gptel to split one tool call into two entries with the same id.
+      ;; Previously we pre-filled the empty entry with an error result, but both
+      ;; entries share the same call_id, so the model received an error for its
+      ;; only tool call and terminated the loop prematurely.
+      (let ((merged-from nil)
+            (all-list all-tool-use))
         (while (cdr all-list)
           (let* ((tc (car all-list))
                  (next (cadr all-list)))
@@ -308,9 +314,24 @@ preventing the FSM from hanging when the model hallucinates tool names."
                                             (plist-get next :name)))
                                    tools))
               (plist-put next :args (plist-get tc :args))
-              (magent-log "INFO merged args from empty-named tool into '%s'"
+              ;; Transfer the id (in case they differ; they share the same id
+              ;; in the qwen3-max quirk but transfer anyway for robustness).
+              (when (and (plist-get tc :id) (not (plist-get next :id)))
+                (plist-put next :id (plist-get tc :id)))
+              (push tc merged-from)
+              (magent-log "INFO merged args+id(%S) from empty-named tool into '%s'"
+                          (plist-get tc :id)
                           (plist-get next :name))))
-          (setq all-list (cdr all-list))))
+          (setq all-list (cdr all-list)))
+        ;; Remove the empty-named entries from the tool-use list so gptel sends
+        ;; only the real tool result (no duplicate error for the same call_id).
+        (when merged-from
+          (plist-put info :tool-use
+                     (cl-remove-if (lambda (tc) (memq tc merged-from))
+                                   all-tool-use))
+          ;; Update local binding so the unknown-tool loop below uses the
+          ;; filtered list.
+          (setq all-tool-use (plist-get info :tool-use))))
       (let ((avail (mapconcat #'gptel-tool-name tools ", ")))
         (dolist (tc all-tool-use)
           (unless (plist-get tc :result)
@@ -322,8 +343,8 @@ preventing the FSM from hanging when the model hallucinates tool names."
                            (format "Error: tool '%s' not found. Available: %s"
                                    name avail))
                 (setq patched t)
-                (magent-log "WARN unknown tool '%s' — returned error to model"
-                            name)))))))
+                (magent-log "WARN unknown tool '%s'(id=%S) — returned error to model"
+                            name (plist-get tc :id))))))))
     ;; Run original handler
     (funcall orig-fn fsm)
     ;; All-unknown edge case: handler body didn't execute, FSM still in TOOL

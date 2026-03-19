@@ -97,6 +97,14 @@ The tool calling loop is managed by magent-fsm.  This function:
          :context context
          :resolution
          (magent-capability-resolution-to-plist capability-resolution)))
+      ;; Propagate user's buffer name so emacs_eval runs in the right context.
+      ;; Buffer-input submissions (typed in the magent buffer) have nil
+      ;; request-context, so fall back to parsing [Context: buffer="..."] from
+      ;; the prompt text.
+      (setq magent-tools--request-buffer-name
+            (or (plist-get request-context :buffer-name)
+                (when (string-match "buffer=\"\\([^\"]+\\)\"" user-prompt)
+                  (match-string 1 user-prompt))))
       (magent-agent-info-apply-gptel-overrides
        agent
        (lambda ()

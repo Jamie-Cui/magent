@@ -30,6 +30,12 @@
 
 ;;; Tool implementations
 
+(defvar magent-tools--request-buffer-name nil
+  "Name of the user's buffer at request submission time.
+Set by `magent-agent-process' at the start of each turn so that
+`emacs_eval' evaluates expressions in the correct buffer context
+rather than the magent output buffer.")
+
 (defun magent-tools--resolve-path (path)
   "Resolve PATH for tool operations.
 Expands ~ and environment variables first, then resolves relative
@@ -157,13 +163,20 @@ CALLBACK is called with success message or error."
 
 (defun magent-tools--emacs-eval (callback sexp &optional timeout)
   "Evaluate SEXP string as Emacs Lisp with optional TIMEOUT in seconds.
-CALLBACK is called with the result as a readable string, or an error message."
+CALLBACK is called with the result as a readable string, or an error message.
+Evaluation runs in the user's context buffer when known
+\(see `magent-tools--request-buffer-name'), falling back to current buffer."
   (condition-case err
       (let* ((timeout (or timeout magent-emacs-eval-timeout))
              (form (car (read-from-string sexp)))
              (timer nil)
              (result nil)
-             (done nil))
+             (done nil)
+             ;; Capture user's buffer at invocation time so the deferred
+             ;; timer runs in the right context, not the magent output buffer.
+             (ctx-buffer (when (and magent-tools--request-buffer-name
+                                    (get-buffer magent-tools--request-buffer-name))
+                           (get-buffer magent-tools--request-buffer-name))))
         (setq timer
               (run-at-time
                timeout nil
@@ -178,7 +191,11 @@ CALLBACK is called with the result as a readable string, or an error message."
          (lambda ()
            (condition-case err
                (progn
-                 (setq result (eval form t))
+                 (setq result
+                       (if (and ctx-buffer (buffer-live-p ctx-buffer))
+                           (with-current-buffer ctx-buffer
+                             (eval form t))
+                         (eval form t)))
                  (unless done
                    (setq done t)
                    (cancel-timer timer)
