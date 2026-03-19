@@ -2,7 +2,7 @@ EMACS ?= emacs
 EMACS_BATCH = $(EMACS) -Q --batch
 
 # Auto-detect dependency paths
-GPTEL_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'gptel-*' -type d 2>/dev/null | head -1)
+GPTEL_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'gptel-[0-9]*' -type d 2>/dev/null | head -1)
 SPINNER_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'spinner-*' -type d 2>/dev/null | head -1)
 TRANSIENT_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'transient-*' -type d 2>/dev/null | head -1)
 COND_LET_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'cond-let-*' -type d 2>/dev/null | head -1)
@@ -27,20 +27,15 @@ SRCS = magent-config.el \
        magent-events.el \
        magent-approval.el \
        magent-file-loader.el \
-       magent-frontmatter.el \
        magent-session.el \
-       magent-md2org.el \
        magent-tools.el \
        magent-agent.el \
        magent-agent-registry.el \
-       magent-agent-file.el \
        magent-permission.el \
        magent-ui.el \
        magent-fsm.el \
        magent-fsm-shared.el \
-       magent-skill-creator.el \
        magent-skills.el \
-       magent-skill-file.el \
        magent-capability.el \
        magent-capability-file.el
 

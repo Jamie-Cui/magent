@@ -162,8 +162,17 @@
                  (funcall callback result)
                  (magent-fsm--tool-queue-run queue))))
           (if async-p
-              (apply fn completion args)
-            (funcall completion (apply fn args))))))))
+              (condition-case err
+                  (apply fn completion args)
+                (quit (funcall completion "Error: Tool execution interrupted"))
+                (error (funcall completion (format "Error: Tool execution failed: %s"
+                                                   (error-message-string err)))))
+            (funcall completion
+                     (condition-case err
+                         (apply fn args)
+                       (quit "Error: Tool execution interrupted")
+                       (error (format "Error: Tool execution failed: %s"
+                                      (error-message-string err)))))))))))
 
 (defun magent-fsm--wrap-tool-function (name args-spec original-fn async-p
                                            &optional queue)

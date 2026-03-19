@@ -1,4 +1,4 @@
-;;; magent-file-loader.el --- Shared file loader helpers for Magent  -*- lexical-binding: t; -*-
+;;; magent-file-loader.el --- Shared file loader and frontmatter helpers for Magent  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 
@@ -9,13 +9,82 @@
 ;;; Commentary:
 
 ;; Shared helper functions for Magent's file-backed definitions such as
-;; agents, skills, and capabilities.
+;; agents, skills, and capabilities, including frontmatter parsing.
 
 ;;; Code:
 
 (require 'cl-lib)
+(require 'subr-x)
+(require 'yaml)
 (require 'magent-config)
-(require 'magent-frontmatter)
+
+(declare-function magent-log "magent-ui")
+
+;;; Frontmatter parsing
+
+(defun magent-file-loader-parse-frontmatter (content)
+  "Parse frontmatter from CONTENT.
+Returns (FRONTMATTER . BODY) where FRONTMATTER is a plist.
+If no frontmatter is found, returns (nil . CONTENT)."
+  (if (string-match "\\`---\n\\(\\(?:.\\|\n\\)*?\\)\n---\n?" content)
+      (let* ((yaml-text (match-string 1 content))
+             (body (substring content (match-end 0)))
+             (raw (or (magent-file-loader--parse-frontmatter-regex yaml-text)
+                      (condition-case err
+                          (yaml-parse-string yaml-text
+                                             :object-type 'plist
+                                             :object-key-type 'keyword
+                                             :sequence-type 'list
+                                             :false-object nil
+                                             :null-object nil)
+                        (error
+                         (magent-log "WARN frontmatter yaml parse failed (%s)"
+                                     (error-message-string err))
+                         nil))))
+             (normalized (magent-file-loader--normalize-frontmatter-plist raw)))
+        (cons normalized body))
+    (cons nil content)))
+
+(defun magent-file-loader--normalize-frontmatter-plist (plist)
+  "Normalize PLIST keys and values for Magent definition files."
+  (let (result)
+    (cl-loop for (key val) on plist by #'cddr do
+      (let* ((key-str (substring (symbol-name key) 1))
+             (normalized-key (intern (concat ":" (subst-char-in-string ?_ ?- key-str))))
+             (normalized-val (magent-file-loader--normalize-frontmatter-value val)))
+        (setq result (plist-put result normalized-key normalized-val))))
+    result))
+
+(defun magent-file-loader--normalize-frontmatter-value (val)
+  "Split VAL into a list if it is a comma-separated string."
+  (if (and (stringp val) (string-match-p "," val))
+      (mapcar #'string-trim (split-string val ","))
+    val))
+
+(defun magent-file-loader--parse-frontmatter-regex (header-str)
+  "Parse simple key-value frontmatter from HEADER-STR."
+  (let (result)
+    (dolist (line (split-string header-str "\n"))
+      (when (string-match "^\\s-*\\([^:]+\\):\\s-*\\(.+\\)$" line)
+        (let* ((key (string-trim (match-string 1 line)))
+               (val (string-trim (match-string 2 line))))
+          (setq result
+                (plist-put result
+                           (intern (concat ":" key))
+                           (magent-file-loader--parse-frontmatter-scalar val))))))
+    result))
+
+(defun magent-file-loader--parse-frontmatter-scalar (str)
+  "Parse scalar frontmatter STR into a boolean, number, or string."
+  (cond
+   ((string-equal str "true") t)
+   ((string-equal str "false") nil)
+   ((string-match-p "^[0-9]+\\(?:\\.[0-9]+\\)?$" str) (string-to-number str))
+   ((and (> (length str) 1)
+         (or (and (eq (aref str 0) ?\") (eq (aref str (1- (length str))) ?\"))
+             (and (eq (aref str 0) ?') (eq (aref str (1- (length str))) ?'))))
+    (substring str 1 -1))
+   (t str)))
 
 (defun magent-file-loader-project-subdir (relative-dir)
   "Return project-local RELATIVE-DIR as a one-item list when it exists."
@@ -49,7 +118,7 @@ For each directory in DIRECTORIES, include:
   "Read FILEPATH and return a plist with parsed frontmatter and body."
   (with-temp-buffer
     (insert-file-contents filepath)
-    (let ((parsed (magent-frontmatter-parse (buffer-string))))
+    (let ((parsed (magent-file-loader-parse-frontmatter (buffer-string))))
       (list :frontmatter (car parsed)
             :body (cdr parsed)))))
 

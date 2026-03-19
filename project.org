@@ -1,6 +1,49 @@
 #+title: Magent Bug Investigation — qwen3-max Streaming Quirks
 #+date: 2026-03-19
 
+* Code Review Plan
+
+This section tracks the current repository-wide review requested on
+=feat/progressive-disclosure=.
+
+** Goals
+
+- Review the current working tree and recent branch changes for
+  correctness regressions.
+- Prefer issues that are concrete, reproducible, and actionable.
+- Cross-check risky areas with compilation/tests before drawing
+  conclusions.
+
+** Scope
+
+- Core runtime modules: agent/fsm/tools/ui/session/config.
+- Newly added or heavily modified capability / approval / audit paths.
+- Tests, docs, and build glue only when they reveal functional
+  regressions.
+
+** Execution Plan
+
+1. Capture baseline context: =git status=, diff summary, and touched
+   files.
+2. Run automated validation: =make compile= and =make test=.
+3. Inspect high-risk modules first:
+   - =magent-fsm-backend-gptel.el=
+   - =magent-tools.el=
+   - =magent-ui.el=
+   - =magent-skills.el=
+   - =magent-agent-registry.el=
+   - =magent-file-loader.el=
+4. For each suspicious change, confirm the exact failing scenario and
+   whether it is newly introduced by this branch.
+5. Summarize findings with priority, affected location, and overall
+   correctness verdict.
+
+** Notes
+
+- Keep the review focused on bugs/regressions, not style nits.
+- Treat the current uncommitted working tree as the review target unless
+  a narrower diff becomes necessary during investigation.
+
 * Status
 
 Work is in progress on branch =feat/progressive-disclosure=.

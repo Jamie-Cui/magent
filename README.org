@@ -265,7 +265,7 @@ Tool availability is controlled by:
 
 6. *Tools* (~magent-tools.el~): 10 tool implementations registered as ~gptel-tool~ structs, filtered per agent based on permission rules.
 
-7. *Skills* (~magent-skills.el~ + ~magent-skill-file.el~ + ~magent-skill-creator.el~): Two skill types -- ~instruction~ (markdown injected into the system prompt) and ~tool~ (invoked via ~skill_invoke~). Magent registers the built-in ~skill-creator~ instruction skill in code, then loads file-based skills in priority order: (1) built-in ~skills/~ directory bundled with magent, (2) user directory =~/.emacs.d/magent-skills/<name>/SKILL.md=, (3) project-local ~.magent/skills/<name>/SKILL.md~. Live Emacs inspection uses ~emacs_eval~.
+7. *Skills* (~magent-skills.el~): Two skill types -- ~instruction~ (markdown injected into the system prompt) and ~tool~ (invoked via ~skill_invoke~). The module contains the registry, built-in ~skill-creator~ definition, file-based skill loading, and interactive inspection commands. Skills load in priority order from: (1) built-in ~skills/~ directory bundled with magent, (2) user directory =~/.emacs.d/magent-skills/<name>/SKILL.md=, (3) project-local ~.magent/skills/<name>/SKILL.md~.
 
 8. *Session* (~magent-session.el~): Conversation history management with per-project active sessions, global fallback outside projects, and JSON persistence. The ~buffer-content~ slot stores raw buffer text for lossless restore.
 
@@ -277,7 +277,7 @@ Tool availability is controlled by:
 
 12. *Markdown-to-Org* (~magent-md2org.el~): Converts markdown assistant output to org-mode format for rendering.
 
-13. *Frontmatter* (~magent-frontmatter.el~): Shared YAML frontmatter parser for agent and skill files. Supports booleans, numbers, quoted strings, and comma-separated lists.
+13. *File Loader* (~magent-file-loader.el~): Shared definition loader for agent, skill, and capability files. It includes frontmatter parsing and supports booleans, numbers, quoted strings, and comma-separated lists.
 
 ** File Structure
 
@@ -295,11 +295,9 @@ magent/
 |-- magent-fsm.el                  # FSM API (dispatches to gptel backend)
 |-- magent-fsm-backend-gptel.el    # gptel FSM backend implementation
 |-- magent-fsm-backend-native.el   # Native FSM backend (struct defs, not active)
-|-- magent-frontmatter.el          # Shared YAML frontmatter parser
+|-- magent-file-loader.el          # Shared definition loader and frontmatter parser
 |-- magent-md2org.el               # Markdown to org-mode converter
-|-- magent-skills.el               # Skill registry and dispatch
-|-- magent-skill-file.el           # Skill file loader (SKILL.md files plus built-in skills/ dir)
-|-- magent-skill-creator.el        # Built-in skill-creator skill
+|-- magent-skills.el               # Skill registry, built-in skills, file loading, and skill commands
 |-- magent-ui.el                   # In-buffer UI and output buffer (org-mode derived)
 |-- magent-pkg.el                  # Package descriptor
 |-- prompt.org                     # Default system prompt

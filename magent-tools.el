@@ -169,42 +169,33 @@ Evaluation runs in the user's context buffer when known
   (condition-case err
       (let* ((timeout (or timeout magent-emacs-eval-timeout))
              (form (car (read-from-string sexp)))
-             (timer nil)
-             (result nil)
-             (done nil)
              ;; Capture user's buffer at invocation time so the deferred
              ;; timer runs in the right context, not the magent output buffer.
              (ctx-buffer (when (and magent-tools--request-buffer-name
                                     (get-buffer magent-tools--request-buffer-name))
                            (get-buffer magent-tools--request-buffer-name))))
-        (setq timer
-              (run-at-time
-               timeout nil
-               (lambda ()
-                 (unless done
-                   (setq done t)
-                   (cancel-timer timer)
-                   (funcall callback "Error: Evaluation timed out")))))
-        ;; Run evaluation in a timer to avoid blocking
         (run-at-time
          0 nil
          (lambda ()
-           (condition-case err
-               (progn
-                 (setq result
-                       (if (and ctx-buffer (buffer-live-p ctx-buffer))
-                           (with-current-buffer ctx-buffer
-                             (eval form t))
-                         (eval form t)))
-                 (unless done
-                   (setq done t)
-                   (cancel-timer timer)
-                   (funcall callback (prin1-to-string result))))
-             (error
-              (unless done
-                (setq done t)
-                (cancel-timer timer)
-                (funcall callback (format "Error evaluating sexp: %s" (error-message-string err)))))))))
+           (let (timed-out)
+             (condition-case err
+                 (let ((result (with-timeout (timeout
+                                              (setq timed-out t)
+                                              nil)
+                                 (if (and ctx-buffer (buffer-live-p ctx-buffer))
+                                     (with-current-buffer ctx-buffer
+                                       (eval form t))
+                                   (eval form t)))))
+                   (if timed-out
+                       (funcall callback "Error: Evaluation timed out")
+                     (funcall callback (prin1-to-string result))))
+               (quit
+                (unless timed-out
+                  (funcall callback "Error: Evaluation interrupted")))
+               (error
+                (unless timed-out
+                  (funcall callback (format "Error evaluating sexp: %s"
+                                            (error-message-string err))))))))))
     (error (funcall callback (format "Error evaluating sexp: %s" (error-message-string err))))))
 
 (defun magent-tools--bash (callback command &optional timeout)

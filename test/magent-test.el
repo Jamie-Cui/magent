@@ -119,9 +119,9 @@
 
 (ert-deftest magent-test-frontmatter-basic ()
   "Test basic frontmatter key-value parsing."
-  (require 'magent-frontmatter)
+  (require 'magent-file-loader)
   (let* ((content "---\nname: my-agent\ndescription: A test agent\n---\nBody text here")
-         (result (magent-frontmatter-parse content))
+         (result (magent-file-loader-parse-frontmatter content))
          (fm (car result))
          (body (cdr result)))
     (should (equal (plist-get fm :name) "my-agent"))
@@ -173,36 +173,36 @@
 
 (ert-deftest magent-test-frontmatter-boolean-values ()
   "Test frontmatter boolean value parsing."
-  (require 'magent-frontmatter)
+  (require 'magent-file-loader)
   (let* ((content "---\nhidden: true\nnative: false\n---\n")
-         (result (magent-frontmatter-parse content))
+         (result (magent-file-loader-parse-frontmatter content))
          (fm (car result)))
     (should (eq (plist-get fm :hidden) t))
     (should (eq (plist-get fm :native) nil))))
 
 (ert-deftest magent-test-frontmatter-numeric-values ()
   "Test frontmatter numeric value parsing."
-  (require 'magent-frontmatter)
+  (require 'magent-file-loader)
   (let* ((content "---\ntemperature: 0.7\nsteps: 10\n---\n")
-         (result (magent-frontmatter-parse content))
+         (result (magent-file-loader-parse-frontmatter content))
          (fm (car result)))
     (should (= (plist-get fm :temperature) 0.7))
     (should (= (plist-get fm :steps) 10))))
 
 (ert-deftest magent-test-frontmatter-quoted-strings ()
   "Test frontmatter quoted string value parsing."
-  (require 'magent-frontmatter)
+  (require 'magent-file-loader)
   (let* ((content "---\nname: \"my agent\"\ncolor: 'blue'\n---\n")
-         (result (magent-frontmatter-parse content))
+         (result (magent-file-loader-parse-frontmatter content))
          (fm (car result)))
     (should (equal (plist-get fm :name) "my agent"))
     (should (equal (plist-get fm :color) "blue"))))
 
 (ert-deftest magent-test-frontmatter-comma-separated-list ()
   "Test frontmatter comma-separated list value parsing."
-  (require 'magent-frontmatter)
+  (require 'magent-file-loader)
   (let* ((content "---\ntools: bash, read, write\n---\n")
-         (result (magent-frontmatter-parse content))
+         (result (magent-file-loader-parse-frontmatter content))
          (fm (car result)))
     (should (listp (plist-get fm :tools)))
     (should (= (length (plist-get fm :tools)) 3))
@@ -210,25 +210,25 @@
 
 (ert-deftest magent-test-frontmatter-no-frontmatter ()
   "Test content without frontmatter."
-  (require 'magent-frontmatter)
+  (require 'magent-file-loader)
   (let* ((content "Just regular content\nno frontmatter")
-         (result (magent-frontmatter-parse content)))
+         (result (magent-file-loader-parse-frontmatter content)))
     (should (null (car result)))
     (should (equal (cdr result) content))))
 
 (ert-deftest magent-test-frontmatter-empty-body ()
   "Test frontmatter with empty body."
-  (require 'magent-frontmatter)
+  (require 'magent-file-loader)
   (let* ((content "---\nname: test\n---\n")
-         (result (magent-frontmatter-parse content)))
+         (result (magent-file-loader-parse-frontmatter content)))
     (should (equal (plist-get (car result) :name) "test"))
     (should (string-empty-p (string-trim (cdr result))))))
 
 (ert-deftest magent-test-frontmatter-underscore-to-hyphen ()
   "Test that underscores in keys are converted to hyphens."
-  (require 'magent-frontmatter)
+  (require 'magent-file-loader)
   (let* ((content "---\ntop_p: 0.9\nmax_tokens: 100\n---\n")
-         (result (magent-frontmatter-parse content))
+         (result (magent-file-loader-parse-frontmatter content))
          (fm (car result)))
     (should (= (plist-get fm :top-p) 0.9))
     (should (= (plist-get fm :max-tokens) 100))))
@@ -819,7 +819,7 @@
 
 (ert-deftest magent-test-agent-file-parse-mode ()
   "Test mode string parsing."
-  (require 'magent-agent-file)
+  (require 'magent-agent-registry)
   (should (eq (magent-agent-file--parse-mode "primary") 'primary))
   (should (eq (magent-agent-file--parse-mode "subagent") 'subagent))
   (should (eq (magent-agent-file--parse-mode "all") 'all))
@@ -828,7 +828,7 @@
 
 (ert-deftest magent-test-agent-file-parse-permission ()
   "Test permission generation from tools config."
-  (require 'magent-agent-file)
+  (require 'magent-agent-registry)
   (let ((rules (magent-agent-file--parse-permission '(:bash nil :read t))))
     ;; bash should be denied
     (should (eq (cdr (assq 'bash rules)) 'deny))
@@ -837,7 +837,7 @@
 
 (ert-deftest magent-test-agent-file-load-from-temp ()
   "Test loading an agent from a temporary file."
-  (require 'magent-agent-file)
+  (require 'magent-agent-registry)
   (let* ((magent-agent-registry--agents (make-hash-table :test 'equal))
          (magent-agent-registry--initialized t)
          (tmpfile (make-temp-file "test-agent-" nil ".md")))
@@ -856,7 +856,7 @@
 
 (ert-deftest magent-test-agent-file-save-roundtrip ()
   "Test saving and reloading an agent preserves fields."
-  (require 'magent-agent-file)
+  (require 'magent-agent-registry)
   (let* ((magent-agent-registry--agents (make-hash-table :test 'equal))
          (magent-agent-registry--initialized t)
          (tmpdir (make-temp-file "agent-dir-" t)))
@@ -1313,7 +1313,7 @@
 
 (ert-deftest magent-test-skill-file-parse-type ()
   "Test skill type string parsing."
-  (require 'magent-skill-file)
+  (require 'magent-skills)
   (should (eq (magent-skill-file--parse-type "tool") 'tool))
   (should (eq (magent-skill-file--parse-type "instruction") 'instruction))
   (should (eq (magent-skill-file--parse-type "TOOL") 'tool))
@@ -1321,7 +1321,7 @@
 
 (ert-deftest magent-test-skill-file-parse-tools ()
   "Test tool spec parsing."
-  (require 'magent-skill-file)
+  (require 'magent-skills)
   ;; Comma-separated string
   (should (equal (magent-skill-file--parse-tools "bash, read, write")
                  '(bash read write)))
@@ -1336,7 +1336,7 @@
 
 (ert-deftest magent-test-skill-file-load-from-temp ()
   "Test loading a skill from a temporary file."
-  (require 'magent-skill-file)
+  (require 'magent-skills)
   (let* ((magent-skills--registry nil)
          (tmpdir (make-temp-file "skill-" t))
          (skillfile (expand-file-name "SKILL.md" tmpdir)))

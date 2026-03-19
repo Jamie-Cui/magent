@@ -86,9 +86,7 @@
 (require 'magent-ui)
 (require 'magent-agent-registry)
 (require 'magent-permission)
-(require 'magent-agent-file)
 (require 'magent-skills)
-(require 'magent-skill-file)
 (require 'magent-capability)
 (require 'magent-capability-file)
 

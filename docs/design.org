@@ -60,7 +60,7 @@ magent-queue.el  magent-session.el    |
 |  - Agent Registry (magent-agent-registry.el)         |
 |  - Permission System (magent-permission.el)          |
 |  - Skills (magent-skills.el + skills/*.el)           |
-|  - Frontmatter Parsing (magent-frontmatter.el)       |
+|  - File Loading + Frontmatter (magent-file-loader.el) |
 |  - Config (magent-config.el)                         |
 +------------------------------------------------------+
     |
@@ -133,7 +133,7 @@ Advanced settings:
 - ~magent-fsm-backend~: FSM backend (gptel or magent)
 - ~magent-auto-context~: Auto-attach buffer context in ~magent-dwim~ (default: t)
 
-Skill-specific settings (in ~magent-skill-file.el~):
+Skill-specific settings (in ~magent-skills.el~):
 - ~magent-skill-directories~: Directories to scan for skills
 - ~magent-skill-file-name~: Skill definition filename (default: ~SKILL.md~)
 
@@ -541,7 +541,7 @@ Skill types:
 - ~instruction~: Markdown body becomes system prompt
 - ~tool~: Invoked via ~skill_invoke~ tool
 
-** Frontmatter Parsing (magent-frontmatter.el)
+** File Loading And Frontmatter (magent-file-loader.el)
 
 Shared utility for parsing Jekyll/Hugo style YAML frontmatter:
 - Three-dash delimited headers (~---~)
@@ -859,9 +859,8 @@ magent/
 ├── magent-fsm-backend-gptel.el    ; Gptel FSM backend (lightweight wrapper)
 ├── magent-ui.el                   ; UI, output buffer, streaming, transient menu
 ├── magent-md2org.el               ; Markdown to org-mode converter
-├── magent-skills.el               ; Skill registry
-├── magent-skill-file.el           ; Skill file loader + interactive commands
-├── magent-frontmatter.el          ; YAML frontmatter parsing
+├── magent-skills.el               ; Skill registry, built-ins, file loader, interactive commands
+├── magent-file-loader.el          ; Shared file loading and frontmatter parsing
 ├── magent-pkg.el                  ; Package descriptor
 ├── CLAUDE.md                      ; Claude Code guidance
 ├── AGENTS.md                      ; (alias for CLAUDE.md)
