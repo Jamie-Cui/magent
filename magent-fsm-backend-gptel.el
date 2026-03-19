@@ -17,7 +17,7 @@
 (require 'json)
 
 (require 'magent-events)
-(require 'magent-fsm-backend-native)
+(require 'magent-fsm-shared)
 (declare-function magent-ui-start-streaming "magent-ui")
 (declare-function magent-ui-continue-streaming "magent-ui")
 (declare-function magent-ui-insert-streaming "magent-ui")

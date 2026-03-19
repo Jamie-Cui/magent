@@ -120,6 +120,49 @@
     (should (equal (plist-get fm :description) "A test agent"))
     (should (equal (string-trim body) "Body text here"))))
 
+(ert-deftest magent-test-file-loader-lists-direct-and-nested-definition-files ()
+  "Test shared file loader finds direct and nested definition files."
+  (require 'magent-file-loader)
+  (let* ((tmpdir (make-temp-file "magent-file-loader-" t))
+         (nested-dir (expand-file-name "nested" tmpdir))
+         (direct-file (expand-file-name "SKILL.md" tmpdir))
+         (nested-file (expand-file-name "SKILL.md" nested-dir)))
+    (unwind-protect
+        (progn
+          (make-directory nested-dir t)
+          (with-temp-file direct-file
+            (insert "---\nname: direct\n---\n"))
+          (with-temp-file nested-file
+            (insert "---\nname: nested\n---\n"))
+          (should (equal (magent-file-loader-list-named-files
+                          (list tmpdir) "SKILL.md")
+                         (list direct-file nested-file))))
+      (delete-directory tmpdir t))))
+
+(ert-deftest magent-test-file-loader-read-definition-without-frontmatter ()
+  "Test shared file loader preserves body when no frontmatter exists."
+  (require 'magent-file-loader)
+  (let ((tmpfile (make-temp-file "magent-file-loader-" nil ".md")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "Plain body only"))
+          (let ((definition (magent-file-loader-read-definition tmpfile)))
+            (should-not (plist-get definition :frontmatter))
+            (should (equal (plist-get definition :body) "Plain body only"))))
+      (delete-file tmpfile))))
+
+(ert-deftest magent-test-file-loader-removes-file-backed-registry-entries ()
+  "Test shared file loader strips only file-backed entries from a registry."
+  (require 'magent-file-loader)
+  (let* ((builtin '("builtin" . (:file-path nil)))
+         (file-backed '("file-backed" . (:file-path "/tmp/skill.md")))
+         (registry (list file-backed builtin)))
+    (should (equal (magent-file-loader-remove-file-backed-entries
+                    registry
+                    (lambda (value) (plist-get value :file-path)))
+                   (list builtin)))))
+
 (ert-deftest magent-test-frontmatter-boolean-values ()
   "Test frontmatter boolean value parsing."
   (require 'magent-frontmatter)
@@ -2162,7 +2205,7 @@
                (lambda (_tool-spec cb arg-values)
                  (setq tool-ran (car arg-values))
                  (funcall cb "ok"))))
-      (magent-fsm--prompt-tool-calls-serially
+      (magent-fsm--prompt-next-tool-call
        (list (list tool (list "echo hi") (lambda (r) (setq result r))))))
     (should (equal tool-ran "echo hi"))
     (should (equal result "ok"))
@@ -2188,7 +2231,7 @@
               ((symbol-function 'magent-approval-request)
                (lambda (_request cb)
                  (funcall cb 'deny-once))))
-      (magent-fsm--prompt-tool-calls-serially
+      (magent-fsm--prompt-next-tool-call
        (list (list tool (list "echo hi") (lambda (r) (setq result r))))))
     (should-not tool-ran)
     (should (string-match-p "denied by user" result))
@@ -2216,7 +2259,7 @@
                (lambda (_tool-spec cb arg-values)
                  (setq tool-ran (car arg-values))
                  (funcall cb "ok"))))
-      (magent-fsm--prompt-tool-calls-serially
+      (magent-fsm--prompt-next-tool-call
        (list (list tool (list "echo hi") (lambda (r) (setq result r))))))
     (should (equal tool-ran "echo hi"))
     (should (equal result "ok"))
@@ -2243,7 +2286,7 @@
               ((symbol-function 'magent-approval-request)
                (lambda (_request cb)
                  (funcall cb 'deny-session))))
-      (magent-fsm--prompt-tool-calls-serially
+      (magent-fsm--prompt-next-tool-call
        (list (list tool (list "echo hi") (lambda (r) (setq result r))))))
     (should-not tool-ran)
     (should (string-match-p "denied by user" result))
@@ -2800,7 +2843,8 @@
          (magent--current-session nil)
          (project-a (make-temp-file "magent-project-a-" t))
          (project-b (make-temp-file "magent-project-b-" t))
-         (buffer (magent-ui-get-buffer))
+         (buffer-a nil)
+         (buffer-b nil)
          (magent-project-root-function
           (lambda ()
             (cond
@@ -2812,7 +2856,8 @@
           (with-temp-buffer
             (setq default-directory (file-name-as-directory project-a))
             (magent-ui--activate-context-session))
-          (with-current-buffer buffer
+          (setq buffer-a (magent-ui-get-buffer))
+          (with-current-buffer buffer-a
             (let ((inhibit-read-only t))
               (erase-buffer)
               (insert "project-a snapshot")))
@@ -2820,14 +2865,116 @@
             (with-temp-buffer
               (setq default-directory (file-name-as-directory project-b))
               (magent-ui--activate-context-session))
+            (setq buffer-b (magent-ui-get-buffer))
             (should (equal (magent-session-buffer-content session-a)
                            "project-a snapshot"))
             (should (equal (magent-session-current-scope)
                            (file-truename (directory-file-name project-b))))
-            (should-not (equal (with-current-buffer buffer (buffer-string))
+            (should-not (eq buffer-a buffer-b))
+            (should-not (equal (with-current-buffer buffer-b (buffer-string))
                                "project-a snapshot"))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
+      (when (buffer-live-p buffer-a)
+        (kill-buffer buffer-a))
+      (when (buffer-live-p buffer-b)
+        (kill-buffer buffer-b))
+      (delete-directory project-a t)
+      (delete-directory project-b t))))
+
+(ert-deftest magent-test-ui-uses-distinct-buffers-per-scope ()
+  "Test global and project scopes resolve to distinct Magent buffers."
+  (require 'magent-ui)
+  (let* ((magent-buffer-name "*magent-test*")
+         (parent-a (make-temp-file "magent-parent-a-" t))
+         (parent-b (make-temp-file "magent-parent-b-" t))
+         (project-a (expand-file-name "app" parent-a))
+         (project-b (expand-file-name "app" parent-b))
+         (scope-a nil)
+         (scope-b nil)
+         (global-buffer nil)
+         (buffer-a nil)
+         (buffer-b nil))
+    (unwind-protect
+        (progn
+          (make-directory project-a t)
+          (make-directory project-b t)
+          (setq scope-a (file-truename (directory-file-name project-a))
+                scope-b (file-truename (directory-file-name project-b))
+                global-buffer (magent-ui-get-buffer 'global)
+                buffer-a (magent-ui-get-buffer scope-a)
+                buffer-b (magent-ui-get-buffer scope-b))
+          (should (equal (buffer-name global-buffer) "*magent-test:global*"))
+          (should (equal (buffer-name buffer-a) "*magent-test:app*"))
+          (should-not (eq buffer-a buffer-b))
+          (should (string-match-p "\\`\\*magent-test:app#" (buffer-name buffer-b)))
+          (with-current-buffer buffer-a
+            (should (equal magent-ui--buffer-scope scope-a)))
+          (with-current-buffer buffer-b
+            (should (equal magent-ui--buffer-scope scope-b))))
+      (when (buffer-live-p global-buffer)
+        (kill-buffer global-buffer))
+      (when (buffer-live-p buffer-a)
+        (kill-buffer buffer-a))
+      (when (buffer-live-p buffer-b)
+        (kill-buffer buffer-b))
+      (delete-directory parent-a t)
+      (delete-directory parent-b t))))
+
+(ert-deftest magent-test-ui-context-scope-prefers-buffer-local-scope ()
+  "Test Magent buffers keep their own scope even when another session is active."
+  (require 'magent-ui)
+  (let* ((magent-buffer-name "*magent-scope*")
+         (project-a (make-temp-file "magent-project-a-" t))
+         (project-b (make-temp-file "magent-project-b-" t))
+         (scope-a (file-truename (directory-file-name project-a)))
+         (scope-b (file-truename (directory-file-name project-b)))
+         (buffer-a nil))
+    (unwind-protect
+        (progn
+          (setq buffer-a (magent-ui-get-buffer scope-a))
+          (magent-session-activate scope-b)
+          (with-current-buffer buffer-a
+            (should (equal (magent-ui--context-scope) scope-a))))
+      (when (buffer-live-p buffer-a)
+        (kill-buffer buffer-a))
+      (delete-directory project-a t)
+      (delete-directory project-b t))))
+
+(ert-deftest magent-test-input-submit-reactivates-buffer-scope ()
+  "Test submitting from an older Magent buffer reactivates that buffer's scope."
+  (require 'magent-ui)
+  (let* ((magent-buffer-name "*magent-submit*")
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (project-a (make-temp-file "magent-project-a-" t))
+         (project-b (make-temp-file "magent-project-b-" t))
+         (scope-a (file-truename (directory-file-name project-a)))
+         (scope-b (file-truename (directory-file-name project-b)))
+         (buffer-a nil)
+         (captured nil))
+    (unwind-protect
+        (progn
+          (magent-session-activate scope-a)
+          (setq buffer-a (magent-ui-get-buffer scope-a))
+          (with-current-buffer buffer-a
+            (magent-ui--insert-input-prompt scope-a)
+            (let ((inhibit-read-only t))
+              (goto-char (point-max))
+              (insert "hello from project a")))
+          (magent-session-activate scope-b)
+          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
+                    ((symbol-function 'magent-ui-process)
+                     (lambda (text &optional source display skills agent)
+                       (setq captured (list text source display skills agent
+                                            (magent-session-current-scope))))))
+            (with-current-buffer buffer-a
+              (magent-input-submit)))
+          (should (equal (car captured) "hello from project a"))
+          (should (eq (nth 1 captured) 'buffer-input))
+          (should (equal (nth 5 captured) scope-a))
+          (should (equal (magent-session-current-scope) scope-a)))
+      (when (buffer-live-p buffer-a)
+        (kill-buffer buffer-a))
       (delete-directory project-a t)
       (delete-directory project-b t))))
 
@@ -2901,11 +3048,13 @@
 (ert-deftest magent-test-ui-render-history-rehydrates-saved-headings ()
   "Test restoring a saved snapshot rebuilds heading overlays and a fresh prompt."
   (require 'magent-ui)
-  (let* ((buffer (magent-ui-get-buffer))
+  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (buffer (magent-ui-get-buffer))
          (session (magent-session-create :id "rehydrate")))
     (unwind-protect
         (progn
-          (setq magent--current-session session)
+          (magent-session-install 'global session)
           (magent-session-add-message session 'user "hello")
           (magent-session-add-message session 'assistant "world")
           (setf (magent-session-buffer-content session)
@@ -2970,7 +3119,9 @@
 (ert-deftest magent-test-resume-session-restores-loaded-buffer-content ()
   "Test resuming a session does not overwrite the loaded snapshot."
   (require 'magent-ui)
-  (let* ((buffer (magent-ui-get-buffer))
+  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (buffer (magent-ui-get-buffer))
          (loaded-session (magent-session-create
                           :id "loaded"
                           :buffer-content "* [ASSISTANT]\nLoaded session\n")))
@@ -2993,8 +3144,10 @@
                      (lambda (_filepath)
                        (list :scope 'global :session loaded-session :id "loaded")))
                     ((symbol-function 'magent-session-install)
-                     (lambda (_scope session)
-                       (setq magent--current-session session)
+                     (lambda (scope session)
+                       (puthash scope session magent-session--scoped-sessions)
+                       (setq magent-session--current-scope scope
+                             magent--current-session session)
                        session))
                     ((symbol-function 'message) #'ignore))
             (magent-resume-session))
@@ -3010,7 +3163,9 @@
 (ert-deftest magent-test-resume-session-restores-loaded-prompt-state ()
   "Test resuming a session with a saved prompt restores one editable draft."
   (require 'magent-ui)
-  (let* ((buffer (magent-ui-get-buffer))
+  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (buffer (magent-ui-get-buffer))
          (loaded-session (magent-session-create :id "loaded"))
          (current-session (magent-session-create :id "current"
                                                  :buffer-content "stale snapshot")))
@@ -3046,8 +3201,10 @@
                      (lambda (_filepath)
                        (list :scope 'global :session loaded-session :id "loaded")))
                     ((symbol-function 'magent-session-install)
-                     (lambda (_scope session)
-                       (setq magent--current-session session)
+                     (lambda (scope session)
+                       (puthash scope session magent-session--scoped-sessions)
+                       (setq magent-session--current-scope scope
+                             magent--current-session session)
                        session))
                     ((symbol-function 'message) #'ignore))
             (magent-resume-session))
@@ -3103,6 +3260,99 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (magent-session-reset))))
+
+(ert-deftest magent-test-resume-session-displays-target-project-buffer ()
+  "Test resuming another project displays and restores that project's buffer."
+  (require 'magent-ui)
+  (let* ((magent-buffer-name "*magent-resume*")
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (project-a (make-temp-file "magent-project-a-" t))
+         (project-b (make-temp-file "magent-project-b-" t))
+         (scope-a (file-truename (directory-file-name project-a)))
+         (scope-b (file-truename (directory-file-name project-b)))
+         (current-session (magent-session-create :id "current"))
+         (loaded-session (magent-session-create
+                          :id "loaded"
+                          :buffer-content "* [ASSISTANT]\nLoaded project buffer\n"))
+         (buffer-a nil)
+         (buffer-b nil)
+         (displayed nil))
+    (unwind-protect
+        (progn
+          (magent-session-install scope-a current-session)
+          (setq buffer-a (magent-ui-get-buffer scope-a))
+          (with-current-buffer buffer-a
+            (let ((inhibit-read-only t))
+              (erase-buffer)
+              (insert "* [USER]\nProject A draft\n")))
+          (cl-letf (((symbol-function 'magent-session-list-files)
+                     (lambda () '("/tmp/project-b-session.json")))
+                    ((symbol-function 'completing-read)
+                     (lambda (&rest _args) "project-b session"))
+                    ((symbol-function 'magent-session--format-file)
+                     (lambda (_filepath) "project-b session"))
+                    ((symbol-function 'magent-session-read-file)
+                     (lambda (_filepath)
+                       (list :scope scope-b :session loaded-session :id "loaded")))
+                    ((symbol-function 'display-buffer)
+                     (lambda (buffer &rest _args)
+                       (setq displayed buffer)
+                       buffer))
+                    ((symbol-function 'message) #'ignore))
+            (magent-resume-session))
+          (setq buffer-b (magent-ui-get-buffer scope-b))
+          (should (eq displayed buffer-b))
+          (with-current-buffer buffer-b
+            (should (string-prefix-p "* [ASSISTANT]\nLoaded project buffer\n"
+                                     (buffer-string))))
+          (with-current-buffer buffer-a
+            (should (string-prefix-p "* [USER]\nProject A draft\n"
+                                     (buffer-string)))))
+      (when (buffer-live-p buffer-a)
+        (kill-buffer buffer-a))
+      (when (buffer-live-p buffer-b)
+        (kill-buffer buffer-b))
+      (delete-directory project-a t)
+      (delete-directory project-b t))))
+
+(ert-deftest magent-test-ui-revert-buffer-keeps-buffer-local-scope ()
+  "Test reverting an inactive Magent buffer uses that buffer's scope."
+  (require 'magent-ui)
+  (let* ((magent-buffer-name "*magent-revert*")
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (project-a (make-temp-file "magent-project-a-" t))
+         (project-b (make-temp-file "magent-project-b-" t))
+         (scope-a (file-truename (directory-file-name project-a)))
+         (scope-b (file-truename (directory-file-name project-b)))
+         (session-a (magent-session-create :id "a"))
+         (session-b (magent-session-create
+                     :id "b"
+                     :buffer-content "* [ASSISTANT]\nProject B\n"))
+         (buffer-a nil))
+    (unwind-protect
+        (progn
+          (magent-session-install scope-a session-a)
+          (setq buffer-a (magent-ui-get-buffer scope-a))
+          (with-current-buffer buffer-a
+            (let ((inhibit-read-only t))
+              (erase-buffer)
+              (insert "* [ASSISTANT]\nProject A\n")))
+          (magent-session-install scope-b session-b)
+          (with-current-buffer buffer-a
+            (magent-ui--revert-buffer nil nil))
+          (with-current-buffer buffer-a
+            (should (string-prefix-p "* [ASSISTANT]\nProject A\n"
+                                     (buffer-string))))
+          (should (string-prefix-p "* [ASSISTANT]\nProject A\n"
+                                   (magent-session-buffer-content session-a))))
+      (when (buffer-live-p buffer-a)
+        (kill-buffer buffer-a))
+      (delete-directory project-a t)
+      (delete-directory project-b t))))
 
 (ert-deftest magent-test-agent-process-emits-turn-events ()
   "Test `magent-agent-process' emits turn lifecycle and text events."
@@ -3381,6 +3631,24 @@
       (should (eq (car fold-call) (point-min)))
       (should (string-match-p "#\\+begin_quote\nCapability resolver: Auto capabilities: org-structure\n#\\+end_quote\n"
                               (buffer-string))))))
+
+(ert-deftest magent-test-ui-reasoning-block-stays-expanded ()
+  "Test reasoning blocks stay expanded in the UI."
+  (require 'magent-ui)
+  (let ((fold-call nil))
+    (magent-ui-clear-buffer)
+    (cl-letf (((symbol-function 'magent-ui--fold-block-at)
+               (lambda (pos block-re)
+                 (setq fold-call (list pos block-re)))))
+      (magent-ui-insert-reasoning-start)
+      (magent-ui-insert-reasoning-text "alpha")
+      (magent-ui-insert-reasoning-end))
+    (should-not fold-call)
+    (with-current-buffer (magent-ui-get-buffer)
+      (should (equal (buffer-string)
+                     "#+begin_think\nalpha\n#+end_think\n"))
+      (should (null magent-ui--reasoning-start))
+      (should magent-ui--streaming-has-text))))
 
 (ert-deftest magent-test-mode-map-binds-diagnose-emacs ()
   "Test `magent-mode-map' binds the Emacs diagnosis command."

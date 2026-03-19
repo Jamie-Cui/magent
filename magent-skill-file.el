@@ -28,8 +28,8 @@
 
 (require 'cl-lib)
 (require 'magent-config)
+(require 'magent-file-loader)
 (require 'magent-skills)
-(require 'magent-frontmatter)
 
 (declare-function magent-log "magent-ui")
 
@@ -67,27 +67,13 @@ Each directory can contain subdirectories with SKILL.md files."
 
 (defun magent-skill-file--project-skill-dirs ()
   "Get project-local skill directories."
-  (let ((root (magent-project-root)))
-    (when root
-      (let ((project-skill-dir (expand-file-name ".magent/skills" root)))
-        (when (file-directory-p project-skill-dir)
-          (list project-skill-dir))))))
+  (magent-file-loader-project-subdir ".magent/skills"))
 
 (defun magent-skill-file--list-files (&optional directories)
   "List all SKILL.md files in DIRECTORIES or `magent-skill-directories'."
-  (let ((dirs (or directories (magent-skill-file--list-directories)))
-        (files nil))
-    (dolist (dir dirs)
-      (when (file-directory-p dir)
-        (let ((direct-skill (expand-file-name magent-skill-file-name dir)))
-          (when (file-exists-p direct-skill)
-            (push direct-skill files)))
-        (dolist (subdir (directory-files dir t "^[^.]"))
-          (when (file-directory-p subdir)
-            (let ((skill-file (expand-file-name magent-skill-file-name subdir)))
-              (when (file-exists-p skill-file)
-                (push skill-file files)))))))
-    (sort files #'string<)))
+  (magent-file-loader-list-named-files
+   (or directories (magent-skill-file--list-directories))
+   magent-skill-file-name))
 
 (defun magent-skill-file--parse-type (type-str)
   "Parse type string TYPE-STR to symbol.
@@ -149,42 +135,39 @@ Returns the invoke function if found, nil otherwise."
 Returns the skill if successful, nil otherwise.
 For tool-type skills, also loads companion .el file if present."
   (condition-case err
-      (with-temp-buffer
-        (insert-file-contents filepath)
-        (let* ((content (buffer-string))
-               (parsed (magent-frontmatter-parse content))
-               (frontmatter (car parsed))
-               (body (cdr parsed)))
-          (when frontmatter
-            (let* ((name (or (plist-get frontmatter :name)
-                             (file-name-nondirectory
-                              (directory-file-name
-                               (file-name-directory filepath)))))
-                   (description (plist-get frontmatter :description))
-                   (type (magent-skill-file--parse-type
-                          (or (plist-get frontmatter :type) "instruction")))
-                   (tools (magent-skill-file--parse-tools
-                           (plist-get frontmatter :tools)))
-                   ;; Load companion file for tool-type skills
-                   (invoke-fn (when (eq type 'tool)
-                                (magent-skill-file--load-companion
-                                 filepath name)))
-                   (skill (magent-skill-create
-                           :name name
-                           :description description
-                           :type type
-                           :tools tools
-                           :prompt (when (> (length body) 0) body)
-                           :invoke-function invoke-fn
-                           :file-path filepath)))
-              (when (magent-skill-name skill)
-                ;; Warn if tool-type skill has no invoke function
-                (when (and (eq type 'tool) (not invoke-fn))
-                  (magent-log "WARN tool-type skill '%s' has no companion .el file or invoke function"
-                              name))
-                (magent-skills-register skill)
-                (magent-log "INFO loaded skill: %s (%s)" name type)
-                skill)))))
+      (let* ((definition (magent-file-loader-read-definition filepath))
+             (frontmatter (plist-get definition :frontmatter))
+             (body (plist-get definition :body)))
+        (when frontmatter
+          (let* ((name (or (plist-get frontmatter :name)
+                           (file-name-nondirectory
+                            (directory-file-name
+                             (file-name-directory filepath)))))
+                 (description (plist-get frontmatter :description))
+                 (type (magent-skill-file--parse-type
+                        (or (plist-get frontmatter :type) "instruction")))
+                 (tools (magent-skill-file--parse-tools
+                         (plist-get frontmatter :tools)))
+                 ;; Load companion file for tool-type skills
+                 (invoke-fn (when (eq type 'tool)
+                              (magent-skill-file--load-companion
+                               filepath name)))
+                 (skill (magent-skill-create
+                         :name name
+                         :description description
+                         :type type
+                         :tools tools
+                         :prompt (when (> (length body) 0) body)
+                         :invoke-function invoke-fn
+                         :file-path filepath)))
+            (when (magent-skill-name skill)
+              ;; Warn if tool-type skill has no invoke function
+              (when (and (eq type 'tool) (not invoke-fn))
+                (magent-log "WARN tool-type skill '%s' has no companion .el file or invoke function"
+                            name))
+              (magent-skills-register skill)
+              (magent-log "INFO loaded skill: %s (%s)" name type)
+              skill))))
     (error
      (magent-log "ERROR loading skill file %s: %s"
                  filepath (error-message-string err))
@@ -193,11 +176,8 @@ For tool-type skills, also loads companion .el file if present."
 (defun magent-skill-file-load-all (&optional directories)
   "Load all skill files from DIRECTORIES or `magent-skill-directories'.
 Returns number of skills loaded."
-  (let ((files (magent-skill-file--list-files directories))
-        (count 0))
-    (dolist (file files)
-      (when (magent-skill-file-load file)
-        (cl-incf count)))
+  (let* ((files (magent-skill-file--list-files directories))
+         (count (magent-file-loader-load-all files #'magent-skill-file-load)))
     (when (> count 0)
       (magent-log "INFO loaded %d skill file(s)" count))
     count))
@@ -207,11 +187,11 @@ Returns number of skills loaded."
 (defun magent-skill-file-reload ()
   "Reload all skills from files."
   (interactive)
-  ;; Clear file-based skills (keep built-in)
-  (dolist (entry magent-skills--registry)
-    (when (magent-skill-file-path (cdr entry))
-      (magent-skills-unregister (car entry))))
-  ;; Reload from files
+  ;; Clear file-based skills (keep built-in), then reload from disk.
+  (setq magent-skills--registry
+        (magent-file-loader-remove-file-backed-entries
+         magent-skills--registry
+         #'magent-skill-file-path))
   (magent-skill-file-load-all))
 
 ;;; Interactive functions

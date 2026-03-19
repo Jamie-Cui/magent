@@ -109,7 +109,7 @@ Registry and custom agents are loaded when non-nil.")
 
 (declare-function magent-audit-enable "magent-audit")
 
-(defun magent--current-agent-name ()
+(defun magent--get-current-agent-name ()
   "Return the name of the current agent as a string.
 Falls back to `magent-default-agent' if no session agent is set."
   (let ((agent (when magent--current-session
@@ -118,28 +118,28 @@ Falls back to `magent-default-agent' if no session agent is set."
 
 (defconst magent--lighter
   '(:eval
-    (concat " [M/" (magent--current-agent-name) "]"
+    (concat " [M/" (magent--get-current-agent-name) "] "
             (when (magent-queue-processing-p)
               (propertize "[busy]" 'face 'warning
                           'help-echo "Magent: request in progress"))
             (spinner-print magent--spinner)))
   "Modeline lighter for `magent-mode'.
-Shows \" [M/agent]\", a busy marker while a request is in flight,
+Shows \" [M/agent] \", a busy marker while a request is in flight,
 and an animated spinner while processing.")
 (put 'magent--lighter 'risky-local-variable t)
 
-(defun magent--mode-line-construct ()
+(defun magent--get-mode-line-string ()
   "Return the magent mode-line string for `mode-line-misc-info'.
 Only renders in `magent-output-mode' buffers.  Shows \"[M/agent]\"
 and a spinner while processing."
   (when (derived-mode-p 'magent-output-mode)
-    (concat " [M/" (magent--current-agent-name) "]"
+    (concat " [M/" (magent--get-current-agent-name) "] "
             (spinner-print magent--spinner))))
 
 (defconst magent--mode-line-spinner-construct
-  '(:eval (magent--mode-line-construct))
+  '(:eval (magent--get-mode-line-string))
   "Mode-line construct added to `global-mode-string'.
-Delegates to `magent--mode-line-construct' so the function can be
+Delegates to `magent--get-mode-line-string' so the function can be
 redefined on reload without needing to update `global-mode-string'.")
 (put 'magent--mode-line-spinner-construct 'risky-local-variable t)
 

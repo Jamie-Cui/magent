@@ -25,7 +25,7 @@
 (require 'cl-lib)
 (require 'magent-config)
 (require 'magent-capability)
-(require 'magent-frontmatter)
+(require 'magent-file-loader)
 
 (declare-function magent-log "magent-ui")
 
@@ -54,21 +54,9 @@ directly."
   :type 'boolean
   :group 'magent)
 
-(defconst magent-capability-file--maintainer-policy-keys
-  '(:family :disclosure :risk)
-  "Capability frontmatter keys controlled by Magent maintainers.")
-
-(defconst magent-capability-file--contributor-metadata-keys
-  '(:skills :modes :features :feature :files :prompt-keywords :keywords)
-  "Capability frontmatter keys contributed as matchable metadata facts.")
-
 (defun magent-capability-file--project-capability-dirs ()
   "Return project-local capability directories."
-  (let ((root (magent-project-root)))
-    (when root
-      (let ((cap-dir (expand-file-name ".magent/capabilities" root)))
-        (when (file-directory-p cap-dir)
-          (list cap-dir))))))
+  (magent-file-loader-project-subdir ".magent/capabilities"))
 
 (defun magent-capability-file--package-metadata-dirs ()
   "Return package-local capability metadata directories.
@@ -105,19 +93,9 @@ better defined."
 
 (defun magent-capability-file--list-files (&optional directories)
   "List all capability files in DIRECTORIES."
-  (let ((dirs (or directories (magent-capability-file--list-directories)))
-        files)
-    (dolist (dir dirs)
-      (when (file-directory-p dir)
-        (let ((direct-file (expand-file-name magent-capability-file-name dir)))
-          (when (file-exists-p direct-file)
-            (push direct-file files)))
-        (dolist (subdir (directory-files dir t "^[^.]"))
-          (when (file-directory-p subdir)
-            (let ((cap-file (expand-file-name magent-capability-file-name subdir)))
-              (when (file-exists-p cap-file)
-                (push cap-file files)))))))
-    (sort files #'string<)))
+  (magent-file-loader-list-named-files
+   (or directories (magent-capability-file--list-directories))
+   magent-capability-file-name))
 
 (defun magent-capability-file--parse-source-kind (value)
   "Parse capability source kind VALUE."
@@ -190,53 +168,51 @@ better defined."
 (defun magent-capability-file-load (filepath)
   "Load a capability definition from FILEPATH."
   (condition-case err
-      (with-temp-buffer
-        (insert-file-contents filepath)
-        (let* ((parsed (magent-frontmatter-parse (buffer-string)))
-               (frontmatter (car parsed))
-               (body (string-trim (cdr parsed))))
-          (when frontmatter
-            (let* ((name (or (plist-get frontmatter :name)
-                             (file-name-nondirectory
-                              (directory-file-name
-                               (file-name-directory filepath)))))
-                   (source-kind (magent-capability-file--parse-source-kind
-                                 (plist-get frontmatter :source)))
-                   (source-name (or (plist-get frontmatter :source-name)
-                                    (plist-get frontmatter :feature)
-                                    (plist-get frontmatter :package)))
-                   (owner (magent-capability-file--source-owner filepath))
-                   (capability
-                    (magent-capability-create
-                     :name name
-                     :title (or (plist-get frontmatter :title) name)
-                     :description (plist-get frontmatter :description)
-                     :family (magent-capability-file--policy-family
-                              frontmatter source-kind source-name owner)
-                     :source-kind source-kind
-                     :source-name (when source-name
-                                    (format "%s" source-name))
-                     :skills (magent-capability-file--parse-string-list
-                              (plist-get frontmatter :skills))
-                     :modes (magent-capability-file--parse-symbol-list
-                             (plist-get frontmatter :modes))
-                     :features (magent-capability-file--parse-symbol-list
-                                (or (plist-get frontmatter :features)
-                                    (plist-get frontmatter :feature)))
-                     :files (magent-capability-file--parse-string-list
-                             (plist-get frontmatter :files))
-                     :prompt-keywords (magent-capability-file--parse-string-list
-                                       (or (plist-get frontmatter :prompt-keywords)
-                                           (plist-get frontmatter :keywords)))
-                     :disclosure (magent-capability-file--policy-disclosure
-                                  frontmatter owner)
-                     :risk (magent-capability-file--policy-risk
-                            frontmatter owner)
-                     :notes (unless (string-empty-p body) body)
-                     :file-path filepath)))
-              (magent-capability-register capability)
-              (magent-log "INFO loaded capability: %s owner=%s" name owner)
-              capability))))
+      (let* ((definition (magent-file-loader-read-definition filepath))
+             (frontmatter (plist-get definition :frontmatter))
+             (body (string-trim (plist-get definition :body))))
+        (when frontmatter
+          (let* ((name (or (plist-get frontmatter :name)
+                           (file-name-nondirectory
+                            (directory-file-name
+                             (file-name-directory filepath)))))
+                 (source-kind (magent-capability-file--parse-source-kind
+                               (plist-get frontmatter :source)))
+                 (source-name (or (plist-get frontmatter :source-name)
+                                  (plist-get frontmatter :feature)
+                                  (plist-get frontmatter :package)))
+                 (owner (magent-capability-file--source-owner filepath))
+                 (capability
+                  (magent-capability-create
+                   :name name
+                   :title (or (plist-get frontmatter :title) name)
+                   :description (plist-get frontmatter :description)
+                   :family (magent-capability-file--policy-family
+                            frontmatter source-kind source-name owner)
+                   :source-kind source-kind
+                   :source-name (when source-name
+                                  (format "%s" source-name))
+                   :skills (magent-capability-file--parse-string-list
+                            (plist-get frontmatter :skills))
+                   :modes (magent-capability-file--parse-symbol-list
+                           (plist-get frontmatter :modes))
+                   :features (magent-capability-file--parse-symbol-list
+                              (or (plist-get frontmatter :features)
+                                  (plist-get frontmatter :feature)))
+                   :files (magent-capability-file--parse-string-list
+                           (plist-get frontmatter :files))
+                   :prompt-keywords (magent-capability-file--parse-string-list
+                                     (or (plist-get frontmatter :prompt-keywords)
+                                         (plist-get frontmatter :keywords)))
+                   :disclosure (magent-capability-file--policy-disclosure
+                                frontmatter owner)
+                   :risk (magent-capability-file--policy-risk
+                          frontmatter owner)
+                   :notes (unless (string-empty-p body) body)
+                   :file-path filepath)))
+            (magent-capability-register capability)
+            (magent-log "INFO loaded capability: %s owner=%s" name owner)
+            capability)))
     (error
      (magent-log "ERROR loading capability file %s: %s"
                  filepath (error-message-string err))
@@ -244,11 +220,10 @@ better defined."
 
 (defun magent-capability-file-load-all (&optional directories)
   "Load all capability files from DIRECTORIES."
-  (let ((files (magent-capability-file--list-files directories))
-        (count 0))
-    (dolist (file files)
-      (when (magent-capability-file-load file)
-        (cl-incf count)))
+  (let* ((files (magent-capability-file--list-files directories))
+         (count (magent-file-loader-load-all
+                 files
+                 #'magent-capability-file-load)))
     (when (> count 0)
       (magent-log "INFO loaded %d capability file(s)" count))
     count))
@@ -257,9 +232,9 @@ better defined."
   "Reload all file-backed capabilities."
   (interactive)
   (setq magent-capability--registry
-        (cl-remove-if (lambda (entry)
-                        (magent-capability-file-path (cdr entry)))
-                      magent-capability--registry))
+        (magent-file-loader-remove-file-backed-entries
+         magent-capability--registry
+         #'magent-capability-file-path))
   (magent-capability-file-load-all))
 
 ;;;###autoload

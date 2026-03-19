@@ -16,9 +16,9 @@
 (require 'cl-lib)
 (require 'magent-config)
 (require 'magent-agent-registry)
+(require 'magent-file-loader)
 (require 'magent-permission)
 (require 'magent-tools)
-(require 'magent-frontmatter)
 
 ;;; File paths
 
@@ -30,10 +30,9 @@
 
 (defun magent-agent-file--list-files (&optional directory)
   "List all agent .md files in DIRECTORY or project root."
-  (let* ((agent-dir (magent-agent-file--agent-dir directory))
-         (files (when (file-directory-p agent-dir)
-                  (directory-files agent-dir t "\\.md$"))))
-    (sort files #'string<)))
+  (magent-file-loader-list-matching-files
+   (magent-agent-file--agent-dir directory)
+   "\\.md$"))
 
 (defun magent-agent-file--parse-mode (mode-str)
   "Parse mode string MODE-STR to symbol.
@@ -68,32 +67,29 @@ TOOLS-CONFIG is a plist like (:bash t :read nil)."
   "Load an agent from FILEPATH.
 Returns the agent info if successful, nil otherwise."
   (condition-case err
-      (with-temp-buffer
-        (insert-file-contents filepath)
-        (let* ((content (buffer-string))
-               (parsed (magent-frontmatter-parse content))
-               (frontmatter (car parsed))
-               (body (cdr parsed))
-               (name (file-name-base filepath)))
-          (when frontmatter
-            (let* ((mode-str (plist-get frontmatter :mode))
-                   (tools-config (plist-get frontmatter :tools))
-                   (permission (when tools-config
-                                 (magent-agent-file--parse-permission tools-config)))
-                   (agent-info (magent-agent-info-create
-                                :name name
-                                :description (plist-get frontmatter :description)
-                                :mode (if mode-str (magent-agent-file--parse-mode mode-str) 'all)
-                                :native nil
-                                :hidden (plist-get frontmatter :hidden)
-                                :temperature (plist-get frontmatter :temperature)
-                                :top-p (plist-get frontmatter :top-p)
-                                :color (plist-get frontmatter :color)
-                                :prompt (when (> (length body) 0) body)
-                                :permission permission)))
-              (when (magent-agent-info-valid-p agent-info)
-                (magent-agent-registry-register agent-info)
-                agent-info)))))
+      (let* ((definition (magent-file-loader-read-definition filepath))
+             (frontmatter (plist-get definition :frontmatter))
+             (body (plist-get definition :body))
+             (name (file-name-base filepath)))
+        (when frontmatter
+          (let* ((mode-str (plist-get frontmatter :mode))
+                 (tools-config (plist-get frontmatter :tools))
+                 (permission (when tools-config
+                               (magent-agent-file--parse-permission tools-config)))
+                 (agent-info (magent-agent-info-create
+                              :name name
+                              :description (plist-get frontmatter :description)
+                              :mode (if mode-str (magent-agent-file--parse-mode mode-str) 'all)
+                              :native nil
+                              :hidden (plist-get frontmatter :hidden)
+                              :temperature (plist-get frontmatter :temperature)
+                              :top-p (plist-get frontmatter :top-p)
+                              :color (plist-get frontmatter :color)
+                              :prompt (when (> (length body) 0) body)
+                              :permission permission)))
+            (when (magent-agent-info-valid-p agent-info)
+              (magent-agent-registry-register agent-info)
+              agent-info))))
     (error
      (magent-log "ERROR loading agent file %s: %s" filepath (error-message-string err))
      nil)))
@@ -101,11 +97,8 @@ Returns the agent info if successful, nil otherwise."
 (defun magent-agent-file-load-all (&optional directory)
   "Load all agent files from DIRECTORY or project root.
 Returns number of agents loaded."
-  (let ((files (magent-agent-file--list-files directory))
-        (count 0))
-    (dolist (file files)
-      (when (magent-agent-file-load file)
-        (cl-incf count)))
+  (let* ((files (magent-agent-file--list-files directory))
+         (count (magent-file-loader-load-all files #'magent-agent-file-load)))
     (when (> count 0)
       (magent-log "INFO loaded %d agent file(s) from %s"
                   count

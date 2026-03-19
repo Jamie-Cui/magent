@@ -43,28 +43,27 @@ paths against the project root."
 (defun magent-tools--read-file (callback path)
   "Read contents of file at PATH asynchronously.
 CALLBACK is called with the file contents or error message."
-  (let ((path (magent-tools--resolve-path path)))
-    (condition-case err
+  (condition-case err
+      (let ((path (magent-tools--resolve-path path)))
         (with-temp-buffer
           (insert-file-contents path)
-          (funcall callback (buffer-string)))
-      (error (funcall callback (format "Error reading file: %s" (error-message-string err)))))))
+          (funcall callback (buffer-string))))
+    (error (funcall callback (format "Error reading file: %s" (error-message-string err))))))
 
 (defun magent-tools--write-file (callback path content)
   "Write CONTENT to file at PATH asynchronously.
 Creates parent directories if needed.
 CALLBACK is called with success message or error."
-  (let ((path (magent-tools--resolve-path path)))
-    (condition-case err
-        (progn
-          (let ((dir (file-name-directory path)))
-            (when (and dir (not (file-exists-p dir)))
-              (make-directory dir t)))
-          (with-temp-buffer
-            (insert content)
-            (write-region (point-min) (point-max) path nil 0))
-          (funcall callback (format "Successfully wrote %s" path)))
-      (error (funcall callback (format "Error writing file: %s" (error-message-string err)))))))
+  (condition-case err
+      (let ((path (magent-tools--resolve-path path)))
+        (let ((dir (file-name-directory path)))
+          (when (and dir (not (file-exists-p dir)))
+            (make-directory dir t)))
+        (with-temp-buffer
+          (insert content)
+          (write-region (point-min) (point-max) path nil 0))
+        (funcall callback (format "Successfully wrote %s" path)))
+    (error (funcall callback (format "Error writing file: %s" (error-message-string err))))))
 
 (defun magent-tools--grep (callback pattern path &optional case-sensitive)
   "Search for PATTERN in files under PATH using ripgrep asynchronously.
@@ -126,8 +125,8 @@ CALLBACK is called with list of matching file paths."
   "Edit file at PATH by replacing OLD-TEXT with NEW-TEXT asynchronously.
 OLD-TEXT must match exactly once in the file.
 CALLBACK is called with success message or error."
-  (let ((path (magent-tools--resolve-path path)))
-    (condition-case err
+  (condition-case err
+      (let ((path (magent-tools--resolve-path path)))
         (let* ((content (with-temp-buffer
                           (insert-file-contents path)
                           (buffer-string)))
@@ -146,8 +145,10 @@ CALLBACK is called with success message or error."
               (with-temp-buffer
                 (insert new-content)
                 (write-region (point-min) (point-max) path nil 0))
-              (funcall callback (format "Successfully edited %s" path))))))
-      (error (funcall callback (format "Error editing file: %s" (error-message-string err)))))))
+              (funcall callback (format "Successfully edited %s" path)))))))
+    (error
+     (funcall callback (format "Error editing file: %s"
+                               (error-message-string err))))))
 
 (defun magent-tools--emacs-eval (callback sexp &optional timeout)
   "Evaluate SEXP string as Emacs Lisp with optional TIMEOUT in seconds.
@@ -187,6 +188,9 @@ CALLBACK is called with the result as a readable string, or an error message."
 (defun magent-tools--bash (callback command &optional timeout)
   "Execute shell COMMAND asynchronously with optional TIMEOUT in seconds.
 CALLBACK is called with the command output (stdout + stderr)."
+  (unless (stringp command)
+    (funcall callback "Error: 'command' argument is required but was not provided. Please call bash with a valid shell command string.")
+    (cl-return-from magent-tools--bash))
   (let* ((timeout (or timeout magent-bash-timeout))
          (buf (generate-new-buffer " *magent-bash*"))
          (timer nil)
@@ -214,22 +218,27 @@ CALLBACK is called with the command output (stdout + stderr)."
                                 "Command timed out with no output"
                               (format "Command timed out. Partial output:\n%s"
                                       (string-trim-right output)))))))))))
-    (setq proc
-          (make-process
-           :name "magent-bash"
-           :buffer buf
-           :command (list shell-file-name shell-command-switch command)
-           :sentinel
-           (lambda (p _event)
-             (when (and (memq (process-status p) '(exit signal))
-                        (not finished))
-               (setq finished t)
-               (let ((output (with-current-buffer buf (buffer-string))))
-                 (funcall cleanup)
-                 (funcall callback
-                          (if (string-blank-p output)
-                              "Command completed with no output"
-                            (string-trim-right output))))))))))
+    (condition-case err
+        (setq proc
+              (make-process
+               :name "magent-bash"
+               :buffer buf
+               :command (list shell-file-name shell-command-switch command)
+               :sentinel
+               (lambda (p _event)
+                 (when (and (memq (process-status p) '(exit signal))
+                            (not finished))
+                   (setq finished t)
+                   (let ((output (with-current-buffer buf (buffer-string))))
+                     (funcall cleanup)
+                     (funcall callback
+                              (if (string-blank-p output)
+                                  "Command completed with no output"
+                                (string-trim-right output))))))))
+      (error
+       (funcall cleanup)
+       (funcall callback (format "Error starting process: %s"
+                                 (error-message-string err)))))))
 
 (defun magent-tools--delegate (callback agent-name prompt)
   "Delegate PROMPT to subagent AGENT-NAME asynchronously.

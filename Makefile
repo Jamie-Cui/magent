@@ -7,13 +7,15 @@ SPINNER_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'spinner-*' 
 TRANSIENT_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'transient-*' -type d 2>/dev/null | head -1)
 COND_LET_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'cond-let-*' -type d 2>/dev/null | head -1)
 EVIL_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'evil-*' -type d 2>/dev/null | head -1)
+YAML_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'yaml-[0-9]*' -type d 2>/dev/null | head -1)
 
 LOADPATH = -L . \
 	$(if $(GPTEL_DIR),-L $(GPTEL_DIR)) \
 	$(if $(SPINNER_DIR),-L $(SPINNER_DIR)) \
 	$(if $(TRANSIENT_DIR),-L $(TRANSIENT_DIR)) \
 	$(if $(COND_LET_DIR),-L $(COND_LET_DIR)) \
-	$(if $(EVIL_DIR),-L $(EVIL_DIR))
+	$(if $(EVIL_DIR),-L $(EVIL_DIR)) \
+	$(if $(YAML_DIR),-L $(YAML_DIR))
 
 # Compilation flags
 BYTE_COMPILE_FLAGS = --eval "(setq byte-compile-error-on-warn nil)" \
@@ -24,6 +26,7 @@ SRCS = magent-config.el \
        magent.el \
        magent-events.el \
        magent-approval.el \
+       magent-file-loader.el \
        magent-frontmatter.el \
        magent-session.el \
        magent-queue.el \
@@ -35,6 +38,7 @@ SRCS = magent-config.el \
        magent-permission.el \
        magent-ui.el \
        magent-fsm.el \
+       magent-fsm-shared.el \
        magent-skill-creator.el \
        magent-skills.el \
        magent-skill-file.el \

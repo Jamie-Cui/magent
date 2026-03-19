@@ -87,7 +87,9 @@ Default value is read from prompt.txt next to this file."
   :group 'magent)
 
 (defcustom magent-buffer-name "*magent*"
-  "Name of the buffer used for Magent output."
+  "Base name used when deriving Magent output buffer names.
+Output buffers are named like `*magent:global*' or
+`*magent:PROJECT-NAME*'."
   :type 'string
   :group 'magent)
 
