@@ -3819,5 +3819,132 @@
   (should (eq (lookup-key magent-mode-map (kbd "C-c m k"))
               'magent-toggle-capability-locally)))
 
+(ert-deftest magent-test-magent-magit-normalize-commit-message ()
+  "Test Magent Magit strips code fences and boilerplate."
+  (require 'magent-magit)
+  (should
+   (equal
+    (magent-magit--normalize-commit-message
+     "```text\nCommit message:\nfix(parser): trim spaces\n\nWrap body text\n```")
+    "fix(parser): trim spaces\n\nWrap body text")))
+
+(ert-deftest magent-test-magent-magit-apply-commit-response ()
+  "Test Magent Magit replaces only the editable commit message region."
+  (require 'magent-magit)
+  (with-temp-buffer
+    (setq-local git-commit-mode t)
+    (setq-local comment-start "#")
+    (insert "\n# Please enter the commit message\n")
+    (let ((request (magent-magit-request-create
+                    :id "req-apply"
+                    :kind 'commit-message
+                    :repo-root "/tmp/repo"
+                    :target-buffer (current-buffer)
+                    :baseline-text ""
+                    :baseline-tick (buffer-chars-modified-tick))))
+      (setq-local magent-magit--active-request-id "req-apply")
+      (magent-magit--apply-commit-response request "fix(parser): trim spaces" nil)
+      (should
+       (equal (buffer-string)
+              "fix(parser): trim spaces\n\n# Please enter the commit message\n"))
+      (should (equal magent-magit--generated-message
+                     "fix(parser): trim spaces")))))
+
+(ert-deftest magent-test-magent-magit-stale-commit-response-goes-to-preview ()
+  "Test Magent Magit refuses to overwrite a commit buffer changed by the user."
+  (require 'magent-magit)
+  (let (preview-buffer)
+    (with-temp-buffer
+      (setq-local git-commit-mode t)
+      (setq-local comment-start "#")
+      (insert "\n# Please enter the commit message\n")
+      (let ((request (magent-magit-request-create
+                      :id "req-stale"
+                      :kind 'commit-message
+                      :repo-root "/tmp/repo"
+                      :target-buffer (current-buffer)
+                      :baseline-text ""
+                      :baseline-tick (buffer-chars-modified-tick))))
+        (setq-local magent-magit--active-request-id "req-stale")
+        (goto-char (point-min))
+        (insert "user draft\n")
+        (cl-letf (((symbol-function 'pop-to-buffer)
+                   (lambda (buffer &rest _args)
+                     (setq preview-buffer buffer)
+                     buffer)))
+          (magent-magit--apply-commit-response request "feat: generated" nil))
+        (should (string-match-p "user draft" (buffer-string)))))
+    (should (buffer-live-p preview-buffer))
+    (with-current-buffer preview-buffer
+      (should (string-match-p "did not apply it automatically" (buffer-string)))
+      (should (string-match-p "feat: generated" (buffer-string))))))
+
+(ert-deftest magent-test-magent-magit-dispatch-request-isolates-gptel-state ()
+  "Test Magent Magit does not leak ambient gptel context into requests."
+  (require 'magent-magit)
+  (let (captured response-text)
+    (with-temp-buffer
+      (setq-local gptel-use-context 'system)
+      (setq-local gptel-context '((fake . context)))
+      (setq-local gptel-use-tools t)
+      (setq-local gptel-tools '(fake-tool))
+      (setq-local gptel-prompt-transform-functions '(ignore))
+      (setq-local gptel-include-reasoning t)
+      (let* ((owner (current-buffer))
+             (request (magent-magit-request-create
+                       :id "req-isolated"
+                       :kind 'diff-explain
+                       :repo-root "/tmp/repo"
+                       :target-buffer owner
+                       :applied-callback
+                       (lambda (_request text _info)
+                         (setq response-text text)))))
+        (cl-letf (((symbol-function 'gptel-request)
+                   (lambda (prompt &rest kwargs)
+                     (setq captured
+                           (with-current-buffer (plist-get kwargs :buffer)
+                             (list :prompt prompt
+                                   :use-context gptel-use-context
+                                   :context gptel-context
+                                   :use-tools gptel-use-tools
+                                   :tools gptel-tools
+                                   :transforms gptel-prompt-transform-functions
+                                   :reasoning gptel-include-reasoning)))
+                     (funcall (plist-get kwargs :callback) "ok" (list :status "ok")))))
+          (magent-magit--dispatch-request request "PROMPT" "SYSTEM")
+          (should (equal response-text "ok"))
+          (should-not magent-magit--active-request-id))))
+    (should (equal (plist-get captured :prompt) "PROMPT"))
+    (should (eq (plist-get captured :use-context) nil))
+    (should (null (plist-get captured :context)))
+    (should (eq (plist-get captured :use-tools) nil))
+    (should (null (plist-get captured :tools)))
+    (should (null (plist-get captured :transforms)))
+    (should (eq (plist-get captured :reasoning) nil))))
+
+(ert-deftest magent-test-magent-magit-commit-keybindings ()
+  "Test Magent Magit installs safer commit-buffer bindings."
+  (require 'magent-magit)
+  (should (eq (lookup-key git-commit-mode-map magent-magit-commit-buffer-key)
+              'magent-magit-generate-message))
+  (should (eq (lookup-key git-commit-mode-map magent-magit-cancel-key)
+              'magent-magit-cancel))
+  (should-not (eq (lookup-key git-commit-mode-map (kbd "M-g"))
+                  'gptel-magit-generate-message)))
+
+(ert-deftest magent-test-magent-magit-transient-entries ()
+  "Test Magent Magit owns the installed Magit transient entries."
+  (require 'magent-magit)
+  (require 'transient)
+  (let ((commit-suffix (transient-get-suffix 'magit-commit
+                                             magent-magit-commit-transient-key))
+        (diff-suffix (transient-get-suffix 'magit-diff
+                                           magent-magit-diff-transient-key)))
+    (should commit-suffix)
+    (should diff-suffix)
+    (should (eq (oref commit-suffix command) 'magent-magit-commit-create))
+    (should (eq (oref diff-suffix command) 'magent-magit-diff-explain))
+    (should-not (transient-get-suffix 'magit-diff "x"))))
+
 (provide 'magent-test)
 ;;; magent-test.el ends here
