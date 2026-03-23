@@ -32,6 +32,13 @@
 (defvar magent-audit--enabled nil
   "Non-nil when Magent audit hooks are installed.")
 
+(defvar magent-audit--pending-writes nil
+  "Queued audit payloads waiting to be flushed to disk.
+Each entry is a cons cell of the form (FILE . JSONL-LINE).")
+
+(defvar magent-audit--flush-timer nil
+  "Idle timer used to flush queued audit records to disk.")
+
 (defvar magent-audit-entry-map
   (let ((map (make-sparse-keymap)))
     (define-key map [mouse-1] #'magent-audit-toggle-entry)
@@ -92,6 +99,7 @@
     (magent-events-remove-sink #'magent-audit--event-sink)
     (remove-hook 'magent-approval-state-change-functions
                  #'magent-audit--approval-state-changed)
+    (magent-audit--flush-pending)
     (setq magent-audit--enabled nil))
   magent-audit--enabled)
 
@@ -101,12 +109,9 @@
     (condition-case err
         (let ((record (magent-audit--build-record event props)))
           (when record
-            (make-directory (magent-audit--directory) t)
-            (with-temp-buffer
-              (insert (json-encode record))
-              (insert "\n")
-              (append-to-file (point-min) (point-max)
-                              (magent-audit--daily-file-path)))))
+            (magent-audit--enqueue-record
+             (magent-audit--daily-file-path)
+             (concat (json-encode record) "\n"))))
       (error
        (magent-log "WARN audit write failed: %s"
                    (error-message-string err))))))
@@ -137,6 +142,46 @@ PROPS accepts the same plist keys as `magent-audit-record'."
    (format "audit-%s.jsonl" (format-time-string "%Y%m%d"))
    (magent-audit--directory)))
 
+(defun magent-audit--enqueue-record (file line)
+  "Queue audit LINE for FILE and schedule an idle flush."
+  (push (cons file line) magent-audit--pending-writes)
+  (magent-audit--schedule-flush))
+
+(defun magent-audit--schedule-flush ()
+  "Schedule an idle flush for queued audit records."
+  (unless (timerp magent-audit--flush-timer)
+    (setq magent-audit--flush-timer
+          (run-with-idle-timer
+           (max 0.0 (or magent-audit-flush-delay 0.0))
+           nil
+           #'magent-audit--flush-pending))))
+
+(defun magent-audit--flush-pending ()
+  "Write queued audit records to disk in batched appends."
+  (when (timerp magent-audit--flush-timer)
+    (cancel-timer magent-audit--flush-timer))
+  (setq magent-audit--flush-timer nil)
+  (when magent-audit--pending-writes
+    (condition-case err
+        (let ((writes (prog1 (nreverse magent-audit--pending-writes)
+                        (setq magent-audit--pending-writes nil)))
+              grouped)
+          (dolist (entry writes)
+            (let* ((file (car entry))
+                   (line (cdr entry))
+                   (existing (assoc file grouped)))
+              (if existing
+                  (setcdr existing (concat (cdr existing) line))
+                (push (cons file line) grouped))))
+          (dolist (entry (nreverse grouped))
+            (make-directory (file-name-directory (car entry)) t)
+            (with-temp-buffer
+              (insert (cdr entry))
+              (append-to-file (point-min) (point-max) (car entry)))))
+      (error
+       (magent-log "WARN audit write failed: %s"
+                   (error-message-string err))))))
+
 (defun magent-audit-get-buffer ()
   "Return the Magent audit browser buffer."
   (let ((buffer (get-buffer-create magent-audit-buffer-name)))
@@ -148,6 +193,7 @@ PROPS accepts the same plist keys as `magent-audit-record'."
 (defun magent-show-audit ()
   "Display the Magent audit browser."
   (interactive)
+  (magent-audit--flush-pending)
   (let ((buffer (magent-audit-get-buffer)))
     (with-current-buffer buffer
       (unless magent-audit--filters
@@ -161,6 +207,7 @@ PROPS accepts the same plist keys as `magent-audit-record'."
 PRESERVE-ENTRY-ID is the record id to keep point on after
 refresh.  The first two arguments follow `revert-buffer'."
   (interactive)
+  (magent-audit--flush-pending)
   (let ((buffer (magent-audit-get-buffer)))
     (with-current-buffer buffer
       (setq preserve-entry-id (or preserve-entry-id

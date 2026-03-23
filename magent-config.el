@@ -206,6 +206,13 @@ When nil, audit logs are written under `magent-session-directory'/audit."
   :type 'integer
   :group 'magent)
 
+(defcustom magent-audit-flush-delay 0.25
+  "Idle delay in seconds before queued audit records are flushed to disk.
+Audit writes are batched and deferred so permission and tool event
+handlers do not block the main Emacs thread on every record."
+  :type 'number
+  :group 'magent)
+
 (defcustom magent-audit-default-days 1
   "Number of recent days loaded by default in the audit browser.
 When nil or non-positive, show all available audit records."
