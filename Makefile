@@ -3,6 +3,7 @@ EMACS_BATCH = $(EMACS) -Q --batch
 
 # Auto-detect dependency paths
 GPTEL_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'gptel-[0-9]*' -type d 2>/dev/null | head -1)
+MAGIT_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'magit-*' -type d 2>/dev/null | head -1)
 SPINNER_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'spinner-*' -type d 2>/dev/null | head -1)
 TRANSIENT_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'transient-*' -type d 2>/dev/null | head -1)
 COND_LET_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'cond-let-*' -type d 2>/dev/null | head -1)
@@ -11,6 +12,7 @@ YAML_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'yaml-[0-9]*' -
 
 LOADPATH = -L . \
 	$(if $(GPTEL_DIR),-L $(GPTEL_DIR)) \
+	$(if $(MAGIT_DIR),-L $(MAGIT_DIR)) \
 	$(if $(SPINNER_DIR),-L $(SPINNER_DIR)) \
 	$(if $(TRANSIENT_DIR),-L $(TRANSIENT_DIR)) \
 	$(if $(COND_LET_DIR),-L $(COND_LET_DIR)) \
@@ -33,6 +35,7 @@ SRCS = magent-config.el \
        magent-agent-registry.el \
        magent-permission.el \
        magent-ui.el \
+       magent-magit.el \
        magent-fsm.el \
        magent-fsm-shared.el \
        magent-skills.el \
