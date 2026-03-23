@@ -2477,6 +2477,27 @@
     (should-not downstream-result)
     (should-not (member 'tool-result ui-events))))
 
+(ert-deftest magent-test-ui-interrupt-renders-plain-status-line ()
+  "Test interrupt renders plain text instead of an error heading."
+  (let ((buffer (magent-ui-get-buffer))
+        (magent--current-fsm t)
+        (magent-ui--request-generation 0))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)))
+    (cl-letf (((symbol-function 'magent-fsm-abort) (lambda (&rest _args) nil))
+              ((symbol-function 'magent-approval-drop-requests) #'ignore)
+              ((symbol-function 'spinner-stop) #'ignore)
+              ((symbol-function 'magent-ui--clear-processing) #'ignore)
+              ((symbol-function 'magent-ui--maybe-show-input-prompt) #'ignore))
+      (magent-interrupt))
+    (with-current-buffer buffer
+      (should (string-match-p (regexp-quote "[Interrupted by user]")
+                              (buffer-string)))
+      (should-not (string-match-p
+                   (concat "^\\* " (regexp-quote magent-error-prompt) " +$")
+                   (buffer-string))))))
+
 (ert-deftest magent-test-emacs-eval-cancel-cleanup-prevents-late-callback ()
   "Test cancelling emacs_eval before its timer fires suppresses the callback."
   (require 'magent-tools)
@@ -2484,11 +2505,22 @@
         (registered-cleanup nil)
         (scheduled nil)
         (cancelled nil)
-        (callback-result nil))
+        (callback-result nil)
+        (thread-object 'fake-thread)
+        (signaled nil))
     (cl-letf (((symbol-function 'run-at-time)
                (lambda (_secs _repeat fn &rest _args)
                  (setq scheduled fn)
                  'fake-timer))
+              ((symbol-function 'make-thread)
+               (lambda (_fn &optional _name)
+                 thread-object))
+              ((symbol-function 'thread-live-p)
+               (lambda (thread)
+                 (eq thread thread-object)))
+              ((symbol-function 'thread-signal)
+               (lambda (thread signal data)
+                 (setq signaled (list thread signal data))))
               ((symbol-function 'cancel-timer)
                (lambda (timer)
                  (setq cancelled timer))))
@@ -2503,9 +2535,41 @@
         (let ((inhibit-quit t))
           (funcall registered-cleanup)
           (should (eq cancelled 'fake-timer))
+          (should (equal signaled '(fake-thread quit nil)))
           (setq quit-flag nil))
         (funcall scheduled)))
     (should-not callback-result)))
+
+(ert-deftest magent-test-emacs-eval-timeout-interrupts-worker ()
+  "Test emacs_eval timeout signals the worker thread and returns a timeout."
+  (require 'magent-tools)
+  (let ((scheduled nil)
+        (callback-result nil)
+        (thread-object 'fake-thread)
+        (signaled nil))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_secs _repeat fn &rest _args)
+                 (setq scheduled fn)
+                 'fake-timer))
+              ((symbol-function 'make-thread)
+               (lambda (_fn &optional _name)
+                 thread-object))
+              ((symbol-function 'thread-live-p)
+               (lambda (thread)
+                 (eq thread thread-object)))
+              ((symbol-function 'thread-signal)
+               (lambda (thread signal data)
+                 (setq signaled (list thread signal data))))
+              ((symbol-function 'cancel-timer) #'ignore))
+      (magent-tools--emacs-eval
+       (lambda (result)
+         (setq callback-result result))
+       "(+ 1 2)"
+       1)
+      (should (functionp scheduled))
+      (funcall scheduled))
+    (should (equal signaled '(fake-thread quit nil)))
+    (should (equal callback-result "Error: Evaluation timed out"))))
 
 (ert-deftest magent-test-gptel-backend-abort-cancels-request-resources ()
   "Test gptel backend abort cancels tool state and tears down the request buffer."
@@ -2659,6 +2723,7 @@
           (magent-audit-record 'permission-decision
                                :decision 'deny
                                :decision-source 'file-rule-deny)
+          (magent-audit--flush-pending)
           (should (= (length (directory-files magent-audit-directory nil "\\.jsonl$")) 1))
           (should (= (length (magent-test--read-audit-records magent-audit-directory)) 2)))
       (delete-directory magent-audit-directory t))))
@@ -2673,6 +2738,7 @@
           (magent-audit-record 'permission-decision
                                :decision 'allow
                                :decision-source 'bypass)
+          (magent-audit--flush-pending)
           (should-not (directory-files magent-audit-directory nil "\\.jsonl$")))
       (delete-directory magent-audit-directory t))))
 
@@ -2702,6 +2768,7 @@
                               :args '(:path "secret.txt"
                                       :old_text "old secret"
                                       :new_text "new secret value"))
+          (magent-audit--flush-pending)
           (let* ((records (magent-test--read-audit-records magent-audit-directory))
                  (write-record (car records))
                  (edit-record (cadr records))
@@ -2748,6 +2815,7 @@
                  :args '(:command "echo hi"))
            #'ignore)
           (magent-approval-resolve-request "req-1" 'allow-session)
+          (magent-audit--flush-pending)
           (let ((records (magent-test--read-audit-records magent-audit-directory)))
             (should (= (length records) 2))
             (should (equal (mapcar (lambda (record) (cdr (assq 'event record))) records)
@@ -2786,6 +2854,7 @@
              '((bash . ask))
              (list (list tool (list "echo hi") (lambda (value) (setq result value))))))
           (should (equal result "ran echo hi"))
+          (magent-audit--flush-pending)
           (let* ((records (magent-test--read-audit-records magent-audit-directory))
                  (record (car records)))
             (should (= (length records) 1))
@@ -2819,6 +2888,7 @@
                       (* . ask))))
            (list (list tool (list ".env") (lambda (value) (setq result value)))))
           (should (string-match-p "access denied" result))
+          (magent-audit--flush-pending)
           (let* ((records (magent-test--read-audit-records magent-audit-directory))
                  (record (car records))
                  (args-preview (cdr (assq 'args_preview record))))
@@ -2844,8 +2914,31 @@
                  (magent-audit-record 'permission-decision
                                       :decision 'allow
                                       :decision-source 'bypass)
+                 (magent-audit--flush-pending)
                  nil)
              (error t))))
+      (delete-directory magent-audit-directory t))))
+
+(ert-deftest magent-test-audit-record-queues-write-until-flush ()
+  "Test audit writes stay queued until the deferred flush runs."
+  (require 'magent-audit)
+  (let* ((magent-enable-audit-log t)
+         (magent-audit-directory (make-temp-file "magent-audit-" t))
+         (magent-audit-flush-delay 60)
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session (magent-session-create)))
+    (unwind-protect
+        (progn
+          (magent-audit-record 'permission-decision
+                               :decision 'allow
+                               :decision-source 'bypass)
+          (should magent-audit--pending-writes)
+          (should-not (directory-files magent-audit-directory nil "\\.jsonl$"))
+          (magent-audit--flush-pending)
+          (should-not magent-audit--pending-writes)
+          (should (= (length (magent-test--read-audit-records magent-audit-directory)) 1)))
+      (magent-audit--flush-pending)
       (delete-directory magent-audit-directory t))))
 
 (ert-deftest magent-test-audit-browser-respects-default-time-window ()
