@@ -30,6 +30,12 @@
 
 ;;; Tool implementations
 
+(defvar magent-tools--request-buffer-name nil
+  "Name of the user's buffer at request submission time.
+Set by `magent-agent-process' at the start of each turn so that
+`emacs_eval' evaluates expressions in the correct buffer context
+rather than the magent output buffer.")
+
 (defun magent-tools--resolve-path (path)
   "Resolve PATH for tool operations.
 Expands ~ and environment variables first, then resolves relative
@@ -43,28 +49,32 @@ paths against the project root."
 (defun magent-tools--read-file (callback path)
   "Read contents of file at PATH asynchronously.
 CALLBACK is called with the file contents or error message."
-  (let ((path (magent-tools--resolve-path path)))
-    (condition-case err
+  (condition-case err
+      (let ((path (magent-tools--resolve-path path)))
         (with-temp-buffer
           (insert-file-contents path)
-          (funcall callback (buffer-string)))
-      (error (funcall callback (format "Error reading file: %s" (error-message-string err)))))))
+          (funcall callback (buffer-string))))
+    (error (funcall callback (format "Error reading file: %s" (error-message-string err))))))
 
 (defun magent-tools--write-file (callback path content)
   "Write CONTENT to file at PATH asynchronously.
 Creates parent directories if needed.
 CALLBACK is called with success message or error."
-  (let ((path (magent-tools--resolve-path path)))
-    (condition-case err
-        (progn
+  (condition-case err
+      (progn
+        (unless (stringp path)
+          (error "Missing required argument 'path' (got %S)" path))
+        (unless (stringp content)
+          (error "Missing required argument 'content' (got %S)" content))
+        (let ((path (magent-tools--resolve-path path)))
           (let ((dir (file-name-directory path)))
             (when (and dir (not (file-exists-p dir)))
               (make-directory dir t)))
           (with-temp-buffer
             (insert content)
             (write-region (point-min) (point-max) path nil 0))
-          (funcall callback (format "Successfully wrote %s" path)))
-      (error (funcall callback (format "Error writing file: %s" (error-message-string err)))))))
+          (funcall callback (format "Successfully wrote %s" path))))
+    (error (funcall callback (format "Error writing file: %s" (error-message-string err))))))
 
 (defun magent-tools--grep (callback pattern path &optional case-sensitive)
   "Search for PATTERN in files under PATH using ripgrep asynchronously.
@@ -126,8 +136,8 @@ CALLBACK is called with list of matching file paths."
   "Edit file at PATH by replacing OLD-TEXT with NEW-TEXT asynchronously.
 OLD-TEXT must match exactly once in the file.
 CALLBACK is called with success message or error."
-  (let ((path (magent-tools--resolve-path path)))
-    (condition-case err
+  (condition-case err
+      (let ((path (magent-tools--resolve-path path)))
         (let* ((content (with-temp-buffer
                           (insert-file-contents path)
                           (buffer-string)))
@@ -146,47 +156,54 @@ CALLBACK is called with success message or error."
               (with-temp-buffer
                 (insert new-content)
                 (write-region (point-min) (point-max) path nil 0))
-              (funcall callback (format "Successfully edited %s" path))))))
-      (error (funcall callback (format "Error editing file: %s" (error-message-string err)))))))
+              (funcall callback (format "Successfully edited %s" path)))))))
+    (error
+     (funcall callback (format "Error editing file: %s"
+                               (error-message-string err))))))
 
 (defun magent-tools--emacs-eval (callback sexp &optional timeout)
   "Evaluate SEXP string as Emacs Lisp with optional TIMEOUT in seconds.
-CALLBACK is called with the result as a readable string, or an error message."
+CALLBACK is called with the result as a readable string, or an error message.
+Evaluation runs in the user's context buffer when known
+\(see `magent-tools--request-buffer-name'), falling back to current buffer."
   (condition-case err
       (let* ((timeout (or timeout magent-emacs-eval-timeout))
              (form (car (read-from-string sexp)))
-             (timer nil)
-             (result nil)
-             (done nil))
-        (setq timer
-              (run-at-time
-               timeout nil
-               (lambda ()
-                 (unless done
-                   (setq done t)
-                   (cancel-timer timer)
-                   (funcall callback "Error: Evaluation timed out")))))
-        ;; Run evaluation in a timer to avoid blocking
+             ;; Capture user's buffer at invocation time so the deferred
+             ;; timer runs in the right context, not the magent output buffer.
+             (ctx-buffer (when (and magent-tools--request-buffer-name
+                                    (get-buffer magent-tools--request-buffer-name))
+                           (get-buffer magent-tools--request-buffer-name))))
         (run-at-time
          0 nil
          (lambda ()
-           (condition-case err
-               (progn
-                 (setq result (eval form t))
-                 (unless done
-                   (setq done t)
-                   (cancel-timer timer)
-                   (funcall callback (prin1-to-string result))))
-             (error
-              (unless done
-                (setq done t)
-                (cancel-timer timer)
-                (funcall callback (format "Error evaluating sexp: %s" (error-message-string err)))))))))
+           (let (timed-out)
+             (condition-case err
+                 (let ((result (with-timeout (timeout
+                                              (setq timed-out t)
+                                              nil)
+                                 (if (and ctx-buffer (buffer-live-p ctx-buffer))
+                                     (with-current-buffer ctx-buffer
+                                       (eval form t))
+                                   (eval form t)))))
+                   (if timed-out
+                       (funcall callback "Error: Evaluation timed out")
+                     (funcall callback (prin1-to-string result))))
+               (quit
+                (unless timed-out
+                  (funcall callback "Error: Evaluation interrupted")))
+               (error
+                (unless timed-out
+                  (funcall callback (format "Error evaluating sexp: %s"
+                                            (error-message-string err))))))))))
     (error (funcall callback (format "Error evaluating sexp: %s" (error-message-string err))))))
 
 (defun magent-tools--bash (callback command &optional timeout)
   "Execute shell COMMAND asynchronously with optional TIMEOUT in seconds.
 CALLBACK is called with the command output (stdout + stderr)."
+  (unless (stringp command)
+    (funcall callback "Error: 'command' argument is required but was not provided. Please call bash with a valid shell command string.")
+    (cl-return-from magent-tools--bash))
   (let* ((timeout (or timeout magent-bash-timeout))
          (buf (generate-new-buffer " *magent-bash*"))
          (timer nil)
@@ -214,22 +231,35 @@ CALLBACK is called with the command output (stdout + stderr)."
                                 "Command timed out with no output"
                               (format "Command timed out. Partial output:\n%s"
                                       (string-trim-right output)))))))))))
-    (setq proc
-          (make-process
-           :name "magent-bash"
-           :buffer buf
-           :command (list shell-file-name shell-command-switch command)
-           :sentinel
-           (lambda (p _event)
-             (when (and (memq (process-status p) '(exit signal))
-                        (not finished))
-               (setq finished t)
-               (let ((output (with-current-buffer buf (buffer-string))))
-                 (funcall cleanup)
-                 (funcall callback
-                          (if (string-blank-p output)
-                              "Command completed with no output"
-                            (string-trim-right output))))))))))
+    (condition-case err
+        (let ((process-environment
+               (append '("PAGER=cat"
+                         "GIT_PAGER=cat"
+                         "MANPAGER=cat"
+                         "SYSTEMD_PAGER=cat"
+                         "GIT_TERMINAL_PROMPT=0"
+                         "DEBIAN_FRONTEND=noninteractive")
+                       process-environment)))
+          (setq proc
+                (make-process
+                 :name "magent-bash"
+                 :buffer buf
+                 :command (list shell-file-name shell-command-switch command)
+               :sentinel
+               (lambda (p _event)
+                 (when (and (memq (process-status p) '(exit signal))
+                            (not finished))
+                   (setq finished t)
+                   (let ((output (with-current-buffer buf (buffer-string))))
+                     (funcall cleanup)
+                     (funcall callback
+                              (if (string-blank-p output)
+                                  "Command completed with no output"
+                                (string-trim-right output)))))))))
+      (error
+       (funcall cleanup)
+       (funcall callback (format "Error starting process: %s"
+                                 (error-message-string err)))))))
 
 (defun magent-tools--delegate (callback agent-name prompt)
   "Delegate PROMPT to subagent AGENT-NAME asynchronously.
@@ -349,13 +379,23 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
 
 (require 'gptel)
 
+(defconst magent-tools--reason-arg
+  '(:name "reason"
+    :type string
+    :description "Brief reason for this tool call (shown in UI)"
+    :optional t)
+  "Display-only arg appended to every tool's :args list.
+The value is shown in the UI but stripped before the tool function is called.
+See `magent-fsm--filter-display-args'.")
+
 (defvar magent-tools--read-file-tool
   (gptel-make-tool
    :name "read_file"
    :description "Read the contents of a file at the given path. Use this to inspect file contents before making changes."
    :args (list '(:name "path"
                        :type string
-                       :description "Absolute or relative path to the file"))
+                       :description "Absolute or relative path to the file")
+               magent-tools--reason-arg)
    :function #'magent-tools--read-file
    :async t
    :category "magent")
@@ -370,7 +410,8 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
                        :description "Absolute or relative path to the file")
                '(:name "content"
                        :type string
-                       :description "The full content to write to the file"))
+                       :description "The full content to write to the file")
+               magent-tools--reason-arg)
    :function #'magent-tools--write-file
    :async t
    :confirm t
@@ -389,7 +430,8 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
                        :description "The exact text to find and replace (must match exactly once)")
                '(:name "new_text"
                        :type string
-                       :description "The text to replace old_text with"))
+                       :description "The text to replace old_text with")
+               magent-tools--reason-arg)
    :function #'magent-tools--edit-file
    :async t
    :confirm t
@@ -409,7 +451,8 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
                '(:name "case_sensitive"
                        :type boolean
                        :description "Whether the search is case-sensitive"
-                       :optional t))
+                       :optional t)
+               magent-tools--reason-arg)
    :function #'magent-tools--grep
    :async t
    :category "magent")
@@ -424,7 +467,8 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
                        :description "Glob pattern, e.g. *.el or **/*.ts")
                '(:name "path"
                        :type string
-                       :description "Root directory to search in"))
+                       :description "Root directory to search in")
+               magent-tools--reason-arg)
    :function #'magent-tools--glob
    :async t
    :category "magent")
@@ -440,7 +484,8 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
                '(:name "timeout"
                        :type integer
                        :description "Timeout in seconds, defaults to 30"
-                       :optional t))
+                       :optional t)
+               magent-tools--reason-arg)
    :function #'magent-tools--bash
    :async t
    :confirm t
@@ -450,14 +495,15 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
 (defvar magent-tools--emacs-eval-tool
   (gptel-make-tool
    :name "emacs_eval"
-   :description "Evaluate an Emacs Lisp expression. Returns the result as a string. Use for buffer inspection, Emacs state queries, running compilation, navigating code with xref, etc."
+   :description "Evaluate an Emacs Lisp expression. Returns the result as a string. Use for buffer inspection, Emacs state queries, running compilation, navigating code with xref, etc. When you need multiple pieces of Emacs state, batch them in a single call using (let ...) or (list ...) rather than making separate calls — but only after you have gathered enough context to know what you need."
    :args (list '(:name "sexp"
                        :type string
                        :description "Emacs Lisp s-expression to evaluate")
                '(:name "timeout"
                        :type integer
                        :description "Timeout in seconds, defaults to 10"
-                       :optional t))
+                       :optional t)
+               magent-tools--reason-arg)
    :function #'magent-tools--emacs-eval
    :async t
    :confirm t
@@ -473,7 +519,8 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
                        :description "Name of the subagent to delegate to (e.g. 'explore', 'general')")
                '(:name "prompt"
                        :type string
-                       :description "Task description for the subagent"))
+                       :description "Task description for the subagent")
+               magent-tools--reason-arg)
    :function #'magent-tools--delegate
    :async t
    :category "magent")
@@ -500,7 +547,8 @@ automatically included in the system prompt."
                '(:name "args"
                        :type array
                        :description "Arguments for the operation (varies by operation)"
-                       :optional t))
+                       :optional t)
+               magent-tools--reason-arg)
    :function #'magent-tools--skill-invoke
    :async t
    :category "magent")
@@ -516,7 +564,8 @@ automatically included in the system prompt."
                '(:name "max_results"
                        :type integer
                        :description "Maximum number of results to return (default 5)"
-                       :optional t))
+                       :optional t)
+               magent-tools--reason-arg)
    :function #'magent-tools--web-search
    :async t
    :category "magent")

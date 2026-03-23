@@ -87,7 +87,9 @@ Default value is read from prompt.txt next to this file."
   :group 'magent)
 
 (defcustom magent-buffer-name "*magent*"
-  "Name of the buffer used for Magent output."
+  "Base name used when deriving Magent output buffer names.
+Output buffers are named like `*magent:global*' or
+`*magent:PROJECT-NAME*'."
   :type 'string
   :group 'magent)
 
@@ -194,8 +196,28 @@ When nil, audit logs are written under `magent-session-directory'/audit."
                  directory)
   :group 'magent)
 
+(defcustom magent-audit-buffer-name "*magent-audit*"
+  "Name of the buffer used for the Magent audit browser."
+  :type 'string
+  :group 'magent)
+
 (defcustom magent-audit-preview-length 120
   "Maximum display width for persisted audit previews."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-audit-default-days 1
+  "Number of recent days loaded by default in the audit browser.
+When nil or non-positive, show all available audit records."
+  :type '(choice (const :tag "All available audit records" nil)
+                 integer)
+  :group 'magent)
+
+(defcustom magent-audit-max-records 200
+  "Maximum number of audit records rendered in the audit browser.
+Older matching records remain on disk and can be reached by
+widening the time window or lowering filters in future UI
+extensions."
   :type 'integer
   :group 'magent)
 
@@ -278,7 +300,7 @@ rendering to reduce UI updates."
 (defcustom magent-include-reasoning t
   "How to handle LLM reasoning/thinking blocks.
 If t, display reasoning blocks wrapped in #+begin_think/#+end_think.
-If 'ignore, insert reasoning text but hide it with org folding.
+If `ignore', keep reasoning blocks out of the Magent UI.
 If nil, discard reasoning content entirely."
   :type '(choice (const :tag "Display reasoning" t)
                  (const :tag "Hide reasoning" ignore)
@@ -298,6 +320,34 @@ If nil, discard reasoning content entirely."
 When non-nil, buffer name, file path, major mode, line number,
 and active region bounds are prepended to the submitted prompt."
   :type 'boolean
+  :group 'magent)
+
+(defcustom magent-enable-capabilities t
+  "Whether to resolve context-aware capabilities for each request.
+When non-nil, Magent selects a small set of active capabilities
+and injects the instruction skills linked to them."
+  :type 'boolean
+  :group 'magent)
+
+(defcustom magent-capability-max-active 3
+  "Maximum number of capabilities to auto-activate per request."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-disabled-capabilities nil
+  "List of capability names that should never auto-activate.
+These names are checked by the capability resolver before any
+automatic activation happens."
+  :type '(repeat string)
+  :group 'magent)
+
+(defcustom magent-disabled-capability-families nil
+  "List of capability family names that should never auto-activate.
+Families are maintainer-defined strings carried by capability
+metadata, for example a package workflow family or a debugging
+family.  A locally enabled capability can still override this for
+that one capability."
+  :type '(repeat string)
   :group 'magent)
 
 ;;; Shared utilities

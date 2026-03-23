@@ -14,9 +14,10 @@
 
 (require 'cl-lib)
 (require 'gptel)
+(require 'json)
 
 (require 'magent-events)
-(require 'magent-fsm-backend-native)
+(require 'magent-fsm-shared)
 (declare-function magent-ui-start-streaming "magent-ui")
 (declare-function magent-ui-continue-streaming "magent-ui")
 (declare-function magent-ui-insert-streaming "magent-ui")
@@ -34,7 +35,83 @@
     (puthash :text-chunks nil state)
     (puthash :reasoning-chunks nil state)
     (puthash :in-reasoning-block nil state)
+    (puthash :saw-reasoning nil state)
     state))
+
+(defsubst magent-fsm-backend-gptel--render-reasoning-p ()
+  "Return non-nil when reasoning blocks should be shown in the UI."
+  (eq magent-include-reasoning t))
+
+(defun magent-fsm-backend-gptel--note-reasoning-seen
+    (state request-id backend model)
+  "Record that reasoning was seen in STATE for REQUEST-ID.
+BACKEND and MODEL are used for diagnostic logging."
+  (unless (gethash :saw-reasoning state)
+    (puthash :saw-reasoning t state)
+    (magent-log "DEBUG reasoning received request=%s backend=%s model=%s ui=%S"
+                request-id
+                (and backend (gptel-backend-name backend))
+                (format "%s" model)
+                magent-include-reasoning)))
+
+(defun magent-fsm-backend-gptel--remember-reasoning (state reasoning-text)
+  "Append REASONING-TEXT to STATE when Magent keeps reasoning."
+  (when (and magent-include-reasoning
+             (stringp reasoning-text))
+    (push reasoning-text (gethash :reasoning-chunks state))
+    (puthash :reasoning-chunks
+             (gethash :reasoning-chunks state)
+             state)))
+
+(defun magent-fsm-backend-gptel--close-reasoning-block (state)
+  "Close the current reasoning block tracked in STATE when needed."
+  (when (gethash :in-reasoning-block state)
+    (magent-ui-insert-reasoning-end)
+    (puthash :in-reasoning-block nil state)))
+
+(defun magent-fsm-backend-gptel--request-bytes (data)
+  "Return encoded byte size for DATA, or nil when unavailable."
+  (when data
+    (length
+     (encode-coding-string
+      (condition-case nil
+          (json-encode data)
+        (error (format "%s" data)))
+      'utf-8-unix t))))
+
+(defun magent-fsm-backend-gptel--final-text (state info)
+  "Return the final assistant text assembled from STATE and INFO."
+  (or (and (gethash :text-chunks state)
+           (apply #'concat
+                  (reverse (gethash :text-chunks state))))
+      (plist-get info :content)
+      ""))
+
+(defun magent-fsm-backend-gptel--usage-plist (info final-text)
+  "Return a normalized usage plist from INFO and FINAL-TEXT."
+  (let* ((input-tokens (or (plist-get info :input-tokens)
+                           (plist-get info :prompt-tokens)))
+         (output-tokens (or (plist-get info :output-tokens)
+                            (plist-get info :completion-tokens)))
+         (total-tokens (or (plist-get info :total-tokens)
+                           (and (numberp input-tokens)
+                                (numberp output-tokens)
+                                (+ input-tokens output-tokens))))
+         (tool-use (plist-get info :tool-use))
+         (request-bytes (magent-fsm-backend-gptel--request-bytes
+                         (plist-get info :data))))
+    (list :input-tokens input-tokens
+          :output-tokens output-tokens
+          :total-tokens total-tokens
+          :usage-available (or (numberp input-tokens)
+                               (numberp output-tokens)
+                               (numberp total-tokens))
+          :request-bytes request-bytes
+          :response-chars (length final-text)
+          :tool-use-count (length tool-use)
+          :stop-reason (plist-get info :stop-reason)
+          :http-status (plist-get info :http-status)
+          :error (plist-get info :error))))
 
 (defun magent-fsm-backend-gptel-create (&rest args)
   "Create gptel FSM from keyword ARGS (returns plist with parameters).
@@ -63,6 +140,7 @@ Accepts the same keyword arguments as `magent-fsm-create'."
          (ui-callback (plist-get params :ui-callback))
          (backend (plist-get params :gptel-backend))
          (model (plist-get params :model))
+         (request-id (magent-events-generate-id))
          (request-buffer (generate-new-buffer " *magent-gptel-request*"))
          ;; Install permission-aware :confirm functions and handle
          ;; `(tool-call . ...)' callbacks ourselves instead of relying on
@@ -72,6 +150,15 @@ Accepts the same keyword arguments as `magent-fsm-create'."
          (stream-state (magent-fsm-backend-gptel--make-stream-state)))
 
     (magent-ui-start-streaming)
+    (magent-events-emit
+     'llm-request-start
+     :context event-context
+     :request-id request-id
+     :backend (and backend (gptel-backend-name backend))
+     :model (format "%s" model)
+     :prompt-count (length prompt-list)
+     :tool-count (length tools)
+     :system-prompt-length (length (or system-prompt "")))
 
     (with-current-buffer request-buffer
       (setq-local gptel-backend backend)
@@ -88,11 +175,13 @@ Accepts the same keyword arguments as `magent-fsm-create'."
         :callback (lambda (response info)
                     (magent-fsm-backend-gptel--callback
                      response info callback ui-callback request-buffer
-                     permission event-context stream-state))))))
+                     permission event-context stream-state request-id
+                     backend model))))))
 
 (defun magent-fsm-backend-gptel--callback (response info callback ui-callback buffer
                                                     permission event-context
-                                                    &optional stream-state)
+                                                    &optional stream-state
+                                                    request-id backend model)
   "Handle gptel response.
 Wraps all UI operations in `condition-case' to suppress benign
 cursor-boundary signals that can leak from evil-mode adjustments
@@ -101,55 +190,89 @@ inside gptel's process filter."
                    (magent-fsm-backend-gptel--make-stream-state))))
     (condition-case nil
         (cond
-         ((and (consp response) (eq (car response) 'reasoning)
-               magent-include-reasoning)
+         ((and (consp response) (eq (car response) 'reasoning))
           (let ((reasoning-text (cdr response)))
+            (magent-fsm-backend-gptel--note-reasoning-seen
+             state request-id backend model)
+            (magent-fsm-backend-gptel--remember-reasoning state reasoning-text)
             (if (eq reasoning-text t)
-                (when (gethash :in-reasoning-block state)
-                  (magent-ui-insert-reasoning-end)
-                  (puthash :in-reasoning-block nil state))
-              (progn
+                (magent-fsm-backend-gptel--close-reasoning-block state)
+              (when (magent-fsm-backend-gptel--render-reasoning-p)
                 (unless (gethash :in-reasoning-block state)
                   (magent-ui-insert-reasoning-start)
                   (puthash :in-reasoning-block t state))
-                (magent-ui-insert-reasoning-text reasoning-text)
-                (push reasoning-text (gethash :reasoning-chunks state))
-                (puthash :reasoning-chunks
-                         (gethash :reasoning-chunks state)
-                         state)))))
+                (magent-ui-insert-reasoning-text reasoning-text)))))
          ((stringp response)
           (push response (gethash :text-chunks state))
           (puthash :text-chunks (gethash :text-chunks state) state)
+          (magent-log "DEBUG text-chunk len=%d total-chunks=%d"
+                      (length response)
+                      (length (gethash :text-chunks state)))
           (magent-events-emit 'text-delta :context event-context :text response)
           (when ui-callback (funcall ui-callback response)))
          ((and (consp response) (eq (car response) 'tool-call))
-          (when (gethash :in-reasoning-block state)
-            (magent-ui-insert-reasoning-end)
-            (puthash :in-reasoning-block nil state))
+          (magent-fsm-backend-gptel--close-reasoning-block state)
           (magent-fsm--handle-tool-call-confirmation-with-permission
            permission (cdr response)))
          ((and (consp response) (eq (car response) 'tool-result))
-          (when (gethash :in-reasoning-block state)
-            (magent-ui-insert-reasoning-end)
-            (puthash :in-reasoning-block nil state))
+          (magent-fsm-backend-gptel--close-reasoning-block state)
+          (magent-log "DEBUG tool-result received stop-reason=%S"
+                      (plist-get info :stop-reason))
           (magent-ui-continue-streaming))
          ((eq response t)
-          (when (gethash :in-reasoning-block state)
-            (magent-ui-insert-reasoning-end)
-            (puthash :in-reasoning-block nil state))
-          (if (plist-get info :tool-use)
-              ;; Tool use round: gptel will continue the loop.
-              ;; Stay in the same section — don't finalize or create a new heading.
-              (magent-ui-continue-streaming)
-            ;; Final response: finalize the streaming section and finish.
-            (magent-ui-finish-streaming-fontify)
-            (when callback
-              (funcall callback (or (and (gethash :text-chunks state)
-                                         (apply #'concat
-                                                (nreverse (gethash :text-chunks state))))
-                                    (plist-get info :content) "")))
-            (when (buffer-live-p buffer) (kill-buffer buffer))))
+          (magent-fsm-backend-gptel--close-reasoning-block state)
+          (when (and magent-include-reasoning
+                     (not (gethash :saw-reasoning state)))
+            (magent-log "DEBUG no reasoning received request=%s backend=%s model=%s ui=%S"
+                        request-id
+                        (and backend (gptel-backend-name backend))
+                        (format "%s" model)
+                        magent-include-reasoning))
+          (let ((final-text (magent-fsm-backend-gptel--final-text state info)))
+            (magent-log "DEBUG response=t tool-use=%S chunks=%d content-len=%d final-len=%d"
+                        (and (plist-get info :tool-use) t)
+                        (length (gethash :text-chunks state))
+                        (length (or (plist-get info :content) ""))
+                        (length final-text))
+            (apply
+             #'magent-events-emit
+             'llm-request-end
+             :context event-context
+             :request-id request-id
+             :status 'completed
+             :backend (and backend (gptel-backend-name backend))
+             :model (format "%s" model)
+             (magent-fsm-backend-gptel--usage-plist info final-text))
+            (if (plist-get info :tool-use)
+                ;; Tool use round: gptel will continue the loop.
+                ;; Stay in the same section — don't finalize or create a new heading.
+                (magent-ui-continue-streaming)
+              ;; Final response: finalize the streaming section and finish.
+              (magent-ui-finish-streaming-fontify)
+              (when callback
+                (funcall callback final-text))
+              (when (buffer-live-p buffer) (kill-buffer buffer)))))
          ((null response)
+          (magent-log "DEBUG null response (failure) error=%S http=%S"
+                      (plist-get info :error)
+                      (plist-get info :http-status))
+          (magent-fsm-backend-gptel--close-reasoning-block state)
+          (when (and magent-include-reasoning
+                     (not (gethash :saw-reasoning state)))
+            (magent-log "DEBUG no reasoning received request=%s backend=%s model=%s ui=%S"
+                        request-id
+                        (and backend (gptel-backend-name backend))
+                        (format "%s" model)
+                        magent-include-reasoning))
+          (apply
+           #'magent-events-emit
+           'llm-request-end
+           :context event-context
+           :request-id request-id
+           :status 'failed
+           :backend (and backend (gptel-backend-name backend))
+           :model (format "%s" model)
+           (magent-fsm-backend-gptel--usage-plist info ""))
           (when callback (funcall callback nil))
           (when (buffer-live-p buffer) (kill-buffer buffer))))
       ((beginning-of-buffer end-of-buffer beginning-of-line end-of-line)
@@ -164,6 +287,29 @@ inside gptel's process filter."
   "Destroy gptel FSM (no-op)."
   (ignore params))
 
+;;; Advice to reset :reasoning-block between tool-use turns
+
+(defun magent--reset-reasoning-block-a (fsm)
+  "Reset :reasoning-block in FSM info before firing a new HTTP request.
+
+gptel's `gptel--handle-wait' clears :tool-success, :tool-use, :error,
+:http-status, and :reasoning between turns but does NOT clear
+:reasoning-block.  For models that stream reasoning via a separate JSON
+field (e.g. qwen3-max with :enable_thinking t), when turn 1 contains
+reasoning followed by a tool call with no text content, :reasoning-block
+is left as \\='in.  On the second turn the stream-filter's
+`((not (eq reasoning-block t)) ...)' branch then mis-classifies incoming
+text content as reasoning, leaving :text-chunks empty and producing a
+silent empty final response (Variant A of the qwen3-max empty-response
+bug documented in project.org)."
+  (let ((info (gptel-fsm-info fsm)))
+    (when (plist-get info :reasoning-block)
+      (magent-log "DEBUG reset :reasoning-block (was %S) before new HTTP request"
+                  (plist-get info :reasoning-block))
+      (plist-put info :reasoning-block nil))))
+
+(advice-add 'gptel--handle-wait :before #'magent--reset-reasoning-block-a)
+
 ;;; Unknown-tool advice for gptel FSM
 
 (defun magent--handle-unknown-tools-a (orig-fn fsm)
@@ -174,6 +320,107 @@ preventing the FSM from hanging when the model hallucinates tool names."
          (patched nil))
     (when-let* ((all-tool-use (plist-get info :tool-use))
                 (tools (plist-get info :tools)))
+      ;; Debug: log all tool calls with name, id, and args to diagnose splitting issues
+      (magent-log "DEBUG tool-use entries: %s"
+                  (mapconcat (lambda (tc)
+                               (format "'%s'(id=%S args=%s)"
+                                       (plist-get tc :name)
+                                       (plist-get tc :id)
+                                       (if (plist-get tc :args) "present" "nil")))
+                             all-tool-use ", "))
+      ;; Fix: when an empty-named tool call precedes a known tool with nil args,
+      ;; merge the empty tool's args and id into the known tool, then remove
+      ;; the empty entry from the tool-use list entirely.  This works around a
+      ;; qwen3-max streaming quirk where the first chunk arrives with name=""
+      ;; causing gptel to split one tool call into two entries with the same id.
+      ;; Previously we pre-filled the empty entry with an error result, but both
+      ;; entries share the same call_id, so the model received an error for its
+      ;; only tool call and terminated the loop prematurely.
+      (let ((merged-from nil)
+            (all-list all-tool-use))
+        (while (cdr all-list)
+          (let* ((tc (car all-list))
+                 (next (cadr all-list)))
+            (when (and (string= (plist-get tc :name) "")
+                       (null (plist-get tc :result))
+                       (plist-get tc :args)
+                       (null (plist-get next :args))
+                       (cl-find-if (lambda (ts)
+                                     (equal (gptel-tool-name ts)
+                                            (plist-get next :name)))
+                                   tools))
+              (plist-put next :args (plist-get tc :args))
+              ;; Transfer the id (in case they differ; they share the same id
+              ;; in the qwen3-max quirk but transfer anyway for robustness).
+              (when (and (plist-get tc :id) (not (plist-get next :id)))
+                (plist-put next :id (plist-get tc :id)))
+              (push tc merged-from)
+              (magent-log "INFO merged args+id(%S) from empty-named tool into '%s'"
+                          (plist-get tc :id)
+                          (plist-get next :name))))
+          (setq all-list (cdr all-list)))
+        ;; Remove the empty-named entries from the tool-use list so gptel sends
+        ;; only the real tool result (no duplicate error for the same call_id).
+        (when merged-from
+          (plist-put info :tool-use
+                     (cl-remove-if (lambda (tc) (memq tc merged-from))
+                                   all-tool-use))
+          ;; Update local binding so the unknown-tool loop below uses the
+          ;; filtered list.
+          (setq all-tool-use (plist-get info :tool-use))
+          ;; Also patch the assistant message already injected into info :data.
+          ;; gptel-openai's [DONE] handler injects the message with raw
+          ;; tool_calls BEFORE our advice runs.  The qwen3-max quirk means:
+          ;;   - the empty-named entry has the real JSON arguments
+          ;;   - the real entry (read_file) has empty "" arguments (invalid JSON)
+          ;; We must (1) copy args from empty entry to real entry, then
+          ;; (2) remove the empty entry so the conversation history is clean.
+          (let* ((data (plist-get info :data))
+                 (messages (and data (plist-get data :messages)))
+                 (n (and messages (length messages))))
+            (when (and n (> n 0))
+              (let ((idx (1- n)))
+                (while (and (>= idx 0)
+                            (not (and (equal (plist-get (aref messages idx) :role)
+                                             "assistant")
+                                      (plist-get (aref messages idx) :tool_calls))))
+                  (cl-decf idx))
+                (when (>= idx 0)
+                  (let* ((msg (aref messages idx))
+                         (tool-calls (plist-get msg :tool_calls))
+                         ;; Build id → non-empty arguments from empty-named entries.
+                         (id-to-args (make-hash-table :test 'equal)))
+                    (cl-loop for tc across tool-calls
+                             do (let* ((func (plist-get tc :function))
+                                       (name (and func (plist-get func :name)))
+                                       (args (and func (plist-get func :arguments))))
+                                  (when (and (stringp name) (string-empty-p name)
+                                             (stringp args) (not (string-empty-p args)))
+                                    (puthash (plist-get tc :id) args id-to-args))))
+                    ;; Copy args to real entries that have empty arguments.
+                    (cl-loop for tc across tool-calls
+                             do (let* ((func (plist-get tc :function))
+                                       (name (and func (plist-get func :name)))
+                                       (id (plist-get tc :id))
+                                       (args-from-empty (gethash id id-to-args))
+                                       (cur-args (and func (plist-get func :arguments))))
+                                  (when (and (stringp name) (not (string-empty-p name))
+                                             args-from-empty
+                                             (or (null cur-args) (string-empty-p cur-args)))
+                                    (plist-put func :arguments args-from-empty)
+                                    (magent-log "INFO fixed '%s' arguments in assistant message" name))))
+                    ;; Remove empty-named entries.
+                    (let ((filtered
+                           (cl-remove-if
+                            (lambda (tc)
+                              (let* ((func (plist-get tc :function))
+                                     (name (and func (plist-get func :name))))
+                                (and (stringp name) (string-empty-p name))))
+                            (append tool-calls nil))))
+                      (when (< (length filtered) (length tool-calls))
+                        (plist-put msg :tool_calls (vconcat filtered))
+                        (magent-log "INFO patched assistant message: removed %d empty tool_call(s)"
+                                    (- (length tool-calls) (length filtered))))))))))))
       (let ((avail (mapconcat #'gptel-tool-name tools ", ")))
         (dolist (tc all-tool-use)
           (unless (plist-get tc :result)
@@ -185,8 +432,8 @@ preventing the FSM from hanging when the model hallucinates tool names."
                            (format "Error: tool '%s' not found. Available: %s"
                                    name avail))
                 (setq patched t)
-                (magent-log "WARN unknown tool '%s' — returned error to model"
-                            name)))))))
+                (magent-log "WARN unknown tool '%s'(id=%S) — returned error to model"
+                            name (plist-get tc :id))))))))
     ;; Run original handler
     (funcall orig-fn fsm)
     ;; All-unknown edge case: handler body didn't execute, FSM still in TOOL
