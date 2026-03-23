@@ -2,7 +2,8 @@
   "Magent AI coding agent for Emacs"
   '((emacs "27.1")
     (gptel "0.9.8")
-    (spinner "1.7.4"))
+    (spinner "1.7.4")
+    (yaml "1.0.0"))
   :keywords '("tools" "ai" "copilot")
   :authors '(("Jamie Cui" . "jamie.cui@outlook.com"))
   :maintainers '(("Jamie Cui" . "jamie.cui@outlook.com"))

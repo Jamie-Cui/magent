@@ -6,7 +6,7 @@
 ;; Maintainer: Jamie Cui <jamie.cui@outlook.com>
 ;; Keywords: tools, ai, copilot
 ;; Package-Version: 0.1.0
-;; Package-Requires: ((emacs "27.1") (spinner "1.7.4") (transient "0.4"))
+;; Package-Requires: ((emacs "27.1") (spinner "1.7.4") (transient "0.4") (yaml "1.0.0"))
 ;; URL: https://github.com/jamie-cui/magent
 
 ;; This file is not part of GNU Emacs.
@@ -86,12 +86,14 @@
 (require 'magent-ui)
 (require 'magent-agent-registry)
 (require 'magent-permission)
-(require 'magent-agent-file)
 (require 'magent-skills)
-(require 'magent-skill-file)
-(require 'magent-queue)
+(require 'magent-capability)
+(require 'magent-capability-file)
 
 (declare-function magent-doctor "magent-ui")
+(declare-function magent-list-capabilities-for-current-context "magent-capability")
+(declare-function magent-explain-last-capability-resolution "magent-capability")
+(declare-function magent-toggle-capability-locally "magent-capability")
 
 ;;; Initialization
 
@@ -104,7 +106,7 @@ Registry and custom agents are loaded when non-nil.")
 
 (declare-function magent-audit-enable "magent-audit")
 
-(defun magent--current-agent-name ()
+(defun magent--get-current-agent-name ()
   "Return the name of the current agent as a string.
 Falls back to `magent-default-agent' if no session agent is set."
   (let ((agent (when magent--current-session
@@ -113,28 +115,28 @@ Falls back to `magent-default-agent' if no session agent is set."
 
 (defconst magent--lighter
   '(:eval
-    (concat " [M/" (magent--current-agent-name) "]"
-            (when (magent-queue-processing-p)
+    (concat " [M/" (magent--get-current-agent-name) "] "
+            (when (magent-ui-processing-p)
               (propertize "[busy]" 'face 'warning
                           'help-echo "Magent: request in progress"))
             (spinner-print magent--spinner)))
   "Modeline lighter for `magent-mode'.
-Shows \" [M/agent]\", a busy marker while a request is in flight,
+Shows \" [M/agent] \", a busy marker while a request is in flight,
 and an animated spinner while processing.")
 (put 'magent--lighter 'risky-local-variable t)
 
-(defun magent--mode-line-construct ()
+(defun magent--get-mode-line-string ()
   "Return the magent mode-line string for `mode-line-misc-info'.
 Only renders in `magent-output-mode' buffers.  Shows \"[M/agent]\"
 and a spinner while processing."
   (when (derived-mode-p 'magent-output-mode)
-    (concat " [M/" (magent--current-agent-name) "]"
+    (concat " [M/" (magent--get-current-agent-name) "] "
             (spinner-print magent--spinner))))
 
 (defconst magent--mode-line-spinner-construct
-  '(:eval (magent--mode-line-construct))
+  '(:eval (magent--get-mode-line-string))
   "Mode-line construct added to `global-mode-string'.
-Delegates to `magent--mode-line-construct' so the function can be
+Delegates to `magent--get-mode-line-string' so the function can be
 redefined on reload without needing to update `global-mode-string'.")
 (put 'magent--mode-line-spinner-construct 'risky-local-variable t)
 
@@ -155,6 +157,9 @@ When enabled, Magent commands are available.
             (define-key map (kbd "C-c m a") #'magent-ask-at-point)
             (define-key map (kbd "C-c m c") #'magent-clear-session)
             (define-key map (kbd "C-c m R") #'magent-resume-session)
+            (define-key map (kbd "C-c m x") #'magent-list-capabilities-for-current-context)
+            (define-key map (kbd "C-c m e") #'magent-explain-last-capability-resolution)
+            (define-key map (kbd "C-c m k") #'magent-toggle-capability-locally)
             (define-key map (kbd "C-c m l") #'magent-show-log)
             (define-key map (kbd "C-c m L") #'magent-clear-log)
             ;; Section folding
@@ -174,6 +179,9 @@ When enabled, Magent commands are available.
 ;; add new bindings explicitly to support live reloading during development.
 (define-key magent-mode-map (kbd "C-c m d") #'magent-diagnose-emacs)
 (define-key magent-mode-map (kbd "C-c m D") #'magent-doctor)
+(define-key magent-mode-map (kbd "C-c m x") #'magent-list-capabilities-for-current-context)
+(define-key magent-mode-map (kbd "C-c m e") #'magent-explain-last-capability-resolution)
+(define-key magent-mode-map (kbd "C-c m k") #'magent-toggle-capability-locally)
 
 (defun magent--ensure-initialized ()
   "Ensure magent is fully initialized.
@@ -185,6 +193,8 @@ Called on first use of any magent command.  Loads agents and skills."
     (magent-agent-registry-init)
     ;; Load skills from files (built-in skills auto-register on require)
     (magent-skill-file-load-all)
+    ;; Load capabilities after skills so linked skill prompts are available.
+    (magent-capability-file-load-all)
     (setq magent--initialized t)
     (magent-log "INFO magent initialization complete")))
 

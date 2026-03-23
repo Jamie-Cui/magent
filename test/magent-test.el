@@ -22,6 +22,14 @@
             (push (json-read-from-string line) records)))))
     (nreverse records)))
 
+(defun magent-test--write-audit-record-file (directory filename records)
+  "Write RECORDS as JSONL into DIRECTORY/FILENAME."
+  (make-directory directory t)
+  (with-temp-file (expand-file-name filename directory)
+    (dolist (record records)
+      (insert (json-encode record))
+      (insert "\n"))))
+
 (defconst magent-test--root-directory
   (expand-file-name ".."
                     (file-name-directory (or load-file-name buffer-file-name)))
@@ -111,76 +119,138 @@
 
 (ert-deftest magent-test-frontmatter-basic ()
   "Test basic frontmatter key-value parsing."
-  (require 'magent-frontmatter)
+  (require 'magent-file-loader)
   (let* ((content "---\nname: my-agent\ndescription: A test agent\n---\nBody text here")
-         (result (magent-frontmatter-parse content))
+         (result (magent-file-loader-parse-frontmatter content))
          (fm (car result))
          (body (cdr result)))
     (should (equal (plist-get fm :name) "my-agent"))
     (should (equal (plist-get fm :description) "A test agent"))
     (should (equal (string-trim body) "Body text here"))))
 
+(ert-deftest magent-test-file-loader-lists-direct-and-nested-definition-files ()
+  "Test shared file loader finds direct and nested definition files."
+  (require 'magent-file-loader)
+  (let* ((tmpdir (make-temp-file "magent-file-loader-" t))
+         (nested-dir (expand-file-name "nested" tmpdir))
+         (direct-file (expand-file-name "SKILL.md" tmpdir))
+         (nested-file (expand-file-name "SKILL.md" nested-dir)))
+    (unwind-protect
+        (progn
+          (make-directory nested-dir t)
+          (with-temp-file direct-file
+            (insert "---\nname: direct\n---\n"))
+          (with-temp-file nested-file
+            (insert "---\nname: nested\n---\n"))
+          (should (equal (magent-file-loader-list-named-files
+                          (list tmpdir) "SKILL.md")
+                         (list direct-file nested-file))))
+      (delete-directory tmpdir t))))
+
+(ert-deftest magent-test-file-loader-read-definition-without-frontmatter ()
+  "Test shared file loader preserves body when no frontmatter exists."
+  (require 'magent-file-loader)
+  (let ((tmpfile (make-temp-file "magent-file-loader-" nil ".md")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "Plain body only"))
+          (let ((definition (magent-file-loader-read-definition tmpfile)))
+            (should-not (plist-get definition :frontmatter))
+            (should (equal (plist-get definition :body) "Plain body only"))))
+      (delete-file tmpfile))))
+
+(ert-deftest magent-test-file-loader-removes-file-backed-registry-entries ()
+  "Test shared file loader strips only file-backed entries from a registry."
+  (require 'magent-file-loader)
+  (let* ((builtin '("builtin" . (:file-path nil)))
+         (file-backed '("file-backed" . (:file-path "/tmp/skill.md")))
+         (registry (list file-backed builtin)))
+    (should (equal (magent-file-loader-remove-file-backed-entries
+                    registry
+                    (lambda (value) (plist-get value :file-path)))
+                   (list builtin)))))
+
 (ert-deftest magent-test-frontmatter-boolean-values ()
   "Test frontmatter boolean value parsing."
-  (require 'magent-frontmatter)
+  (require 'magent-file-loader)
   (let* ((content "---\nhidden: true\nnative: false\n---\n")
-         (result (magent-frontmatter-parse content))
+         (result (magent-file-loader-parse-frontmatter content))
          (fm (car result)))
     (should (eq (plist-get fm :hidden) t))
     (should (eq (plist-get fm :native) nil))))
 
 (ert-deftest magent-test-frontmatter-numeric-values ()
   "Test frontmatter numeric value parsing."
-  (require 'magent-frontmatter)
+  (require 'magent-file-loader)
   (let* ((content "---\ntemperature: 0.7\nsteps: 10\n---\n")
-         (result (magent-frontmatter-parse content))
+         (result (magent-file-loader-parse-frontmatter content))
          (fm (car result)))
     (should (= (plist-get fm :temperature) 0.7))
     (should (= (plist-get fm :steps) 10))))
 
 (ert-deftest magent-test-frontmatter-quoted-strings ()
   "Test frontmatter quoted string value parsing."
-  (require 'magent-frontmatter)
+  (require 'magent-file-loader)
   (let* ((content "---\nname: \"my agent\"\ncolor: 'blue'\n---\n")
-         (result (magent-frontmatter-parse content))
+         (result (magent-file-loader-parse-frontmatter content))
          (fm (car result)))
     (should (equal (plist-get fm :name) "my agent"))
     (should (equal (plist-get fm :color) "blue"))))
 
 (ert-deftest magent-test-frontmatter-comma-separated-list ()
   "Test frontmatter comma-separated list value parsing."
-  (require 'magent-frontmatter)
+  (require 'magent-file-loader)
   (let* ((content "---\ntools: bash, read, write\n---\n")
-         (result (magent-frontmatter-parse content))
+         (result (magent-file-loader-parse-frontmatter content))
          (fm (car result)))
     (should (listp (plist-get fm :tools)))
     (should (= (length (plist-get fm :tools)) 3))
     (should (equal (plist-get fm :tools) '("bash" "read" "write")))))
 
+(ert-deftest magent-test-frontmatter-multiline-yaml-list ()
+  "Test multiline YAML frontmatter falls back to the YAML parser."
+  (require 'magent-file-loader)
+  (let* ((content "---\nname: test-agent\ntools:\n  - read\n  - write\nskills:\n  - skill-a\n  - skill-b\n---\nBody text")
+         (result (magent-file-loader-parse-frontmatter content))
+         (fm (car result)))
+    (should (equal (plist-get fm :name) "test-agent"))
+    (should (equal (plist-get fm :tools) '("read" "write")))
+    (should (equal (plist-get fm :skills) '("skill-a" "skill-b")))
+    (should (equal (string-trim (cdr result)) "Body text"))))
+
 (ert-deftest magent-test-frontmatter-no-frontmatter ()
   "Test content without frontmatter."
-  (require 'magent-frontmatter)
+  (require 'magent-file-loader)
   (let* ((content "Just regular content\nno frontmatter")
-         (result (magent-frontmatter-parse content)))
+         (result (magent-file-loader-parse-frontmatter content)))
     (should (null (car result)))
     (should (equal (cdr result) content))))
 
 (ert-deftest magent-test-frontmatter-empty-body ()
   "Test frontmatter with empty body."
-  (require 'magent-frontmatter)
+  (require 'magent-file-loader)
   (let* ((content "---\nname: test\n---\n")
-         (result (magent-frontmatter-parse content)))
+         (result (magent-file-loader-parse-frontmatter content)))
     (should (equal (plist-get (car result) :name) "test"))
     (should (string-empty-p (string-trim (cdr result))))))
 
 (ert-deftest magent-test-frontmatter-underscore-to-hyphen ()
   "Test that underscores in keys are converted to hyphens."
-  (require 'magent-frontmatter)
+  (require 'magent-file-loader)
   (let* ((content "---\ntop_p: 0.9\nmax_tokens: 100\n---\n")
-         (result (magent-frontmatter-parse content))
+         (result (magent-file-loader-parse-frontmatter content))
          (fm (car result)))
     (should (= (plist-get fm :top-p) 0.9))
     (should (= (plist-get fm :max-tokens) 100))))
+
+(ert-deftest magent-test-md2org-convert-inline-restores-bold-markers ()
+  "Test inline markdown conversion restores Org bold markers."
+  (require 'magent-ui)
+  (let ((converted (magent-md2org-convert-string "Plain **foo** and *bar* with `baz`.")))
+    (should (equal converted "Plain *foo* and /bar/ with ~baz~."))
+    (should-not (string-match-p (regexp-quote (string 1)) converted))
+    (should-not (string-match-p (regexp-quote (string 2)) converted))))
 
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Permission system tests
@@ -546,6 +616,15 @@
       (should-not (eq s1 s2))
       (should (= (length (magent-session-messages s2)) 0)))))
 
+(ert-deftest magent-test-session-reset-clears-capability-local-overrides ()
+  "Test session reset clears local capability toggles."
+  (require 'magent-capability)
+  (let ((magent-capability--local-disabled-capabilities '("org-structure"))
+        (magent-capability--local-enabled-capabilities '("magit-workflow")))
+    (magent-session-reset)
+    (should-not magent-capability--local-disabled-capabilities)
+    (should-not magent-capability--local-enabled-capabilities)))
+
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Agent registry tests
 ;; ──────────────────────────────────────────────────────────────────────
@@ -759,7 +838,7 @@
 
 (ert-deftest magent-test-agent-file-parse-mode ()
   "Test mode string parsing."
-  (require 'magent-agent-file)
+  (require 'magent-agent-registry)
   (should (eq (magent-agent-file--parse-mode "primary") 'primary))
   (should (eq (magent-agent-file--parse-mode "subagent") 'subagent))
   (should (eq (magent-agent-file--parse-mode "all") 'all))
@@ -768,7 +847,7 @@
 
 (ert-deftest magent-test-agent-file-parse-permission ()
   "Test permission generation from tools config."
-  (require 'magent-agent-file)
+  (require 'magent-agent-registry)
   (let ((rules (magent-agent-file--parse-permission '(:bash nil :read t))))
     ;; bash should be denied
     (should (eq (cdr (assq 'bash rules)) 'deny))
@@ -777,7 +856,7 @@
 
 (ert-deftest magent-test-agent-file-load-from-temp ()
   "Test loading an agent from a temporary file."
-  (require 'magent-agent-file)
+  (require 'magent-agent-registry)
   (let* ((magent-agent-registry--agents (make-hash-table :test 'equal))
          (magent-agent-registry--initialized t)
          (tmpfile (make-temp-file "test-agent-" nil ".md")))
@@ -796,7 +875,7 @@
 
 (ert-deftest magent-test-agent-file-save-roundtrip ()
   "Test saving and reloading an agent preserves fields."
-  (require 'magent-agent-file)
+  (require 'magent-agent-registry)
   (let* ((magent-agent-registry--agents (make-hash-table :test 'equal))
          (magent-agent-registry--initialized t)
          (tmpdir (make-temp-file "agent-dir-" t)))
@@ -962,12 +1041,298 @@
       (should (string-match-p "s1" (car prompts))))))
 
 ;; ──────────────────────────────────────────────────────────────────────
+;;; Capability tests
+;; ──────────────────────────────────────────────────────────────────────
+
+(ert-deftest magent-test-capabilities-register-and-get ()
+  "Test capability registration and retrieval."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil))
+    (let ((capability (magent-capability-create
+                       :name "runtime"
+                       :description "Inspect runtime"
+                       :skills '("emacs-runtime-inspection"))))
+      (magent-capability-register capability)
+      (should (magent-capability-get "runtime"))
+      (should (equal (magent-capability-name
+                      (magent-capability-get "runtime"))
+                     "runtime")))))
+
+(ert-deftest magent-test-capability-resolve-activates-matching-skill ()
+  "Test context-aware capability resolution."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil))
+    (magent-capability-register
+     (magent-capability-create
+      :name "org-structure"
+      :description "Org structure edits"
+      :skills '("org-structure-workflow")
+      :modes '(org-mode)
+      :features '(org)
+      :prompt-keywords '("heading")
+      :disclosure 'active))
+    (let* ((resolution (magent-capability-resolve
+                        "Please reorganize this heading"
+                        '(:major-mode org-mode :features (org))
+                        nil))
+           (active (magent-capability-resolution-active-capabilities resolution)))
+      (should (= (length active) 1))
+      (should (equal (magent-capability-resolution-skill-names resolution)
+                     '("org-structure-workflow")))
+      (should (equal (magent-capability-name
+                      (magent-capability-match-capability (car active)))
+                     "org-structure")))))
+
+(ert-deftest magent-test-capability-parse-context-prompt-derives-fields ()
+  "Test prompt context parsing derives normalized resolver fields."
+  (require 'magent-capability)
+  (let ((context (magent-capability--parse-context-prompt
+                  "[Context: buffer=\"notes.org\" file=\"/tmp/notes.org\" mode=org-mode modified=true region=1-4]")))
+    (should (equal (plist-get context :buffer-name) "notes.org"))
+    (should (equal (plist-get context :file-path) "/tmp/notes.org"))
+    (should (equal (plist-get context :file-extension) "org"))
+    (should (eq (plist-get context :major-mode) 'org-mode))
+    (should (memq 'org-mode (plist-get context :major-mode-family)))
+    (should (eq (plist-get context :buffer-modified-p) t))
+    (should (eq (plist-get context :region-active) t))))
+
+(ert-deftest magent-test-capability-resolve-tie-breaks-by-name ()
+  "Test equal-score active capabilities are sorted by name."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil)
+        (magent-capability-max-active 3))
+    (dolist (name '("zeta" "alpha"))
+      (magent-capability-register
+       (magent-capability-create
+        :name name
+        :skills (list (concat name "-skill"))
+        :modes '(org-mode)
+        :features '(org)
+        :disclosure 'active)))
+    (let* ((resolution (magent-capability-resolve
+                        "Refile this subtree"
+                        '(:major-mode org-mode
+                          :major-mode-family (org-mode text-mode)
+                          :features (org))
+                        nil))
+           (active (magent-capability-resolution-active-capabilities resolution)))
+      (should (equal (mapcar (lambda (match)
+                               (magent-capability-name
+                                (magent-capability-match-capability match)))
+                             active)
+                     '("alpha" "zeta"))))))
+
+(ert-deftest magent-test-capability-resolve-respects-disabled-capabilities ()
+  "Test disabled capabilities stay hidden even when they match."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil)
+        (magent-disabled-capabilities '("org-structure")))
+    (magent-capability-register
+     (magent-capability-create
+      :name "org-structure"
+      :skills '("org-structure-workflow")
+      :modes '(org-mode)
+      :features '(org)
+      :prompt-keywords '("heading")
+      :disclosure 'active))
+    (let* ((resolution (magent-capability-resolve
+                        "Please reorganize this heading"
+                        '(:major-mode org-mode
+                          :major-mode-family (org-mode text-mode)
+                          :features (org))
+                        nil))
+           (match (car (magent-capability-resolution-matches resolution))))
+      (should (eq (magent-capability-match-status match) 'hidden))
+      (should-not (magent-capability-resolution-active-capabilities resolution))
+      (should-not (plist-get (magent-capability-match-details match) :enabled)))))
+
+(ert-deftest magent-test-capability-resolve-respects-disabled-family ()
+  "Test disabled capability families suppress auto-activation."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil)
+        (magent-disabled-capability-families '("org")))
+    (magent-capability-register
+     (magent-capability-create
+      :name "org-structure"
+      :family "org"
+      :skills '("org-structure-workflow")
+      :modes '(org-mode)
+      :features '(org)
+      :disclosure 'active))
+    (let* ((resolution (magent-capability-resolve
+                        "Refactor this subtree"
+                        '(:major-mode org-mode
+                          :major-mode-family (org-mode outline-mode text-mode)
+                          :features (org))
+                        nil))
+           (match (car (magent-capability-resolution-matches resolution))))
+      (should (eq (magent-capability-match-status match) 'hidden))
+      (should-not (plist-get (magent-capability-match-details match) :enabled)))))
+
+(ert-deftest magent-test-capability-toggle-locally-overrides-disabled-state ()
+  "Test local capability toggles override disabled capability settings."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil)
+        (magent-disabled-capabilities '("org-structure"))
+        (magent-capability--local-disabled-capabilities nil)
+        (magent-capability--local-enabled-capabilities nil))
+    (magent-capability-register
+     (magent-capability-create
+      :name "org-structure"
+      :family "org"))
+    (should-not (magent-capability-enabled-p
+                 (magent-capability-get "org-structure")))
+    (should (eq (magent-capability-toggle-locally "org-structure") 'enabled))
+    (should (magent-capability-enabled-p
+             (magent-capability-get "org-structure")))
+    (should (eq (magent-capability-toggle-locally "org-structure") 'disabled))
+    (should-not (magent-capability-enabled-p
+                 (magent-capability-get "org-structure")))))
+
+(ert-deftest magent-test-capability-resolution-summary-includes-active-and-suggested ()
+  "Test capability resolution summary remains concise and inspectable."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil))
+    (magent-capability-register
+     (magent-capability-create
+      :name "org-structure"
+      :family "org"
+      :skills '("org-structure-workflow")
+      :modes '(org-mode)
+      :features '(org)
+      :disclosure 'active))
+    (magent-capability-register
+     (magent-capability-create
+      :name "git-workflow"
+      :family "git"
+      :skills '("git-workflow")
+      :files '("*COMMIT_EDITMSG")
+      :prompt-keywords '("commit")
+      :disclosure 'suggested))
+    (let ((summary (magent-capability-resolution-summary
+                    (magent-capability-resolve
+                     "Commit after reorganizing this subtree"
+                     '(:major-mode org-mode
+                       :major-mode-family (org-mode outline-mode text-mode)
+                       :file-path "/tmp/COMMIT_EDITMSG"
+                       :features (org))
+                     nil))))
+      (should (string-match-p "Auto capabilities: org-structure" summary))
+      (should (string-match-p "Suggested: git-workflow" summary)))))
+
+(ert-deftest magent-test-capability-resolve-zero-max-active-keeps-explicit-skills ()
+  "Test zero auto-activation limit suppresses capability skill injection."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil)
+        (magent-capability-max-active 0))
+    (magent-capability-register
+     (magent-capability-create
+      :name "org-structure"
+      :skills '("auto-skill")
+      :modes '(org-mode)
+      :features '(org)
+      :prompt-keywords '("heading")
+      :disclosure 'active))
+    (let ((resolution (magent-capability-resolve
+                       "Please reorganize this heading"
+                       '(:major-mode org-mode
+                         :major-mode-family (org-mode text-mode)
+                         :features (org))
+                       '("manual-skill"))))
+      (should-not (magent-capability-resolution-active-capabilities resolution))
+      (should (equal (magent-capability-resolution-skill-names resolution)
+                     '("manual-skill"))))))
+
+(ert-deftest magent-test-capability-resolve-records-debug-contributions ()
+  "Test resolver debug details preserve individual score contributions."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil))
+    (magent-capability-register
+     (magent-capability-create
+      :name "org-structure"
+      :skills '("org-structure-workflow")
+      :modes '(org-mode)
+      :features '(org)
+      :files '("*.org")
+      :prompt-keywords '("heading")
+      :disclosure 'active))
+    (let* ((resolution (magent-capability-resolve
+                        "Please reorganize this heading"
+                        '(:major-mode org-mode
+                          :major-mode-family (org-mode text-mode)
+                          :file-path "/tmp/notes.org"
+                          :file-extension "org"
+                          :features (org))
+                        nil))
+           (match (car (magent-capability-resolution-active-capabilities resolution)))
+           (contributions (plist-get (magent-capability-match-details match)
+                                     :contributions)))
+      (should (= (magent-capability-match-score match) 8))
+      (should (equal (mapcar (lambda (entry) (plist-get entry :kind)) contributions)
+                     '(mode feature file keyword))))))
+
+(ert-deftest magent-test-capability-resolve-mixed-org-and-git-context ()
+  "Test org context plus git wording does not hide the org capability."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil))
+    (magent-capability-register
+     (magent-capability-create
+      :name "git-workflow"
+      :skills '("git-workflow")
+      :prompt-keywords '("commit")
+      :disclosure 'suggested))
+    (magent-capability-register
+     (magent-capability-create
+      :name "org-structure"
+      :skills '("org-structure-workflow")
+      :modes '(org-mode)
+      :features '(org)
+      :disclosure 'active))
+    (let* ((resolution (magent-capability-resolve
+                        "Please commit the result after reorganizing this subtree"
+                        '(:major-mode org-mode
+                          :major-mode-family (org-mode text-mode)
+                          :features (org))
+                        nil))
+           (matches (magent-capability-resolution-matches resolution)))
+      (should (equal (magent-capability-name
+                      (magent-capability-match-capability (car matches)))
+                     "org-structure"))
+      (should (eq (magent-capability-match-status (car matches)) 'active))
+      (should (equal (magent-capability-name
+                      (magent-capability-match-capability (cadr matches)))
+                     "git-workflow"))
+      (should (eq (magent-capability-match-status (cadr matches)) 'hidden)))))
+
+(ert-deftest magent-test-capability-resolve-magit-mode-family-and-keyword ()
+  "Test a Magit family match combines with commit wording deterministically."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil))
+    (magent-capability-register
+     (magent-capability-create
+      :name "magit-workflow"
+      :skills '("magit-workflow")
+      :modes '(magit-mode)
+      :prompt-keywords '("commit")
+      :disclosure 'active))
+    (let* ((resolution (magent-capability-resolve
+                        "Help me commit these changes"
+                        '(:major-mode magit-status-mode
+                          :major-mode-family (magit-status-mode magit-mode special-mode fundamental-mode))
+                        nil))
+           (match (car (magent-capability-resolution-active-capabilities resolution))))
+      (should match)
+      (should (= (magent-capability-match-score match) 4))
+      (should (equal (mapcar #'identity (magent-capability-match-reasons match))
+                     '("mode-family=magit-mode" "keyword=commit"))))))
+
+;; ──────────────────────────────────────────────────────────────────────
 ;;; Skill file parsing tests
 ;; ──────────────────────────────────────────────────────────────────────
 
 (ert-deftest magent-test-skill-file-parse-type ()
   "Test skill type string parsing."
-  (require 'magent-skill-file)
+  (require 'magent-skills)
   (should (eq (magent-skill-file--parse-type "tool") 'tool))
   (should (eq (magent-skill-file--parse-type "instruction") 'instruction))
   (should (eq (magent-skill-file--parse-type "TOOL") 'tool))
@@ -975,7 +1340,7 @@
 
 (ert-deftest magent-test-skill-file-parse-tools ()
   "Test tool spec parsing."
-  (require 'magent-skill-file)
+  (require 'magent-skills)
   ;; Comma-separated string
   (should (equal (magent-skill-file--parse-tools "bash, read, write")
                  '(bash read write)))
@@ -990,7 +1355,7 @@
 
 (ert-deftest magent-test-skill-file-load-from-temp ()
   "Test loading a skill from a temporary file."
-  (require 'magent-skill-file)
+  (require 'magent-skills)
   (let* ((magent-skills--registry nil)
          (tmpdir (make-temp-file "skill-" t))
          (skillfile (expand-file-name "SKILL.md" tmpdir)))
@@ -1006,6 +1371,321 @@
             (should (equal (magent-skill-tools skill) '(bash read)))
             (should (string-match-p "Do the thing" (magent-skill-prompt skill)))))
       (delete-directory tmpdir t))))
+
+(ert-deftest magent-test-capability-file-load-from-temp ()
+  "Test loading a capability from a temporary file."
+  (require 'magent-capability-file)
+  (let* ((magent-capability--registry nil)
+         (tmpdir (make-temp-file "capability-" t))
+         (capfile (expand-file-name "CAPABILITY.md" tmpdir)))
+    (unwind-protect
+        (progn
+          (with-temp-file capfile
+            (insert
+             "---\n"
+             "name: org-structure\n"
+             "description: Structured org editing\n"
+             "source: package\n"
+             "package: org\n"
+             "skills: org-structure-workflow\n"
+             "modes: org-mode\n"
+             "features: org\n"
+             "keywords: heading, subtree\n"
+             "disclosure: active\n"
+             "---\n"
+             "Use for org structure.\n"))
+          (let ((capability (magent-capability-file-load capfile)))
+            (should capability)
+            (should (equal (magent-capability-name capability) "org-structure"))
+            (should (eq (magent-capability-source-kind capability) 'package))
+            (should (equal (magent-capability-skills capability)
+                           '("org-structure-workflow")))
+            (should (equal (magent-capability-modes capability) '(org-mode)))
+            (should (equal (magent-capability-features capability) '(org)))))
+      (delete-directory tmpdir t))))
+
+(ert-deftest magent-test-capability-file-load-normalizes-list-metadata ()
+  "Test capability file loader normalizes strings, CSV fields, and lists."
+  (require 'magent-capability-file)
+  (let* ((magent-capability--registry nil)
+         (tmpdir (make-temp-file "capability-" t))
+         (capfile (expand-file-name "CAPABILITY.md" tmpdir)))
+    (unwind-protect
+        (progn
+          (with-temp-file capfile
+            (insert
+             "---\n"
+             "name: package-reload\n"
+             "skills: reload-workflow, diagnose-workflow\n"
+             "modes: emacs-lisp-mode, lisp-interaction-mode\n"
+             "features: emacs-lisp, lisp-mode\n"
+             "files: *.el, init.el\n"
+             "keywords: reload, package, config\n"
+             "---\n"))
+          (let ((capability (magent-capability-file-load capfile)))
+            (should capability)
+            (should (equal (magent-capability-skills capability)
+                           '("reload-workflow" "diagnose-workflow")))
+            (should (equal (magent-capability-modes capability)
+                           '(emacs-lisp-mode lisp-interaction-mode)))
+            (should (equal (magent-capability-features capability)
+                           '(emacs-lisp lisp-mode)))
+            (should (equal (magent-capability-files capability)
+                           '("*.el" "init.el")))
+            (should (equal (magent-capability-prompt-keywords capability)
+                           '("reload" "package" "config")))))
+      (delete-directory tmpdir t))))
+
+(ert-deftest magent-test-capability-file-load-derives-family ()
+  "Test capability files carry explicit or derived family metadata."
+  (require 'magent-capability-file)
+  (let* ((magent-capability--registry nil)
+         (tmpdir (make-temp-file "capability-" t))
+         (capfile (expand-file-name "CAPABILITY.md" tmpdir)))
+    (unwind-protect
+        (progn
+          (with-temp-file capfile
+            (insert
+             "---\n"
+             "name: org-structure\n"
+             "source: package\n"
+             "package: org\n"
+             "---\n"))
+          (let ((capability (magent-capability-file-load capfile)))
+            (should capability)
+            (should (equal (magent-capability-family capability) "org"))))
+      (delete-directory tmpdir t))))
+
+(ert-deftest magent-test-capability-file-external-metadata-does-not_override_policy ()
+  "Test external metadata cannot override maintainer-controlled policy fields."
+  (require 'magent-capability-file)
+  (let* ((magent-capability--registry nil)
+         (magent-capability-directories nil)
+         (tmpdir (make-temp-file "capability-external-" t))
+         (capdir (expand-file-name "pkg-cap" tmpdir))
+         (capfile (expand-file-name "CAPABILITY.md" capdir)))
+    (unwind-protect
+        (progn
+          (make-directory capdir t)
+          (with-temp-file capfile
+            (insert
+             "---\n"
+             "name: package-cap\n"
+             "source: package\n"
+             "package: pkg-demo\n"
+             "family: attacker-family\n"
+             "disclosure: active\n"
+             "risk: high\n"
+             "skills: project-workflow\n"
+             "keywords: package demo\n"
+             "---\n"))
+          (let ((capability (magent-capability-file-load capfile)))
+            (should capability)
+            (should (equal (magent-capability-family capability) "pkg-demo"))
+            (should (eq (magent-capability-disclosure capability) 'suggested))
+            (should (eq (magent-capability-risk capability) 'low))))
+      (delete-directory tmpdir t))))
+
+(ert-deftest magent-test-capability-reload-updates-running-registry ()
+  "Test reloading capabilities updates file-backed definitions in place."
+  (require 'magent-capability-file)
+  (let* ((magent-capability--registry nil)
+         (magent-capability-directories nil)
+         (tmpdir (make-temp-file "capability-reload-" t))
+         (capdir (expand-file-name "reload-cap" tmpdir))
+         (capfile (expand-file-name "CAPABILITY.md" capdir)))
+    (unwind-protect
+        (progn
+          (setq magent-capability-directories (list tmpdir))
+          (make-directory capdir t)
+          (with-temp-file capfile
+            (insert
+             "---\n"
+             "name: reload-cap\n"
+             "description: First description\n"
+             "skills: project-workflow\n"
+             "keywords: first\n"
+             "---\n"))
+          (magent-capability-file-load-all (list tmpdir))
+          (should (equal (magent-capability-description
+                          (magent-capability-get "reload-cap"))
+                         "First description"))
+          (with-temp-file capfile
+            (insert
+             "---\n"
+             "name: reload-cap\n"
+             "description: Updated description\n"
+             "skills: project-workflow\n"
+             "keywords: second\n"
+             "---\n"))
+          (magent-capability-file-reload)
+          (should (equal (magent-capability-description
+                          (magent-capability-get "reload-cap"))
+                         "Updated description"))
+          (should (equal (magent-capability-prompt-keywords
+                          (magent-capability-get "reload-cap"))
+                         '("second"))))
+      (delete-directory tmpdir t))))
+
+(ert-deftest magent-test-capability-reload-drops-removed-file-backed-entry ()
+  "Test reloading capabilities drops removed file-backed entries."
+  (require 'magent-capability-file)
+  (let* ((magent-capability--registry nil)
+         (magent-capability-directories nil)
+         (tmpdir (make-temp-file "capability-reload-" t))
+         (capdir (expand-file-name "reload-cap" tmpdir))
+         (capfile (expand-file-name "CAPABILITY.md" capdir)))
+    (unwind-protect
+        (progn
+          (setq magent-capability-directories (list tmpdir))
+          (make-directory capdir t)
+          (with-temp-file capfile
+            (insert
+             "---\n"
+             "name: reload-cap\n"
+             "skills: project-workflow\n"
+             "---\n"))
+          (magent-capability-file-load-all (list tmpdir))
+          (should (magent-capability-get "reload-cap"))
+          (delete-file capfile)
+          (magent-capability-file-reload)
+          (should-not (magent-capability-get "reload-cap")))
+      (delete-directory tmpdir t))))
+
+(ert-deftest magent-test-capability-file-load-all-includes-new-builtin-families ()
+  "Test builtin capability loading includes new builtin and curated package families."
+  (require 'magent-capability-file)
+  (let ((magent-capability--registry nil))
+    (magent-capability-file-load-all (list magent-capability-file--builtin-dir))
+    (dolist (name '("emacs-hook-debugging"
+                    "emacs-config-reload"
+                    "emacs-command-variable-introspection"
+                    "project-workflow"
+                    "lsp-workspace-workflow"))
+      (should (magent-capability-get name)))))
+
+(ert-deftest magent-test-builtin-capability-activates-for-hook-debugging ()
+  "Test builtin hook debugging capability activates in Emacs Lisp buffers."
+  (require 'magent-capability-file)
+  (let ((magent-capability--registry nil))
+    (magent-capability-file-load-all (list magent-capability-file--builtin-dir))
+    (let* ((resolution (magent-capability-resolve
+                        "Diagnose why this hook and key binding are shadowed"
+                        '(:major-mode emacs-lisp-mode
+                          :major-mode-family (emacs-lisp-mode prog-mode)
+                          :features (emacs))
+                        nil))
+           (active-names (mapcar (lambda (match)
+                                   (magent-capability-name
+                                    (magent-capability-match-capability match)))
+                                 (magent-capability-resolution-active-capabilities resolution))))
+      (should (member "emacs-hook-debugging" active-names)))))
+
+(ert-deftest magent-test-builtin-capability-activates-for-command-variable-introspection ()
+  "Test builtin command and variable introspection activates in scratch-like contexts."
+  (require 'magent-capability-file)
+  (let ((magent-capability--registry nil))
+    (magent-capability-file-load-all (list magent-capability-file--builtin-dir))
+    (let* ((resolution (magent-capability-resolve
+                        "Inspect this command and variable binding for me"
+                        '(:major-mode lisp-interaction-mode
+                          :major-mode-family (lisp-interaction-mode emacs-lisp-mode prog-mode)
+                          :features (emacs))
+                        nil))
+           (active-names (mapcar (lambda (match)
+                                   (magent-capability-name
+                                    (magent-capability-match-capability match)))
+                                 (magent-capability-resolution-active-capabilities resolution))))
+      (should (member "emacs-command-variable-introspection" active-names)))))
+
+(ert-deftest magent-test-builtin-capability-activates-for-config-reload-diagnosis ()
+  "Test builtin config reload capability activates for diagnosis-style reload prompts."
+  (require 'magent-capability-file)
+  (let ((magent-capability--registry nil))
+    (magent-capability-file-load-all (list magent-capability-file--builtin-dir))
+    (let* ((resolution (magent-capability-resolve
+                        "Diagnose why reloading init.el leaves stale package state"
+                        '(:major-mode emacs-lisp-mode
+                          :major-mode-family (emacs-lisp-mode prog-mode)
+                          :file-path "/tmp/init.el"
+                          :features (emacs))
+                        nil))
+           (active-names (mapcar (lambda (match)
+                                   (magent-capability-name
+                                    (magent-capability-match-capability match)))
+                                 (magent-capability-resolution-active-capabilities resolution))))
+      (should (member "emacs-config-reload" active-names)))))
+
+(ert-deftest magent-test-curated-project-capability-activates-with-project-wording ()
+  "Test curated project capability activates from explicit project workflow wording."
+  (require 'magent-capability-file)
+  (let ((magent-capability--registry nil))
+    (magent-capability-file-load-all (list magent-capability-file--builtin-dir))
+    (let* ((resolution (magent-capability-resolve
+                        "Switch project and show me the current project root"
+                        '(:major-mode emacs-lisp-mode
+                          :major-mode-family (emacs-lisp-mode prog-mode)
+                          :features (project))
+                        nil))
+           (active-names (mapcar (lambda (match)
+                                   (magent-capability-name
+                                    (magent-capability-match-capability match)))
+                                 (magent-capability-resolution-active-capabilities resolution))))
+      (should (member "project-workflow" active-names)))))
+
+(ert-deftest magent-test-curated-lsp-capability-activates-with-lsp-context ()
+  "Test curated LSP capability activates only in programming/LSP contexts."
+  (require 'magent-capability-file)
+  (let ((magent-capability--registry nil))
+    (magent-capability-file-load-all (list magent-capability-file--builtin-dir))
+    (let* ((resolution (magent-capability-resolve
+                        "Use diagnostics and rename symbol across the workspace"
+                        '(:major-mode python-mode
+                          :major-mode-family (python-mode prog-mode)
+                          :features (lsp-mode))
+                        nil))
+           (active-names (mapcar (lambda (match)
+                                   (magent-capability-name
+                                    (magent-capability-match-capability match)))
+                                 (magent-capability-resolution-active-capabilities resolution))))
+      (should (member "lsp-workspace-workflow" active-names)))))
+
+(ert-deftest magent-test-curated-package-features-do-not_auto_activate_irrelevant_prompt ()
+  "Test installed package features alone do not force curated capability activation."
+  (require 'magent-capability-file)
+  (let ((magent-capability--registry nil))
+    (magent-capability-file-load-all (list magent-capability-file--builtin-dir))
+    (let* ((resolution (magent-capability-resolve
+                        "Hello there"
+                        '(:major-mode fundamental-mode
+                          :major-mode-family (fundamental-mode)
+                          :features (project lsp-mode org magit))
+                        nil))
+           (active-names (mapcar (lambda (match)
+                                   (magent-capability-name
+                                    (magent-capability-match-capability match)))
+                                 (magent-capability-resolution-active-capabilities resolution))))
+    (should-not (member "project-workflow" active-names))
+    (should-not (member "lsp-workspace-workflow" active-names))
+    (should-not (member "magit-workflow" active-names))
+    (should-not (member "org-structure-workflow" active-names)))))
+
+(ert-deftest magent-test-ensure-initialized-loads-skills-before-capabilities ()
+  "Test Magent initialization loads skills before capabilities."
+  (let ((magent--initialized nil)
+        calls)
+    (cl-letf (((symbol-function 'magent-audit-enable)
+               (lambda () (push 'audit calls)))
+              ((symbol-function 'magent-agent-registry-init)
+               (lambda () (push 'agent-registry calls)))
+              ((symbol-function 'magent-skill-file-load-all)
+               (lambda (&optional _dirs) (push 'skills calls)))
+              ((symbol-function 'magent-capability-file-load-all)
+               (lambda (&optional _dirs) (push 'capabilities calls)))
+              ((symbol-function 'magent-log) #'ignore))
+      (magent--ensure-initialized))
+    (should (equal (nreverse calls)
+                   '(audit agent-registry skills capabilities)))))
 
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Tools tests
@@ -1260,7 +1940,7 @@
   "Test the mode-line lighter no longer depends on queue depth APIs."
   (require 'magent)
   (let ((magent--spinner (spinner-create 'progress-bar-filled)))
-    (cl-letf (((symbol-function 'magent-queue-processing-p) (lambda () nil)))
+    (cl-letf (((symbol-function 'magent-ui-processing-p) (lambda () nil)))
       (should (string-match-p "\\[M/" (eval (cadr magent--lighter)))))))
 
 (ert-deftest magent-test-tools-gptel-to-magent-tool ()
@@ -1438,6 +2118,40 @@
     (should (equal final-response "Hello world"))
     (should-not (gethash :in-reasoning-block stream-state))))
 
+(ert-deftest magent-test-gptel-backend-emits-llm-request-usage-event ()
+  "Test gptel backend emits machine-readable request usage metadata."
+  (require 'magent-events)
+  (require 'magent-fsm-backend-gptel)
+  (let ((captured nil)
+        (backend (gptel-make-openai "test" :key "test-key"))
+        (stream-state (magent-fsm-backend-gptel--make-stream-state))
+        (request-buffer (generate-new-buffer " *magent-gptel-test*")))
+    (puthash :text-chunks '("world" "Hello ") stream-state)
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+          (magent-events-add-sink (lambda (event) (push event captured)))
+          (magent-fsm-backend-gptel--callback
+           t
+           (list :input-tokens 12
+                 :output-tokens 34
+                 :data '(:model "gpt-test" :messages [(:role "user" :content "hi")]))
+           nil nil request-buffer nil nil stream-state
+           "req-test" backend 'gpt-4o-mini))
+      (magent-events-clear-sinks)
+      (when (buffer-live-p request-buffer)
+        (kill-buffer request-buffer)))
+    (let ((event (cl-find-if (lambda (item)
+                               (eq (plist-get item :type) 'llm-request-end))
+                             captured)))
+      (should event)
+      (should (equal (plist-get event :request-id) "req-test"))
+      (should (= (plist-get event :input-tokens) 12))
+      (should (= (plist-get event :output-tokens) 34))
+      (should (= (plist-get event :total-tokens) 46))
+      (should (numberp (plist-get event :request-bytes)))
+      (should (= (plist-get event :response-chars)
+                 (length "Hello world"))))))
+
 (ert-deftest magent-test-gptel-backend-skips-reasoning-when-disabled ()
   "Test gptel backend ignores reasoning events when reasoning is disabled."
   (require 'magent-fsm-backend-gptel)
@@ -1461,6 +2175,39 @@
       (when (buffer-live-p request-buffer)
         (kill-buffer request-buffer)))
     (should-not events)
+    (should (gethash :saw-reasoning stream-state))
+    (should-not (gethash :reasoning-chunks stream-state))
+    (should-not (gethash :in-reasoning-block stream-state))))
+
+(ert-deftest magent-test-gptel-backend-hides-reasoning-when-ignored ()
+  "Test gptel backend keeps ignored reasoning out of the Magent UI."
+  (require 'magent-fsm-backend-gptel)
+  (let ((magent-include-reasoning 'ignore)
+        (events nil)
+        (stream-state (magent-fsm-backend-gptel--make-stream-state))
+        (request-buffer (generate-new-buffer " *magent-gptel-test*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-ui-insert-reasoning-start)
+                   (lambda ()
+                     (push 'reasoning-start events)))
+                  ((symbol-function 'magent-ui-insert-reasoning-text)
+                   (lambda (_text)
+                     (push 'reasoning-text events)))
+                  ((symbol-function 'magent-ui-insert-reasoning-end)
+                   (lambda ()
+                     (push 'reasoning-end events))))
+          (magent-fsm-backend-gptel--callback
+           (cons 'reasoning "alpha") nil nil nil request-buffer nil nil
+           stream-state)
+          (magent-fsm-backend-gptel--callback
+           (cons 'reasoning t) nil nil nil request-buffer nil nil
+           stream-state))
+      (when (buffer-live-p request-buffer)
+        (kill-buffer request-buffer)))
+    (should-not events)
+    (should (gethash :saw-reasoning stream-state))
+    (should (equal (nreverse (gethash :reasoning-chunks stream-state))
+                   '("alpha")))
     (should-not (gethash :in-reasoning-block stream-state))))
 
 (ert-deftest magent-test-permission-prompt-choice-once-allow ()
@@ -1485,7 +2232,7 @@
                (lambda (_tool-spec cb arg-values)
                  (setq tool-ran (car arg-values))
                  (funcall cb "ok"))))
-      (magent-fsm--prompt-tool-calls-serially
+      (magent-fsm--prompt-next-tool-call
        (list (list tool (list "echo hi") (lambda (r) (setq result r))))))
     (should (equal tool-ran "echo hi"))
     (should (equal result "ok"))
@@ -1511,7 +2258,7 @@
               ((symbol-function 'magent-approval-request)
                (lambda (_request cb)
                  (funcall cb 'deny-once))))
-      (magent-fsm--prompt-tool-calls-serially
+      (magent-fsm--prompt-next-tool-call
        (list (list tool (list "echo hi") (lambda (r) (setq result r))))))
     (should-not tool-ran)
     (should (string-match-p "denied by user" result))
@@ -1539,7 +2286,7 @@
                (lambda (_tool-spec cb arg-values)
                  (setq tool-ran (car arg-values))
                  (funcall cb "ok"))))
-      (magent-fsm--prompt-tool-calls-serially
+      (magent-fsm--prompt-next-tool-call
        (list (list tool (list "echo hi") (lambda (r) (setq result r))))))
     (should (equal tool-ran "echo hi"))
     (should (equal result "ok"))
@@ -1566,7 +2313,7 @@
               ((symbol-function 'magent-approval-request)
                (lambda (_request cb)
                  (funcall cb 'deny-session))))
-      (magent-fsm--prompt-tool-calls-serially
+      (magent-fsm--prompt-next-tool-call
        (list (list tool (list "echo hi") (lambda (r) (setq result r))))))
     (should-not tool-ran)
     (should (string-match-p "denied by user" result))
@@ -1999,6 +2746,118 @@
              (error t))))
       (delete-directory magent-audit-directory t))))
 
+(ert-deftest magent-test-audit-browser-respects-default-time-window ()
+  "Test the audit browser only shows records inside the default day window."
+  (require 'magent-audit)
+  (let* ((magent-audit-directory (make-temp-file "magent-audit-ui-" t))
+         (magent-audit-default-days 1)
+         (magent-audit-max-records 50)
+         (recent-time (format-time-string "%Y-%m-%dT%H:%M:%S%z" (current-time)))
+         (old-time (format-time-string
+                    "%Y-%m-%dT%H:%M:%S%z"
+                    (time-subtract (current-time) (days-to-time 3))))
+         buffer)
+    (unwind-protect
+        (progn
+          (magent-test--write-audit-record-file
+           magent-audit-directory
+           "audit-test.jsonl"
+           `(((timestamp . ,recent-time)
+              (event . "permission-decision")
+              (decision . "allow")
+              (tool_name . "bash")
+              (summary . "recent audit record"))
+             ((timestamp . ,old-time)
+              (event . "permission-decision")
+              (decision . "deny")
+              (tool_name . "read_file")
+              (summary . "stale audit record"))))
+          (setq buffer (magent-show-audit))
+          (with-current-buffer buffer
+            (should (derived-mode-p 'magent-audit-mode))
+            (should (= (length magent-audit--all-records) 1))
+            (should (= (length magent-audit--visible-records) 1))
+            (should (string-match-p "recent audit record" (buffer-string)))
+            (should-not (string-match-p "stale audit record" (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory magent-audit-directory t))))
+
+(ert-deftest magent-test-audit-browser-filters-and-expands-details ()
+  "Test audit browser filters records and expands inline details."
+  (require 'magent-audit)
+  (let* ((magent-audit-directory (make-temp-file "magent-audit-ui-" t))
+         (magent-audit-default-days 7)
+         (magent-audit-max-records 50)
+         (timestamp (format-time-string "%Y-%m-%dT%H:%M:%S%z" (current-time)))
+         buffer)
+    (unwind-protect
+        (progn
+          (magent-test--write-audit-record-file
+           magent-audit-directory
+           "audit-test.jsonl"
+           `(((timestamp . ,timestamp)
+              (event . "permission-decision")
+              (decision . "allow")
+              (tool_name . "bash")
+              (request_id . "req-allow")
+              (summary . "allowed command"))
+             ((timestamp . ,timestamp)
+              (event . "permission-decision")
+              (decision . "deny")
+              (tool_name . "read_file")
+              (request_id . "req-deny")
+              (summary . "blocked env read")
+              (args_preview . ((path . ".env"))))))
+          (setq buffer (magent-show-audit))
+          (with-current-buffer buffer
+            (magent-audit--set-filter-value :decision "deny")
+            (should (= (length magent-audit--visible-records) 1))
+            (should (string-match-p "blocked env read" (buffer-string)))
+            (should-not (string-match-p "allowed command" (buffer-string)))
+            (goto-char (point-min))
+            (re-search-forward "blocked env read")
+            (beginning-of-line)
+            (magent-audit-toggle-entry)
+            (should (string-match-p "request-id: req-deny" (buffer-string)))
+            (should (string-match-p "args-preview:" (buffer-string)))
+            (should (string-match-p "\\(path \\. \".env\"\\)" (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory magent-audit-directory t))))
+
+(ert-deftest magent-test-audit-browser-skips-malformed-jsonl ()
+  "Test malformed audit lines are ignored without breaking the browser."
+  (require 'magent-audit)
+  (let* ((magent-audit-directory (make-temp-file "magent-audit-ui-" t))
+         (magent-audit-default-days 7)
+         (magent-audit-max-records 50)
+         (timestamp (format-time-string "%Y-%m-%dT%H:%M:%S%z" (current-time)))
+         (file (expand-file-name "audit-test.jsonl" magent-audit-directory))
+         buffer)
+    (unwind-protect
+        (progn
+          (make-directory magent-audit-directory t)
+          (with-temp-file file
+            (insert "{not-json}\n")
+            (insert
+             (json-encode
+              `((timestamp . ,timestamp)
+                (event . "tool-call-end")
+                (status . "ok")
+                (tool_name . "bash")
+                (summary . "valid record after malformed line"))))
+            (insert "\n"))
+          (setq buffer (magent-show-audit))
+          (with-current-buffer buffer
+            (should (= magent-audit--load-errors 1))
+            (should (= (length magent-audit--visible-records) 1))
+            (should (string-match-p "valid record after malformed line"
+                                    (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory magent-audit-directory t))))
+
 (ert-deftest magent-test-session-scope-from-directory-falls-back-to-global ()
   "Test session scope is global when no project root is detected."
   (let ((magent-project-root-function (lambda () nil)))
@@ -2123,7 +2982,8 @@
          (magent--current-session nil)
          (project-a (make-temp-file "magent-project-a-" t))
          (project-b (make-temp-file "magent-project-b-" t))
-         (buffer (magent-ui-get-buffer))
+         (buffer-a nil)
+         (buffer-b nil)
          (magent-project-root-function
           (lambda ()
             (cond
@@ -2135,7 +2995,8 @@
           (with-temp-buffer
             (setq default-directory (file-name-as-directory project-a))
             (magent-ui--activate-context-session))
-          (with-current-buffer buffer
+          (setq buffer-a (magent-ui-get-buffer))
+          (with-current-buffer buffer-a
             (let ((inhibit-read-only t))
               (erase-buffer)
               (insert "project-a snapshot")))
@@ -2143,14 +3004,116 @@
             (with-temp-buffer
               (setq default-directory (file-name-as-directory project-b))
               (magent-ui--activate-context-session))
+            (setq buffer-b (magent-ui-get-buffer))
             (should (equal (magent-session-buffer-content session-a)
                            "project-a snapshot"))
             (should (equal (magent-session-current-scope)
                            (file-truename (directory-file-name project-b))))
-            (should-not (equal (with-current-buffer buffer (buffer-string))
+            (should-not (eq buffer-a buffer-b))
+            (should-not (equal (with-current-buffer buffer-b (buffer-string))
                                "project-a snapshot"))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
+      (when (buffer-live-p buffer-a)
+        (kill-buffer buffer-a))
+      (when (buffer-live-p buffer-b)
+        (kill-buffer buffer-b))
+      (delete-directory project-a t)
+      (delete-directory project-b t))))
+
+(ert-deftest magent-test-ui-uses-distinct-buffers-per-scope ()
+  "Test global and project scopes resolve to distinct Magent buffers."
+  (require 'magent-ui)
+  (let* ((magent-buffer-name "*magent-test*")
+         (parent-a (make-temp-file "magent-parent-a-" t))
+         (parent-b (make-temp-file "magent-parent-b-" t))
+         (project-a (expand-file-name "app" parent-a))
+         (project-b (expand-file-name "app" parent-b))
+         (scope-a nil)
+         (scope-b nil)
+         (global-buffer nil)
+         (buffer-a nil)
+         (buffer-b nil))
+    (unwind-protect
+        (progn
+          (make-directory project-a t)
+          (make-directory project-b t)
+          (setq scope-a (file-truename (directory-file-name project-a))
+                scope-b (file-truename (directory-file-name project-b))
+                global-buffer (magent-ui-get-buffer 'global)
+                buffer-a (magent-ui-get-buffer scope-a)
+                buffer-b (magent-ui-get-buffer scope-b))
+          (should (equal (buffer-name global-buffer) "*magent-test:global*"))
+          (should (equal (buffer-name buffer-a) "*magent-test:app*"))
+          (should-not (eq buffer-a buffer-b))
+          (should (string-match-p "\\`\\*magent-test:app#" (buffer-name buffer-b)))
+          (with-current-buffer buffer-a
+            (should (equal magent-ui--buffer-scope scope-a)))
+          (with-current-buffer buffer-b
+            (should (equal magent-ui--buffer-scope scope-b))))
+      (when (buffer-live-p global-buffer)
+        (kill-buffer global-buffer))
+      (when (buffer-live-p buffer-a)
+        (kill-buffer buffer-a))
+      (when (buffer-live-p buffer-b)
+        (kill-buffer buffer-b))
+      (delete-directory parent-a t)
+      (delete-directory parent-b t))))
+
+(ert-deftest magent-test-ui-context-scope-prefers-buffer-local-scope ()
+  "Test Magent buffers keep their own scope even when another session is active."
+  (require 'magent-ui)
+  (let* ((magent-buffer-name "*magent-scope*")
+         (project-a (make-temp-file "magent-project-a-" t))
+         (project-b (make-temp-file "magent-project-b-" t))
+         (scope-a (file-truename (directory-file-name project-a)))
+         (scope-b (file-truename (directory-file-name project-b)))
+         (buffer-a nil))
+    (unwind-protect
+        (progn
+          (setq buffer-a (magent-ui-get-buffer scope-a))
+          (magent-session-activate scope-b)
+          (with-current-buffer buffer-a
+            (should (equal (magent-ui--context-scope) scope-a))))
+      (when (buffer-live-p buffer-a)
+        (kill-buffer buffer-a))
+      (delete-directory project-a t)
+      (delete-directory project-b t))))
+
+(ert-deftest magent-test-input-submit-reactivates-buffer-scope ()
+  "Test submitting from an older Magent buffer reactivates that buffer's scope."
+  (require 'magent-ui)
+  (let* ((magent-buffer-name "*magent-submit*")
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (project-a (make-temp-file "magent-project-a-" t))
+         (project-b (make-temp-file "magent-project-b-" t))
+         (scope-a (file-truename (directory-file-name project-a)))
+         (scope-b (file-truename (directory-file-name project-b)))
+         (buffer-a nil)
+         (captured nil))
+    (unwind-protect
+        (progn
+          (magent-session-activate scope-a)
+          (setq buffer-a (magent-ui-get-buffer scope-a))
+          (with-current-buffer buffer-a
+            (magent-ui--insert-input-prompt scope-a)
+            (let ((inhibit-read-only t))
+              (goto-char (point-max))
+              (insert "hello from project a")))
+          (magent-session-activate scope-b)
+          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
+                    ((symbol-function 'magent-ui-process)
+                     (lambda (text &optional source display skills agent)
+                       (setq captured (list text source display skills agent
+                                            (magent-session-current-scope))))))
+            (with-current-buffer buffer-a
+              (magent-input-submit)))
+          (should (equal (car captured) "hello from project a"))
+          (should (eq (nth 1 captured) 'buffer-input))
+          (should (equal (nth 5 captured) scope-a))
+          (should (equal (magent-session-current-scope) scope-a)))
+      (when (buffer-live-p buffer-a)
+        (kill-buffer buffer-a))
       (delete-directory project-a t)
       (delete-directory project-b t))))
 
@@ -2189,7 +3152,7 @@
     (unwind-protect
         (progn
           (magent-session-activate (file-truename (directory-file-name project-a)))
-          (let ((magent-queue--processing t))
+          (let ((magent-ui--processing t))
             (cl-letf (((symbol-function 'magent-ui--context-scope)
                        (lambda ()
                          (file-truename (directory-file-name project-b)))))
@@ -2224,11 +3187,13 @@
 (ert-deftest magent-test-ui-render-history-rehydrates-saved-headings ()
   "Test restoring a saved snapshot rebuilds heading overlays and a fresh prompt."
   (require 'magent-ui)
-  (let* ((buffer (magent-ui-get-buffer))
+  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (buffer (magent-ui-get-buffer))
          (session (magent-session-create :id "rehydrate")))
     (unwind-protect
         (progn
-          (setq magent--current-session session)
+          (magent-session-install 'global session)
           (magent-session-add-message session 'user "hello")
           (magent-session-add-message session 'assistant "world")
           (setf (magent-session-buffer-content session)
@@ -2293,7 +3258,9 @@
 (ert-deftest magent-test-resume-session-restores-loaded-buffer-content ()
   "Test resuming a session does not overwrite the loaded snapshot."
   (require 'magent-ui)
-  (let* ((buffer (magent-ui-get-buffer))
+  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (buffer (magent-ui-get-buffer))
          (loaded-session (magent-session-create
                           :id "loaded"
                           :buffer-content "* [ASSISTANT]\nLoaded session\n")))
@@ -2316,8 +3283,10 @@
                      (lambda (_filepath)
                        (list :scope 'global :session loaded-session :id "loaded")))
                     ((symbol-function 'magent-session-install)
-                     (lambda (_scope session)
-                       (setq magent--current-session session)
+                     (lambda (scope session)
+                       (puthash scope session magent-session--scoped-sessions)
+                       (setq magent-session--current-scope scope
+                             magent--current-session session)
                        session))
                     ((symbol-function 'message) #'ignore))
             (magent-resume-session))
@@ -2333,7 +3302,9 @@
 (ert-deftest magent-test-resume-session-restores-loaded-prompt-state ()
   "Test resuming a session with a saved prompt restores one editable draft."
   (require 'magent-ui)
-  (let* ((buffer (magent-ui-get-buffer))
+  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (buffer (magent-ui-get-buffer))
          (loaded-session (magent-session-create :id "loaded"))
          (current-session (magent-session-create :id "current"
                                                  :buffer-content "stale snapshot")))
@@ -2369,8 +3340,10 @@
                      (lambda (_filepath)
                        (list :scope 'global :session loaded-session :id "loaded")))
                     ((symbol-function 'magent-session-install)
-                     (lambda (_scope session)
-                       (setq magent--current-session session)
+                     (lambda (scope session)
+                       (puthash scope session magent-session--scoped-sessions)
+                       (setq magent-session--current-scope scope
+                             magent--current-session session)
                        session))
                     ((symbol-function 'message) #'ignore))
             (magent-resume-session))
@@ -2427,6 +3400,99 @@
         (kill-buffer buffer))
       (magent-session-reset))))
 
+(ert-deftest magent-test-resume-session-displays-target-project-buffer ()
+  "Test resuming another project displays and restores that project's buffer."
+  (require 'magent-ui)
+  (let* ((magent-buffer-name "*magent-resume*")
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (project-a (make-temp-file "magent-project-a-" t))
+         (project-b (make-temp-file "magent-project-b-" t))
+         (scope-a (file-truename (directory-file-name project-a)))
+         (scope-b (file-truename (directory-file-name project-b)))
+         (current-session (magent-session-create :id "current"))
+         (loaded-session (magent-session-create
+                          :id "loaded"
+                          :buffer-content "* [ASSISTANT]\nLoaded project buffer\n"))
+         (buffer-a nil)
+         (buffer-b nil)
+         (displayed nil))
+    (unwind-protect
+        (progn
+          (magent-session-install scope-a current-session)
+          (setq buffer-a (magent-ui-get-buffer scope-a))
+          (with-current-buffer buffer-a
+            (let ((inhibit-read-only t))
+              (erase-buffer)
+              (insert "* [USER]\nProject A draft\n")))
+          (cl-letf (((symbol-function 'magent-session-list-files)
+                     (lambda () '("/tmp/project-b-session.json")))
+                    ((symbol-function 'completing-read)
+                     (lambda (&rest _args) "project-b session"))
+                    ((symbol-function 'magent-session--format-file)
+                     (lambda (_filepath) "project-b session"))
+                    ((symbol-function 'magent-session-read-file)
+                     (lambda (_filepath)
+                       (list :scope scope-b :session loaded-session :id "loaded")))
+                    ((symbol-function 'display-buffer)
+                     (lambda (buffer &rest _args)
+                       (setq displayed buffer)
+                       buffer))
+                    ((symbol-function 'message) #'ignore))
+            (magent-resume-session))
+          (setq buffer-b (magent-ui-get-buffer scope-b))
+          (should (eq displayed buffer-b))
+          (with-current-buffer buffer-b
+            (should (string-prefix-p "* [ASSISTANT]\nLoaded project buffer\n"
+                                     (buffer-string))))
+          (with-current-buffer buffer-a
+            (should (string-prefix-p "* [USER]\nProject A draft\n"
+                                     (buffer-string)))))
+      (when (buffer-live-p buffer-a)
+        (kill-buffer buffer-a))
+      (when (buffer-live-p buffer-b)
+        (kill-buffer buffer-b))
+      (delete-directory project-a t)
+      (delete-directory project-b t))))
+
+(ert-deftest magent-test-ui-revert-buffer-keeps-buffer-local-scope ()
+  "Test reverting an inactive Magent buffer uses that buffer's scope."
+  (require 'magent-ui)
+  (let* ((magent-buffer-name "*magent-revert*")
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (project-a (make-temp-file "magent-project-a-" t))
+         (project-b (make-temp-file "magent-project-b-" t))
+         (scope-a (file-truename (directory-file-name project-a)))
+         (scope-b (file-truename (directory-file-name project-b)))
+         (session-a (magent-session-create :id "a"))
+         (session-b (magent-session-create
+                     :id "b"
+                     :buffer-content "* [ASSISTANT]\nProject B\n"))
+         (buffer-a nil))
+    (unwind-protect
+        (progn
+          (magent-session-install scope-a session-a)
+          (setq buffer-a (magent-ui-get-buffer scope-a))
+          (with-current-buffer buffer-a
+            (let ((inhibit-read-only t))
+              (erase-buffer)
+              (insert "* [ASSISTANT]\nProject A\n")))
+          (magent-session-install scope-b session-b)
+          (with-current-buffer buffer-a
+            (magent-ui--revert-buffer nil nil))
+          (with-current-buffer buffer-a
+            (should (string-prefix-p "* [ASSISTANT]\nProject A\n"
+                                     (buffer-string))))
+          (should (string-prefix-p "* [ASSISTANT]\nProject A\n"
+                                   (magent-session-buffer-content session-a))))
+      (when (buffer-live-p buffer-a)
+        (kill-buffer buffer-a))
+      (delete-directory project-a t)
+      (delete-directory project-b t))))
+
 (ert-deftest magent-test-agent-process-emits-turn-events ()
   "Test `magent-agent-process' emits turn lifecycle and text events."
   (require 'magent-events)
@@ -2453,9 +3519,132 @@
                           (eq (plist-get event :type) 'text-delta))
                         captured))
     (should (cl-find-if (lambda (event)
+                          (eq (plist-get event :type) 'llm-request-start))
+                        captured))
+    (should (cl-find-if (lambda (event)
+                          (eq (plist-get event :type) 'llm-request-end))
+                        captured))
+    (should (cl-find-if (lambda (event)
                           (and (eq (plist-get event :type) 'turn-end)
                                (eq (plist-get event :status) 'completed)))
                         captured))))
+
+(ert-deftest magent-test-agent-process-resolves-capability-skills ()
+  "Test `magent-agent-process' merges capability-derived skills."
+  (require 'magent-capability)
+  (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+        (gptel-model 'gpt-4o-mini)
+        (magent-capability--registry nil)
+        (magent-enable-capabilities t)
+        (captured-skill-names nil))
+    (magent-capability-register
+     (magent-capability-create
+      :name "org-structure"
+      :description "Org structure edits"
+      :skills '("auto-skill")
+      :modes '(org-mode)
+      :features '(org)
+      :prompt-keywords '("heading")
+      :disclosure 'active))
+    (cl-letf (((symbol-function 'magent-skills-get-instruction-prompts)
+               (lambda (skill-names)
+                 (setq captured-skill-names skill-names)
+                 '("## Skill: captured\n\nDo things.")))
+              ((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (let ((callback (plist-get kwargs :callback)))
+                   (funcall callback "Hello" nil)
+                   (funcall callback t (list :content "Hello")))))
+              ((symbol-function 'magent-ui-start-streaming) #'ignore)
+              ((symbol-function 'magent-ui-insert-streaming) #'ignore)
+              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+      (magent-agent-process
+       "Please reorganize this heading"
+       #'ignore
+       nil
+       '("manual-skill")
+       nil
+       '(:major-mode org-mode :features (org))))
+    (should (equal captured-skill-names '("manual-skill" "auto-skill")))))
+
+(ert-deftest magent-test-agent-process-dedupes-explicit-and-capability-skills ()
+  "Test diagnosis-style explicit skills and capability skills are deduplicated."
+  (require 'magent-capability)
+  (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+        (gptel-model 'gpt-4o-mini)
+        (captured-skill-names nil))
+    (cl-letf (((symbol-function 'magent-skills-get-instruction-prompts)
+               (lambda (skill-names)
+                 (setq captured-skill-names skill-names)
+                 '("## Skill: captured\n\nDo things.")))
+              ((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (let ((callback (plist-get kwargs :callback)))
+                   (funcall callback "Hello" nil)
+                   (funcall callback t (list :content "Hello")))))
+              ((symbol-function 'magent-ui-start-streaming) #'ignore)
+              ((symbol-function 'magent-ui-insert-streaming) #'ignore)
+              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+      (magent-agent-process
+       "Diagnose why this hook is not running"
+       #'ignore
+       nil
+       '("systematic-debugging")
+       nil
+       '(:major-mode emacs-lisp-mode :major-mode-family (emacs-lisp-mode prog-mode))
+       (magent-capability-resolution-create
+        :skill-names '("systematic-debugging" "emacs-runtime-inspection" "systematic-debugging"))))
+    (should (equal captured-skill-names
+                   '("systematic-debugging" "emacs-runtime-inspection")))))
+
+(ert-deftest magent-test-agent-process-emits-capability-resolution-event ()
+  "Test `magent-agent-process' emits capability resolution metadata."
+  (require 'magent-capability)
+  (require 'magent-events)
+  (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+        (gptel-model 'gpt-4o-mini)
+        (magent-capability--registry nil)
+        (magent-enable-capabilities t)
+        (captured nil))
+    (magent-capability-register
+     (magent-capability-create
+      :name "org-structure"
+      :description "Org structure edits"
+      :skills '("auto-skill")
+      :modes '(org-mode)
+      :features '(org)
+      :prompt-keywords '("heading")
+      :disclosure 'active))
+    (cl-letf (((symbol-function 'magent-skills-get-instruction-prompts)
+               (lambda (_skill-names)
+                 '("## Skill: captured\n\nDo things.")))
+              ((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (let ((callback (plist-get kwargs :callback)))
+                   (funcall callback "Hello" nil)
+                   (funcall callback t (list :content "Hello")))))
+              ((symbol-function 'magent-ui-start-streaming) #'ignore)
+              ((symbol-function 'magent-ui-insert-streaming) #'ignore)
+              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+      (unwind-protect
+          (progn
+            (magent-events-add-sink (lambda (event) (push event captured)))
+            (magent-agent-process
+             "Please reorganize this heading"
+             #'ignore
+             nil nil nil
+             '(:major-mode org-mode :features (org))))
+        (magent-events-clear-sinks)))
+    (let* ((event (cl-find-if (lambda (item)
+                                (eq (plist-get item :type)
+                                    'capability-resolution))
+                              captured))
+           (resolution (plist-get event :resolution)))
+      (should event)
+      (should (equal (plist-get resolution :active-capabilities)
+                     '("org-structure")))
+      (should (equal (plist-get resolution :skill-names)
+                     '("auto-skill"))))))
 
 (ert-deftest magent-test-diagnose-emacs-dispatches-structured-prompt ()
   "Test `magent-diagnose-emacs' dispatches a structured diagnosis request."
@@ -2521,15 +3710,84 @@
         captured)
     (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
               ((symbol-function 'magent-ui--activate-context-session) (lambda () 'session))
-              ((symbol-function 'magent-queue-enqueue)
-               (lambda (prompt source &optional display skills agent-info)
-                 (setq captured (list prompt source display skills agent-info)))))
+              ((symbol-function 'magent-capability-capture-context)
+               (lambda () '(:buffer-name "*scratch*" :major-mode emacs-lisp-mode)))
+              ((symbol-function 'magent-capability-resolve-for-turn)
+               (lambda (_prompt _request-context _skills)
+                 'resolution))
+              ((symbol-function 'magent-ui--enqueue)
+               (lambda (prompt source &optional display skills agent-info request-context capability-resolution)
+                 (setq captured (list prompt source display skills agent-info request-context capability-resolution)))))
       (magent-ui-dispatch-prompt "diag" 'diagnose "display" '("systematic-debugging") t agent))
     (should (equal (nth 0 captured) "diag"))
     (should (equal (nth 1 captured) 'diagnose))
     (should (equal (nth 2 captured) "display"))
     (should (equal (nth 3 captured) '("systematic-debugging")))
-    (should (eq (nth 4 captured) agent))))
+    (should (eq (nth 4 captured) agent))
+    (should (equal (nth 5 captured)
+                   '(:buffer-name "*scratch*" :major-mode emacs-lisp-mode)))
+    (should (eq (nth 6 captured) 'resolution))))
+
+(ert-deftest magent-test-ui-run-item-shows-capability-summary ()
+  "Test `magent-ui--run-item' renders a capability summary for the turn."
+  (require 'magent-ui)
+  (let* ((buffer (magent-ui-get-buffer))
+         (resolution (magent-capability-resolution-create
+                      :active-capabilities
+                      (list (magent-capability-match-create
+                             :capability (magent-capability-create :name "org-structure")
+                             :status 'active))
+                      :suggested-capabilities
+                      (list (magent-capability-match-create
+                             :capability (magent-capability-create :name "git-workflow")
+                             :status 'suggested))))
+         (item (magent-ui--request-create
+                :prompt "hello"
+                :source 'prompt
+                :capability-resolution resolution)))
+    (magent-ui-clear-buffer)
+    (cl-letf (((symbol-function 'magent-ui-display-buffer) #'ignore)
+              ((symbol-function 'spinner-start) #'ignore)
+              ((symbol-function 'magent-agent-process)
+               (lambda (&rest _args) 'fsm)))
+      (magent-ui--run-item item))
+    (with-current-buffer buffer
+      (should (string-match-p "Capability resolver: Auto capabilities: org-structure | Suggested: git-workflow"
+                              (buffer-string))))))
+
+(ert-deftest magent-test-ui-capability-summary-folds-quote-block ()
+  "Test capability summaries default-fold their quote block in the UI."
+  (require 'magent-ui)
+  (let ((fold-call nil))
+    (magent-ui-clear-buffer)
+    (cl-letf (((symbol-function 'magent-ui--fold-block-at)
+               (lambda (pos block-re)
+                 (setq fold-call (list pos block-re)))))
+      (magent-ui-insert-capability-summary "Auto capabilities: org-structure"))
+    (should fold-call)
+    (should (equal (cadr fold-call) "#\\+begin_quote"))
+    (with-current-buffer (magent-ui-get-buffer)
+      (should (eq (car fold-call) (point-min)))
+      (should (string-match-p "#\\+begin_quote\nCapability resolver: Auto capabilities: org-structure\n#\\+end_quote\n"
+                              (buffer-string))))))
+
+(ert-deftest magent-test-ui-reasoning-block-stays-expanded ()
+  "Test reasoning blocks stay expanded in the UI."
+  (require 'magent-ui)
+  (let ((fold-call nil))
+    (magent-ui-clear-buffer)
+    (cl-letf (((symbol-function 'magent-ui--fold-block-at)
+               (lambda (pos block-re)
+                 (setq fold-call (list pos block-re)))))
+      (magent-ui-insert-reasoning-start)
+      (magent-ui-insert-reasoning-text "alpha")
+      (magent-ui-insert-reasoning-end))
+    (should-not fold-call)
+    (with-current-buffer (magent-ui-get-buffer)
+      (should (equal (buffer-string)
+                     "#+begin_think\nalpha\n#+end_think\n"))
+      (should (null magent-ui--reasoning-start))
+      (should magent-ui--streaming-has-text))))
 
 (ert-deftest magent-test-mode-map-binds-diagnose-emacs ()
   "Test `magent-mode-map' binds the Emacs diagnosis command."
@@ -2542,6 +3800,24 @@
   (require 'magent)
   (should (eq (lookup-key magent-mode-map (kbd "C-c m D"))
               'magent-doctor)))
+
+(ert-deftest magent-test-mode-map-binds-capability-context-list ()
+  "Test `magent-mode-map' binds current-context capability listing."
+  (require 'magent)
+  (should (eq (lookup-key magent-mode-map (kbd "C-c m x"))
+              'magent-list-capabilities-for-current-context)))
+
+(ert-deftest magent-test-mode-map-binds-capability-last-resolution ()
+  "Test `magent-mode-map' binds last capability resolution explanation."
+  (require 'magent)
+  (should (eq (lookup-key magent-mode-map (kbd "C-c m e"))
+              'magent-explain-last-capability-resolution)))
+
+(ert-deftest magent-test-mode-map-binds-capability-local-toggle ()
+  "Test `magent-mode-map' binds local capability toggling."
+  (require 'magent)
+  (should (eq (lookup-key magent-mode-map (kbd "C-c m k"))
+              'magent-toggle-capability-locally)))
 
 (provide 'magent-test)
 ;;; magent-test.el ends here

@@ -24,16 +24,32 @@
 
 ;; Forward declarations for UI functions
 (declare-function magent-ui-insert-streaming "magent-ui")
+(declare-function magent-capability-resolution-skill-names "magent-capability")
+(declare-function magent-capability-resolution-to-plist "magent-capability")
+(declare-function magent-capability-resolve-for-turn "magent-capability")
 (declare-function magent-skills-get-instruction-prompts "magent-skills")
 
 ;;; Agent execution
 
-(defun magent-agent-process (user-prompt &optional callback agent-info skill-names event-context)
+(defun magent-agent--dedupe-skill-names (skill-names)
+  "Return SKILL-NAMES without duplicates, preserving order."
+  (let (seen result)
+    (dolist (name skill-names (nreverse result))
+      (when (and name (not (member name seen)))
+        (push name seen)
+        (push name result)))))
+
+(defun magent-agent-process
+    (user-prompt &optional callback agent-info skill-names event-context request-context capability-resolution)
   "Process USER-PROMPT through the AI agent using magent FSM.
 CALLBACK is called with the final string response when complete.
 AGENT-INFO is the agent to use (defaults to session agent or registry default).
 SKILL-NAMES is a list of skill name strings to activate for this request.
 EVENT-CONTEXT is an optional existing event context to reuse.
+REQUEST-CONTEXT is an optional structured context plist captured at
+dispatch time.
+CAPABILITY-RESOLUTION is an optional precomputed capability resolver
+result for this turn.
 When nil, no skills are injected (skills must be explicitly selected
 via slash commands in the prompt).
 
@@ -54,14 +70,41 @@ The tool calling loop is managed by magent-fsm.  This function:
     (let* ((prompt-list (magent-session-to-gptel-prompt-list session))
            (base-system-msg (or (magent-agent-info-prompt agent)
                                 magent-system-prompt))
-           (skill-prompts (when (and (require 'magent-skills nil t) skill-names)
-                            (magent-skills-get-instruction-prompts skill-names)))
+           (capability-resolution
+            (or capability-resolution
+                (when (require 'magent-capability nil t)
+                  (magent-capability-resolve-for-turn
+                   user-prompt request-context skill-names))))
+           (resolved-skill-names
+            (magent-agent--dedupe-skill-names
+             (or (and capability-resolution
+                      (magent-capability-resolution-skill-names
+                       capability-resolution))
+                 skill-names)))
+           (skill-prompts (when (and (require 'magent-skills nil t)
+                                     resolved-skill-names)
+                            (magent-skills-get-instruction-prompts
+                             resolved-skill-names)))
            (system-msg (if skill-prompts
                            (concat base-system-msg
                                    "\n\n# Active Skills\n\n"
                                    (mapconcat #'identity skill-prompts "\n\n"))
                          base-system-msg))
            (tools (magent-tools-get-magent-tools agent)))
+      (when capability-resolution
+        (magent-events-emit
+         'capability-resolution
+         :context context
+         :resolution
+         (magent-capability-resolution-to-plist capability-resolution)))
+      ;; Propagate user's buffer name so emacs_eval runs in the right context.
+      ;; Buffer-input submissions (typed in the magent buffer) have nil
+      ;; request-context, so fall back to parsing [Context: buffer="..."] from
+      ;; the prompt text.
+      (setq magent-tools--request-buffer-name
+            (or (plist-get request-context :buffer-name)
+                (when (string-match "buffer=\"\\([^\"]+\\)\"" user-prompt)
+                  (match-string 1 user-prompt))))
       (magent-agent-info-apply-gptel-overrides
        agent
        (lambda ()
@@ -72,6 +115,9 @@ The tool calling loop is managed by magent-fsm.  This function:
                        (gptel-backend-name backend)
                        model
                        (mapconcat (lambda (tool) (plist-get tool :name)) tools ", "))
+           (when resolved-skill-names
+             (magent-log "INFO active skills=[%s]"
+                         (mapconcat #'identity resolved-skill-names ", ")))
            (let ((fsm (magent-fsm-create
                        :session session
                        :agent agent
