@@ -34,6 +34,11 @@
 (declare-function magent-permission-session-override "magent-permission")
 (declare-function magent-permission-set-session-override "magent-permission")
 
+(defvar magent-tools--register-cancel nil
+  "Dynamically bound async-tool cancellation registrar.
+When non-nil, async Magent tools call this function with a cleanup
+closure that should run if the current request is aborted.")
+
 (cl-defstruct (magent-fsm (:constructor magent-fsm-native-create)
                           (:copier magent-fsm-copy))
   "Finite state machine for Magent LLM requests."
@@ -60,6 +65,37 @@
   process
   permission
   aborted)
+
+(cl-defstruct
+    (magent-fsm--abort-controller
+     (:constructor magent-fsm--abort-controller-create))
+  "Request-scoped abort state for async tool execution."
+  cleanups
+  aborted)
+
+(defun magent-fsm--abort-controller-register (controller cleanup)
+  "Register CLEANUP with abort CONTROLLER.
+If CONTROLLER is already aborted, run CLEANUP immediately."
+  (when (functionp cleanup)
+    (if (and controller
+             (magent-fsm--abort-controller-aborted controller))
+        (with-demoted-errors "Magent abort cleanup error: %S"
+          (funcall cleanup))
+      (when controller
+        (push cleanup (magent-fsm--abort-controller-cleanups controller)))))
+  cleanup)
+
+(defun magent-fsm--abort-controller-abort (controller)
+  "Abort CONTROLLER and run its cleanup closures once."
+  (when (and controller
+             (not (magent-fsm--abort-controller-aborted controller)))
+    (setf (magent-fsm--abort-controller-aborted controller) t)
+    (let ((cleanups (nreverse
+                     (magent-fsm--abort-controller-cleanups controller))))
+      (setf (magent-fsm--abort-controller-cleanups controller) nil)
+      (dolist (cleanup cleanups)
+        (with-demoted-errors "Magent abort cleanup error: %S"
+          (funcall cleanup))))))
 
 (defun magent-fsm--show-tool-call-format (name args)
   "Format tool call NAME with ARGS into a display string.
@@ -129,58 +165,87 @@ When ARGS contains a :reason key, prepend it as [reason] to the summary."
 (cl-defstruct (magent-fsm--tool-queue
                (:constructor magent-fsm--tool-queue-create))
   items
-  busy)
+  busy
+  aborted)
 
 (defun magent-fsm--tool-queue-push (queue item)
   "Push ITEM onto QUEUE and start processing if idle."
-  (setf (magent-fsm--tool-queue-items queue)
-        (nconc (magent-fsm--tool-queue-items queue) (list item)))
-  (magent-fsm--tool-queue-run queue))
+  (unless (magent-fsm--tool-queue-aborted queue)
+    (setf (magent-fsm--tool-queue-items queue)
+          (nconc (magent-fsm--tool-queue-items queue) (list item)))
+    (magent-fsm--tool-queue-run queue)))
+
+(defun magent-fsm--tool-queue-abort (queue)
+  "Abort QUEUE, discarding pending tool items."
+  (when queue
+    (setf (magent-fsm--tool-queue-aborted queue) t
+          (magent-fsm--tool-queue-items queue) nil
+          (magent-fsm--tool-queue-busy queue) nil)))
 
 (defun magent-fsm--tool-queue-run (queue)
   "Process the next queued tool if the queue is idle."
-  (unless (magent-fsm--tool-queue-busy queue)
+  (unless (or (magent-fsm--tool-queue-aborted queue)
+              (magent-fsm--tool-queue-busy queue))
     (when-let ((item (pop (magent-fsm--tool-queue-items queue))))
-      (setf (magent-fsm--tool-queue-busy queue) t)
-      (let ((name (plist-get item :name))
-            (input (plist-get item :input))
-            (call-id (plist-get item :call-id))
-            (args-plist (plist-get item :args-plist))
-            (fn (plist-get item :fn))
-            (async-p (plist-get item :async))
-            (callback (plist-get item :callback))
-            (args (plist-get item :args)))
-        (require 'magent-ui)
-        (magent-events-emit 'tool-call-start
-                            :call-id call-id
-                            :tool-name name
-                            :title name
-                            :summary input
-                            :description input
-                            :args args-plist)
-        (magent-ui-insert-tool-call name input)
-        (let ((completion
-               (lambda (result)
-                 (magent-fsm--show-tool-result name result)
-                 (magent-events-emit 'tool-call-end
-                                     :call-id call-id
-                                     :tool-name name
-                                     :result result)
-                 (setf (magent-fsm--tool-queue-busy queue) nil)
-                 (funcall callback result)
-                 (magent-fsm--tool-queue-run queue))))
-          (if async-p
-              (condition-case err
-                  (apply fn completion args)
-                (quit (funcall completion "Error: Tool execution interrupted"))
-                (error (funcall completion (format "Error: Tool execution failed: %s"
-                                                   (error-message-string err)))))
-            (funcall completion
-                     (condition-case err
-                         (apply fn args)
-                       (quit "Error: Tool execution interrupted")
-                       (error (format "Error: Tool execution failed: %s"
-                                      (error-message-string err)))))))))))
+      (let ((abort-controller (plist-get item :abort-controller)))
+        (unless (and abort-controller
+                     (magent-fsm--abort-controller-aborted abort-controller))
+          (setf (magent-fsm--tool-queue-busy queue) t)
+          (let ((name (plist-get item :name))
+                (input (plist-get item :input))
+                (call-id (plist-get item :call-id))
+                (args-plist (plist-get item :args-plist))
+                (fn (plist-get item :fn))
+                (async-p (plist-get item :async))
+                (callback (plist-get item :callback))
+                (args (plist-get item :args)))
+            (require 'magent-ui)
+            (magent-events-emit 'tool-call-start
+                                :call-id call-id
+                                :tool-name name
+                                :title name
+                                :summary input
+                                :description input
+                                :args args-plist)
+            (magent-ui-insert-tool-call name input)
+            (let ((completion
+                   (lambda (result)
+                     (setf (magent-fsm--tool-queue-busy queue) nil)
+                     (unless (or (magent-fsm--tool-queue-aborted queue)
+                                 (and abort-controller
+                                      (magent-fsm--abort-controller-aborted
+                                       abort-controller)))
+                       (magent-fsm--show-tool-result name result)
+                       (magent-events-emit 'tool-call-end
+                                           :call-id call-id
+                                           :tool-name name
+                                           :result result)
+                       (funcall callback result)
+                       (magent-fsm--tool-queue-run queue)))))
+              (if async-p
+                  (let ((magent-tools--register-cancel
+                         (lambda (cleanup)
+                           (magent-fsm--abort-controller-register
+                            abort-controller cleanup))))
+                    (condition-case err
+                        (apply fn completion args)
+                      (quit
+                       (funcall completion "Error: Tool execution interrupted"))
+                      (error
+                       (funcall completion
+                                (format "Error: Tool execution failed: %s"
+                                        (error-message-string err))))))
+                (funcall completion
+                         (condition-case err
+                             (let ((magent-tools--register-cancel
+                                    (lambda (cleanup)
+                                      (magent-fsm--abort-controller-register
+                                       abort-controller cleanup))))
+                               (apply fn args))
+                           (quit "Error: Tool execution interrupted")
+                           (error
+                            (format "Error: Tool execution failed: %s"
+                                    (error-message-string err)))))))))))))
 
 (defun magent-fsm--filter-display-args (args-spec arg-values)
   "Remove display-only args from ARG-VALUES before invoking the tool function.
@@ -198,7 +263,7 @@ must not be forwarded to the actual tool implementation."
     arg-values))
 
 (defun magent-fsm--wrap-tool-function (name args-spec original-fn async-p
-                                           &optional queue)
+                                            &optional queue abort-controller)
   "Wrap ORIGINAL-FN to render tool UI and events before/after execution."
   (if queue
       (lambda (callback &rest arg-values)
@@ -214,13 +279,48 @@ must not be forwarded to the actual tool implementation."
                  :fn original-fn
                  :async async-p
                  :callback callback
+                 :abort-controller abort-controller
                  :args fn-args))))
     (if async-p
         (lambda (callback &rest arg-values)
+          (unless (and abort-controller
+                       (magent-fsm--abort-controller-aborted abort-controller))
+            (let* ((args-plist (magent-fsm--args-to-plist args-spec arg-values))
+                   (call-id (magent-events-generate-id))
+                   (summary (magent-fsm--show-tool-call-format name args-plist))
+                   (fn-args (magent-fsm--filter-display-args args-spec arg-values)))
+              (magent-events-emit 'tool-call-start
+                                  :call-id call-id
+                                  :tool-name name
+                                  :title name
+                                  :summary summary
+                                  :description summary
+                                  :args args-plist)
+              (magent-fsm--show-tool-call name args-plist)
+              (let ((magent-tools--register-cancel
+                     (lambda (cleanup)
+                       (magent-fsm--abort-controller-register
+                        abort-controller cleanup))))
+                (apply original-fn
+                       (lambda (result)
+                         (unless (and abort-controller
+                                      (magent-fsm--abort-controller-aborted
+                                       abort-controller))
+                           (magent-fsm--show-tool-result name result)
+                           (magent-events-emit 'tool-call-end
+                                               :call-id call-id
+                                               :tool-name name
+                                               :result result)
+                           (funcall callback result)))
+                       fn-args)))))
+      (lambda (&rest arg-values)
+        (unless (and abort-controller
+                     (magent-fsm--abort-controller-aborted abort-controller))
           (let* ((args-plist (magent-fsm--args-to-plist args-spec arg-values))
                  (call-id (magent-events-generate-id))
                  (summary (magent-fsm--show-tool-call-format name args-plist))
-                 (fn-args (magent-fsm--filter-display-args args-spec arg-values)))
+                 (fn-args (magent-fsm--filter-display-args args-spec arg-values))
+                 result)
             (magent-events-emit 'tool-call-start
                                 :call-id call-id
                                 :tool-name name
@@ -229,41 +329,25 @@ must not be forwarded to the actual tool implementation."
                                 :description summary
                                 :args args-plist)
             (magent-fsm--show-tool-call name args-plist)
-            (apply original-fn
-                   (lambda (result)
-                     (magent-fsm--show-tool-result name result)
-                     (magent-events-emit 'tool-call-end
-                                         :call-id call-id
-                                         :tool-name name
-                                         :result result)
-                     (funcall callback result))
-                   fn-args)))
-      (lambda (&rest arg-values)
-        (let* ((args-plist (magent-fsm--args-to-plist args-spec arg-values))
-               (call-id (magent-events-generate-id))
-               (summary (magent-fsm--show-tool-call-format name args-plist))
-               (fn-args (magent-fsm--filter-display-args args-spec arg-values))
-               result)
-          (magent-events-emit 'tool-call-start
-                              :call-id call-id
-                              :tool-name name
-                              :title name
-                              :summary summary
-                              :description summary
-                              :args args-plist)
-          (magent-fsm--show-tool-call name args-plist)
-          (setq result (apply original-fn fn-args))
-          (magent-fsm--show-tool-result name result)
-          (magent-events-emit 'tool-call-end
-                              :call-id call-id
-                              :tool-name name
-                              :result result)
-          result)))))
+            (let ((magent-tools--register-cancel
+                   (lambda (cleanup)
+                     (magent-fsm--abort-controller-register
+                      abort-controller cleanup))))
+              (setq result (apply original-fn fn-args)))
+            (unless (and abort-controller
+                         (magent-fsm--abort-controller-aborted abort-controller))
+              (magent-fsm--show-tool-result name result)
+              (magent-events-emit 'tool-call-end
+                                  :call-id call-id
+                                  :tool-name name
+                                  :result result)
+              result)))))))
 
-(defun magent-fsm--convert-tools-to-gptel (tools &optional permission _event-context)
+(defun magent-fsm--convert-tools-to-gptel
+    (tools &optional permission _event-context abort-controller tool-queue)
   "Convert Magent TOOLS to gptel-tool structs with UI wrappers."
   (require 'gptel)
-  (let ((queue (magent-fsm--tool-queue-create)))
+  (let ((queue (or tool-queue (magent-fsm--tool-queue-create))))
     (mapcar (lambda (tool)
               (let* ((name (plist-get tool :name))
                      (args-spec (plist-get tool :args))
@@ -271,7 +355,8 @@ must not be forwarded to the actual tool implementation."
                      (async-p (plist-get tool :async))
                      (perm-key (plist-get tool :perm-key))
                      (wrapped-fn (magent-fsm--wrap-tool-function
-                                  name args-spec original-fn async-p queue))
+                                  name args-spec original-fn async-p
+                                  queue abort-controller))
                      (confirm-fn (when permission
                                    (magent-fsm--make-confirm-function
                                     perm-key permission args-spec))))

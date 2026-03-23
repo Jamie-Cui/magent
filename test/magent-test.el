@@ -1973,7 +1973,7 @@
         (permission '((bash . ask)))
         (gptel-backend (gptel-make-openai "test" :key "test-key")))
     (cl-letf (((symbol-function 'magent-fsm--convert-tools-to-gptel)
-               (lambda (_tools arg-permission &optional _event-context)
+               (lambda (_tools arg-permission &optional _event-context _abort-controller _tool-queue)
                  (setq captured-permission arg-permission)
                  nil))
               ((symbol-function 'gptel-request)
@@ -2404,7 +2404,8 @@
         (request-callback nil)
         (gptel-backend (gptel-make-openai "test" :key "test-key")))
     (cl-letf (((symbol-function 'magent-fsm--convert-tools-to-gptel)
-               (lambda (_tools _permission &optional _event-context) nil))
+               (lambda (_tools _permission &optional _event-context _abort-controller _tool-queue)
+                 nil))
               ((symbol-function 'magent-ui-start-streaming)
                (lambda () (push 'start events)))
               ((symbol-function 'magent-ui-continue-streaming)
@@ -2441,6 +2442,107 @@
                          'continue
                          (list 'chunk "world")
                          'finish)))))
+
+(ert-deftest magent-test-interrupt-drops-stale-async-tool-result ()
+  "Test aborted requests ignore late async tool completions."
+  (require 'magent-fsm-shared)
+  (let ((controller (magent-fsm--abort-controller-create))
+        (queue (magent-fsm--tool-queue-create))
+        (tool-callback nil)
+        (downstream-result nil)
+        (ui-events nil))
+    (cl-letf (((symbol-function 'magent-events-emit)
+               (lambda (&rest _args) nil))
+              ((symbol-function 'magent-ui-insert-tool-call)
+               (lambda (&rest _args) (push 'tool-call ui-events)))
+              ((symbol-function 'magent-ui-insert-tool-result)
+               (lambda (&rest _args) (push 'tool-result ui-events))))
+      (let ((wrapped
+             (magent-fsm--wrap-tool-function
+              "emacs_eval"
+              (list '(:name "sexp" :type string))
+              (lambda (callback sexp)
+                (should (equal sexp "(sleep-for 1)"))
+                (setq tool-callback callback))
+              t queue controller)))
+        (funcall wrapped
+                 (lambda (result)
+                   (setq downstream-result result))
+                 "(sleep-for 1)")
+        (should tool-callback)
+        (should (member 'tool-call ui-events))
+        (magent-fsm--tool-queue-abort queue)
+        (magent-fsm--abort-controller-abort controller)
+        (funcall tool-callback "\"done\"")))
+    (should-not downstream-result)
+    (should-not (member 'tool-result ui-events))))
+
+(ert-deftest magent-test-emacs-eval-cancel-cleanup-prevents-late-callback ()
+  "Test cancelling emacs_eval before its timer fires suppresses the callback."
+  (require 'magent-tools)
+  (let ((quit-flag nil)
+        (registered-cleanup nil)
+        (scheduled nil)
+        (cancelled nil)
+        (callback-result nil))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_secs _repeat fn &rest _args)
+                 (setq scheduled fn)
+                 'fake-timer))
+              ((symbol-function 'cancel-timer)
+               (lambda (timer)
+                 (setq cancelled timer))))
+      (let ((magent-tools--register-cancel
+             (lambda (cleanup)
+               (setq registered-cleanup cleanup))))
+        (magent-tools--emacs-eval
+         (lambda (result)
+           (setq callback-result result))
+         "(+ 1 2)")
+        (should (functionp registered-cleanup))
+        (let ((inhibit-quit t))
+          (funcall registered-cleanup)
+          (should (eq cancelled 'fake-timer))
+          (setq quit-flag nil))
+        (funcall scheduled)))
+    (should-not callback-result)))
+
+(ert-deftest magent-test-gptel-backend-abort-cancels-request-resources ()
+  "Test gptel backend abort cancels tool state and tears down the request buffer."
+  (require 'magent-fsm-backend-gptel)
+  (let* ((controller (magent-fsm--abort-controller-create))
+         (queue (magent-fsm--tool-queue-create))
+         (request-buffer (generate-new-buffer " *magent-abort*"))
+         (cleanup-ran nil)
+         (aborted-buffer nil)
+         (turn-end nil))
+    (magent-fsm--abort-controller-register
+     controller
+     (lambda ()
+       (setq cleanup-ran t)))
+    (setf (magent-fsm--tool-queue-items queue) '(pending)
+          (magent-fsm--tool-queue-busy queue) t)
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'gptel-abort)
+                     (lambda (buffer)
+                       (setq aborted-buffer buffer)))
+                    ((symbol-function 'magent-events-end-turn)
+                     (lambda (&rest args)
+                       (setq turn-end args))))
+            (magent-fsm-backend-gptel-abort
+             (list :event-context 'ctx
+                   :abort-controller controller
+                   :tool-queue queue
+                   :request-buffer request-buffer))))
+      (when (buffer-live-p request-buffer)
+        (kill-buffer request-buffer)))
+    (should cleanup-ran)
+    (should (eq aborted-buffer request-buffer))
+    (should turn-end)
+    (should (magent-fsm--tool-queue-aborted queue))
+    (should-not (magent-fsm--tool-queue-busy queue))
+    (should-not (buffer-live-p request-buffer))))
 
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; FSM tests
