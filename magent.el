@@ -90,6 +90,10 @@
 (require 'magent-capability)
 (require 'magent-capability-file)
 
+;; Keep Magit integration optional: only load it when Magit itself is present.
+(with-eval-after-load 'magit
+  (require 'magent-magit))
+
 (declare-function magent-doctor "magent-ui")
 (declare-function magent-list-capabilities-for-current-context "magent-capability")
 (declare-function magent-explain-last-capability-resolution "magent-capability")
