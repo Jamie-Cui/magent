@@ -26,6 +26,7 @@
 (declare-function magent-ui-insert-reasoning-end "magent-ui")
 (declare-function magent-ui-finish-streaming-fontify "magent-ui")
 (declare-function magent-log "magent-config")
+(declare-function gptel-abort "gptel")
 
 (defvar magent-include-reasoning)
 
@@ -126,6 +127,9 @@ Accepts the same keyword arguments as `magent-fsm-create'."
         :tools (plist-get args :tools)
         :event-context (plist-get args :event-context)
         :permission (plist-get args :permission)
+        :abort-controller (magent-fsm--abort-controller-create)
+        :tool-queue nil
+        :request-buffer nil
         :callback (plist-get args :callback)
         :ui-callback (plist-get args :ui-callback)))
 
@@ -136,18 +140,25 @@ Accepts the same keyword arguments as `magent-fsm-create'."
          (tools (plist-get params :tools))
          (event-context (plist-get params :event-context))
          (permission (plist-get params :permission))
+         (abort-controller (plist-get params :abort-controller))
          (callback (plist-get params :callback))
          (ui-callback (plist-get params :ui-callback))
          (backend (plist-get params :gptel-backend))
          (model (plist-get params :model))
          (request-id (magent-events-generate-id))
          (request-buffer (generate-new-buffer " *magent-gptel-request*"))
+         (tool-queue (or (plist-get params :tool-queue)
+                         (magent-fsm--tool-queue-create)))
          ;; Install permission-aware :confirm functions and handle
          ;; `(tool-call . ...)' callbacks ourselves instead of relying on
          ;; gptel's default in-buffer confirmation UI.
          (gptel-tools (magent-fsm--convert-tools-to-gptel
-                       tools permission event-context))
+                       tools permission event-context
+                       abort-controller tool-queue))
          (stream-state (magent-fsm-backend-gptel--make-stream-state)))
+
+    (plist-put params :request-buffer request-buffer)
+    (plist-put params :tool-queue tool-queue)
 
     (magent-ui-start-streaming)
     (magent-events-emit
@@ -280,7 +291,17 @@ inside gptel's process filter."
 
 (defun magent-fsm-backend-gptel-abort (params)
   "Abort gptel request."
-  (let ((context (plist-get params :event-context)))
+  (let ((context (plist-get params :event-context))
+        (abort-controller (plist-get params :abort-controller))
+        (tool-queue (plist-get params :tool-queue))
+        (request-buffer (plist-get params :request-buffer)))
+    (magent-fsm--tool-queue-abort tool-queue)
+    (magent-fsm--abort-controller-abort abort-controller)
+    (when (buffer-live-p request-buffer)
+      (with-demoted-errors "Magent gptel abort error: %S"
+        (gptel-abort request-buffer))
+      (when (buffer-live-p request-buffer)
+        (kill-buffer request-buffer)))
     (magent-events-end-turn context 'cancelled "User aborted")))
 
 (defun magent-fsm-backend-gptel-destroy (params)

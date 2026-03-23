@@ -22,6 +22,7 @@
 (declare-function magent-skills-get "magent-skills")
 (declare-function magent-skills-list "magent-skills")
 (declare-function magent-skills-invoke "magent-skills")
+(declare-function gptel-abort "gptel")
 
 ;; dom.el functions used for web search result parsing (requires --with-xml2 build)
 (declare-function dom-by-class "dom")
@@ -35,6 +36,15 @@
 Set by `magent-agent-process' at the start of each turn so that
 `emacs_eval' evaluates expressions in the correct buffer context
 rather than the magent output buffer.")
+
+(defvar magent-tools--register-cancel nil
+  "Dynamically bound function used to register request abort cleanups.")
+
+(defun magent-tools--register-cancel-cleanup (cleanup)
+  "Register CLEANUP for the current request when supported."
+  (when (functionp magent-tools--register-cancel)
+    (funcall magent-tools--register-cancel cleanup))
+  cleanup)
 
 (defun magent-tools--resolve-path (path)
   "Resolve PATH for tool operations.
@@ -87,25 +97,36 @@ CALLBACK is called with matching lines or error message."
                                   (magent-project-root))))
          (buf (generate-new-buffer " *magent-grep*"))
          (args (list "--no-heading" "--line-number" "--color=never"
-                     (format "--max-count=%d" magent-grep-max-matches))))
+                     (format "--max-count=%d" magent-grep-max-matches)))
+         proc)
     (unless case-sensitive
       (push "--ignore-case" args))
     (unless (file-directory-p resolved)
       (push resolved args))
     (push pattern args)
-    (make-process
-     :name "magent-grep"
-     :buffer buf
-     :command (cons magent-grep-program (nreverse args))
-     :sentinel
-     (lambda (proc _event)
-       (when (memq (process-status proc) '(exit signal))
-         (let ((output (with-current-buffer buf (buffer-string))))
-           (kill-buffer buf)
-           (funcall callback
-                    (if (string-blank-p output)
-                        "No matches found"
-                      (string-trim-right output)))))))))
+    (setq proc
+          (make-process
+           :name "magent-grep"
+           :buffer buf
+           :command (cons magent-grep-program (nreverse args))
+           :sentinel
+           (lambda (proc _event)
+             (when (memq (process-status proc) '(exit signal))
+               (let ((output (if (buffer-live-p buf)
+                                 (with-current-buffer buf (buffer-string))
+                               "")))
+                 (when (buffer-live-p buf)
+                   (kill-buffer buf))
+                 (funcall callback
+                          (if (string-blank-p output)
+                              "No matches found"
+                            (string-trim-right output))))))))
+    (magent-tools--register-cancel-cleanup
+     (lambda ()
+       (when (process-live-p proc)
+         (delete-process proc))
+       (when (buffer-live-p buf)
+         (kill-buffer buf))))))
 
 (defun magent-tools--glob (callback pattern path)
   "Find files matching PATTERN under PATH asynchronously.
@@ -169,33 +190,46 @@ Evaluation runs in the user's context buffer when known
   (condition-case err
       (let* ((timeout (or timeout magent-emacs-eval-timeout))
              (form (car (read-from-string sexp)))
+             (cancelled nil)
+             timer
              ;; Capture user's buffer at invocation time so the deferred
              ;; timer runs in the right context, not the magent output buffer.
              (ctx-buffer (when (and magent-tools--request-buffer-name
                                     (get-buffer magent-tools--request-buffer-name))
                            (get-buffer magent-tools--request-buffer-name))))
-        (run-at-time
-         0 nil
+        (setq timer
+              (run-at-time
+               0 nil
+               (lambda ()
+                 (unless cancelled
+                   (let (timed-out)
+                     (condition-case err
+                         (let ((result
+                                (with-timeout (timeout
+                                               (setq timed-out t)
+                                               nil)
+                                  (if (and ctx-buffer (buffer-live-p ctx-buffer))
+                                      (with-current-buffer ctx-buffer
+                                        (eval form t))
+                                    (eval form t)))))
+                           (unless cancelled
+                             (if timed-out
+                                 (funcall callback "Error: Evaluation timed out")
+                               (funcall callback (prin1-to-string result)))))
+                       (quit
+                        (unless (or timed-out cancelled)
+                          (funcall callback "Error: Evaluation interrupted")))
+                       (error
+                        (unless (or timed-out cancelled)
+                          (funcall callback (format "Error evaluating sexp: %s"
+                                                    (error-message-string err)))))))))))
+        (magent-tools--register-cancel-cleanup
          (lambda ()
-           (let (timed-out)
-             (condition-case err
-                 (let ((result (with-timeout (timeout
-                                              (setq timed-out t)
-                                              nil)
-                                 (if (and ctx-buffer (buffer-live-p ctx-buffer))
-                                     (with-current-buffer ctx-buffer
-                                       (eval form t))
-                                   (eval form t)))))
-                   (if timed-out
-                       (funcall callback "Error: Evaluation timed out")
-                     (funcall callback (prin1-to-string result))))
-               (quit
-                (unless timed-out
-                  (funcall callback "Error: Evaluation interrupted")))
-               (error
-                (unless timed-out
-                  (funcall callback (format "Error evaluating sexp: %s"
-                                            (error-message-string err))))))))))
+           (setq cancelled t)
+           (when timer
+             (cancel-timer timer)
+             (setq timer nil))
+           (setq quit-flag t))))
     (error (funcall callback (format "Error evaluating sexp: %s" (error-message-string err))))))
 
 (defun magent-tools--bash (callback command &optional timeout)
@@ -214,6 +248,7 @@ CALLBACK is called with the command output (stdout + stderr)."
             (when timer (cancel-timer timer) (setq timer nil))
             (when (process-live-p proc) (delete-process proc))
             (when (buffer-live-p buf) (kill-buffer buf)))))
+    (magent-tools--register-cancel-cleanup cleanup)
     (setq timer
           (run-at-time
            timeout nil
@@ -250,7 +285,9 @@ CALLBACK is called with the command output (stdout + stderr)."
                  (when (and (memq (process-status p) '(exit signal))
                             (not finished))
                    (setq finished t)
-                   (let ((output (with-current-buffer buf (buffer-string))))
+                   (let ((output (if (buffer-live-p buf)
+                                     (with-current-buffer buf (buffer-string))
+                                   "")))
                      (funcall cleanup)
                      (funcall callback
                               (if (string-blank-p output)
@@ -284,6 +321,11 @@ then spawns a nested `gptel-request' with the subagent's configuration."
          agent
          (lambda ()
            (let ((request-buffer (generate-new-buffer " *magent-delegate-request*")))
+             (magent-tools--register-cancel-cleanup
+              (lambda ()
+                (gptel-abort request-buffer)
+                (when (buffer-live-p request-buffer)
+                  (kill-buffer request-buffer))))
              (with-current-buffer request-buffer
                (setq-local gptel-tools tools)
                (setq-local gptel-use-tools (if tools t nil)))
@@ -317,13 +359,24 @@ QUERY is the search string.
 MAX-RESULTS is the maximum number of results to return (default 5)."
   (let ((max-results (or max-results 5))
         (url (format "https://html.duckduckgo.com/html/?q=%s"
-                     (url-hexify-string query))))
+                     (url-hexify-string query)))
+        request-buffer)
     (condition-case err
-        (url-retrieve
-         url
-         (lambda (status)
-           (magent-tools--web-search-callback status callback query max-results))
-         nil t t)
+        (progn
+          (setq request-buffer
+                (url-retrieve
+                 url
+                 (lambda (status)
+                   (magent-tools--web-search-callback
+                    status callback query max-results))
+                 nil t t))
+          (magent-tools--register-cancel-cleanup
+           (lambda ()
+             (when-let ((proc (and request-buffer
+                                   (get-buffer-process request-buffer))))
+               (delete-process proc))
+             (when (buffer-live-p request-buffer)
+               (kill-buffer request-buffer)))))
       (error (funcall callback (format "Error initiating search: %s" (error-message-string err)))))))
 
 (defun magent-tools--web-search-callback (status callback query max-results)
