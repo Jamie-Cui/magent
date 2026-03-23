@@ -191,45 +191,92 @@ Evaluation runs in the user's context buffer when known
       (let* ((timeout (or timeout magent-emacs-eval-timeout))
              (form (car (read-from-string sexp)))
              (cancelled nil)
+             (completed nil)
              timer
+             worker
              ;; Capture user's buffer at invocation time so the deferred
-             ;; timer runs in the right context, not the magent output buffer.
+             ;; evaluator runs in the right context, not the magent output buffer.
              (ctx-buffer (when (and magent-tools--request-buffer-name
                                     (get-buffer magent-tools--request-buffer-name))
                            (get-buffer magent-tools--request-buffer-name))))
-        (setq timer
-              (run-at-time
-               0 nil
-               (lambda ()
+        (cl-labels
+            ((finish (result)
+               (unless completed
+                 (setq completed t)
+                 (when timer
+                   (cancel-timer timer)
+                   (setq timer nil))
                  (unless cancelled
-                   (let (timed-out)
-                     (condition-case err
-                         (let ((result
-                                (with-timeout (timeout
-                                               (setq timed-out t)
-                                               nil)
+                   (funcall callback result))))
+             (interrupt-worker ()
+               (when (and (fboundp 'thread-live-p)
+                          worker
+                          (thread-live-p worker))
+                 (thread-signal worker 'quit nil))))
+          (setq worker
+                (if (fboundp 'make-thread)
+                    ;; Run evaluation on a worker thread so abort/timeout can
+                    ;; signal it even when the form is busy in Lisp.
+                    (make-thread
+                     (lambda ()
+                       (condition-case worker-err
+                           (let ((result
                                   (if (and ctx-buffer (buffer-live-p ctx-buffer))
                                       (with-current-buffer ctx-buffer
                                         (eval form t))
-                                    (eval form t)))))
-                           (unless cancelled
-                             (if timed-out
-                                 (funcall callback "Error: Evaluation timed out")
-                               (funcall callback (prin1-to-string result)))))
-                       (quit
-                        (unless (or timed-out cancelled)
-                          (funcall callback "Error: Evaluation interrupted")))
-                       (error
-                        (unless (or timed-out cancelled)
-                          (funcall callback (format "Error evaluating sexp: %s"
-                                                    (error-message-string err)))))))))))
-        (magent-tools--register-cancel-cleanup
-         (lambda ()
-           (setq cancelled t)
-           (when timer
-             (cancel-timer timer)
-             (setq timer nil))
-           (setq quit-flag t))))
+                                    (eval form t))))
+                             (run-at-time 0 nil
+                                          (lambda ()
+                                            (finish (prin1-to-string result)))))
+                         (quit
+                          (run-at-time 0 nil
+                                       (lambda ()
+                                         (unless (or completed cancelled)
+                                           (finish "Error: Evaluation interrupted")))))
+                         (error
+                          (run-at-time 0 nil
+                                       (lambda ()
+                                         (unless (or completed cancelled)
+                                           (finish
+                                            (format "Error evaluating sexp: %s"
+                                                    (error-message-string worker-err)))))))))
+                     "magent-emacs-eval")
+                  (progn
+                    (run-at-time
+                     0 nil
+                     (lambda ()
+                       (condition-case sync-err
+                           (let ((result
+                                  (if (and ctx-buffer (buffer-live-p ctx-buffer))
+                                      (with-current-buffer ctx-buffer
+                                        (eval form t))
+                                    (eval form t))))
+                             (finish (prin1-to-string result)))
+                         (quit
+                          (unless (or completed cancelled)
+                            (finish "Error: Evaluation interrupted")))
+                         (error
+                          (unless (or completed cancelled)
+                            (finish
+                             (format "Error evaluating sexp: %s"
+                                     (error-message-string sync-err))))))))
+                    nil)))
+          (when (and timeout (> timeout 0))
+            (setq timer
+                  (run-at-time
+                   timeout nil
+                   (lambda ()
+                     (unless (or completed cancelled)
+                       (interrupt-worker)
+                       (finish "Error: Evaluation timed out"))))))
+          (magent-tools--register-cancel-cleanup
+           (lambda ()
+             (setq cancelled t)
+             (when timer
+               (cancel-timer timer)
+               (setq timer nil))
+             (interrupt-worker)
+             (setq quit-flag t)))))
     (error (funcall callback (format "Error evaluating sexp: %s" (error-message-string err))))))
 
 (defun magent-tools--bash (callback command &optional timeout)

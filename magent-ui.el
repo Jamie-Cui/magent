@@ -556,7 +556,7 @@ request are discarded."
   (cl-incf magent-ui--request-generation)
   (when (and (boundp 'magent--spinner) magent--spinner)
     (spinner-stop magent--spinner))
-  (magent-ui-insert-error "[Interrupted by user]")
+  (magent-ui-insert-status-line "[Interrupted by user]")
   (magent-log "INFO Request interrupted by user (gen now %d)"
               magent-ui--request-generation)
   (magent-ui--clear-processing)
@@ -982,6 +982,13 @@ Closes the #+begin_tool block and auto-folds it."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (magent-ui--insert-header magent-error-prompt 'magent-error-header)
     (insert (propertize error-text 'face 'magent-error-body))
+    (insert "\n")))
+
+(defun magent-ui-insert-status-line (text &optional face)
+  "Insert TEXT as a plain status line without creating a heading.
+FACE defaults to `magent-error-body'."
+  (magent-ui--with-insert (magent-ui-get-buffer)
+    (insert (propertize text 'face (or face 'magent-error-body)))
     (insert "\n")))
 
 (defun magent-ui-insert-capability-summary (summary)
