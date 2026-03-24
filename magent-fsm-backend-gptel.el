@@ -83,6 +83,17 @@ Both t and `ignore' keep reasoning in STATE.  Only nil discards it."
         (error (format "%s" data)))
       'utf-8-unix t))))
 
+(defun magent-fsm-backend-gptel--request-live-p (live-p)
+  "Return non-nil when LIVE-P indicates the request is still current."
+  (if (functionp live-p)
+      (condition-case err
+          (funcall live-p)
+        (error
+         (magent-log "WARN request liveness predicate failed: %s"
+                     (error-message-string err))
+         nil))
+    t))
+
 (defun magent-fsm-backend-gptel--final-text (state info)
   "Return the final assistant text assembled from STATE and INFO."
   (or (and (gethash :text-chunks state)
@@ -172,10 +183,10 @@ Both t and `ignore' keep reasoning in STATE.  Only nil discards it."
   "Return the hard-stop message for repeated emacs_eval exploration."
   (let ((limit magent-emacs-eval-max-calls-per-turn))
     (if (natnump limit)
-        (format "Error: emacs_eval exceeded %d call%s in this turn. Stop exploring and answer the user directly."
-                limit
-                (if (= limit 1) "" "s"))
-      "Error: emacs_eval exceeded the configured per-turn limit. Stop exploring and answer the user directly.")))
+        (magent-fsm--emacs-eval-limit-message limit)
+      (concat "Error: tool_use_limit_reached. emacs_eval exceeded the configured "
+              "per-turn limit. Stop exploring and answer the user directly. "
+              (magent-fsm--emacs-eval-direct-answer-guidance)))))
 
 (defun magent-fsm-backend-gptel-create (&rest args)
   "Create gptel FSM from keyword ARGS (returns plist with parameters).
@@ -194,6 +205,7 @@ Accepts the same keyword arguments as `magent-fsm-create'."
         :abort-controller (magent-fsm--abort-controller-create)
         :tool-queue nil
         :request-buffer nil
+        :live-p (plist-get args :live-p)
         :callback (plist-get args :callback)
         :ui-callback (plist-get args :ui-callback)))
 
@@ -207,6 +219,7 @@ Accepts the same keyword arguments as `magent-fsm-create'."
          (abort-controller (plist-get params :abort-controller))
          (callback (plist-get params :callback))
          (ui-callback (plist-get params :ui-callback))
+         (live-p (plist-get params :live-p))
          (backend (plist-get params :gptel-backend))
          (model (plist-get params :model))
          (request-id (magent-events-generate-id))
@@ -255,7 +268,7 @@ Accepts the same keyword arguments as `magent-fsm-create'."
                             (magent-fsm-backend-gptel--callback
                              response info callback ui-callback request-buffer
                              permission event-context stream-state request-id
-                             backend model))))
+                             backend model live-p))))
              (info (and (gptel-fsm-p gptel-fsm)
                         (gptel-fsm-info gptel-fsm))))
         (when info
@@ -267,114 +280,121 @@ Accepts the same keyword arguments as `magent-fsm-create'."
 (defun magent-fsm-backend-gptel--callback (response info callback ui-callback buffer
                                                     permission event-context
                                                     &optional stream-state
-                                                    request-id backend model)
+                                                    request-id backend model
+                                                    live-p)
   "Handle gptel response.
 Wraps all UI operations in `condition-case' to suppress benign
 cursor-boundary signals that can leak from evil-mode adjustments
 inside gptel's process filter."
-  (let ((state (or stream-state
-                   (magent-fsm-backend-gptel--make-stream-state))))
-    (condition-case nil
-        (cond
-         ((and (consp response) (eq (car response) 'reasoning))
-          (let ((reasoning-text (cdr response)))
-            (magent-fsm-backend-gptel--note-reasoning-seen
-             state request-id backend model)
-            (magent-fsm-backend-gptel--remember-reasoning state reasoning-text)
-            (if (eq reasoning-text t)
-                (magent-fsm-backend-gptel--close-reasoning-block state)
-              ;; Only t renders reasoning in the buffer.
-              ;; `ignore' keeps the chunks but suppresses UI output.
-              (when (magent-fsm-backend-gptel--render-reasoning-p)
-                (unless (gethash :in-reasoning-block state)
-                  (magent-ui-insert-reasoning-start)
-                  (puthash :in-reasoning-block t state))
-                (magent-ui-insert-reasoning-text reasoning-text)))))
-         ((stringp response)
-          (push response (gethash :text-chunks state))
-          (puthash :text-chunks (gethash :text-chunks state) state)
-          (magent-log "DEBUG text-chunk len=%d total-chunks=%d"
-                      (length response)
-                      (length (gethash :text-chunks state)))
-          (magent-events-emit 'text-delta :context event-context :text response)
-          (when ui-callback (funcall ui-callback response)))
-         ((and (consp response) (eq (car response) 'tool-call))
-          (magent-fsm-backend-gptel--close-reasoning-block state)
-          (magent-fsm--handle-tool-call-confirmation-with-permission
-           permission (cdr response)))
-         ((and (consp response) (eq (car response) 'tool-result))
-          (magent-fsm-backend-gptel--close-reasoning-block state)
-          (magent-log "DEBUG tool-result received stop-reason=%S"
-                      (plist-get info :stop-reason))
-          (magent-ui-continue-streaming))
-         ((eq response t)
-          (magent-fsm-backend-gptel--close-reasoning-block state)
-          (when (and magent-include-reasoning
-                     (not (gethash :saw-reasoning state)))
-            (magent-log "DEBUG no reasoning received request=%s backend=%s model=%s ui=%S"
-                        request-id
-                        (and backend (gptel-backend-name backend))
-                        (format "%s" model)
-                        magent-include-reasoning))
-          (let ((final-text (magent-fsm-backend-gptel--final-text state info)))
-            (magent-log "DEBUG response=t tool-use=%S chunks=%d content-len=%d final-len=%d"
-                        (and (plist-get info :tool-use) t)
-                        (length (gethash :text-chunks state))
-                        (length (or (plist-get info :content) ""))
-                        (length final-text))
+  (if (not (magent-fsm-backend-gptel--request-live-p live-p))
+      (progn
+        (magent-log "DEBUG discarding stale gptel callback request=%s response=%S"
+                    request-id response)
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer)))
+    (let ((state (or stream-state
+                     (magent-fsm-backend-gptel--make-stream-state))))
+      (condition-case nil
+          (cond
+           ((and (consp response) (eq (car response) 'reasoning))
+            (let ((reasoning-text (cdr response)))
+              (magent-fsm-backend-gptel--note-reasoning-seen
+               state request-id backend model)
+              (magent-fsm-backend-gptel--remember-reasoning state reasoning-text)
+              (if (eq reasoning-text t)
+                  (magent-fsm-backend-gptel--close-reasoning-block state)
+                ;; Only t renders reasoning in the buffer.
+                ;; `ignore' keeps the chunks but suppresses UI output.
+                (when (magent-fsm-backend-gptel--render-reasoning-p)
+                  (unless (gethash :in-reasoning-block state)
+                    (magent-ui-insert-reasoning-start)
+                    (puthash :in-reasoning-block t state))
+                  (magent-ui-insert-reasoning-text reasoning-text)))))
+           ((stringp response)
+            (push response (gethash :text-chunks state))
+            (puthash :text-chunks (gethash :text-chunks state) state)
+            (magent-log "DEBUG text-chunk len=%d total-chunks=%d"
+                        (length response)
+                        (length (gethash :text-chunks state)))
+            (magent-events-emit 'text-delta :context event-context :text response)
+            (when ui-callback (funcall ui-callback response)))
+           ((and (consp response) (eq (car response) 'tool-call))
+            (magent-fsm-backend-gptel--close-reasoning-block state)
+            (magent-fsm--handle-tool-call-confirmation-with-permission
+             permission (cdr response)))
+           ((and (consp response) (eq (car response) 'tool-result))
+            (magent-fsm-backend-gptel--close-reasoning-block state)
+            (magent-log "DEBUG tool-result received stop-reason=%S"
+                        (plist-get info :stop-reason))
+            (magent-ui-continue-streaming))
+           ((eq response t)
+            (magent-fsm-backend-gptel--close-reasoning-block state)
+            (when (and magent-include-reasoning
+                       (not (gethash :saw-reasoning state)))
+              (magent-log "DEBUG no reasoning received request=%s backend=%s model=%s ui=%S"
+                          request-id
+                          (and backend (gptel-backend-name backend))
+                          (format "%s" model)
+                          magent-include-reasoning))
+            (let ((final-text (magent-fsm-backend-gptel--final-text state info)))
+              (magent-log "DEBUG response=t tool-use=%S chunks=%d content-len=%d final-len=%d"
+                          (and (plist-get info :tool-use) t)
+                          (length (gethash :text-chunks state))
+                          (length (or (plist-get info :content) ""))
+                          (length final-text))
+              (apply
+               #'magent-events-emit
+               'llm-request-end
+               :context event-context
+               :request-id request-id
+               :status 'completed
+               :backend (and backend (gptel-backend-name backend))
+               :model (format "%s" model)
+               (magent-fsm-backend-gptel--usage-plist info final-text))
+              (if (plist-get info :tool-use)
+                  ;; Tool use round: gptel will continue the loop.
+                  ;; Stay in the same section — don't finalize or create a new heading.
+                  (magent-ui-continue-streaming)
+                ;; Final response: finalize the streaming section and finish.
+                (magent-ui-finish-streaming-fontify)
+                (when callback
+                  (funcall callback final-text))
+                (when (buffer-live-p buffer) (kill-buffer buffer)))))
+           ((null response)
+            (magent-log "DEBUG null response (failure) error=%S http=%S"
+                        (plist-get info :error)
+                        (plist-get info :http-status))
+            (magent-fsm-backend-gptel--close-reasoning-block state)
+            (when (and magent-include-reasoning
+                       (not (gethash :saw-reasoning state)))
+              (magent-log "DEBUG no reasoning received request=%s backend=%s model=%s ui=%S"
+                          request-id
+                          (and backend (gptel-backend-name backend))
+                          (format "%s" model)
+                          magent-include-reasoning))
             (apply
              #'magent-events-emit
              'llm-request-end
              :context event-context
              :request-id request-id
-             :status 'completed
+             :status 'failed
              :backend (and backend (gptel-backend-name backend))
              :model (format "%s" model)
-             (magent-fsm-backend-gptel--usage-plist info final-text))
-            (if (plist-get info :tool-use)
-                ;; Tool use round: gptel will continue the loop.
-                ;; Stay in the same section — don't finalize or create a new heading.
-                (magent-ui-continue-streaming)
-              ;; Final response: finalize the streaming section and finish.
-              (magent-ui-finish-streaming-fontify)
-              (when callback
-                (funcall callback final-text))
-              (when (buffer-live-p buffer) (kill-buffer buffer)))))
-         ((null response)
-          (magent-log "DEBUG null response (failure) error=%S http=%S"
-                      (plist-get info :error)
-                      (plist-get info :http-status))
-          (magent-fsm-backend-gptel--close-reasoning-block state)
-          (when (and magent-include-reasoning
-                     (not (gethash :saw-reasoning state)))
-            (magent-log "DEBUG no reasoning received request=%s backend=%s model=%s ui=%S"
-                        request-id
-                        (and backend (gptel-backend-name backend))
-                        (format "%s" model)
-                        magent-include-reasoning))
-         (apply
-          #'magent-events-emit
-          'llm-request-end
-          :context event-context
-          :request-id request-id
-          :status 'failed
-          :backend (and backend (gptel-backend-name backend))
-          :model (format "%s" model)
-          (magent-fsm-backend-gptel--usage-plist info ""))
-          (let ((error-text (plist-get info :error)))
-            (if (and (stringp error-text)
-                     (> (length error-text) 0))
-                (progn
-                  (when ui-callback
-                    (funcall ui-callback error-text))
-                  (magent-ui-finish-streaming-fontify)
-                  (when callback
-                    (funcall callback error-text)))
-              (when callback
-                (funcall callback nil))))
-          (when (buffer-live-p buffer) (kill-buffer buffer))))
-      ((beginning-of-buffer end-of-buffer beginning-of-line end-of-line)
-       nil))))
+             (magent-fsm-backend-gptel--usage-plist info ""))
+            (let ((error-text (plist-get info :error)))
+              (if (and (stringp error-text)
+                       (> (length error-text) 0))
+                  (progn
+                    (when ui-callback
+                      (funcall ui-callback error-text))
+                    (magent-ui-finish-streaming-fontify)
+                    (when callback
+                      (funcall callback error-text)))
+                (when callback
+                  (funcall callback nil))))
+            (when (buffer-live-p buffer) (kill-buffer buffer))))
+        ((beginning-of-buffer end-of-buffer beginning-of-line end-of-line)
+         nil)))))
 
 (defun magent-fsm-backend-gptel-abort (params)
   "Abort gptel request."

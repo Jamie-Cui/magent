@@ -163,12 +163,56 @@ When ARGS contains a :reason key, prepend it as [reason] to the summary."
            for val in arg-values
            append (list (intern (concat ":" (plist-get spec :name))) val)))
 
+(defconst magent-fsm--large-raw-content-threshold-bytes 65536
+  "Minimum raw text size that usually provides enough context to answer.
+When an `emacs_eval' or `read_file' result reaches this size, Magent
+records it so later guard messages can steer the model toward answering
+directly instead of continuing exploratory tool use.")
+
 (defun magent-fsm--tool-guard-state-create ()
   "Create per-request state used for Magent tool-call guards."
   (let ((state (make-hash-table :test 'eq)))
     (puthash :emacs-eval-count 0 state)
     (puthash :seen-emacs-eval-sexps (make-hash-table :test 'equal) state)
+    (puthash :last-raw-content-tool nil state)
+    (puthash :last-raw-content-bytes nil state)
     state))
+
+(defun magent-fsm--tool-guard-track-result (name result guard-state)
+  "Record useful request-local metadata for tool NAME and RESULT.
+Large raw text returned by `emacs_eval' or `read_file' is remembered so
+future guard messages can remind the model that it already has enough
+material to summarize or analyze directly."
+  (when (and guard-state
+             (member name '("emacs_eval" "read_file"))
+             (stringp result)
+             (not (string-prefix-p "Error:" result)))
+    (let ((bytes (string-bytes result)))
+      (when (>= bytes magent-fsm--large-raw-content-threshold-bytes)
+        (puthash :last-raw-content-tool name guard-state)
+        (puthash :last-raw-content-bytes bytes guard-state)))))
+
+(defun magent-fsm--emacs-eval-direct-answer-guidance (&optional guard-state)
+  "Return guidance that steers the model toward answering directly.
+When GUARD-STATE records a previous large raw-content read, include its
+size so the model sees that it already has enough context."
+  (let ((tool (and guard-state (gethash :last-raw-content-tool guard-state)))
+        (bytes (and guard-state (gethash :last-raw-content-bytes guard-state))))
+    (if (and (stringp tool)
+             (integerp bytes)
+             (>= bytes magent-fsm--large-raw-content-threshold-bytes))
+        (format "A prior %s call already returned %d bytes of raw content. That is enough context for summarization or general analysis. Answer directly from that content instead of calling formatting or filtering tools."
+                tool bytes)
+      "If you already retrieved the file or buffer content, use that raw content directly instead of calling formatting or filtering tools.")))
+
+(defun magent-fsm--emacs-eval-limit-message (limit &optional guard-state)
+  "Return a constructive limit message for repeated `emacs_eval' calls.
+LIMIT is the configured per-turn cap.  GUARD-STATE adds large-result
+context when available."
+  (format "Error: tool_use_limit_reached. emacs_eval exceeded %d call%s in this turn. Stop exploring and answer the user directly. %s"
+          limit
+          (if (= limit 1) "" "s")
+          (magent-fsm--emacs-eval-direct-answer-guidance guard-state)))
 
 (defun magent-fsm--maybe-intercept-tool-call (name args-plist guard-state)
   "Return a synthetic tool result when NAME/ARGS-PLIST should be intercepted.
@@ -183,12 +227,12 @@ GUARD-STATE tracks request-local tool guard state."
            (limit magent-emacs-eval-max-calls-per-turn))
       (cond
        ((and sexp (gethash sexp seen))
-        "[system-intercept] You already executed this exact emacs_eval query in this turn. Stop calling tools and answer the user with the information you already have.")
+        (format "[system-intercept] You already executed this exact emacs_eval query in this turn. Stop calling tools and answer the user directly. %s"
+                (magent-fsm--emacs-eval-direct-answer-guidance guard-state)))
        ((and (natnump limit)
              (>= count limit))
-        (format "[system-intercept] emacs_eval has already been called %d time%s in this turn. Stop calling tools and answer the user with the information you already have."
-                limit
-                (if (= limit 1) "" "s")))
+        (concat "[system-intercept] "
+                (magent-fsm--emacs-eval-limit-message limit guard-state)))
        (t
         (puthash :emacs-eval-count (1+ count) guard-state)
         (when sexp
@@ -230,6 +274,7 @@ GUARD-STATE tracks request-local tool guard state."
                 (input (plist-get item :input))
                 (call-id (plist-get item :call-id))
                 (args-plist (plist-get item :args-plist))
+                (tool-guard-state (plist-get item :guard-state))
                 (fn (plist-get item :fn))
                 (async-p (plist-get item :async))
                 (callback (plist-get item :callback))
@@ -250,6 +295,8 @@ GUARD-STATE tracks request-local tool guard state."
                                  (and abort-controller
                                       (magent-fsm--abort-controller-aborted
                                        abort-controller)))
+                       (magent-fsm--tool-guard-track-result
+                        name result tool-guard-state)
                        (magent-fsm--show-tool-result name result)
                        (magent-events-emit 'tool-call-end
                                            :call-id call-id
@@ -313,6 +360,7 @@ must not be forwarded to the actual tool implementation."
                  :call-id (magent-events-generate-id)
                  :input summary
                  :args-plist args-plist
+                 :guard-state guard-state
                  :fn (if intercept-result
                          (lambda () intercept-result)
                        original-fn)
@@ -355,6 +403,7 @@ must not be forwarded to the actual tool implementation."
                            (unless (and abort-controller
                                         (magent-fsm--abort-controller-aborted
                                          abort-controller))
+                             (magent-fsm--tool-guard-track-result name result guard-state)
                              (magent-fsm--show-tool-result name result)
                              (magent-events-emit 'tool-call-end
                                                  :call-id call-id
@@ -389,6 +438,7 @@ must not be forwarded to the actual tool implementation."
                 (setq result (apply original-fn fn-args))))
             (unless (and abort-controller
                          (magent-fsm--abort-controller-aborted abort-controller))
+              (magent-fsm--tool-guard-track-result name result guard-state)
               (magent-fsm--show-tool-result name result)
               (magent-events-emit 'tool-call-end
                                   :call-id call-id

@@ -45,6 +45,14 @@ If CONTENT is a list of content blocks, concatenate their text fields."
   (if (stringp content) content
     (mapconcat (lambda (b) (or (cdr (assq 'text b)) "")) content "")))
 
+(defun magent-session--assistant-response-reusable-p (content)
+  "Return non-nil when assistant CONTENT should be reused in prompts.
+Empty assistant replies and synthetic failure text are preserved in the
+saved transcript, but should not be fed back into later requests."
+  (let ((text (string-trim (magent-session--content-to-string content))))
+    (and (not (string-empty-p text))
+         (not (string-prefix-p "Error:" text)))))
+
 (defconst magent-session-summary-title-max-width 48
   "Maximum display width for saved session summary titles.")
 
@@ -465,20 +473,33 @@ Returns a condensed version of the conversation."
 Returns a list in gptel's advanced format:
   ((prompt . \"user msg\") (response . \"assistant msg\") ...)
 Tool result messages are skipped; gptel handles tool round-trips
-internally within each request."
-  (let ((messages (magent-session-get-messages session)))
-    (delq nil
-          (mapcar
-           (lambda (msg)
-             (let ((role (magent-msg-role msg))
-                   (content (magent-msg-content msg)))
-               (pcase role
-                 ('user
-                  (cons 'prompt (magent-session--content-to-string content)))
-                 ('assistant
-                  (cons 'response (magent-session--content-to-string content)))
-                 (_ nil))))
-           messages))))
+internally within each request.
+
+Only completed turns are reused.  When an assistant reply is empty or a
+synthetic error string, Magent drops both that reply and its paired user
+prompt from future prompt reuse.  The final pending user prompt is still
+included so the current turn is preserved."
+  (let ((messages (magent-session-get-messages session))
+        pending-user
+        prompt-list)
+    (dolist (msg messages)
+      (let ((role (magent-msg-role msg))
+            (content (magent-msg-content msg)))
+        (pcase role
+          ('user
+           (setq pending-user (magent-session--content-to-string content)))
+          ('assistant
+           (when pending-user
+             (if (magent-session--assistant-response-reusable-p content)
+                 (let ((assistant-text (magent-session--content-to-string content)))
+                   (push (cons 'prompt pending-user) prompt-list)
+                   (push (cons 'response assistant-text) prompt-list))
+               (magent-log "INFO dropping failed session turn from prompt reuse")))
+           (setq pending-user nil))
+          (_ nil))))
+    (when pending-user
+      (push (cons 'prompt pending-user) prompt-list))
+    (nreverse prompt-list)))
 
 (provide 'magent-session)
 ;;; magent-session.el ends here

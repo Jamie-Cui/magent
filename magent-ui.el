@@ -1373,19 +1373,24 @@ stale callbacks are discarded."
       (magent-log "INFO %s" summary)
       (magent-ui-insert-capability-summary summary))
     (condition-case err
-        (setq magent--current-fsm
-              (magent-agent-process
-               input
-               (lambda (response)
-                 (if (= gen magent-ui--request-generation)
-                     (magent-ui--finish-processing response)
-                   (magent-log "DEBUG discarding stale callback gen=%d (current=%d)"
-                               gen magent-ui--request-generation)))
-               (magent-ui--request-agent item)
-               (magent-ui--request-skills item)
-               nil
-               (magent-ui--request-request-context item)
-               (magent-ui--request-capability-resolution item)))
+        (let ((request-live-p
+               (lambda ()
+                 (= gen magent-ui--request-generation))))
+          (setq magent--current-fsm
+                (magent-agent-process
+                 input
+                 (lambda (response)
+                   (if (= gen magent-ui--request-generation)
+                       (magent-ui--finish-processing response)
+                     (magent-log "DEBUG discarding stale callback gen=%d (current=%d)"
+                                 gen magent-ui--request-generation)))
+                 (magent-ui--request-agent item)
+                 (magent-ui--request-skills item)
+                 nil
+                 (magent-ui--request-request-context item)
+                 (magent-ui--request-capability-resolution item)
+                 #'magent-ui-insert-streaming
+                 request-live-p)))
       (error
        (magent-log "ERROR in run-item: %s" (error-message-string err))
        (magent-ui-insert-error (error-message-string err))

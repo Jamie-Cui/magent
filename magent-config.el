@@ -267,7 +267,7 @@ If rg is not found, grep tool calls will fail with an informative error."
   :type 'integer
   :group 'magent)
 
-(defcustom magent-emacs-eval-max-calls-per-turn 3
+(defcustom magent-emacs-eval-max-calls-per-turn 10
   "Maximum number of emacs_eval calls allowed in a single turn.
 When non-nil, Magent stops further emacs_eval exploration after
 this many calls in the same turn and forces the model to answer.

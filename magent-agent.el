@@ -40,7 +40,8 @@
         (push name result)))))
 
 (defun magent-agent-process
-    (user-prompt &optional callback agent-info skill-names event-context request-context capability-resolution)
+    (user-prompt &optional callback agent-info skill-names event-context
+                 request-context capability-resolution ui-callback request-live-p)
   "Process USER-PROMPT through the AI agent using magent FSM.
 CALLBACK is called with the final string response when complete.
 AGENT-INFO is the agent to use (defaults to session agent or registry default).
@@ -50,6 +51,10 @@ REQUEST-CONTEXT is an optional structured context plist captured at
 dispatch time.
 CAPABILITY-RESOLUTION is an optional precomputed capability resolver
 result for this turn.
+UI-CALLBACK receives streaming text chunks for this request and defaults
+to `magent-ui-insert-streaming'.
+REQUEST-LIVE-P is an optional predicate used to discard stale backend
+callbacks after the UI has moved on to a newer request.
 When nil, no skills are injected (skills must be explicitly selected
 via slash commands in the prompt).
 
@@ -129,6 +134,7 @@ The tool calling loop is managed by magent-fsm.  This function:
                        :max-tool-rounds (magent-agent-info-steps agent)
                        :event-context context
                        :permission (magent-agent-info-permission agent)
+                       :live-p request-live-p
                        :callback (lambda (response)
                                    (unless event-context
                                      (magent-events-end-turn
@@ -137,7 +143,8 @@ The tool calling loop is managed by magent-fsm.  This function:
                                    (when (stringp response)
                                      (magent-session-add-message session 'assistant response))
                                    (when callback (funcall callback response)))
-                       :ui-callback #'magent-ui-insert-streaming)))
+                       :ui-callback (or ui-callback
+                                        #'magent-ui-insert-streaming))))
              (magent-fsm-start fsm)
              fsm)))))))
 

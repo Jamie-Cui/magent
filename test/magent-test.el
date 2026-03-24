@@ -585,6 +585,36 @@
       (should (equal (car (nth 0 prompt-list)) 'prompt))
       (should (equal (car (nth 1 prompt-list)) 'response)))))
 
+(ert-deftest magent-test-session-to-gptel-prompt-list-drops-failed-turns ()
+  "Test failed turns do not leak into later prompt reuse."
+  (require 'magent-session)
+  (let ((session (magent-session-create)))
+    (magent-session-add-message session 'user "emacs 有几个 buffer")
+    (magent-session-add-message session 'assistant "")
+    (magent-session-add-message session 'user "magent 有几个 skills")
+    (magent-session-add-message
+     session 'assistant
+     "Error: tool_use_limit_reached. emacs_eval exceeded 3 calls in this turn.")
+    (magent-session-add-message session 'user "emacs 有几个 实例")
+    (should (equal (magent-session-to-gptel-prompt-list session)
+                   '((prompt . "emacs 有几个 实例"))))))
+
+(ert-deftest magent-test-session-to-gptel-prompt-list-keeps-completed-turns ()
+  "Test completed turns remain even when a later turn failed."
+  (require 'magent-session)
+  (let ((session (magent-session-create)))
+    (magent-session-add-message session 'user "What is Emacs?")
+    (magent-session-add-message session 'assistant "A text editor.")
+    (magent-session-add-message session 'user "magent 有几个 skills")
+    (magent-session-add-message
+     session 'assistant
+     "Error: tool_use_limit_reached. emacs_eval exceeded 3 calls in this turn.")
+    (magent-session-add-message session 'user "Tell me more.")
+    (should (equal (magent-session-to-gptel-prompt-list session)
+                   '((prompt . "What is Emacs?")
+                     (response . "A text editor.")
+                     (prompt . "Tell me more."))))))
+
 (ert-deftest magent-test-session-get-id ()
   "Test session ID generation."
   (require 'magent-session)
@@ -2155,6 +2185,48 @@
     (should (equal final-response "Hello world"))
     (should-not (gethash :in-reasoning-block stream-state))))
 
+(ert-deftest magent-test-gptel-backend-drops-stale-callbacks-before-ui-mutation ()
+  "Test stale gptel callbacks do not mutate UI or complete the request."
+  (require 'magent-fsm-backend-gptel)
+  (let ((events nil)
+        (final-response 'unset)
+        (request-buffer (generate-new-buffer " *magent-gptel-test*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-ui-insert-streaming)
+                   (lambda (chunk)
+                     (push (list 'chunk chunk) events)))
+                  ((symbol-function 'magent-ui-continue-streaming)
+                   (lambda ()
+                     (push 'continue events)))
+                  ((symbol-function 'magent-ui-finish-streaming-fontify)
+                   (lambda ()
+                     (push 'finish events)))
+                  ((symbol-function 'magent-ui-insert-reasoning-start)
+                   (lambda ()
+                     (push 'reasoning-start events)))
+                  ((symbol-function 'magent-ui-insert-reasoning-text)
+                   (lambda (text)
+                     (push (list 'reasoning text) events)))
+                  ((symbol-function 'magent-ui-insert-reasoning-end)
+                   (lambda ()
+                     (push 'reasoning-end events)))
+                  ((symbol-function 'magent-fsm--handle-tool-call-confirmation-with-permission)
+                   (lambda (&rest _args)
+                     (push 'tool-call events))))
+          (magent-fsm-backend-gptel--callback
+           "stale text"
+           nil
+           (lambda (response)
+             (setq final-response response))
+           #'magent-ui-insert-streaming
+           request-buffer nil nil nil "req-stale" nil nil
+           (lambda () nil))
+          (should-not events)
+          (should (eq final-response 'unset))
+          (should-not (buffer-live-p request-buffer))))
+    (when (buffer-live-p request-buffer)
+      (kill-buffer request-buffer))))
+
 (ert-deftest magent-test-gptel-backend-surfaces-error-text-on-failure ()
   "Test gptel backend shows backend errors instead of returning a blank response."
   (require 'magent-fsm-backend-gptel)
@@ -2560,12 +2632,39 @@
     (should-not
      (magent-fsm--maybe-intercept-tool-call
       "emacs_eval" '(:sexp "(length (seq-filter #'buffer-file-name (buffer-list)))") guard-state))
-    (should (string-match-p "emacs_eval has already been called 3 times"
-                            (magent-fsm--maybe-intercept-tool-call
-                             "emacs_eval"
-                             '(:sexp "(length (seq-remove (lambda (buf) (string-prefix-p \" \" (buffer-name buf))) (buffer-list)))")
-                             guard-state)))
+    (let ((message
+           (magent-fsm--maybe-intercept-tool-call
+            "emacs_eval"
+            '(:sexp "(length (seq-remove (lambda (buf) (string-prefix-p \" \" (buffer-name buf))) (buffer-list)))")
+            guard-state)))
+      (should (string-match-p "tool_use_limit_reached" message))
+      (should (string-match-p "emacs_eval exceeded 3 calls" message)))
     (should (= (gethash :emacs-eval-count guard-state) 3))))
+
+(ert-deftest magent-test-tool-guard-limit-message-includes-large-raw-content-guidance ()
+  "Test emacs_eval limit guidance mentions previously fetched raw content."
+  (require 'magent-fsm-shared)
+  (let ((guard-state (magent-fsm--tool-guard-state-create))
+        (magent-emacs-eval-max-calls-per-turn 1))
+    (puthash :emacs-eval-count 1 guard-state)
+    (puthash :last-raw-content-tool "emacs_eval" guard-state)
+    (puthash :last-raw-content-bytes 115846 guard-state)
+    (let ((message
+           (magent-fsm--maybe-intercept-tool-call
+            "emacs_eval" '(:sexp "(org-export-as '\\''ascii)") guard-state)))
+      (should (string-match-p "tool_use_limit_reached" message))
+      (should (string-match-p "115846 bytes of raw content" message))
+      (should (string-match-p "Answer directly from that content" message)))))
+
+(ert-deftest magent-test-tool-guard-tracks-large-raw-results ()
+  "Test large raw results are remembered for later guidance."
+  (require 'magent-fsm-shared)
+  (let ((guard-state (magent-fsm--tool-guard-state-create))
+        (large-result (make-string 70000 ?x)))
+    (magent-fsm--tool-guard-track-result "emacs_eval" large-result guard-state)
+    (should (equal (gethash :last-raw-content-tool guard-state) "emacs_eval"))
+    (should (= (gethash :last-raw-content-bytes guard-state)
+               (string-bytes large-result)))))
 
 (ert-deftest magent-test-tool-guard-respects-configured-emacs-eval-limit ()
   "Test emacs_eval guard uses `magent-emacs-eval-max-calls-per-turn'."
@@ -2575,11 +2674,13 @@
     (should-not
      (magent-fsm--maybe-intercept-tool-call
       "emacs_eval" '(:sexp "(length (buffer-list))") guard-state))
-    (should (string-match-p "already been called 1 time"
-                            (magent-fsm--maybe-intercept-tool-call
-                             "emacs_eval"
-                             '(:sexp "(seq-map #'buffer-name (buffer-list))")
-                             guard-state)))
+    (let ((message
+           (magent-fsm--maybe-intercept-tool-call
+            "emacs_eval"
+            '(:sexp "(seq-map #'buffer-name (buffer-list))")
+            guard-state)))
+      (should (string-match-p "tool_use_limit_reached" message))
+      (should (string-match-p "emacs_eval exceeded 1 call" message)))
     (should (= (gethash :emacs-eval-count guard-state) 1))))
 
 (ert-deftest magent-test-gptel-backend-aborts-on-fourth-emacs-eval-round ()
@@ -2611,6 +2712,8 @@
        fsm))
     (should-not orig-called)
     (should-not captured-response)
+    (should (string-match-p "tool_use_limit_reached"
+                            (plist-get info :error)))
     (should (string-match-p "emacs_eval exceeded 3 calls"
                             (plist-get info :error)))
     (should (eq (gptel-fsm-state fsm) 'ERRS))))
@@ -2642,6 +2745,8 @@
        fsm))
     (should-not orig-called)
     (should-not captured-response)
+    (should (string-match-p "use that raw content directly"
+                            (plist-get info :error)))
     (should (string-match-p "emacs_eval exceeded 2 calls"
                             (plist-get info :error)))
     (should (eq (gptel-fsm-state fsm) 'ERRS))))
