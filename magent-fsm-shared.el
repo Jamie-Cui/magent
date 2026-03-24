@@ -39,6 +39,9 @@
 When non-nil, async Magent tools call this function with a cleanup
 closure that should run if the current request is aborted.")
 
+(defvar magent-fsm--tool-guard-state nil
+  "Dynamically bound per-request tool guard state.")
+
 (cl-defstruct (magent-fsm (:constructor magent-fsm-native-create)
                           (:copier magent-fsm-copy))
   "Finite state machine for Magent LLM requests."
@@ -160,6 +163,38 @@ When ARGS contains a :reason key, prepend it as [reason] to the summary."
            for val in arg-values
            append (list (intern (concat ":" (plist-get spec :name))) val)))
 
+(defun magent-fsm--tool-guard-state-create ()
+  "Create per-request state used for Magent tool-call guards."
+  (let ((state (make-hash-table :test 'eq)))
+    (puthash :emacs-eval-count 0 state)
+    (puthash :seen-emacs-eval-sexps (make-hash-table :test 'equal) state)
+    state))
+
+(defun magent-fsm--maybe-intercept-tool-call (name args-plist guard-state)
+  "Return a synthetic tool result when NAME/ARGS-PLIST should be intercepted.
+GUARD-STATE tracks request-local tool guard state."
+  (when (and guard-state
+             (string= name "emacs_eval"))
+    (let* ((sexp (and-let* ((raw (plist-get args-plist :sexp))
+                            ((stringp raw)))
+                   (string-trim raw)))
+           (seen (gethash :seen-emacs-eval-sexps guard-state))
+           (count (gethash :emacs-eval-count guard-state 0))
+           (limit magent-emacs-eval-max-calls-per-turn))
+      (cond
+       ((and sexp (gethash sexp seen))
+        "[system-intercept] You already executed this exact emacs_eval query in this turn. Stop calling tools and answer the user with the information you already have.")
+       ((and (natnump limit)
+             (>= count limit))
+        (format "[system-intercept] emacs_eval has already been called %d time%s in this turn. Stop calling tools and answer the user with the information you already have."
+                limit
+                (if (= limit 1) "" "s")))
+       (t
+        (puthash :emacs-eval-count (1+ count) guard-state)
+        (when sexp
+          (puthash sexp t seen))
+        nil)))))
+
 ;;; Tool render queue
 
 (cl-defstruct (magent-fsm--tool-queue
@@ -263,24 +298,28 @@ must not be forwarded to the actual tool implementation."
     arg-values))
 
 (defun magent-fsm--wrap-tool-function (name args-spec original-fn async-p
-                                            &optional queue abort-controller)
+                                            &optional queue abort-controller guard-state)
   "Wrap ORIGINAL-FN to render tool UI and events before/after execution."
   (if queue
       (lambda (callback &rest arg-values)
         (let* ((args-plist (magent-fsm--args-to-plist args-spec arg-values))
                (summary (magent-fsm--show-tool-call-format name args-plist))
-               (fn-args (magent-fsm--filter-display-args args-spec arg-values)))
+               (fn-args (magent-fsm--filter-display-args args-spec arg-values))
+               (intercept-result (magent-fsm--maybe-intercept-tool-call
+                                  name args-plist guard-state)))
           (magent-fsm--tool-queue-push
            queue
            (list :name name
                  :call-id (magent-events-generate-id)
                  :input summary
                  :args-plist args-plist
-                 :fn original-fn
-                 :async async-p
+                 :fn (if intercept-result
+                         (lambda () intercept-result)
+                       original-fn)
+                 :async (and async-p (not intercept-result))
                  :callback callback
                  :abort-controller abort-controller
-                 :args fn-args))))
+                 :args (if intercept-result nil fn-args)))))
     (if async-p
         (lambda (callback &rest arg-values)
           (unless (and abort-controller
@@ -288,7 +327,9 @@ must not be forwarded to the actual tool implementation."
             (let* ((args-plist (magent-fsm--args-to-plist args-spec arg-values))
                    (call-id (magent-events-generate-id))
                    (summary (magent-fsm--show-tool-call-format name args-plist))
-                   (fn-args (magent-fsm--filter-display-args args-spec arg-values)))
+                   (fn-args (magent-fsm--filter-display-args args-spec arg-values))
+                   (intercept-result (magent-fsm--maybe-intercept-tool-call
+                                      name args-plist guard-state)))
               (magent-events-emit 'tool-call-start
                                   :call-id call-id
                                   :tool-name name
@@ -297,22 +338,30 @@ must not be forwarded to the actual tool implementation."
                                   :description summary
                                   :args args-plist)
               (magent-fsm--show-tool-call name args-plist)
-              (let ((magent-tools--register-cancel
-                     (lambda (cleanup)
-                       (magent-fsm--abort-controller-register
-                        abort-controller cleanup))))
-                (apply original-fn
-                       (lambda (result)
-                         (unless (and abort-controller
-                                      (magent-fsm--abort-controller-aborted
-                                       abort-controller))
-                           (magent-fsm--show-tool-result name result)
-                           (magent-events-emit 'tool-call-end
-                                               :call-id call-id
-                                               :tool-name name
-                                               :result result)
-                           (funcall callback result)))
-                       fn-args)))))
+              (if intercept-result
+                  (progn
+                    (magent-fsm--show-tool-result name intercept-result)
+                    (magent-events-emit 'tool-call-end
+                                        :call-id call-id
+                                        :tool-name name
+                                        :result intercept-result)
+                    (funcall callback intercept-result))
+                (let ((magent-tools--register-cancel
+                       (lambda (cleanup)
+                         (magent-fsm--abort-controller-register
+                          abort-controller cleanup))))
+                  (apply original-fn
+                         (lambda (result)
+                           (unless (and abort-controller
+                                        (magent-fsm--abort-controller-aborted
+                                         abort-controller))
+                             (magent-fsm--show-tool-result name result)
+                             (magent-events-emit 'tool-call-end
+                                                 :call-id call-id
+                                                 :tool-name name
+                                                 :result result)
+                             (funcall callback result)))
+                         fn-args))))))
       (lambda (&rest arg-values)
         (unless (and abort-controller
                      (magent-fsm--abort-controller-aborted abort-controller))
@@ -320,6 +369,8 @@ must not be forwarded to the actual tool implementation."
                  (call-id (magent-events-generate-id))
                  (summary (magent-fsm--show-tool-call-format name args-plist))
                  (fn-args (magent-fsm--filter-display-args args-spec arg-values))
+                 (intercept-result (magent-fsm--maybe-intercept-tool-call
+                                    name args-plist guard-state))
                  result)
             (magent-events-emit 'tool-call-start
                                 :call-id call-id
@@ -329,11 +380,13 @@ must not be forwarded to the actual tool implementation."
                                 :description summary
                                 :args args-plist)
             (magent-fsm--show-tool-call name args-plist)
-            (let ((magent-tools--register-cancel
-                   (lambda (cleanup)
-                     (magent-fsm--abort-controller-register
-                      abort-controller cleanup))))
-              (setq result (apply original-fn fn-args)))
+            (if intercept-result
+                (setq result intercept-result)
+              (let ((magent-tools--register-cancel
+                     (lambda (cleanup)
+                       (magent-fsm--abort-controller-register
+                        abort-controller cleanup))))
+                (setq result (apply original-fn fn-args))))
             (unless (and abort-controller
                          (magent-fsm--abort-controller-aborted abort-controller))
               (magent-fsm--show-tool-result name result)
@@ -356,7 +409,8 @@ must not be forwarded to the actual tool implementation."
                      (perm-key (plist-get tool :perm-key))
                      (wrapped-fn (magent-fsm--wrap-tool-function
                                   name args-spec original-fn async-p
-                                  queue abort-controller))
+                                  queue abort-controller
+                                  magent-fsm--tool-guard-state))
                      (confirm-fn (when permission
                                    (magent-fsm--make-confirm-function
                                     perm-key permission args-spec))))

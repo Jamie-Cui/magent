@@ -15,6 +15,8 @@
 
 (require 'cl-lib)
 
+(defvar magent-by-pass-permission)  ; from magent-config.el
+
 ;;; Permission structure
 
 (cl-defstruct (magent-permission
@@ -40,9 +42,6 @@ Examples:
 (defconst magent-permission-allow 'allow)
 (defconst magent-permission-deny 'deny)
 (defconst magent-permission-ask 'ask)
-
-(defvar magent-by-pass-permission nil
-  "Non-nil means Magent bypasses permission filtering and confirmation.")
 
 ;;;###autoload
 (defun magent-toggle-by-pass-permission (&optional arg)

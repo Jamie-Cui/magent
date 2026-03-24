@@ -37,6 +37,8 @@ SRCS = magent-config.el \
        magent-ui.el \
        magent-magit.el \
        magent-fsm.el \
+       magent-fsm-backend-gptel.el \
+       magent-fsm-backend-native.el \
        magent-fsm-shared.el \
        magent-skills.el \
        magent-capability.el \

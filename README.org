@@ -115,6 +115,9 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 
 In the ~*magent*~ output buffer: ~TAB~ and ~S-TAB~ fold sections, ~?~ opens the transient menu, ~C-c C-c~ submits input, and ~C-g~ interrupts.
 
+The same bypass state is also exposed as the customize option
+~magent-by-pass-permission~ under ~M-x customize-group RET magent RET~.
+
 ** Session Scope
 
 Magent keeps a single ~*magent*~ buffer, but session state is scoped by project:
@@ -239,7 +242,7 @@ The AI agent has access to these tools (can be customized per agent):
 | ~skill_invoke~ | no          | Invoke tool-type skills                               |
 | ~web_search~   | no          | Search the web via DuckDuckGo                         |
 
-Tools with side effects prompt the user for confirmation before execution unless permission bypass is enabled with ~M-x magent-toggle-by-pass-permission~.
+Tools with side effects prompt the user for confirmation before execution unless permission bypass is enabled with ~M-x magent-toggle-by-pass-permission~ or by customizing ~magent-by-pass-permission~.
 
 Tool availability is controlled by:
 

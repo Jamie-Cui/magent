@@ -135,6 +135,23 @@ transitions to ERROR.  Set to 0 to disable."
   :type 'integer
   :group 'magent)
 
+(defvaralias 'magent-always-bypass-permission 'magent-by-pass-permission)
+(make-obsolete-variable 'magent-always-bypass-permission
+                        'magent-by-pass-permission "0.1.0")
+
+(defcustom magent-by-pass-permission nil
+  "DANGEROUS: Bypass permission checks for all tools.
+When non-nil, all tool calls are executed without confirmation,
+ignoring agent permission rules and user-defined overrides.
+This is a security risk and should only be enabled in trusted
+environments for debugging or automation purposes.
+
+This variable is the canonical permission bypass flag used by
+`magent-toggle-by-pass-permission' and permission checks."
+  :type 'boolean
+  :group 'magent
+  :risky t)
+
 (defcustom magent-enable-logging t
   "Enable logging to the *magent-log* buffer.
 When enabled, API requests and responses are logged for debugging."
@@ -250,6 +267,17 @@ If rg is not found, grep tool calls will fail with an informative error."
   :type 'integer
   :group 'magent)
 
+(defcustom magent-emacs-eval-max-calls-per-turn 3
+  "Maximum number of emacs_eval calls allowed in a single turn.
+When non-nil, Magent stops further emacs_eval exploration after
+this many calls in the same turn and forces the model to answer.
+Exact duplicate emacs_eval forms are still intercepted even when
+this count-based cap is disabled.  Set to nil to disable the
+count-based cap."
+  :type '(choice (const :tag "Disable count-based cap" nil)
+                 (natnum :tag "Max calls per turn"))
+  :group 'magent)
+
 (defcustom magent-ui-header-strike-through nil
   "Whether to draw a strike-through line after section headers.
 When non-nil, a dash line extends from the header label to the
@@ -306,12 +334,25 @@ rendering to reduce UI updates."
 
 (defcustom magent-include-reasoning t
   "How to handle LLM reasoning/thinking blocks.
-If t, display reasoning blocks wrapped in #+begin_think/#+end_think.
-If `ignore', keep reasoning blocks out of the Magent UI.
-If nil, discard reasoning content entirely."
-  :type '(choice (const :tag "Display reasoning" t)
-                 (const :tag "Hide reasoning" ignore)
-                 (const :tag "Discard reasoning" nil))
+If t, display reasoning blocks in the Magent UI and retain them.
+If `ignore', hide reasoning from the Magent UI but still retain the
+received reasoning text internally.
+If nil, discard reasoning content entirely instead of showing or
+retaining it.
+
+In other words, `ignore' means \"hidden but kept\", while nil means
+\"dropped\"."
+  :type '(choice (const :tag "Display reasoning and keep it" t)
+                 (const :tag "Hide reasoning but keep it internally" ignore)
+                 (const :tag "Discard reasoning entirely" nil))
+  :group 'magent)
+
+(defcustom magent-ui-wrap-reasoning-in-think-block t
+  "Whether to wrap displayed reasoning in `#+begin_think' blocks.
+When nil, displayed reasoning is inserted as plain assistant text.
+This only affects reasoning shown in the Magent UI, so it has no
+effect unless `magent-include-reasoning' is t."
+  :type 'boolean
   :group 'magent)
 
 ;; FIXME: native FSM backend (magent-fsm-backend-native.el) is not ready.

@@ -126,6 +126,7 @@ The tool calling loop is managed by magent-fsm.  This function:
                        :prompt-list prompt-list
                        :system-prompt system-msg
                        :tools tools
+                       :max-tool-rounds (magent-agent-info-steps agent)
                        :event-context context
                        :permission (magent-agent-info-permission agent)
                        :callback (lambda (response)

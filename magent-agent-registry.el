@@ -343,6 +343,7 @@ Your output must be:
    :description "Default agent for building and general coding tasks"
    :mode 'primary
    :native t
+   :steps 12
    :permission (magent-permission-defaults)))
 
 (defun magent-agent-types--plan ()

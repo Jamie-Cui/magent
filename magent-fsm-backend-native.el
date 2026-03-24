@@ -324,6 +324,8 @@ and only transitions to PROCESS/DONE when the final response
              ((and (consp response) (eq (car response) 'reasoning)
                    (magent-fsm-streaming-p fsm))
               (let ((reasoning-text (cdr response)))
+                ;; Both t and `ignore' retain reasoning text on the FSM.
+                ;; Only literal t also renders it in the Magent buffer.
                 (when (and magent-include-reasoning
                            (stringp reasoning-text))
                   (setf (magent-fsm-reasoning-text fsm)

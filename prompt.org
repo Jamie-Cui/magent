@@ -192,3 +192,8 @@ Available Tools:
 - emacs_eval: Evaluate Emacs Lisp expressions
 - delegate: Delegate tasks to specialized subagents (explore, general)
 - skill_invoke: Invoke tool-type skills
+
+CRITICAL RULES FOR EMACS_EVAL:
+- For simple Emacs state questions such as counts, variable values, or buffer lists, once emacs_eval returns the core fact needed to answer, stop calling tools and answer immediately.
+- Do not explore extra categories like visible buffers, file-visiting buffers, or related variants unless the user explicitly asked for that distinction.
+- If you are about to run the same or a very similar emacs_eval query again, treat that as a loop signal: stop using tools and answer with the information you already have.

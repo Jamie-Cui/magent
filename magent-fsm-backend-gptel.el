@@ -40,7 +40,9 @@
     state))
 
 (defsubst magent-fsm-backend-gptel--render-reasoning-p ()
-  "Return non-nil when reasoning blocks should be shown in the UI."
+  "Return non-nil when reasoning blocks should be shown in the UI.
+Only literal t renders reasoning.  `ignore' still retains reasoning
+internally, while nil drops it."
   (eq magent-include-reasoning t))
 
 (defun magent-fsm-backend-gptel--note-reasoning-seen
@@ -56,7 +58,8 @@ BACKEND and MODEL are used for diagnostic logging."
                 magent-include-reasoning)))
 
 (defun magent-fsm-backend-gptel--remember-reasoning (state reasoning-text)
-  "Append REASONING-TEXT to STATE when Magent keeps reasoning."
+  "Append REASONING-TEXT to STATE when Magent retains reasoning.
+Both t and `ignore' keep reasoning in STATE.  Only nil discards it."
   (when (and magent-include-reasoning
              (stringp reasoning-text))
     (push reasoning-text (gethash :reasoning-chunks state))
@@ -114,6 +117,66 @@ BACKEND and MODEL are used for diagnostic logging."
           :http-status (plist-get info :http-status)
           :error (plist-get info :error))))
 
+(defun magent-fsm-backend-gptel--note-tool-round (info)
+  "Increment and return the current tool round count for INFO."
+  (let ((count (1+ (or (plist-get info :magent-tool-round-count) 0))))
+    (plist-put info :magent-tool-round-count count)
+    count))
+
+(defun magent-fsm-backend-gptel--tool-round-limit-reached-p (info)
+  "Return non-nil when INFO has exceeded its configured tool round limit."
+  (when-let ((limit (plist-get info :magent-tool-round-limit)))
+    (> (magent-fsm-backend-gptel--note-tool-round info) limit)))
+
+(defun magent-fsm-backend-gptel--tool-round-limit-message (info)
+  "Return a user-facing error message for INFO's tool round limit."
+  (let ((limit (plist-get info :magent-tool-round-limit)))
+    (format "Error: tool loop exceeded %d round%s. The model kept requesting more tools instead of answering."
+            limit
+            (if (= limit 1) "" "s"))))
+
+(defun magent-fsm-backend-gptel--abort-tool-loop (fsm info &optional message)
+  "Abort FSM because INFO exceeded a Magent loop guard."
+  (let ((message (or message
+                     (magent-fsm-backend-gptel--tool-round-limit-message info))))
+    (magent-log "WARN aborting tool loop request=%s count=%s limit=%s message=%s"
+                (plist-get info :magent-request-id)
+                (plist-get info :magent-tool-round-count)
+                (plist-get info :magent-tool-round-limit)
+                message)
+    (plist-put info :tool-use nil)
+    (plist-put info :tool-pending nil)
+    (plist-put info :tool-success nil)
+    (plist-put info :error message)
+    (when-let ((callback (plist-get info :callback)))
+      (funcall callback nil info))
+    (gptel--fsm-transition fsm 'ERRS)))
+
+(defun magent-fsm-backend-gptel--assistant-tool-call-count (info tool-name)
+  "Return the number of assistant tool calls to TOOL-NAME in INFO history."
+  (let* ((data (plist-get info :data))
+         (messages (and data (plist-get data :messages)))
+         (count 0))
+    (when (vectorp messages)
+      (cl-loop for msg across messages
+               when (and (equal (plist-get msg :role) "assistant")
+                         (plist-get msg :tool_calls))
+               do (cl-loop for tc across (plist-get msg :tool_calls)
+                           for func = (plist-get tc :function)
+                           for name = (and func (plist-get func :name))
+                           when (equal name tool-name)
+                           do (cl-incf count))))
+    count))
+
+(defun magent-fsm-backend-gptel--emacs-eval-limit-message ()
+  "Return the hard-stop message for repeated emacs_eval exploration."
+  (let ((limit magent-emacs-eval-max-calls-per-turn))
+    (if (natnump limit)
+        (format "Error: emacs_eval exceeded %d call%s in this turn. Stop exploring and answer the user directly."
+                limit
+                (if (= limit 1) "" "s"))
+      "Error: emacs_eval exceeded the configured per-turn limit. Stop exploring and answer the user directly.")))
+
 (defun magent-fsm-backend-gptel-create (&rest args)
   "Create gptel FSM from keyword ARGS (returns plist with parameters).
 Accepts the same keyword arguments as `magent-fsm-create'."
@@ -125,6 +188,7 @@ Accepts the same keyword arguments as `magent-fsm-create'."
         :prompt-list (plist-get args :prompt-list)
         :system-prompt (plist-get args :system-prompt)
         :tools (plist-get args :tools)
+        :max-tool-rounds (plist-get args :max-tool-rounds)
         :event-context (plist-get args :event-context)
         :permission (plist-get args :permission)
         :abort-controller (magent-fsm--abort-controller-create)
@@ -149,12 +213,15 @@ Accepts the same keyword arguments as `magent-fsm-create'."
          (request-buffer (generate-new-buffer " *magent-gptel-request*"))
          (tool-queue (or (plist-get params :tool-queue)
                          (magent-fsm--tool-queue-create)))
+         (tool-guard-state (magent-fsm--tool-guard-state-create))
+         (max-tool-rounds (plist-get params :max-tool-rounds))
          ;; Install permission-aware :confirm functions and handle
          ;; `(tool-call . ...)' callbacks ourselves instead of relying on
          ;; gptel's default in-buffer confirmation UI.
-         (gptel-tools (magent-fsm--convert-tools-to-gptel
-                       tools permission event-context
-                       abort-controller tool-queue))
+         (gptel-tools (let ((magent-fsm--tool-guard-state tool-guard-state))
+                        (magent-fsm--convert-tools-to-gptel
+                         tools permission event-context
+                         abort-controller tool-queue)))
          (stream-state (magent-fsm-backend-gptel--make-stream-state)))
 
     (plist-put params :request-buffer request-buffer)
@@ -178,16 +245,24 @@ Accepts the same keyword arguments as `magent-fsm-create'."
       (setq-local gptel-use-tools (and gptel-tools t))
       (setq-local gptel-confirm-tool-calls 'auto)
       (setq-local gptel-include-reasoning magent-include-reasoning)
-      (gptel-request
-          prompt-list
-        :buffer (current-buffer)
-        :system system-prompt
-        :stream t
-        :callback (lambda (response info)
-                    (magent-fsm-backend-gptel--callback
-                     response info callback ui-callback request-buffer
-                     permission event-context stream-state request-id
-                     backend model))))))
+      (let* ((gptel-fsm
+              (gptel-request
+                  prompt-list
+                :buffer (current-buffer)
+                :system system-prompt
+                :stream t
+                :callback (lambda (response info)
+                            (magent-fsm-backend-gptel--callback
+                             response info callback ui-callback request-buffer
+                             permission event-context stream-state request-id
+                             backend model))))
+             (info (and (gptel-fsm-p gptel-fsm)
+                        (gptel-fsm-info gptel-fsm))))
+        (when info
+          (plist-put info :magent-request-id request-id)
+          (plist-put info :magent-tool-round-count 0)
+          (when (numberp max-tool-rounds)
+            (plist-put info :magent-tool-round-limit max-tool-rounds)))))))
 
 (defun magent-fsm-backend-gptel--callback (response info callback ui-callback buffer
                                                     permission event-context
@@ -208,6 +283,8 @@ inside gptel's process filter."
             (magent-fsm-backend-gptel--remember-reasoning state reasoning-text)
             (if (eq reasoning-text t)
                 (magent-fsm-backend-gptel--close-reasoning-block state)
+              ;; Only t renders reasoning in the buffer.
+              ;; `ignore' keeps the chunks but suppresses UI output.
               (when (magent-fsm-backend-gptel--render-reasoning-p)
                 (unless (gethash :in-reasoning-block state)
                   (magent-ui-insert-reasoning-start)
@@ -275,16 +352,26 @@ inside gptel's process filter."
                         (and backend (gptel-backend-name backend))
                         (format "%s" model)
                         magent-include-reasoning))
-          (apply
-           #'magent-events-emit
-           'llm-request-end
-           :context event-context
-           :request-id request-id
-           :status 'failed
-           :backend (and backend (gptel-backend-name backend))
-           :model (format "%s" model)
-           (magent-fsm-backend-gptel--usage-plist info ""))
-          (when callback (funcall callback nil))
+         (apply
+          #'magent-events-emit
+          'llm-request-end
+          :context event-context
+          :request-id request-id
+          :status 'failed
+          :backend (and backend (gptel-backend-name backend))
+          :model (format "%s" model)
+          (magent-fsm-backend-gptel--usage-plist info ""))
+          (let ((error-text (plist-get info :error)))
+            (if (and (stringp error-text)
+                     (> (length error-text) 0))
+                (progn
+                  (when ui-callback
+                    (funcall ui-callback error-text))
+                  (magent-ui-finish-streaming-fontify)
+                  (when callback
+                    (funcall callback error-text)))
+              (when callback
+                (funcall callback nil))))
           (when (buffer-live-p buffer) (kill-buffer buffer))))
       ((beginning-of-buffer end-of-buffer beginning-of-line end-of-line)
        nil))))
@@ -339,138 +426,133 @@ Pre-fill :result for unknown tool calls so gptel filters them out,
 preventing the FSM from hanging when the model hallucinates tool names."
   (let* ((info (gptel-fsm-info fsm))
          (patched nil))
-    (when-let* ((all-tool-use (plist-get info :tool-use))
-                (tools (plist-get info :tools)))
-      ;; Debug: log all tool calls with name, id, and args to diagnose splitting issues
-      (magent-log "DEBUG tool-use entries: %s"
-                  (mapconcat (lambda (tc)
-                               (format "'%s'(id=%S args=%s)"
-                                       (plist-get tc :name)
-                                       (plist-get tc :id)
-                                       (if (plist-get tc :args) "present" "nil")))
-                             all-tool-use ", "))
-      ;; Fix: when an empty-named tool call precedes a known tool with nil args,
-      ;; merge the empty tool's args and id into the known tool, then remove
-      ;; the empty entry from the tool-use list entirely.  This works around a
-      ;; qwen3-max streaming quirk where the first chunk arrives with name=""
-      ;; causing gptel to split one tool call into two entries with the same id.
-      ;; Previously we pre-filled the empty entry with an error result, but both
-      ;; entries share the same call_id, so the model received an error for its
-      ;; only tool call and terminated the loop prematurely.
-      (let ((merged-from nil)
-            (all-list all-tool-use))
-        (while (cdr all-list)
-          (let* ((tc (car all-list))
-                 (next (cadr all-list)))
-            (when (and (string= (plist-get tc :name) "")
-                       (null (plist-get tc :result))
-                       (plist-get tc :args)
-                       (null (plist-get next :args))
-                       (cl-find-if (lambda (ts)
-                                     (equal (gptel-tool-name ts)
-                                            (plist-get next :name)))
-                                   tools))
-              (plist-put next :args (plist-get tc :args))
-              ;; Transfer the id (in case they differ; they share the same id
-              ;; in the qwen3-max quirk but transfer anyway for robustness).
-              (when (and (plist-get tc :id) (not (plist-get next :id)))
-                (plist-put next :id (plist-get tc :id)))
-              (push tc merged-from)
-              (magent-log "INFO merged args+id(%S) from empty-named tool into '%s'"
-                          (plist-get tc :id)
-                          (plist-get next :name))))
-          (setq all-list (cdr all-list)))
-        ;; Remove the empty-named entries from the tool-use list so gptel sends
-        ;; only the real tool result (no duplicate error for the same call_id).
-        (when merged-from
-          (plist-put info :tool-use
-                     (cl-remove-if (lambda (tc) (memq tc merged-from))
-                                   all-tool-use))
-          ;; Update local binding so the unknown-tool loop below uses the
-          ;; filtered list.
-          (setq all-tool-use (plist-get info :tool-use))
-          ;; Also patch the assistant message already injected into info :data.
-          ;; gptel-openai's [DONE] handler injects the message with raw
-          ;; tool_calls BEFORE our advice runs.  The qwen3-max quirk means:
-          ;;   - the empty-named entry has the real JSON arguments
-          ;;   - the real entry (read_file) has empty "" arguments (invalid JSON)
-          ;; We must (1) copy args from empty entry to real entry, then
-          ;; (2) remove the empty entry so the conversation history is clean.
-          (let* ((data (plist-get info :data))
-                 (messages (and data (plist-get data :messages)))
-                 (n (and messages (length messages))))
-            (when (and n (> n 0))
-              (let ((idx (1- n)))
-                (while (and (>= idx 0)
-                            (not (and (equal (plist-get (aref messages idx) :role)
-                                             "assistant")
-                                      (plist-get (aref messages idx) :tool_calls))))
-                  (cl-decf idx))
-                (when (>= idx 0)
-                  (let* ((msg (aref messages idx))
-                         (tool-calls (plist-get msg :tool_calls))
-                         ;; Build id → non-empty arguments from empty-named entries.
-                         (id-to-args (make-hash-table :test 'equal)))
-                    (cl-loop for tc across tool-calls
-                             do (let* ((func (plist-get tc :function))
-                                       (name (and func (plist-get func :name)))
-                                       (args (and func (plist-get func :arguments))))
-                                  (when (and (stringp name) (string-empty-p name)
-                                             (stringp args) (not (string-empty-p args)))
-                                    (puthash (plist-get tc :id) args id-to-args))))
-                    ;; Copy args to real entries that have empty arguments.
-                    (cl-loop for tc across tool-calls
-                             do (let* ((func (plist-get tc :function))
-                                       (name (and func (plist-get func :name)))
-                                       (id (plist-get tc :id))
-                                       (args-from-empty (gethash id id-to-args))
-                                       (cur-args (and func (plist-get func :arguments))))
-                                  (when (and (stringp name) (not (string-empty-p name))
-                                             args-from-empty
-                                             (or (null cur-args) (string-empty-p cur-args)))
-                                    (plist-put func :arguments args-from-empty)
-                                    (magent-log "INFO fixed '%s' arguments in assistant message" name))))
-                    ;; Remove empty-named entries.
-                    (let ((filtered
-                           (cl-remove-if
-                            (lambda (tc)
-                              (let* ((func (plist-get tc :function))
-                                     (name (and func (plist-get func :name))))
-                                (and (stringp name) (string-empty-p name))))
-                            (append tool-calls nil))))
-                      (when (< (length filtered) (length tool-calls))
-                        (plist-put msg :tool_calls (vconcat filtered))
-                        (magent-log "INFO patched assistant message: removed %d empty tool_call(s)"
-                                    (- (length tool-calls) (length filtered))))))))))))
-      (let ((avail (mapconcat #'gptel-tool-name tools ", ")))
-        (dolist (tc all-tool-use)
-          (unless (plist-get tc :result)
-            (let ((name (plist-get tc :name)))
-              (unless (cl-find-if
-                       (lambda (ts) (equal (gptel-tool-name ts) name))
-                       tools)
-                (plist-put tc :result
-                           (format "Error: tool '%s' not found. Available: %s"
-                                   name avail))
-                (setq patched t)
-                (magent-log "WARN unknown tool '%s'(id=%S) — returned error to model"
-                            name (plist-get tc :id))))))))
-    ;; Run original handler
-    (funcall orig-fn fsm)
-    ;; All-unknown edge case: handler body didn't execute, FSM still in TOOL
-    (when (and patched (eq (gptel-fsm-state fsm) 'TOOL))
-      (let ((remaining (cl-remove-if
-                        (lambda (tc) (plist-get tc :result))
-                        (plist-get info :tool-use))))
-        (when (null remaining)
-          (plist-put info :tool-success t)
-          (let ((backend (plist-get info :backend)))
-            (gptel--inject-prompt
-             backend (plist-get info :data)
-             (gptel--parse-tool-results backend (plist-get info :tool-use))))
-          (funcall (plist-get info :callback)
-                   (cons 'tool-result nil) info)
-          (gptel--fsm-transition fsm))))))
+    (if (magent-fsm-backend-gptel--tool-round-limit-reached-p info)
+        (magent-fsm-backend-gptel--abort-tool-loop fsm info)
+      (when-let* ((all-tool-use (plist-get info :tool-use))
+                  (tools (plist-get info :tools)))
+        ;; Debug: log all tool calls with name, id, and args to diagnose splitting issues
+        (magent-log "DEBUG tool-use entries: %s"
+                    (mapconcat (lambda (tc)
+                                 (format "'%s'(id=%S args=%s)"
+                                         (plist-get tc :name)
+                                         (plist-get tc :id)
+                                         (if (plist-get tc :args) "present" "nil")))
+                               all-tool-use ", "))
+        ;; Fix: when an empty-named tool call precedes a known tool with nil args,
+        ;; merge the empty tool's args and id into the known tool, then remove
+        ;; the empty entry from the tool-use list entirely.  This works around a
+        ;; qwen3-max streaming quirk where the first chunk arrives with name=""
+        ;; causing gptel to split one tool call into two entries with the same id.
+        ;; Previously we pre-filled the empty entry with an error result, but both
+        ;; entries share the same call_id, so the model received an error for its
+        ;; only tool call and terminated the loop prematurely.
+        (let ((merged-from nil)
+              (all-list all-tool-use))
+          (while (cdr all-list)
+            (let* ((tc (car all-list))
+                   (next (cadr all-list)))
+              (when (and (string= (plist-get tc :name) "")
+                         (null (plist-get tc :result))
+                         (plist-get tc :args)
+                         (null (plist-get next :args))
+                         (cl-find-if (lambda (ts)
+                                       (equal (gptel-tool-name ts)
+                                              (plist-get next :name)))
+                                     tools))
+                (plist-put next :args (plist-get tc :args))
+                (when (and (plist-get tc :id) (not (plist-get next :id)))
+                  (plist-put next :id (plist-get tc :id)))
+                (push tc merged-from)
+                (magent-log "INFO merged args+id(%S) from empty-named tool into '%s'"
+                            (plist-get tc :id)
+                            (plist-get next :name))))
+            (setq all-list (cdr all-list)))
+          (when merged-from
+            (plist-put info :tool-use
+                       (cl-remove-if (lambda (tc) (memq tc merged-from))
+                                     all-tool-use))
+            (setq all-tool-use (plist-get info :tool-use))
+            (let* ((data (plist-get info :data))
+                   (messages (and data (plist-get data :messages)))
+                   (n (and messages (length messages))))
+              (when (and n (> n 0))
+                (let ((idx (1- n)))
+                  (while (and (>= idx 0)
+                              (not (and (equal (plist-get (aref messages idx) :role)
+                                               "assistant")
+                                        (plist-get (aref messages idx) :tool_calls))))
+                    (cl-decf idx))
+                  (when (>= idx 0)
+                    (let* ((msg (aref messages idx))
+                           (tool-calls (plist-get msg :tool_calls))
+                           (id-to-args (make-hash-table :test 'equal)))
+                      (cl-loop for tc across tool-calls
+                               do (let* ((func (plist-get tc :function))
+                                         (name (and func (plist-get func :name)))
+                                         (args (and func (plist-get func :arguments))))
+                                    (when (and (stringp name) (string-empty-p name)
+                                               (stringp args) (not (string-empty-p args)))
+                                      (puthash (plist-get tc :id) args id-to-args))))
+                      (cl-loop for tc across tool-calls
+                               do (let* ((func (plist-get tc :function))
+                                         (name (and func (plist-get func :name)))
+                                         (id (plist-get tc :id))
+                                         (args-from-empty (gethash id id-to-args))
+                                         (cur-args (and func (plist-get func :arguments))))
+                                    (when (and (stringp name) (not (string-empty-p name))
+                                               args-from-empty
+                                               (or (null cur-args) (string-empty-p cur-args)))
+                                      (plist-put func :arguments args-from-empty)
+                                      (magent-log "INFO fixed '%s' arguments in assistant message" name))))
+                      (let ((filtered
+                             (cl-remove-if
+                              (lambda (tc)
+                                (let* ((func (plist-get tc :function))
+                                       (name (and func (plist-get func :name))))
+                                  (and (stringp name) (string-empty-p name))))
+                              (append tool-calls nil))))
+                        (when (< (length filtered) (length tool-calls))
+                          (plist-put msg :tool_calls (vconcat filtered))
+                          (magent-log "INFO patched assistant message: removed %d empty tool_call(s)"
+                                      (- (length tool-calls) (length filtered))))))))))))
+        (let ((avail (mapconcat #'gptel-tool-name tools ", ")))
+          (dolist (tc all-tool-use)
+            (unless (plist-get tc :result)
+              (let ((name (plist-get tc :name)))
+                (unless (cl-find-if
+                         (lambda (ts) (equal (gptel-tool-name ts) name))
+                         tools)
+                  (plist-put tc :result
+                             (format "Error: tool '%s' not found. Available: %s"
+                                     name avail))
+                  (setq patched t)
+                  (magent-log "WARN unknown tool '%s'(id=%S) — returned error to model"
+                              name (plist-get tc :id))))))))
+      (when (and (natnump magent-emacs-eval-max-calls-per-turn)
+                 (cl-find-if (lambda (tc)
+                               (equal (plist-get tc :name) "emacs_eval"))
+                             (plist-get info :tool-use))
+                 (>= (magent-fsm-backend-gptel--assistant-tool-call-count
+                      info "emacs_eval")
+                     magent-emacs-eval-max-calls-per-turn))
+        (magent-fsm-backend-gptel--abort-tool-loop
+         fsm info
+         (magent-fsm-backend-gptel--emacs-eval-limit-message)))
+      (unless (plist-get info :error)
+        (funcall orig-fn fsm)
+        (when (and patched (eq (gptel-fsm-state fsm) 'TOOL))
+          (let ((remaining (cl-remove-if
+                            (lambda (tc) (plist-get tc :result))
+                            (plist-get info :tool-use))))
+            (when (null remaining)
+              (plist-put info :tool-success t)
+              (let ((backend (plist-get info :backend)))
+                (gptel--inject-prompt
+                 backend (plist-get info :data)
+                 (gptel--parse-tool-results backend (plist-get info :tool-use))))
+              (funcall (plist-get info :callback)
+                       (cons 'tool-result nil) info)
+              (gptel--fsm-transition fsm))))))))
 
 (advice-add 'gptel--handle-tool-use :around #'magent--handle-unknown-tools-a)
 

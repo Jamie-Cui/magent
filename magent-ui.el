@@ -56,6 +56,7 @@
 (declare-function evil-define-key* "evil-core")
 (declare-function evil-visual-state-p "evil-states")
 (declare-function evil-insert-state "evil-states")
+(declare-function evil-normal-state "evil-states")
 
 ;; Forward declaration for magent entry point (magent.el loaded first)
 (declare-function magent--ensure-initialized "magent")
@@ -805,6 +806,12 @@ with optional partial skill name."
              (eq (char-before) ?@))
     (completion-at-point)))
 
+(defun magent-ui--exit-input-state ()
+  "Return Evil to normal state after a successful input submission."
+  (when (and (bound-and-true-p evil-local-mode)
+             (fboundp 'evil-normal-state))
+    (evil-normal-state)))
+
 (defun magent-input-submit ()
   "Submit the text in the input area and send it to the agent.
 Makes the input text read-only, clears the input marker, and
@@ -842,6 +849,7 @@ buffer is reused (the queue skips inserting a duplicate)."
       (add-text-properties input-start (point-max) '(read-only t)))
     (setq magent-ui--input-marker nil)
     (setq magent-ui--input-section-start nil)
+    (magent-ui--exit-input-state)
     (magent-ui-process text 'buffer-input nil skill-names)))
 
 ;;; Section folding
@@ -1143,7 +1151,8 @@ When text was streamed, converts markdown to org-mode in the response body."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (setq magent-ui--in-reasoning-block t)
     (setq magent-ui--reasoning-start (point))
-    (insert (propertize "#+begin_think" 'face 'magent-reasoning-header) "\n")))
+    (when magent-ui-wrap-reasoning-in-think-block
+      (insert (propertize "#+begin_think" 'face 'magent-reasoning-header) "\n"))))
 
 (defun magent-ui-insert-reasoning-text (text)
   "Insert reasoning TEXT into the output buffer."
@@ -1154,7 +1163,10 @@ When text was streamed, converts markdown to org-mode in the response body."
   "Insert the end of a reasoning block."
   (let ((buf (magent-ui-get-buffer)))
     (magent-ui--with-insert buf
-      (insert "\n" (propertize "#+end_think" 'face 'magent-reasoning-header) "\n")
+      (if magent-ui-wrap-reasoning-in-think-block
+          (insert "\n" (propertize "#+end_think" 'face 'magent-reasoning-header) "\n")
+        (unless (or (bobp) (eq (char-before) ?\n))
+          (insert "\n")))
       (setq magent-ui--in-reasoning-block nil)
       (setq magent-ui--streaming-has-text t)
       (when magent-ui--reasoning-start

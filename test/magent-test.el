@@ -113,6 +113,27 @@
           (should (eq (magent-msg-role assistant-msg) 'assistant))
           (should (equal (magent-msg-content assistant-msg) "AI response")))))))
 
+(ert-deftest magent-test-agent-process-passes-max-tool-rounds-to-fsm ()
+  "Test that agent step limits are forwarded to the FSM."
+  (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+        (gptel-model 'gpt-4o-mini)
+        (captured nil)
+        (agent (magent-agent-info-create
+                :name "test"
+                :mode 'primary
+                :steps 7
+                :permission (magent-permission-defaults))))
+    (cl-letf (((symbol-function 'magent-fsm-create)
+               (lambda (&rest args)
+                 (setq captured args)
+                 args))
+              ((symbol-function 'magent-fsm-start) #'ignore)
+              ((symbol-function 'magent-tools-get-magent-tools)
+               (lambda (_agent) nil)))
+      (magent-session-reset)
+      (magent-agent-process "Hello" nil agent))
+    (should (= (plist-get captured :max-tool-rounds) 7))))
+
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Frontmatter parsing tests
 ;; ──────────────────────────────────────────────────────────────────────
@@ -386,6 +407,22 @@
       (should (equal (car messages) "Magent permission bypass enabled"))
       (should (eq (magent-toggle-by-pass-permission 0) nil))
       (should-not magent-by-pass-permission)
+      (should (equal (car messages) "Magent permission bypass disabled")))))
+
+(ert-deftest magent-test-toggle-by-pass-permission-command-clears-obsolete-alias-state ()
+  "Test the toggle command clears bypass enabled through the obsolete alias."
+  (require 'magent-permission)
+  (let ((magent-by-pass-permission nil)
+        (messages nil))
+    (cl-letf (((symbol-function 'message)
+               (lambda (fmt &rest args)
+                 (push (apply #'format fmt args) messages))))
+      (setq magent-always-bypass-permission t)
+      (should magent-by-pass-permission)
+      (should (magent-permission-bypass-p))
+      (should (eq (magent-toggle-by-pass-permission 0) nil))
+      (should-not magent-by-pass-permission)
+      (should-not (magent-permission-bypass-p))
       (should (equal (car messages) "Magent permission bypass disabled")))))
 
 (ert-deftest magent-test-permission-merge-simple ()
@@ -2118,6 +2155,32 @@
     (should (equal final-response "Hello world"))
     (should-not (gethash :in-reasoning-block stream-state))))
 
+(ert-deftest magent-test-gptel-backend-surfaces-error-text-on-failure ()
+  "Test gptel backend shows backend errors instead of returning a blank response."
+  (require 'magent-fsm-backend-gptel)
+  (let ((events nil)
+        (error-text "Error: synthetic failure.")
+        (final-response 'unset)
+        (request-buffer (generate-new-buffer " *magent-gptel-test*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-ui-finish-streaming-fontify)
+                   (lambda ()
+                     (push 'finish events))))
+          (magent-fsm-backend-gptel--callback
+           nil
+           (list :error error-text)
+           (lambda (response)
+             (setq final-response response))
+           (lambda (chunk)
+             (push (list 'chunk chunk) events))
+           request-buffer nil nil))
+      (when (buffer-live-p request-buffer)
+        (kill-buffer request-buffer)))
+    (should (equal final-response error-text))
+    (should (equal (nreverse events)
+                   `((chunk ,error-text)
+                     finish)))))
+
 (ert-deftest magent-test-gptel-backend-emits-llm-request-usage-event ()
   "Test gptel backend emits machine-readable request usage metadata."
   (require 'magent-events)
@@ -2442,6 +2505,146 @@
                          'continue
                          (list 'chunk "world")
                          'finish)))))
+
+(ert-deftest magent-test-gptel-backend-aborts-when-tool-round-limit-is-exceeded ()
+  "Test runaway tool loops are aborted before another tool round runs."
+  (require 'magent-fsm-backend-gptel)
+  (let* ((captured-response 'unset)
+         (orig-called nil)
+         (info (list :buffer (current-buffer)
+                     :callback (lambda (response _info)
+                                 (setq captured-response response))
+                     :tool-use (list (list :id "call_1"
+                                           :name "emacs_eval"
+                                           :args '(:sexp "(buffer-list)")))
+                     :magent-request-id "req-loop"
+                     :magent-tool-round-limit 2
+                     :magent-tool-round-count 2))
+         (fsm (gptel-make-fsm :state 'TOOL :info info)))
+    (cl-letf (((symbol-function 'gptel--fsm-transition)
+               (lambda (machine &optional new-state)
+                 (setf (gptel-fsm-state machine) new-state))))
+      (magent--handle-unknown-tools-a
+       (lambda (_fsm) (setq orig-called t))
+       fsm))
+    (should-not orig-called)
+    (should-not captured-response)
+    (should (string-match-p "tool loop exceeded 2 rounds"
+                            (plist-get info :error)))
+    (should (eq (gptel-fsm-state fsm) 'ERRS))
+    (should (= (plist-get info :magent-tool-round-count) 3))))
+
+(ert-deftest magent-test-tool-guard-intercepts-duplicate-emacs-eval ()
+  "Test duplicate emacs_eval calls are short-circuited within one turn."
+  (require 'magent-fsm-shared)
+  (let* ((guard-state (magent-fsm--tool-guard-state-create))
+         (args '(:sexp "(length (buffer-list))"))
+         (first (magent-fsm--maybe-intercept-tool-call "emacs_eval" args guard-state))
+         (second (magent-fsm--maybe-intercept-tool-call "emacs_eval" args guard-state)))
+    (should-not first)
+    (should (string-match-p "already executed this exact emacs_eval query"
+                            second))
+    (should (= (gethash :emacs-eval-count guard-state) 1))))
+
+(ert-deftest magent-test-tool-guard-intercepts-emacs-eval-after-third-call ()
+  "Test emacs_eval is capped at three executions per turn."
+  (require 'magent-fsm-shared)
+  (let ((guard-state (magent-fsm--tool-guard-state-create))
+        (magent-emacs-eval-max-calls-per-turn 3))
+    (should-not
+     (magent-fsm--maybe-intercept-tool-call
+      "emacs_eval" '(:sexp "(length (buffer-list))") guard-state))
+    (should-not
+     (magent-fsm--maybe-intercept-tool-call
+      "emacs_eval" '(:sexp "(seq-map #'buffer-name (buffer-list))") guard-state))
+    (should-not
+     (magent-fsm--maybe-intercept-tool-call
+      "emacs_eval" '(:sexp "(length (seq-filter #'buffer-file-name (buffer-list)))") guard-state))
+    (should (string-match-p "emacs_eval has already been called 3 times"
+                            (magent-fsm--maybe-intercept-tool-call
+                             "emacs_eval"
+                             '(:sexp "(length (seq-remove (lambda (buf) (string-prefix-p \" \" (buffer-name buf))) (buffer-list)))")
+                             guard-state)))
+    (should (= (gethash :emacs-eval-count guard-state) 3))))
+
+(ert-deftest magent-test-tool-guard-respects-configured-emacs-eval-limit ()
+  "Test emacs_eval guard uses `magent-emacs-eval-max-calls-per-turn'."
+  (require 'magent-fsm-shared)
+  (let ((guard-state (magent-fsm--tool-guard-state-create))
+        (magent-emacs-eval-max-calls-per-turn 1))
+    (should-not
+     (magent-fsm--maybe-intercept-tool-call
+      "emacs_eval" '(:sexp "(length (buffer-list))") guard-state))
+    (should (string-match-p "already been called 1 time"
+                            (magent-fsm--maybe-intercept-tool-call
+                             "emacs_eval"
+                             '(:sexp "(seq-map #'buffer-name (buffer-list))")
+                             guard-state)))
+    (should (= (gethash :emacs-eval-count guard-state) 1))))
+
+(ert-deftest magent-test-gptel-backend-aborts-on-fourth-emacs-eval-round ()
+  "Test the backend hard-stops after three prior emacs_eval rounds."
+  (require 'magent-fsm-backend-gptel)
+  (let* ((captured-response 'unset)
+         (orig-called nil)
+         (magent-emacs-eval-max-calls-per-turn 3)
+         (info (list :buffer (current-buffer)
+                     :callback (lambda (response _info)
+                                 (setq captured-response response))
+                     :tool-use (list (list :id "call_4"
+                                           :name "emacs_eval"
+                                           :args '(:sexp "(length (buffer-list))")))
+                     :data '(:messages
+                             [(:role "assistant" :tool_calls
+                                      [(:function (:name "emacs_eval" :arguments "{\"sexp\":\"1\"}"))])
+                              (:role "assistant" :tool_calls
+                                      [(:function (:name "emacs_eval" :arguments "{\"sexp\":\"2\"}"))])
+                              (:role "assistant" :tool_calls
+                                      [(:function (:name "emacs_eval" :arguments "{\"sexp\":\"3\"}"))])])
+                     :magent-request-id "req-emacs-limit"))
+         (fsm (gptel-make-fsm :state 'TOOL :info info)))
+    (cl-letf (((symbol-function 'gptel--fsm-transition)
+               (lambda (machine &optional new-state)
+                 (setf (gptel-fsm-state machine) new-state))))
+      (magent--handle-unknown-tools-a
+       (lambda (_fsm) (setq orig-called t))
+       fsm))
+    (should-not orig-called)
+    (should-not captured-response)
+    (should (string-match-p "emacs_eval exceeded 3 calls"
+                            (plist-get info :error)))
+    (should (eq (gptel-fsm-state fsm) 'ERRS))))
+
+(ert-deftest magent-test-gptel-backend-respects-configured-emacs-eval-limit ()
+  "Test backend hard-stop uses `magent-emacs-eval-max-calls-per-turn'."
+  (require 'magent-fsm-backend-gptel)
+  (let* ((captured-response 'unset)
+         (orig-called nil)
+         (magent-emacs-eval-max-calls-per-turn 2)
+         (info (list :buffer (current-buffer)
+                     :callback (lambda (response _info)
+                                 (setq captured-response response))
+                     :tool-use (list (list :id "call_3"
+                                           :name "emacs_eval"
+                                           :args '(:sexp "(length (buffer-list))")))
+                     :data '(:messages
+                             [(:role "assistant" :tool_calls
+                                      [(:function (:name "emacs_eval" :arguments "{\"sexp\":\"1\"}"))])
+                              (:role "assistant" :tool_calls
+                                      [(:function (:name "emacs_eval" :arguments "{\"sexp\":\"2\"}"))])])
+                     :magent-request-id "req-emacs-limit-custom"))
+         (fsm (gptel-make-fsm :state 'TOOL :info info)))
+    (cl-letf (((symbol-function 'gptel--fsm-transition)
+               (lambda (machine &optional new-state)
+                 (setf (gptel-fsm-state machine) new-state))))
+      (magent--handle-unknown-tools-a
+       (lambda (_fsm) (setq orig-called t))
+       fsm))
+    (should-not orig-called)
+    (should-not captured-response)
+    (should (string-match-p "emacs_eval exceeded 2 calls"
+                            (plist-get info :error)))
+    (should (eq (gptel-fsm-state fsm) 'ERRS))))
 
 (ert-deftest magent-test-interrupt-drops-stale-async-tool-result ()
   "Test aborted requests ignore late async tool completions."
@@ -3312,6 +3515,41 @@
       (delete-directory project-a t)
       (delete-directory project-b t))))
 
+(ert-deftest magent-test-input-submit-restores-evil-normal-state ()
+  "Test successful input submission returns Evil to normal state."
+  (require 'magent-ui)
+  (let* ((magent-buffer-name "*magent-evil-submit*")
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (buffer nil)
+         (captured nil)
+         (normal-state-called nil))
+    (unwind-protect
+        (progn
+          (magent-session-activate 'global)
+          (setq buffer (magent-ui-get-buffer 'global))
+          (with-current-buffer buffer
+            (magent-ui--insert-input-prompt 'global)
+            (setq-local evil-local-mode t)
+            (let ((inhibit-read-only t))
+              (goto-char (point-max))
+              (insert "return to normal")))
+          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
+                    ((symbol-function 'magent-ui-process)
+                     (lambda (text &optional source display skills agent)
+                       (setq captured (list text source display skills agent))))
+                    ((symbol-function 'evil-normal-state)
+                     (lambda ()
+                       (setq normal-state-called t))))
+            (with-current-buffer buffer
+              (magent-input-submit)))
+          (should normal-state-called)
+          (should (equal (car captured) "return to normal"))
+          (should (eq (nth 1 captured) 'buffer-input)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest magent-test-config-reload-preserves-ui-logger ()
   "Test reloading config does not clobber the UI log implementation."
   (require 'magent-ui)
@@ -3969,7 +4207,8 @@
 (ert-deftest magent-test-ui-reasoning-block-stays-expanded ()
   "Test reasoning blocks stay expanded in the UI."
   (require 'magent-ui)
-  (let ((fold-call nil))
+  (let ((fold-call nil)
+        (magent-ui-wrap-reasoning-in-think-block t))
     (magent-ui-clear-buffer)
     (cl-letf (((symbol-function 'magent-ui--fold-block-at)
                (lambda (pos block-re)
@@ -3981,6 +4220,19 @@
     (with-current-buffer (magent-ui-get-buffer)
       (should (equal (buffer-string)
                      "#+begin_think\nalpha\n#+end_think\n"))
+      (should (null magent-ui--reasoning-start))
+      (should magent-ui--streaming-has-text))))
+
+(ert-deftest magent-test-ui-reasoning-can-skip-think-block-wrapper ()
+  "Test reasoning can be shown without `#+begin_think' wrappers."
+  (require 'magent-ui)
+  (let ((magent-ui-wrap-reasoning-in-think-block nil))
+    (magent-ui-clear-buffer)
+    (magent-ui-insert-reasoning-start)
+    (magent-ui-insert-reasoning-text "alpha")
+    (magent-ui-insert-reasoning-end)
+    (with-current-buffer (magent-ui-get-buffer)
+      (should (equal (buffer-string) "alpha\n"))
       (should (null magent-ui--reasoning-start))
       (should magent-ui--streaming-has-text))))
 
