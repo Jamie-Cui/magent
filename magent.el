@@ -81,14 +81,15 @@
 (require 'magent-config)
 (require 'magent-audit)
 (require 'magent-session)
+(require 'magent-runtime)
 (require 'magent-tools)
 (require 'magent-agent)
 (require 'magent-ui)
 (require 'magent-agent-registry)
+(require 'magent-agent-file)
 (require 'magent-permission)
 (require 'magent-skills)
 (require 'magent-capability)
-(require 'magent-capability-file)
 
 ;; Keep Magit integration optional: only load it when Magit itself is present.
 (with-eval-after-load 'magit
@@ -98,17 +99,10 @@
 (declare-function magent-list-capabilities-for-current-context "magent-capability")
 (declare-function magent-explain-last-capability-resolution "magent-capability")
 (declare-function magent-toggle-capability-locally "magent-capability")
-
-;;; Initialization
-
-(defvar magent--initialized nil
-  "Non-nil if magent has already been initialized.
-Registry and custom agents are loaded when non-nil.")
+(declare-function magent-runtime-ensure-initialized "magent-runtime")
 
 (defvar magent--spinner (spinner-create 'rotating-line)
   "Global spinner displayed in the modeline while magent is processing.")
-
-(declare-function magent-audit-enable "magent-audit")
 
 (defun magent--get-current-agent-name ()
   "Return the name of the current agent as a string.
@@ -144,6 +138,30 @@ Delegates to `magent--get-mode-line-string' so the function can be
 redefined on reload without needing to update `global-mode-string'.")
 (put 'magent--mode-line-spinner-construct 'risky-local-variable t)
 
+(defconst magent--mode-bindings
+  '(("C-c m p" . magent-dwim)
+    ("C-c m d" . magent-diagnose-emacs)
+    ("C-c m D" . magent-doctor)
+    ("C-c m r" . magent-prompt-region)
+    ("C-c m a" . magent-ask-at-point)
+    ("C-c m c" . magent-clear-session)
+    ("C-c m R" . magent-resume-session)
+    ("C-c m x" . magent-list-capabilities-for-current-context)
+    ("C-c m e" . magent-explain-last-capability-resolution)
+    ("C-c m k" . magent-toggle-capability-locally)
+    ("C-c m l" . magent-show-log)
+    ("C-c m L" . magent-clear-log)
+    ("C-c m t" . magent-ui-toggle-section)
+    ("C-c m A" . magent-select-agent)
+    ("C-c m i" . magent-show-current-agent)
+    ("C-c m v" . magent-list-agents))
+  "Declarative keybinding table for `magent-mode'.")
+
+(defun magent--populate-mode-map (map)
+  "Install `magent-mode' bindings into MAP."
+  (dolist (binding magent--mode-bindings map)
+    (define-key map (kbd (car binding)) (cdr binding))))
+
 ;;;###autoload
 (define-minor-mode magent-mode
   "Minor mode for Magent AI coding agent.
@@ -152,55 +170,21 @@ When enabled, Magent commands are available.
 \\{magent-mode-map}"
   :init-value nil
   :lighter magent--lighter
-  :keymap (let ((map (make-sparse-keymap)))
-            ;; Keybindings
-            (define-key map (kbd "C-c m p") #'magent-dwim)
-            (define-key map (kbd "C-c m d") #'magent-diagnose-emacs)
-            (define-key map (kbd "C-c m D") #'magent-doctor)
-            (define-key map (kbd "C-c m r") #'magent-prompt-region)
-            (define-key map (kbd "C-c m a") #'magent-ask-at-point)
-            (define-key map (kbd "C-c m c") #'magent-clear-session)
-            (define-key map (kbd "C-c m R") #'magent-resume-session)
-            (define-key map (kbd "C-c m x") #'magent-list-capabilities-for-current-context)
-            (define-key map (kbd "C-c m e") #'magent-explain-last-capability-resolution)
-            (define-key map (kbd "C-c m k") #'magent-toggle-capability-locally)
-            (define-key map (kbd "C-c m l") #'magent-show-log)
-            (define-key map (kbd "C-c m L") #'magent-clear-log)
-            ;; Section folding
-            (define-key map (kbd "C-c m t") #'magent-ui-toggle-section)
-            ;; Agent management
-            (define-key map (kbd "C-c m A") #'magent-select-agent)
-            (define-key map (kbd "C-c m i") #'magent-show-current-agent)
-            (define-key map (kbd "C-c m v") #'magent-list-agents)
-            map)
+  :keymap (magent--populate-mode-map (make-sparse-keymap))
   (when magent-mode
     ;; Minimal initialization on mode enable
     (unless (member magent--mode-line-spinner-construct global-mode-string)
       (push magent--mode-line-spinner-construct global-mode-string)
       (magent-log "INFO magent mode enabled (lazy init)"))))
 
-;; `define-minor-mode' does not refresh an existing keymap on reload, so
-;; add new bindings explicitly to support live reloading during development.
-(define-key magent-mode-map (kbd "C-c m d") #'magent-diagnose-emacs)
-(define-key magent-mode-map (kbd "C-c m D") #'magent-doctor)
-(define-key magent-mode-map (kbd "C-c m x") #'magent-list-capabilities-for-current-context)
-(define-key magent-mode-map (kbd "C-c m e") #'magent-explain-last-capability-resolution)
-(define-key magent-mode-map (kbd "C-c m k") #'magent-toggle-capability-locally)
+;; `define-minor-mode' does not replace an already defined keymap on reload.
+;; Re-apply the full binding table so live development stays in sync.
+(magent--populate-mode-map magent-mode-map)
 
 (defun magent--ensure-initialized ()
   "Ensure magent is fully initialized.
 Called on first use of any magent command.  Loads agents and skills."
-  (unless magent--initialized
-    (magent-log "INFO Initializing magent agents and skills...")
-    (magent-audit-enable)
-    ;; Initialize agent registry (also loads custom agents)
-    (magent-agent-registry-init)
-    ;; Load skills from files (built-in skills auto-register on require)
-    (magent-skill-file-load-all)
-    ;; Load capabilities after skills so linked skill prompts are available.
-    (magent-capability-file-load-all)
-    (setq magent--initialized t)
-    (magent-log "INFO magent initialization complete")))
+  (magent-runtime-ensure-initialized))
 
 ;;;###autoload
 (define-globalized-minor-mode global-magent-mode magent-mode

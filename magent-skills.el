@@ -25,6 +25,7 @@
 (require 'subr-x)
 (require 'magent-config)
 (require 'magent-file-loader)
+(require 'magent-runtime)
 
 (declare-function magent-log "magent-ui")
 
@@ -173,7 +174,9 @@ use a skill - make it count."
   (tools nil)
   (prompt nil)
   (invoke-function nil)
-  (file-path nil))
+  (file-path nil)
+  (source-layer 'builtin)
+  source-scope)
 
 ;;; Skill registry
 
@@ -272,13 +275,15 @@ If SKILL-NAMES is a list, only include those skills."
                 :name "skill-creator"
                 :description magent-skill-creator--description
                 :type 'instruction
-                :prompt magent-skill-creator--prompt)))
+                :prompt magent-skill-creator--prompt
+                :source-layer 'builtin)))
     (magent-skills-register skill)
-    (magent-log "INFO registered built-in skill: skill-creator (instruction-type)")))
+    (magent-log "INFO registered built-in skill: skill-creator (instruction-type)")
+    skill))
 
 ;;; File-backed skills
 
-(defconst magent-skill-file--builtin-dir
+(defconst magent-skills--builtin-dir
   (expand-file-name "skills" (file-name-directory (or load-file-name buffer-file-name)))
   "Directory containing built-in skills bundled with magent.")
 
@@ -298,30 +303,32 @@ Each directory can contain subdirectories with SKILL.md files."
   :type 'string
   :group 'magent)
 
-(defun magent-skill-file--list-directories ()
-  "Get list of skill directories to scan."
-  (append (list magent-skill-file--builtin-dir)
-          magent-skill-directories
-          (magent-skill-file--project-skill-dirs)))
+(defun magent-skills--classify-source (filepath)
+  "Return a plist describing the source classification for FILEPATH."
+  (magent-file-loader-classify-source
+   filepath
+   :builtin-dirs (list magent-skills--builtin-dir)
+   :user-dirs magent-skill-directories
+   :project-relative-dir ".magent/skills"))
 
-(defun magent-skill-file--project-skill-dirs ()
-  "Get project-local skill directories."
-  (magent-file-loader-project-subdir ".magent/skills"))
-
-(defun magent-skill-file--list-files (&optional directories)
+(defun magent-skills--list-files (&optional directories)
   "List all SKILL.md files in DIRECTORIES or `magent-skill-directories'."
-  (magent-file-loader-list-named-files
-   (or directories (magent-skill-file--list-directories))
-   magent-skill-file-name))
+  (if directories
+      (magent-file-loader-list-named-files directories magent-skill-file-name)
+    (magent-file-loader-list-definition-files
+     magent-skill-file-name
+     :builtin-dirs (list magent-skills--builtin-dir)
+     :user-dirs magent-skill-directories
+     :project-relative-dir ".magent/skills")))
 
-(defun magent-skill-file--parse-type (type-str)
+(defun magent-skills--parse-type (type-str)
   "Parse type string TYPE-STR to a skill type symbol."
   (pcase (downcase type-str)
     ("tool" 'tool)
     ("instruction" 'instruction)
     (_ 'instruction)))
 
-(defun magent-skill-file--parse-tools (tools-spec)
+(defun magent-skills--parse-tools (tools-spec)
   "Parse TOOLS-SPEC to list of tool symbols.
 TOOLS-SPEC can be a string, symbol, or list."
   (cond
@@ -338,7 +345,7 @@ TOOLS-SPEC can be a string, symbol, or list."
             tools-spec))
    (t nil)))
 
-(defun magent-skill-file--find-companion-file (skill-file)
+(defun magent-skills--find-companion-file (skill-file)
   "Find companion implementation file for SKILL-FILE."
   (let* ((dir (file-name-directory skill-file))
          (basename (file-name-sans-extension
@@ -352,35 +359,36 @@ TOOLS-SPEC can be a string, symbol, or list."
      ((file-exists-p named-el) named-el)
      (t nil))))
 
-(defun magent-skill-file--load-companion (skill-file skill-name)
+(defun magent-skills--load-companion (skill-file skill-name)
   "Load companion implementation file for SKILL-FILE.
 SKILL-NAME is used to resolve the invoke function."
-  (when-let* ((el-file (magent-skill-file--find-companion-file skill-file)))
+  (when-let* ((el-file (magent-skills--find-companion-file skill-file)))
     (magent-log "INFO loading companion file: %s" el-file)
     (load-file el-file)
     (let ((invoke-fn (intern (format "magent-skill-%s-invoke" skill-name))))
       (when (fboundp invoke-fn)
         invoke-fn))))
 
-(defun magent-skill-file-load (filepath)
+(defun magent-skills-load-file (filepath)
   "Load a skill from FILEPATH.
 Returns the skill if successful, nil otherwise."
   (condition-case err
       (let* ((definition (magent-file-loader-read-definition filepath))
              (frontmatter (plist-get definition :frontmatter))
-             (body (plist-get definition :body)))
+             (body (plist-get definition :body))
+             (source (magent-skills--classify-source filepath)))
         (when frontmatter
           (let* ((name (or (plist-get frontmatter :name)
                            (file-name-nondirectory
                             (directory-file-name
                              (file-name-directory filepath)))))
                  (description (plist-get frontmatter :description))
-                 (type (magent-skill-file--parse-type
+                 (type (magent-skills--parse-type
                         (or (plist-get frontmatter :type) "instruction")))
-                 (tools (magent-skill-file--parse-tools
+                 (tools (magent-skills--parse-tools
                          (plist-get frontmatter :tools)))
                  (invoke-fn (when (eq type 'tool)
-                              (magent-skill-file--load-companion filepath name)))
+                              (magent-skills--load-companion filepath name)))
                  (skill (magent-skill-create
                          :name name
                          :description description
@@ -388,7 +396,9 @@ Returns the skill if successful, nil otherwise."
                          :tools tools
                          :prompt (when (> (length body) 0) body)
                          :invoke-function invoke-fn
-                         :file-path filepath)))
+                         :file-path filepath
+                         :source-layer (plist-get source :layer)
+                         :source-scope (plist-get source :scope))))
             (when (magent-skill-name skill)
               (when (and (eq type 'tool) (not invoke-fn))
                 (magent-log "WARN tool-type skill '%s' has no companion .el file or invoke function"
@@ -401,23 +411,52 @@ Returns the skill if successful, nil otherwise."
                  filepath (error-message-string err))
      nil)))
 
-(defun magent-skill-file-load-all (&optional directories)
+(defun magent-skills-load-all (&optional directories)
   "Load all skill files from DIRECTORIES or `magent-skill-directories'.
 Returns number of skills loaded."
-  (let* ((files (magent-skill-file--list-files directories))
-         (count (magent-file-loader-load-all files #'magent-skill-file-load)))
+  (let* ((files (magent-skills--list-files directories))
+         (count (magent-file-loader-load-all files #'magent-skills-load-file)))
     (when (> count 0)
       (magent-log "INFO loaded %d skill file(s)" count))
     count))
 
-(defun magent-skill-file-reload ()
-  "Reload all skills from files."
+(defun magent-skills-initialize-static ()
+  "Load built-in and user-global skill definitions."
+  (magent-skills--register-builtin)
+  (magent-skills-load-all
+   (append (list magent-skills--builtin-dir)
+           magent-skill-directories)))
+
+(defun magent-skills-load-project-scope (scope)
+  "Load project-local skill definitions for SCOPE."
+  (magent-skills-load-all
+   (magent-file-loader-project-subdir-for-scope ".magent/skills" scope)))
+
+(defun magent-skills-reload ()
+  "Reload all skills from files.
+When a project overlay is currently active, restore that project's
+local skills after static definitions are reloaded."
   (interactive)
+  (let ((project-scope
+         (or (when (called-interactively-p 'interactive)
+               (magent-runtime-prepare-command-context)
+               (magent-runtime-active-project-scope))
+             (magent-runtime-active-project-scope))))
+    (magent-file-loader-reload-file-backed-registry
+     'magent-skills--registry
+     #'magent-skill-file-path
+     #'magent-skills-initialize-static)
+    (when project-scope
+      (magent-skills-load-project-scope project-scope))))
+
+(defun magent-skills-remove-project-scope (scope)
+  "Remove project-local skills registered for SCOPE."
   (setq magent-skills--registry
-        (magent-file-loader-remove-file-backed-entries
+        (magent-file-loader-remove-project-scope-entries
          magent-skills--registry
-         #'magent-skill-file-path))
-  (magent-skill-file-load-all))
+         #'magent-skill-source-layer
+         #'magent-skill-source-scope
+         scope)))
 
 ;;; Interactive commands
 
@@ -425,6 +464,7 @@ Returns number of skills loaded."
 (defun magent-list-skills ()
   "Display a list of all registered skills."
   (interactive)
+  (magent-runtime-prepare-command-context)
   (let ((skills (mapcar #'cdr magent-skills--registry)))
     (magent--with-display-buffer "*Magent Skills*"
       (insert "Available Skills:\n\n")
@@ -452,14 +492,18 @@ Returns number of skills loaded."
 This clears file-based skills and reloads them from disk.
 Built-in skills are preserved."
   (interactive)
-  (magent-skill-file-reload)
+  (magent-runtime-prepare-command-context)
+  (magent-skills-reload)
   (message "Skills reloaded: %s" (mapconcat #'identity (magent-skills-list) ", ")))
 
 ;;;###autoload
 (defun magent-describe-skill (skill-name)
   "Show detailed information about SKILL-NAME."
   (interactive
-   (list (completing-read "Describe skill: " (magent-skills-list) nil t)))
+   (progn
+     (magent-runtime-prepare-command-context)
+     (list (completing-read "Describe skill: " (magent-skills-list) nil t))))
+  (magent-runtime-prepare-command-context)
   (let ((skill (magent-skills-get skill-name)))
     (if (not skill)
         (message "Skill '%s' not found" skill-name)
@@ -475,9 +519,6 @@ Built-in skills are preserved."
           (insert (format "\n## Prompt\n\n%s\n" (magent-skill-prompt skill))))
         (when (magent-skill-file-path skill)
           (insert (format "\n## Source\n\n%s\n" (magent-skill-file-path skill))))))))
-
-;; Auto-register built-in skills when this module is loaded.
-(magent-skills--register-builtin)
 
 (provide 'magent-skills)
 ;;; magent-skills.el ends here

@@ -39,26 +39,32 @@ Magent follows a modular, layered architecture with clear separation of concerns
 magent.el (entry point + mode)
     |
     v
+magent-runtime.el (static init + project overlays)
+    |
+    +-- bundled definitions: agents / skills / capabilities
+    +-- project overlays: .magent/agent / .magent/skills / .magent/capabilities
+    |
+    v
 +------------------+------------------+------------------+
 |     UI Layer     |   Agent Layer    |   Tool Layer     |
 |  magent-ui.el    | magent-agent.el  | magent-tools.el  |
 +------------------+------------------+------------------+
     |                |                |
     v                v                |
-Queue Layer    Session Layer          |
-magent-queue.el  magent-session.el    |
+request lock   Session Layer          |
+magent-ui.el   magent-session.el      |
     |                |                |
     |                v                |
     |        FSM Layer                |
     |       magent-fsm.el             |
-    |          |         \            |
-    |    native backend   gptel       |
-    |                     backend     |
+    |          |                      |
+    |      gptel backend              |
     v                v                v
 +------------------------------------------------------+
 |                 Core Modules                         |
 |  - Agent Registry (magent-agent-registry.el)         |
 |  - Permission System (magent-permission.el)          |
+|  - Capabilities (magent-capability.el)               |
 |  - Skills (magent-skills.el + skills/*.el)           |
 |  - File Loading + Frontmatter (magent-file-loader.el) |
 |  - Config (magent-config.el)                         |
@@ -130,7 +136,7 @@ UI display settings:
 
 Advanced settings:
 - ~magent-include-reasoning~: How to handle reasoning blocks (t/ignore/nil)
-- ~magent-fsm-backend~: FSM backend (gptel or magent)
+- ~magent-fsm-backend~: FSM backend selector (currently only ~gptel~)
 - ~magent-auto-context~: Auto-attach buffer context in ~magent-dwim~ (default: t)
 
 Skill-specific settings (in ~magent-skills.el~):
@@ -141,23 +147,25 @@ Also provides shared utilities:
 - ~magent-project-root~: Project root detection (tries ~magent-project-root-function~, then projectile, then project.el, then ~default-directory~)
 - ~magent-log~: Logging stub (overridden by ~magent-ui.el~ with real implementation)
 
-** Queue System (magent-queue.el)
+** Request Dispatch (magent-ui.el)
 
-Single-request lock for serializing concurrent requests. Global singleton because magent has a single output buffer and single processing slot.
+Single-request serialization now lives directly in the UI layer. This matches the actual ownership model: magent has one output buffer, one visible request slot, and one in-flight generation counter.
 
 Data structure:
-- ~magent-queue-item~: Struct with prompt (string), source (symbol), timestamp (float)
+- ~magent-ui--request~: Struct with prompt, display text, source symbol, selected skills, optional agent override, structured request context, precomputed capability resolution, and timestamp
 
-Queue behavior:
-- When idle: prompt dispatches immediately
-- When processing: prompt is rejected with a busy message
+Dispatch behavior:
+- When idle: ~magent-ui--enqueue~ creates a request object and schedules ~magent-ui--run-item~
+- When processing: new prompts are rejected with a busy message instead of buffered
+- When a request finishes or is interrupted: ~magent-ui--clear-processing~ releases the lock
 
 Key functions:
-- ~magent-queue-enqueue~: Immediate-dispatch or reject if busy
-- ~magent-queue-dequeue-and-run~: Release the processing lock
-- ~magent-queue-clear~: No-op kept for API compatibility
+- ~magent-ui--enqueue~: Validate busy state and create a request
+- ~magent-ui--dispatch~: Set the processing lock and defer execution with ~run-at-time~
+- ~magent-ui--clear-processing~: Release the single in-flight lock
+- ~magent-ui--run-item~: Execute the request and wire UI/session/FSM callbacks
 
-The queue owns the processing lock (~magent-queue--processing~). ~magent-ui-process~ delegates to ~magent-queue-enqueue~, and ~magent-ui--run-item~ handles actual dispatch.
+The UI layer owns the processing flag (~magent-ui--processing~). There is no standalone queue module anymore.
 
 ** Session Management (magent-session.el)
 
@@ -183,7 +191,7 @@ This consolidated file implements:
 - ~magent-agent-info~ struct with fields: name, description, mode, native, hidden, temperature, top-p, color, model, prompt, options, steps, permission
 - 7 built-in agent definitions
 - Hash-table registry with lookup, filtering, and selection
-- Feature aliases for ~magent-agent-info~ and ~magent-agent-types~
+- Compatibility shim files for legacy ~magent-agent-info~ and ~magent-agent-types~ requires
 
 Built-in agents:
 | Agent      | Mode       | Description                                     |
@@ -308,7 +316,8 @@ Tool name to permission key mapping:
 
 ** Finite State Machine (magent-fsm.el + backends)
 
-Unified entry point for the tool-calling loop with two switchable backends controlled by ~magent-fsm-backend~:
+Unified entry point for the tool-calling loop.  Only the gptel backend is
+active; ~magent-fsm-backend~ remains as a single-value compatibility setting.
 
 *** Unified API
 
@@ -317,11 +326,13 @@ Unified entry point for the tool-calling loop with two switchable backends contr
 - ~magent-fsm-abort~: Abort FSM execution
 - ~magent-fsm-destroy~: Clean up resources
 
-All dispatch to the configured backend.
+All dispatch to the gptel backend.
 
-*** Native Backend (magent-fsm-backend-native.el)
+*** Shared FSM State (magent-fsm-shared.el)
 
-Custom FSM with full state machine control and permission-aware confirmation.
+Shared FSM structs, abort state, and transient resource cleanup live in
+~magent-fsm-shared.el~.  The active execution path lives in
+~magent-fsm-backend-gptel.el~.
 
 States:
 - ~INIT~: Validate inputs (session, backend, model)
@@ -389,7 +400,7 @@ such as runtime inspection, Org structure editing, or Magit workflow
 without permanently injecting every skill into the system prompt.
 
 Lifecycle:
-1. Discovery: ~magent-capability-file-load-all~ loads builtin, user, and project capability files and registers them in ~magent-capability--registry~.
+1. Discovery: ~magent-capability-load-all~ loads builtin, user, and project capability files and registers them in ~magent-capability--registry~.
 2. Scoring: ~magent-capability-resolve~ builds a normalized context plist and applies deterministic additive match helpers.
 3. Suggestion: matches above the suggestion threshold stay visible in the resolver output even if they are not auto-activated.
 4. Activation: the highest-ranked ~active~ disclosure matches up to ~magent-capability-max-active~ contribute their linked instruction skills.
@@ -432,7 +443,6 @@ Governance model:
 - Maintainer-owned policy fields: ~family~, ~disclosure~, ~risk~
 - Contributor-owned metadata facts: ~skills~, ~modes~, ~features~, ~files~, ~keywords~
 - Current ingestion sources are maintainer-shipped builtin files plus user/project-local files that Magent loads directly.
-- Future package-local capability metadata is represented as a disabled-by-default ingestion path so package-provided facts can be projected without delegating activation policy to external packages.
 
 Prompt composition rules:
 - Explicit slash-selected skills stay first.
@@ -601,10 +611,10 @@ Messages are stored as alists:
 
 Accessed via ~magent-msg-role~ and ~magent-msg-content~ (defsubst accessors). Content can be a string or a list of content blocks; ~magent-session--content-to-string~ coerces to plain string.
 
-** magent-fsm (native backend)
+** magent-fsm struct
 
 #+begin_src elisp
-(cl-defstruct (magent-fsm (:constructor magent-fsm-native-create)
+(cl-defstruct (magent-fsm (:constructor magent-fsm-struct-create)
                           (:copier magent-fsm-copy))
   (state 'INIT)              ; Current state (INIT/SEND/WAIT/PROCESS/TOOL/DONE/ERROR)
   (session nil)              ; magent-session struct
@@ -655,15 +665,20 @@ The gptel backend uses a plain plist instead of a struct.
   (file-path nil))  ; Source file path
 #+end_src
 
-** magent-queue-item
+** magent-ui--request
 
 #+begin_src elisp
-(cl-defstruct (magent-queue-item
-               (:constructor magent-queue-item-create)
+(cl-defstruct (magent-ui--request
+               (:constructor magent-ui--request-create)
                (:copier nil))
-  (prompt nil :type string)    ; Prompt text
-  (source 'prompt :type symbol) ; Caller symbol (prompt, send-prompt, prompt-region, ask-at-point)
-  (timestamp 0.0 :type float)) ; Enqueue time (float-time)
+  (prompt nil :type string)            ; Prompt text
+  (display nil :type (or string null)) ; Display heading text
+  (source 'prompt :type symbol)        ; Caller symbol
+  (skills nil :type list)              ; Selected slash-command skills
+  agent                                ; Optional magent-agent-info override
+  request-context                      ; Structured origin context plist
+  capability-resolution                ; Optional precomputed capability matches
+  (timestamp 0.0 :type float))         ; Dispatch time (float-time)
 #+end_src
 
 * Key Design Decisions
@@ -676,11 +691,10 @@ All LLM communication goes through gptel. This decision:
 - Leverages gptel's battle-tested HTTP implementation
 - Simplifies tool-calling loop implementation
 
-** Switchable FSM Backends
+** FSM Backend Setting
 
-~magent-fsm-backend~ (default ~gptel~) selects between:
-- *Native backend*: Full FSM control with custom state machine. Provides permission-aware interactive confirmation prompts. More complex but offers fine-grained control over tool execution flow.
-- *Gptel backend*: Lightweight wrapper that delegates the entire tool-calling loop to gptel. Simpler code path but tools auto-execute without interactive confirmation (gptel's confirm UI requires a visible buffer, and this backend uses a hidden request buffer).
+~magent-fsm-backend~ is retained as a defcustom for API continuity, but the
+only supported value is ~gptel~.
 
 ** Per-Agent gptel Overrides
 
@@ -847,16 +861,20 @@ gptel-api-key  ; Should return your API key
 magent/
 ├── magent.el                      ; Main entry point + minor mode
 ├── magent-config.el               ; Configuration (33 defcustom vars)
-├── magent-queue.el                ; Single-request processing lock
+├── magent-runtime.el              ; Static init + project overlay activation
 ├── magent-session.el              ; Session management
+├── magent-capability.el           ; Capability registry and resolver
+├── magent-audit.el                ; Audit logging
 ├── magent-tools.el                ; Tool implementations (10 tools)
 ├── magent-agent.el                ; Agent processing
+├── magent-agent-info.el           ; Compatibility shim for legacy agent-info feature
+├── magent-agent-types.el          ; Compatibility shim for legacy agent-types feature
 ├── magent-agent-registry.el       ; Agent struct + registry + built-ins
 ├── magent-agent-file.el           ; Custom agent loader/saver
 ├── magent-permission.el           ; Permission system
 ├── magent-fsm.el                  ; FSM unified API + backend dispatch
-├── magent-fsm-backend-native.el   ; Native FSM backend (full state machine)
 ├── magent-fsm-backend-gptel.el    ; Gptel FSM backend (lightweight wrapper)
+├── magent-fsm-shared.el           ; Shared FSM structs and cleanup helpers
 ├── magent-ui.el                   ; UI, output buffer, streaming, transient menu
 ├── magent-md2org.el               ; Markdown to org-mode converter
 ├── magent-skills.el               ; Skill registry, built-ins, file loader, interactive commands

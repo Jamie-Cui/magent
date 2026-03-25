@@ -31,7 +31,7 @@ emacs -Q --batch -L . -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'gptel-*' -typ
 - Registry tests bind `magent-agent-registry--agents` to a fresh hash table
 - Skills tests bind `magent-skills--registry` to nil
 - Session tests call `magent-session-reset` to clear global state
-- FSM struct tests require `magent-fsm-backend-native` (struct definitions live there even though native execution is disabled)
+- FSM struct and shared permission tests should load `magent-fsm-shared`
 
 ### End-to-End Testing
 
@@ -54,11 +54,13 @@ Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and perm
 ```
 magent.el (entry point: magent-mode, global-magent-mode)
   ├─ magent-config.el     (defcustoms, deffaces, shared utilities, magent-log stub)
+  ├─ magent-runtime.el    (static init + project overlay activation)
   ├─ magent-session.el    (conversation state, JSON persistence)
-  ├─ magent-queue.el      (FIFO prompt serialization)
+  ├─ magent-capability.el (capability registry and prompt-time resolution)
   ├─ magent-tools.el      (10 gptel-tool structs)
   ├─ magent-agent.el      (magent-agent-process: builds gptel prompt, calls gptel-request)
-  ├─ magent-agent-registry.el  (cl-defstruct, 8 built-in agents, hash-table registry)
+  ├─ magent-agent-registry.el  (cl-defstruct, 7 built-in agents, hash-table registry)
+  ├─ magent-agent-info.el / magent-agent-types.el  (legacy feature-name compatibility shims)
   ├─ magent-agent-file.el      (loads custom agents from .magent/agent/*.md)
   ├─ magent-permission.el      (rule-based tool access control per agent)
   ├─ magent-ui.el              (in-buffer input/output, org-mode derived, overlay sections)
@@ -70,42 +72,45 @@ magent.el (entry point: magent-mode, global-magent-mode)
 
 ### Core Flow
 
-1. **Entry point** (`magent.el`): `magent-mode` minor mode with `C-c m` prefix. Mode enable only adds a modeline construct. Full initialization (agent registry, skills) is **lazy** — triggered on first command via `magent--ensure-initialized`.
+1. **Entry point** (`magent.el`): `magent-mode` minor mode with `C-c m` prefix. Mode enable only adds a modeline construct. Static initialization is **lazy** — triggered on first command via `magent--ensure-initialized`.
 
-2. **UI** (`magent-ui.el`): The `*magent*` buffer derives from `org-mode` (`magent-output-mode`). Uses **in-buffer input**: `magent-prompt` inserts an editable `* [USER]` section at buffer end; `C-c C-c` submits. Past content is read-only.
+2. **Runtime** (`magent-runtime.el`): Owns the ordered initialization pipeline for agents, skills, and capabilities. Static bundled definitions load once; project-local overlays under `.magent/` are activated and unloaded as session scope changes.
+
+3. **UI** (`magent-ui.el`): The `*magent*` buffer derives from `org-mode` (`magent-output-mode`). Uses **in-buffer input**: `magent-prompt` inserts an editable `* [USER]` section at buffer end; `C-c C-c` submits. Past content is read-only.
    - Message sections use level-1 org headings with custom faces
    - Tool calls render as `#+begin_tool`/`#+end_tool` blocks (auto-folded via deferred `org-cycle`)
    - Reasoning blocks render as `#+begin_think`/`#+end_think` (auto-folded)
    - Streaming uses chunk batching (`magent-ui-batch-insert-delay`) and async fontification above `magent-ui-fontify-threshold`
+   - Request serialization is owned here via `magent-ui--processing` and `magent-ui--enqueue`; concurrent prompts are rejected with a busy message instead of buffered
    - `?` opens a transient menu; `TAB`/`S-TAB` fold sections; `C-g` interrupts
 
-3. **Agent processing** (`magent-agent.el`): `magent-agent-process` builds a gptel prompt list from the session, applies per-agent overrides (model, temperature via `default-value` — intentionally avoids buffer-local gptel settings), filters tools by permissions, then calls `gptel-request`.
+4. **Agent processing** (`magent-agent.el`): `magent-agent-process` builds a gptel prompt list from the session, applies per-agent overrides (model, temperature via `default-value` — intentionally avoids buffer-local gptel settings), filters tools by permissions, then calls `gptel-request`.
 
-4. **Tools** (`magent-tools.el`): 10 `gptel-tool` structs — `read_file`, `write_file`, `edit_file`, `grep`, `glob`, `bash`, `emacs_eval`, `delegate`, `skill_invoke`, `web_search`. Tools are registered globally but filtered per-agent through permissions. `web_search` uses DuckDuckGo via `url-retrieve` + `libxml-parse-html-region` (requires Emacs built with `--with-xml2`).
+5. **Tools** (`magent-tools.el`): 10 `gptel-tool` structs — `read_file`, `write_file`, `edit_file`, `grep`, `glob`, `bash`, `emacs_eval`, `delegate`, `skill_invoke`, `web_search`. Tools are registered globally but filtered per-agent through permissions. `web_search` uses DuckDuckGo via `url-retrieve` + `libxml-parse-html-region` (requires Emacs built with `--with-xml2`).
 
-5. **FSM** (`magent-fsm.el`): Only the **gptel backend** is active. The native backend (`magent-fsm-backend-native.el`) is disabled (FIXME in both `magent-config.el` and `magent-fsm.el`). The gptel backend handles the full tool-calling loop including permission-aware confirmation via `:confirm` functions installed by `magent-fsm--convert-tools-to-gptel`.
+6. **FSM** (`magent-fsm.el`): Only the **gptel backend** is active. Shared FSM structs, tool wrapping, permission prompting, and resource cleanup live in `magent-fsm-shared.el`. The gptel backend handles the full tool-calling loop including permission-aware confirmation via `:confirm` functions installed by `magent-fsm--convert-tools-to-gptel`.
 
-6. **Permissions** (`magent-permission.el`): Rules map tool names to `allow`/`deny`/`ask`, with optional file-pattern sub-rules (glob syntax). Resolution: exact tool match → file-pattern rules → wildcard (`*`) fallback → **default allow**. File-pattern rules are order-dependent (first match wins); more specific patterns must come before less specific ones.
+7. **Permissions** (`magent-permission.el`): Rules map tool names to `allow`/`deny`/`ask`, with optional file-pattern sub-rules (glob syntax). Resolution: exact tool match → file-pattern rules → wildcard (`*`) fallback → **default allow**. File-pattern rules are order-dependent (first match wins); more specific patterns must come before less specific ones.
 
-7. **Queue** (`magent-queue.el`): Single-request serialization. When a request is in-flight, new prompts are rejected with a busy message instead of being buffered.
+8. **Capabilities** (`magent-capability.el`): File-backed capability definitions score the current request context and attach matching instruction skills. Bundled, user, and project-local capability overlays all feed the same resolver.
 
-8. **Session** (`magent-session.el`): Conversation state with messages list and history trimming. Persists to `magent-session-directory` as JSON. The `buffer-content` slot stores raw buffer text for lossless restore (preserving tool/reasoning blocks not in the message list). `magent-session-reset` clears session, permission overrides, and queue together.
+9. **Session** (`magent-session.el`): Conversation state with messages list and history trimming. Persists to `magent-session-directory` as JSON. The `buffer-content` slot stores raw buffer text for lossless restore (preserving tool/reasoning blocks not in the message list). `magent-session-reset` clears the scoped session plus approval and capability overrides.
 
-9. **Skills** (`magent-skills.el`): Two types — `instruction` (markdown injected into system prompt) and `tool` (invoked via `skill_invoke`). The module now contains the registry, built-in `skill-creator`, file-based skill loading, and interactive inspection commands. Skills load in priority order from (1) built-in `skills/`, (2) user directory `~/.emacs.d/magent-skills/<name>/SKILL.md`, and (3) project-local `.magent/skills/<name>/SKILL.md`.
+10. **Skills** (`magent-skills.el`): Two types — `instruction` (markdown injected into system prompt) and `tool` (invoked via `skill_invoke`). The module now contains the registry, built-in `skill-creator`, file-based skill loading, and interactive inspection commands. Skills load in priority order from (1) built-in `skills/`, (2) user directory `~/.emacs.d/magent-skills/<name>/SKILL.md`, and (3) project-local `.magent/skills/<name>/SKILL.md`.
 
 ### Gotchas
 
 - **`magent-output-mode` derives from `org-mode`**: All org keybindings, font-lock, and folding apply. Use `inhibit-read-only` for insertions; org fontification can trigger re-entrancy.
 - **`magent-ui--with-insert` suppresses buffer-boundary signals**: Catches `beginning-of-buffer`, `end-of-buffer`, etc. to suppress evil-mode cursor adjustment errors from gptel process filters.
 - **`magent-log` is a stub in `magent-config.el`**: No-op until `magent-ui` is loaded. In batch tests, logs go nowhere unless you explicitly load `magent-ui`.
-- **gptel backend requires native backend module**: `magent-fsm-backend-gptel.el` requires `magent-fsm-backend-native.el` at load time for the `magent-fsm` struct definition and slot accessors.
+- **Shared FSM definitions live in `magent-fsm-shared.el`**: the gptel backend no longer depends on the native backend shim for struct definitions or permission helpers.
 - **`magent--handle-unknown-tools-a`**: An `around` advice on `gptel--handle-tool-use` that pre-fills error results for hallucinated tool names, preventing FSM hangs.
 - **Request generation counter**: `magent-ui--request-generation` increments on dispatch and interrupt. Stale callbacks compare their captured generation and discard themselves if mismatched.
 - **`revert-buffer` in output buffer**: Bound to `magent-ui--revert-buffer` → `magent-ui-render-history`. Safe to use `g` in evil mode.
 
 ### Agent Definitions
 
-Built-in agents: `build` (default), `plan`, `explore`, `general`, `compaction`, `title`, `summary`. Defined in `magent-agent-registry.el` with `cl-defstruct magent-agent-info` (fields: name, description, mode, native, hidden, temperature, top-p, color, model, prompt, options, steps, permission). Agent modes: `primary` (user-facing), `subagent` (internal), `all` (either).
+Built-in agents: `build` (default), `plan`, `explore`, `general`, `compaction`, `title`, `summary`. Defined in `magent-agent-registry.el` with `cl-defstruct magent-agent-info` (fields: name, description, mode, native, hidden, temperature, top-p, color, model, prompt, options, steps, permission). `magent-agent-info.el` and `magent-agent-types.el` are now only compatibility shims for older `require` forms. Agent modes: `primary` (user-facing), `subagent` (internal), `all` (either).
 
 Custom agents: `.magent/agent/*.md` files with YAML frontmatter + markdown body (system prompt). Frontmatter is parsed by `magent-file-loader.el` (supports booleans, numbers, quoted strings, comma-separated lists; converts underscores to hyphens in keys).
 

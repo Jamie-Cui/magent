@@ -13,6 +13,9 @@
 ;;   magent-agent-info.el   (struct + helpers)
 ;;   magent-agent-types.el  (built-in agent definitions)
 ;;   magent-agent-registry.el (registry operations)
+;;
+;; Tiny compatibility shim files still exist for the historical
+;; `magent-agent-info' and `magent-agent-types' feature names.
 
 ;;; Code:
 
@@ -21,6 +24,7 @@
 (require 'magent-config)
 (require 'magent-file-loader)
 (require 'magent-permission)
+(require 'magent-runtime)
 
 (defvar magent-tools--permission-keys)
 
@@ -47,7 +51,10 @@ Fields:
 - PROMPT: Optional custom system prompt
 - OPTIONS: Additional options as an alist
 - STEPS: Optional maximum iteration steps
-- PERMISSION: Permission ruleset for tool access control"
+- PERMISSION: Permission ruleset for tool access control
+- FILE-PATH: Backing file path for file-defined agents
+- SOURCE-LAYER: One of \\='builtin or \\='project
+- SOURCE-SCOPE: Normalized project root for project-local agents"
   name
   description
   mode
@@ -60,7 +67,10 @@ Fields:
   prompt
   (options nil)
   steps
-  (permission nil))
+  (permission nil)
+  file-path
+  (source-layer 'builtin)
+  source-scope)
 
 ;;; Agent mode validation
 
@@ -124,120 +134,6 @@ The agent's TEMPERATURE field, if non-nil, overrides `gptel-temperature'."
   (and (magent-agent-info-p info)
        (stringp (magent-agent-info-name info))
        (magent-agent-info-valid-mode-p (magent-agent-info-mode info))))
-
-;; ──────────────────────────────────────────────────────────────────────
-;;; File-backed agents
-;; ──────────────────────────────────────────────────────────────────────
-
-(defun magent-agent-file--agent-dir (&optional directory)
-  "Get the agent directory for DIRECTORY or project root."
-  (let* ((root (or directory (magent-project-root)))
-         (agent-dir (expand-file-name magent-agent-directory root)))
-    agent-dir))
-
-(defun magent-agent-file--list-files (&optional directory)
-  "List all agent .md files in DIRECTORY or project root."
-  (magent-file-loader-list-matching-files
-   (magent-agent-file--agent-dir directory)
-   "\\.md$"))
-
-(defun magent-agent-file--parse-mode (mode-str)
-  "Parse mode string MODE-STR to symbol.
-Returns \\='primary, \\='subagent, or \\='all (default)."
-  (pcase (downcase mode-str)
-    ("primary" 'primary)
-    ("subagent" 'subagent)
-    ("all" 'all)
-    (_ 'all)))
-
-(defun magent-agent-file--parse-permission (tools-config)
-  "Parse tools config to permission rules.
-TOOLS-CONFIG is a plist like (:bash t :read nil)."
-  (let ((rules nil)
-        (all-tools magent-tools--permission-keys))
-    (dolist (tool all-tools)
-      (push (cons tool 'allow) rules))
-    (when (and tools-config (plistp tools-config))
-      (cl-loop for (key value) on tools-config by #'cddr
-               do (let ((tool-name (intern (downcase (substring (symbol-name key) 1)))))
-                    (when (eq value nil)
-                      (setq rules (assq-delete-all tool-name rules))
-                      (push (cons tool-name 'deny) rules)))))
-    (nreverse rules)))
-
-(defun magent-agent-file-load (filepath)
-  "Load an agent from FILEPATH.
-Returns the agent info if successful, nil otherwise."
-  (condition-case err
-      (let* ((definition (magent-file-loader-read-definition filepath))
-             (frontmatter (plist-get definition :frontmatter))
-             (body (plist-get definition :body))
-             (name (file-name-base filepath)))
-        (when frontmatter
-          (let* ((mode-str (plist-get frontmatter :mode))
-                 (tools-config (plist-get frontmatter :tools))
-                 (permission (when tools-config
-                               (magent-agent-file--parse-permission tools-config)))
-                 (agent-info (magent-agent-info-create
-                              :name name
-                              :description (plist-get frontmatter :description)
-                              :mode (if mode-str (magent-agent-file--parse-mode mode-str) 'all)
-                              :native nil
-                              :hidden (plist-get frontmatter :hidden)
-                              :temperature (plist-get frontmatter :temperature)
-                              :top-p (plist-get frontmatter :top-p)
-                              :color (plist-get frontmatter :color)
-                              :prompt (when (> (length body) 0) body)
-                              :permission permission)))
-            (when (magent-agent-info-valid-p agent-info)
-              (magent-agent-registry-register agent-info)
-              agent-info))))
-    (error
-     (magent-log "ERROR loading agent file %s: %s" filepath (error-message-string err))
-     nil)))
-
-(defun magent-agent-file-load-all (&optional directory)
-  "Load all agent files from DIRECTORY or project root.
-Returns number of agents loaded."
-  (let* ((files (magent-agent-file--list-files directory))
-         (count (magent-file-loader-load-all files #'magent-agent-file-load)))
-    (when (> count 0)
-      (magent-log "INFO loaded %d agent file(s) from %s"
-                  count
-                  (magent-agent-file--agent-dir directory)))
-    count))
-
-(defun magent-agent-file-save (agent-info &optional directory)
-  "Save AGENT-INFO to a .md file in DIRECTORY or project root.
-Returns the filepath if successful."
-  (let* ((name (magent-agent-info-name agent-info))
-         (agent-dir (magent-agent-file--agent-dir directory))
-         (filepath (expand-file-name (concat name ".md") agent-dir)))
-    (make-directory agent-dir t)
-    (with-temp-file filepath
-      (insert "---\n")
-      (when (magent-agent-info-description agent-info)
-        (insert (format "description: %s\n"
-                        (magent-agent-info-description agent-info))))
-      (when (magent-agent-info-mode agent-info)
-        (insert (format "mode: %s\n"
-                        (magent-agent-info-mode agent-info))))
-      (when (magent-agent-info-hidden agent-info)
-        (insert "hidden: true\n"))
-      (when (magent-agent-info-temperature agent-info)
-        (insert (format "temperature: %s\n"
-                        (magent-agent-info-temperature agent-info))))
-      (when (magent-agent-info-top-p agent-info)
-        (insert (format "top-p: %s\n"
-                        (magent-agent-info-top-p agent-info))))
-      (when (magent-agent-info-color agent-info)
-        (insert (format "color: %s\n"
-                        (magent-agent-info-color agent-info))))
-      (insert "---\n\n")
-      (when (magent-agent-info-prompt agent-info)
-        (insert (magent-agent-info-prompt agent-info))
-        (insert "\n")))
-    filepath))
 
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Built-in agent types
@@ -343,6 +239,8 @@ Your output must be:
    :description "Default agent for building and general coding tasks"
    :mode 'primary
    :native t
+   :steps 12
+   :source-layer 'builtin
    :permission (magent-permission-defaults)))
 
 (defun magent-agent-types--plan ()
@@ -352,6 +250,7 @@ Your output must be:
    :description "Planning mode for organizing work before implementation"
    :mode 'primary
    :native t
+   :source-layer 'builtin
    :permission (magent-permission-merge
                 (magent-permission-defaults)
                 (magent-permission-from-config
@@ -367,6 +266,7 @@ Your output must be:
    :mode 'subagent
    :native t
    :hidden t
+   :source-layer 'builtin
    :permission (magent-permission-merge
                 (magent-permission-defaults)
                 (magent-permission-from-config
@@ -380,6 +280,7 @@ Your output must be:
    :mode 'subagent
    :native t
    :prompt magent-agent--prompt-explore
+   :source-layer 'builtin
    :permission (list (cons '* magent-permission-deny)
                      (cons 'grep magent-permission-allow)
                      (cons 'glob magent-permission-allow)
@@ -395,6 +296,7 @@ Your output must be:
    :native t
    :hidden t
    :prompt magent-agent--prompt-compaction
+   :source-layer 'builtin
    :permission (magent-permission-from-config
                 '((* . deny)))))
 
@@ -407,6 +309,7 @@ Your output must be:
    :native t
    :hidden t
    :prompt magent-agent--prompt-title
+   :source-layer 'builtin
    :permission (magent-permission-from-config
                 '((* . deny)))))
 
@@ -419,6 +322,7 @@ Your output must be:
    :native t
    :hidden t
    :prompt magent-agent--prompt-summary
+   :source-layer 'builtin
    :permission (magent-permission-from-config
                 '((* . deny)))))
 
@@ -459,10 +363,11 @@ Returns list of agent info structures."
       (magent-agent-registry-register agent-info))
     (setq magent-agent-registry--default-agent
           magent-default-agent)
-    (setq magent-agent-registry--initialized t)
-    ;; Load custom agents from config files
-    (when magent-load-custom-agents
-      (magent-agent-file-load-all))))
+    (setq magent-agent-registry--initialized t)))
+
+(defun magent-agent-initialize-static ()
+  "Initialize built-in agent definitions."
+  (magent-agent-registry-init))
 
 ;;; Agent registration
 
@@ -475,6 +380,14 @@ Returns the registered agent info."
              agent-info
              magent-agent-registry--agents)
     agent-info))
+
+(defun magent-agent-registry-remove-project-scope (scope)
+  "Remove all project-local agents registered for SCOPE."
+  (magent-file-loader-hash-remove-project-scope-entries
+   magent-agent-registry--agents
+   #'magent-agent-info-source-layer
+   #'magent-agent-info-source-scope
+   scope))
 
 ;;; Agent retrieval
 
@@ -567,11 +480,15 @@ This does not affect built-in agents that will be reloaded on initialization."
 
 ;;; Interactive functions
 
+(declare-function magent-agent-file-load-all "magent-agent-file")
+(declare-function magent-agent-file-save "magent-agent-file")
+
 ;;;###autoload
 (defun magent-list-agents (&optional include-hidden)
   "Display a list of all agents.
 With prefix argument, include hidden agents."
   (interactive "P")
+  (magent-runtime-prepare-command-context)
   (let ((agents (magent-agent-registry-list include-hidden)))
     (magent--with-display-buffer "*Magent Agents*"
       (insert "Available Agents:\n\n")
@@ -585,8 +502,11 @@ With prefix argument, include hidden agents."
 (defun magent-set-default-agent (agent-name)
   "Set the default agent to AGENT-NAME."
   (interactive
-   (list (completing-read "Set default agent: "
-                          (magent-agent-registry-list-names))))
+   (progn
+     (magent-runtime-prepare-command-context)
+     (list (completing-read "Set default agent: "
+                            (magent-agent-registry-list-names)))))
+  (magent-runtime-prepare-command-context)
   (if (magent-agent-registry-set-default agent-name)
       (magent-log "INFO default agent set to: %s" agent-name)
     (error "Agent not found: %s" agent-name)))
@@ -595,24 +515,24 @@ With prefix argument, include hidden agents."
 (defun magent-load-agent-files (&optional directory)
   "Load all agent files from DIRECTORY or project root."
   (interactive)
+  (require 'magent-agent-file)
   (magent-agent-file-load-all directory))
 
 ;;;###autoload
 (defun magent-save-agent (agent-name &optional directory)
   "Save agent named AGENT-NAME to a file."
   (interactive
-   (list (completing-read "Save agent: "
-                          (magent-agent-registry-list-names t))))
+   (progn
+     (magent-runtime-prepare-command-context)
+     (list (completing-read "Save agent: "
+                            (magent-agent-registry-list-names t)))))
+  (require 'magent-agent-file)
+  (magent-runtime-prepare-command-context)
   (let ((agent-info (magent-agent-registry-get agent-name)))
     (if agent-info
         (let ((filepath (magent-agent-file-save agent-info directory)))
           (magent-log "INFO agent saved to: %s" filepath))
       (error "Agent not found: %s" agent-name))))
 
-;; Provide feature aliases so that existing (require 'magent-agent-info)
-;; and (require 'magent-agent-types) continue to work.
-(provide 'magent-agent-info)
-(provide 'magent-agent-types)
-(provide 'magent-agent-file)
 (provide 'magent-agent-registry)
 ;;; magent-agent-registry.el ends here
