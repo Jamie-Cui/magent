@@ -168,6 +168,22 @@
                          (list direct-file nested-file))))
       (delete-directory tmpdir t))))
 
+(ert-deftest magent-test-file-loader-skips-missing-definition-files ()
+  "Test shared file loader skips missing direct and nested definition files."
+  (require 'magent-file-loader)
+  (let* ((tmpdir (make-temp-file "magent-file-loader-" t))
+         (nested-dir (expand-file-name "nested" tmpdir))
+         (nested-file (expand-file-name "SKILL.md" nested-dir)))
+    (unwind-protect
+        (progn
+          (make-directory nested-dir t)
+          (with-temp-file nested-file
+            (insert "---\nname: nested\n---\n"))
+          (should (equal (magent-file-loader-list-named-files
+                          (list tmpdir) "SKILL.md")
+                         (list nested-file))))
+      (delete-directory tmpdir t))))
+
 (ert-deftest magent-test-file-loader-read-definition-without-frontmatter ()
   "Test shared file loader preserves body when no frontmatter exists."
   (require 'magent-file-loader)
@@ -3805,6 +3821,28 @@
                          "2026-03-17 12:00:00  (global)  Investigate resume menu title rendering regre...")))
       (delete-directory magent-session-directory t))))
 
+(ert-deftest magent-test-resume-session-candidates-include-time ()
+  "Test `magent-resume-session' presents timestamps with time-of-day."
+  (require 'magent-ui)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (session-file (expand-file-name "session-20260317-120000.json"
+                                         magent-session-directory))
+         captured-collection)
+    (unwind-protect
+        (progn
+          (with-temp-file session-file
+            (insert "{\"scope\":\"global\",\"summary-title\":\"Resume label\"}"))
+          (cl-letf (((symbol-function 'magent-ui--activate-context-session) #'ignore)
+                    ((symbol-function 'completing-read)
+                     (lambda (_prompt collection &rest _args)
+                       (setq captured-collection collection)
+                       nil))
+                    ((symbol-function 'message) #'ignore))
+            (magent-resume-session))
+          (should (equal captured-collection
+                         '("2026-03-17 12:00:00  (global)  Resume label"))))
+      (delete-directory magent-session-directory t))))
+
 (ert-deftest magent-test-runtime-activate-scope-switches-project-overlays ()
   "Test runtime activation unloads the old overlay before loading the new one."
   (require 'magent-runtime)
@@ -4092,6 +4130,71 @@
           (magent-log "reload-safe %s" 1)
           (with-current-buffer buffer
             (should (string-match-p "reload-safe 1" (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-ui-log-level-info-hides-debug ()
+  "Test INFO log level suppresses DEBUG messages."
+  (require 'magent-ui)
+  (let ((magent-enable-logging t)
+        (magent-log-level 'info)
+        (buffer (magent-ui-get-log-buffer)))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (let ((inhibit-read-only t))
+              (erase-buffer)))
+          (magent-log "DEBUG hidden")
+          (magent-log "INFO shown")
+          (magent-log "PERM shown")
+          (magent-log "plain shown")
+          (with-current-buffer buffer
+            (let ((contents (buffer-string)))
+              (should-not (string-match-p "DEBUG hidden" contents))
+              (should (string-match-p "INFO shown" contents))
+              (should (string-match-p "PERM shown" contents))
+              (should (string-match-p "plain shown" contents)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-ui-log-level-warn-hides-info-and-perm ()
+  "Test WARN log level keeps only WARN and ERROR messages."
+  (require 'magent-ui)
+  (let ((magent-enable-logging t)
+        (magent-log-level 'warn)
+        (buffer (magent-ui-get-log-buffer)))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (let ((inhibit-read-only t))
+              (erase-buffer)))
+          (magent-log "INFO hidden")
+          (magent-log "PERM hidden")
+          (magent-log "WARN shown")
+          (magent-log "ERROR shown")
+          (with-current-buffer buffer
+            (let ((contents (buffer-string)))
+              (should-not (string-match-p "INFO hidden" contents))
+              (should-not (string-match-p "PERM hidden" contents))
+              (should (string-match-p "WARN shown" contents))
+              (should (string-match-p "ERROR shown" contents)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-ui-log-level-disabled-suppresses-output ()
+  "Test disabled logging suppresses all log output."
+  (require 'magent-ui)
+  (let ((magent-enable-logging nil)
+        (magent-log-level 'debug)
+        (buffer (magent-ui-get-log-buffer)))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (let ((inhibit-read-only t))
+              (erase-buffer)))
+          (magent-log "ERROR hidden")
+          (with-current-buffer buffer
+            (should (equal (buffer-string) ""))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

@@ -423,7 +423,7 @@ Restores `magent--current-session'.  Returns the session or nil."
 
 (defun magent-session--format-file (filepath)
   "Return a human-readable label for session FILEPATH.
-Parses the session-YYYYMMDD-HHMMSS filename pattern into a date string."
+Parses the session-YYYYMMDD-HHMMSS filename pattern into a date/time string."
   (let* ((name (file-name-sans-extension (file-name-nondirectory filepath)))
          (meta (magent-session--read-file-metadata filepath))
          (scope (plist-get meta :scope))

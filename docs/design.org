@@ -93,7 +93,7 @@ Package requirements: ~emacs 27.1+~, ~gptel 0.9.8~, ~spinner 1.7.4~, ~transient 
 
 All magent-specific configuration is in the ~magent~ customize group. LLM provider, model, and API key settings are managed entirely by gptel.
 
-33 defcustom variables organized by category:
+34 defcustom variables organized by category:
 
 Core settings:
 - ~magent-system-prompt~: System prompt for the AI agent (includes org-mode formatting instructions)
@@ -104,6 +104,7 @@ Core settings:
 - ~magent-max-history~: Max session messages (default: 100)
 - ~magent-request-timeout~: LLM request timeout in seconds (default: 120)
 - ~magent-enable-logging~: Enable ~*magent-log*~ buffer
+- ~magent-log-level~: Minimum displayed log level (default: ~info~)
 - ~magent-default-agent~: Default agent name (default: "build")
 - ~magent-load-custom-agents~: Load agents from ~.magent/agent/*.md~
 
@@ -837,7 +838,8 @@ The Makefile auto-detects gptel and spinner in ~$HOME/.emacs.d/elpa~. Override w
 ** Enable Logging
 
 #+begin_src elisp
-(setq magent-enable-logging t)
+(setq magent-enable-logging t
+      magent-log-level 'debug)
 M-x magent-show-log  ; C-c m l
 #+end_src
 
