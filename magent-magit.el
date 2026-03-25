@@ -28,6 +28,9 @@
 (require 'magit)
 (require 'git-commit)
 
+(declare-function gptel-magit-install "gptel-magit")
+(declare-function gptel-magit-commit-generate "gptel-magit")
+(declare-function gptel-magit-diff-explain "gptel-magit")
 (declare-function markdown-view-mode "markdown-mode")
 (declare-function gfm-view-mode "markdown-mode")
 

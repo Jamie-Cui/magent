@@ -177,7 +177,7 @@ PROPS accepts the same plist keys as `magent-audit-record'."
             (make-directory (file-name-directory (car entry)) t)
             (with-temp-buffer
               (insert (cdr entry))
-              (append-to-file (point-min) (point-max) (car entry)))))
+              (write-region (point-min) (point-max) (car entry) t 0))))
       (error
        (magent-log "WARN audit write failed: %s"
                    (error-message-string err))))))

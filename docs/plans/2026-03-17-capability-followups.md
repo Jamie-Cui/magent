@@ -2,19 +2,19 @@
 
 **Goal:** Turn the new capability layer from a minimal internal selector into a stable, explainable, user-tunable product surface for Magent.
 **Architecture:** Keep capabilities as a layer above skills and below tools. Continue using instruction skills as the behavior-shaping substrate, but add stronger matching, user controls, richer package capability coverage, and better debug/inspection surfaces around the resolver.
-**Tech Stack:** Emacs Lisp, YAML frontmatter capability files, existing Magent skill loader, current queue/agent/session pipeline, ERT, live Emacs verification via `emacsclient`.
+**Tech Stack:** Emacs Lisp, YAML frontmatter capability files, existing Magent skill loader, current UI/agent/session pipeline, ERT, live Emacs verification via `emacsclient`.
 
 ## File Map
 
 - Modify: `magent-capability.el`
-- Modify: `magent-capability-file.el`
+- Modify: `magent-capability.el`
 - Modify: `magent-agent.el`
 - Modify: `magent-ui.el`
 - Modify: `magent-config.el`
 - Modify: `magent.el`
-- Modify: `magent-skill-file.el`
+- Modify: `magent-skills.el`
 - Modify: `test/magent-test.el`
-- Modify: `README.md`
+- Modify: `README.org`
 - Modify: `docs/design.org`
 - Create: `capabilities/*/CAPABILITY.md`
 - Create: `skills/*/SKILL.md`
@@ -24,7 +24,7 @@
 
 **Files:**
 - Modify: `magent-capability.el`
-- Modify: `magent-capability-file.el`
+- Modify: `magent-capability.el`
 - Modify: `test/magent-test.el`
 - Modify: `docs/design.org`
 
@@ -54,14 +54,14 @@
 - Modify: `magent-capability.el`
 - Modify: `magent-ui.el`
 - Modify: `magent.el`
-- Modify: `README.md`
+- Modify: `README.org`
 - Modify: `test/magent-test.el`
 
 - [ ] Add interactive commands to list capabilities for the current context, explain the last resolution, and toggle a capability on/off locally.
 - [ ] Add a small user-visible summary in the `*magent*` buffer or log when capabilities were auto-activated for the current turn.
 - [ ] Add customization for disabling individual capabilities and entire capability families without editing files on disk.
 - [ ] Ensure explicit slash-selected skills still win over capability auto-selection when there is tension.
-- [ ] Document the user controls in `README.md`.
+- [ ] Document the user controls in `README.org`.
 
 ## Task 4: Expand Builtin Capability Families
 
@@ -69,7 +69,7 @@
 - Create: `capabilities/*/CAPABILITY.md`
 - Create: `skills/*/SKILL.md`
 - Modify: `test/magent-test.el`
-- Modify: `README.md`
+- Modify: `README.org`
 
 - [ ] Add builtin capability families for hook/keymap/advice debugging, package/config reload workflow, and command/variable introspection.
 - [ ] Keep builtins grouped by problem domain, not by raw Elisp function list.
@@ -81,8 +81,8 @@
 **Files:**
 - Create: `capabilities/*/CAPABILITY.md`
 - Create: `skills/*/SKILL.md`
-- Modify: `magent-capability-file.el`
-- Modify: `README.md`
+- Modify: `magent-capability.el`
+- Modify: `README.org`
 - Modify: `test/magent-test.el`
 
 - [ ] Start with a small curated package set: `magit`, `org`, `project`, and one LSP package family.
@@ -94,10 +94,10 @@
 ## Task 6: Separate Metadata Contribution From Activation Policy
 
 **Files:**
-- Modify: `magent-capability-file.el`
+- Modify: `magent-capability.el`
 - Modify: `magent-capability.el`
 - Modify: `docs/design.org`
-- Modify: `README.md`
+- Modify: `README.org`
 
 - [ ] Define which fields are considered maintainer-owned policy versus package-author or user-provided metadata.
 - [ ] Keep activation policy, risk level, and disclosure defaults under Magent control.
@@ -109,7 +109,7 @@
 **Files:**
 - Modify: `magent-agent.el`
 - Modify: `magent-ui.el`
-- Modify: `magent-skill-file.el`
+- Modify: `magent-skills.el`
 - Modify: `test/magent-test.el`
 
 - [ ] Make diagnosis flows such as `magent-diagnose-emacs` and `magent-doctor` compose cleanly with auto-capabilities instead of duplicating too much guidance.
@@ -122,11 +122,11 @@
 **Files:**
 - Modify: `test/magent-test.el`
 - Modify: `Makefile`
-- Modify: `README.md`
+- Modify: `README.org`
 
 - [ ] Add regression tests for capability loading order and startup initialization.
 - [ ] Add tests for capability reload behavior in a running session.
-- [ ] Add one or two end-to-end live Emacs verification recipes to `README.md` for maintainers:
+- [ ] Add one or two end-to-end live Emacs verification recipes to `README.org` for maintainers:
   - Org buffer -> org capability activates
   - Magit buffer -> Magit capability activates
   - Plain code buffer with no matching context -> no auto capability

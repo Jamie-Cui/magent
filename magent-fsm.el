@@ -23,8 +23,7 @@
 
 ;;; Code:
 
-;; FIXME: native FSM backend (magent-fsm-backend-native.el) is disabled.
-;; Only the gptel backend is currently supported.
+;; Only the gptel backend is supported.
 
 (require 'magent-config)
 (require 'magent-fsm-backend-gptel)

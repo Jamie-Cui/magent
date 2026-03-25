@@ -43,7 +43,7 @@
         <li>Web search via DuckDuckGo</li>
         <li>Claude Code skills for interacting with the running Emacs instance</li>
         <li>Session management with conversation history and buffer content persistence</li>
-        <li>FIFO prompt queue for serializing concurrent requests</li>
+        <li>Single in-flight request lock in the UI layer with explicit busy rejection</li>
         <li>Streaming responses with chunk batching and async fontification</li>
         <li>Markdown-to-Org conversion for rendering assistant output in org-mode</li>
         <li>Context-aware prompting via <code>magent-dwim</code> with automatic buffer context attachment</li>
@@ -51,43 +51,44 @@
     </ul>
 
     <h2 id="architecture">Architecture Overview</h2>
-    <p>Magent follows a modular, layered architecture with clear separation of concerns:</p>
-    <pre>magent.el (entry point + mode)
+    <p>Magent follows a layered architecture built around one active FSM backend, scoped runtime overlays, and an org-mode interaction buffer:</p>
+    <pre>magent.el (minor mode + lazy init)
     |
     v
+runtime orchestration (magent-runtime.el)
+    |
+    +-- static definitions
+    |     - agents
+    |     - skills
+    |     - capabilities
+    |
+    +-- project overlays
+          - .magent/agent/*.md
+          - .magent/skills/**/SKILL.md
+          - .magent/capabilities/**/CAPABILITY.md
+
 +------------------+------------------+------------------+
 |     UI Layer     |   Agent Layer    |   Tool Layer     |
 |  magent-ui.el    | magent-agent.el  | magent-tools.el  |
 +------------------+------------------+------------------+
     |                |                |
     v                v                |
-Queue Layer    Session Layer          |
-magent-queue.el  magent-session.el    |
+session state   prompt building       |
+magent-session.el   + permissions     |
     |                |                |
     |                v                |
-    |        FSM Layer                |
-    |       magent-fsm.el             |
-    |          |         \            |
-    |    native backend   gptel       |
-    |                     backend     |
-    v                v                v
-+------------------------------------------------------+
-|                 Core Modules                         |
-|  - Agent Registry (magent-agent-registry.el)         |
-|  - Permission System (magent-permission.el)          |
-|  - Skills (magent-skills.el + skills/*.el)           |
-|  - File Loading + Frontmatter (magent-file-loader.el) |
-|  - Markdown-to-Org (magent-md2org.el)                |
-|  - Config (magent-config.el)                         |
-+------------------------------------------------------+
-    |
+    |         FSM API + backend       |
+    |     magent-fsm.el               |
+    |        |                        |
+    |        +-- magent-fsm-backend-gptel.el
+    |        +-- magent-fsm-shared.el
     v
-  gptel (external)</pre>
+gptel (external)</pre>
 
     <h2 id="modules">Core Modules</h2>
 
     <h3>Entry Point (magent.el)</h3>
-    <p>The entry point defines <code>magent-mode</code>, a minor mode with <code>C-c m</code> keybinding prefix. When enabled, it adds a modeline lighter showing spinner and queue depth. Agent/skill initialization is deferred until first command use (<code>magent--ensure-initialized</code>).</p>
+    <p>The entry point defines <code>magent-mode</code>, a minor mode with a <code>C-c m</code> prefix map. Enabling the mode is lightweight: it installs the modeline indicator and defers static runtime initialization until first real use through <code>magent--ensure-initialized</code>.</p>
 
     <h3>Agent System</h3>
     <p>Built-in agents:</p>
@@ -110,7 +111,7 @@ magent-queue.el  magent-session.el    |
         <tr>
             <td>explore</td>
             <td>subagent</td>
-            <td>Codebase exploration specialist</td>
+            <td>Fast codebase exploration specialist</td>
         </tr>
         <tr>
             <td>general</td>
@@ -155,7 +156,7 @@ magent-queue.el  magent-session.el    |
     </table>
 
     <h3>Finite State Machine (magent-fsm.el)</h3>
-    <p>The FSM manages the complete tool-calling loop with states: INIT → SEND → WAIT → PROCESS → TOOL → DONE/ERROR</p>
+    <p>The FSM API dispatches only to the gptel backend. Shared structs, abort state, and transient process cleanup live in <code>magent-fsm-shared.el</code>; streaming and tool-calling orchestration live in <code>magent-fsm-backend-gptel.el</code>.</p>
 
     <h2 id="data">Core Data Structures</h2>
 
@@ -178,12 +179,12 @@ magent-queue.el  magent-session.el    |
 
     <h3>magent-session</h3>
     <pre>(cl-defstruct (magent-session (:constructor magent-session-create))
-  messages        ; List of messages in chronological order
-  message-count   ; Cached count
-  max-history     ; Max messages to keep
-  id              ; Session identifier
-  agent           ; Assigned agent info
-  buffer-content  ; Saved buffer text for lossless restore
+  messages          ; List of messages in chronological order
+  max-history       ; Max messages to keep
+  id                ; Session identifier
+  agent             ; Assigned agent info
+  buffer-content    ; Saved buffer text for lossless restore
+  approval-overrides ; Session-scoped approval memory
 )</pre>
 
     <h2 id="design">Key Design Decisions</h2>
@@ -192,7 +193,7 @@ magent-queue.el  magent-session.el    |
     <p>All LLM communication goes through gptel. This decision:</p>
     <ul>
         <li>Reduces code maintenance burden</li>
-        <li>Ensures compatibility with all gptel providers</li>
+        <li>Ensures compatibility with gptel providers</li>
         <li>Leverages gptel's battle-tested HTTP implementation</li>
         <li>Simplifies tool-calling loop implementation</li>
     </ul>

@@ -94,10 +94,52 @@ allowing the caller to fall back to a full YAML parser."
 
 (defun magent-file-loader-project-subdir (relative-dir)
   "Return project-local RELATIVE-DIR as a one-item list when it exists."
-  (when-let ((root (magent-project-root)))
+  (when-let ((dir (magent-file-loader-project-directory relative-dir)))
+    (list dir)))
+
+(defun magent-file-loader-project-directory (relative-dir &optional scope)
+  "Return project-local RELATIVE-DIR under SCOPE or current project root."
+  (when-let ((root (or scope (magent-project-root))))
     (let ((dir (expand-file-name relative-dir root)))
       (when (file-directory-p dir)
-        (list dir)))))
+        dir))))
+
+(defun magent-file-loader-project-subdir-for-scope (relative-dir scope)
+  "Return project-local RELATIVE-DIR for SCOPE as a one-item list."
+  (when-let ((dir (magent-file-loader-project-directory relative-dir scope)))
+    (list dir)))
+
+(defun magent-file-loader-file-under-directory-p (filepath directory)
+  "Return non-nil when FILEPATH is inside DIRECTORY."
+  (and filepath directory
+       (file-exists-p directory)
+       (string-prefix-p (file-name-as-directory (file-truename directory))
+                        (file-truename filepath))))
+
+(defun magent-file-loader-file-under-any-directory-p (filepath directories)
+  "Return non-nil when FILEPATH is inside one of DIRECTORIES."
+  (cl-some (lambda (directory)
+             (magent-file-loader-file-under-directory-p filepath directory))
+           (delq nil directories)))
+
+(defun magent-file-loader-project-root-for-file (filepath relative-dir)
+  "Return the project root owning FILEPATH under RELATIVE-DIR, or nil.
+RELATIVE-DIR is the project-local subdirectory path such as
+\".magent/skills\"."
+  (when filepath
+    (let ((current (file-name-directory (file-truename filepath)))
+          found)
+      (while (and current (not found))
+        (let* ((candidate (directory-file-name current))
+               (subdir (expand-file-name relative-dir candidate))
+               (parent (file-name-directory candidate)))
+          (if (magent-file-loader-file-under-directory-p filepath subdir)
+              (setq found (file-truename candidate))
+            (setq current
+                  (and parent
+                       (not (string= parent current))
+                       parent)))))
+      found)))
 
 (defun magent-file-loader-list-named-files (directories filename)
   "Return sorted FILENAME paths found in DIRECTORIES and their subdirs.
@@ -119,6 +161,35 @@ For each directory in DIRECTORIES, include:
   (sort (when (file-directory-p directory)
           (directory-files directory t regexp))
         #'string<))
+
+(cl-defun magent-file-loader-list-definition-files
+    (filename &key builtin-dirs user-dirs project-relative-dir scope extra-dirs)
+  "Return sorted FILENAME paths across configured definition directories."
+  (magent-file-loader-list-named-files
+   (append builtin-dirs
+           user-dirs
+           (when project-relative-dir
+             (magent-file-loader-project-subdir-for-scope
+              project-relative-dir scope))
+           extra-dirs)
+   filename))
+
+(cl-defun magent-file-loader-classify-source
+    (filepath &key builtin-dirs user-dirs project-relative-dir default-layer)
+  "Return a plist describing the source layer and scope for FILEPATH."
+  (let* ((source-scope (and project-relative-dir
+                            (magent-file-loader-project-root-for-file
+                             filepath project-relative-dir)))
+         (source-layer
+          (cond
+           ((magent-file-loader-file-under-any-directory-p filepath builtin-dirs)
+            'builtin)
+           ((magent-file-loader-file-under-any-directory-p filepath user-dirs)
+            'user)
+           (source-scope 'project)
+           (t (or default-layer 'builtin)))))
+    (list :layer source-layer
+          :scope source-scope)))
 
 (defun magent-file-loader-read-definition (filepath)
   "Read FILEPATH and return a plist with parsed frontmatter and body."
@@ -142,6 +213,36 @@ FILE-PATH-FUNCTION is called with each registry value."
   (cl-remove-if (lambda (entry)
                   (funcall file-path-function (cdr entry)))
                 registry))
+
+(defun magent-file-loader-remove-project-scope-entries
+    (registry source-layer-function source-scope-function scope)
+  "Return REGISTRY without project-layer entries from SCOPE."
+  (cl-remove-if
+   (lambda (entry)
+     (let ((value (cdr entry)))
+       (and (eq (funcall source-layer-function value) 'project)
+            (equal (funcall source-scope-function value) scope))))
+   registry))
+
+(defun magent-file-loader-hash-remove-project-scope-entries
+    (table source-layer-function source-scope-function scope)
+  "Delete project-layer values from TABLE for SCOPE and return TABLE."
+  (maphash
+   (lambda (key value)
+     (when (and (eq (funcall source-layer-function value) 'project)
+                (equal (funcall source-scope-function value) scope))
+       (remhash key table)))
+   table)
+  table)
+
+(defun magent-file-loader-reload-file-backed-registry
+    (registry-symbol file-path-function load-function &rest args)
+  "Remove file-backed entries from REGISTRY-SYMBOL and call LOAD-FUNCTION."
+  (set registry-symbol
+       (magent-file-loader-remove-file-backed-entries
+        (symbol-value registry-symbol)
+        file-path-function))
+  (apply load-function args))
 
 (provide 'magent-file-loader)
 ;;; magent-file-loader.el ends here

@@ -30,9 +30,12 @@ Each sink receives a plist describing one event.")
 (defun magent-events-generate-id ()
   "Generate a lowercase identifier suitable for Magent events."
   (let ((alphabet "abcdefghijklmnopqrstuvwxyz0123456789")
-        (result (make-string 24 ?a)))
-    (dotimes (i 24 result)
-      (aset result i (aref alphabet (random (length alphabet)))))))
+        (result (make-string 24 ?a))
+        (index 0))
+    (while (< index 24)
+      (aset result index (aref alphabet (random (length alphabet))))
+      (setq index (1+ index)))
+    result))
 
 (defun magent-events-current-context ()
   "Return the current turn context, or nil."

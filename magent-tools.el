@@ -18,11 +18,16 @@
 (require 'magent-config)
 (require 'magent-agent-registry)
 (require 'magent-events)
+(require 'magent-runtime)
+(require 'magent-session)
 
 (declare-function magent-skills-get "magent-skills")
 (declare-function magent-skills-list "magent-skills")
 (declare-function magent-skills-invoke "magent-skills")
-(declare-function gptel-abort "gptel")
+(declare-function magent-agent-process "magent-agent")
+(declare-function magent-events-create-subagent-context "magent-events")
+(declare-function magent-events-stop-subagent "magent-events")
+(declare-function magent-fsm-abort "magent-fsm")
 
 ;; dom.el functions used for web search result parsing (requires --with-xml2 build)
 (declare-function dom-by-class "dom")
@@ -31,14 +36,16 @@
 
 ;;; Tool implementations
 
-(defvar magent-tools--request-buffer-name nil
-  "Name of the user's buffer at request submission time.
-Set by `magent-agent-process' at the start of each turn so that
-`emacs_eval' evaluates expressions in the correct buffer context
-rather than the magent output buffer.")
+(defvar magent-tools--request-context nil
+  "Dynamically bound `magent-request-context' for the current tool call.")
 
 (defvar magent-tools--register-cancel nil
   "Dynamically bound function used to register request abort cleanups.")
+
+(defun magent-tools--origin-buffer-name ()
+  "Return the request origin buffer name for the current tool call."
+  (and magent-tools--request-context
+       (magent-request-context-origin-buffer-name magent-tools--request-context)))
 
 (defun magent-tools--register-cancel-cleanup (cleanup)
   "Register CLEANUP for the current request when supported."
@@ -186,7 +193,7 @@ CALLBACK is called with success message or error."
   "Evaluate SEXP string as Emacs Lisp with optional TIMEOUT in seconds.
 CALLBACK is called with the result as a readable string, or an error message.
 Evaluation runs in the user's context buffer when known
-\(see `magent-tools--request-buffer-name'), falling back to current buffer."
+\(see `magent-tools--request-context'), falling back to current buffer."
   (condition-case err
       (let* ((timeout (or timeout magent-emacs-eval-timeout))
              (form (car (read-from-string sexp)))
@@ -196,9 +203,8 @@ Evaluation runs in the user's context buffer when known
              worker
              ;; Capture user's buffer at invocation time so the deferred
              ;; evaluator runs in the right context, not the magent output buffer.
-             (ctx-buffer (when (and magent-tools--request-buffer-name
-                                    (get-buffer magent-tools--request-buffer-name))
-                           (get-buffer magent-tools--request-buffer-name))))
+             (ctx-buffer (when-let ((buffer-name (magent-tools--origin-buffer-name)))
+                           (get-buffer buffer-name))))
         (cl-labels
             ((finish (result)
                (unless completed
@@ -349,7 +355,7 @@ CALLBACK is called with the command output (stdout + stderr)."
   "Delegate PROMPT to subagent AGENT-NAME asynchronously.
 CALLBACK is the gptel process-tool-result function.
 Looks up the agent in the registry, validates it is a subagent,
-then spawns a nested `gptel-request' with the subagent's configuration."
+then spawns a Magent child request that runs through the normal FSM."
   (let ((agent (magent-agent-registry-get agent-name)))
     (cond
      ((null agent)
@@ -357,47 +363,68 @@ then spawns a nested `gptel-request' with the subagent's configuration."
      ((not (magent-agent-info-mode-p agent 'subagent))
       (funcall callback (format "Error: agent '%s' is not a subagent" agent-name)))
      (t
-      (let* ((system-msg (or (magent-agent-info-prompt agent)
-                             magent-system-prompt))
-             (tools (magent-tools-get-gptel-tools agent))
-             (prompt-list (list (cons 'prompt prompt)))
+      (let* ((parent-context magent-tools--request-context)
+             (approval-session
+              (or (and parent-context
+                       (magent-request-context-approval-session parent-context))
+                  (and parent-context
+                       (magent-request-context-session parent-context))
+                  (magent-session-get)))
+             (child-session (magent-session-create :agent agent))
              (subagent-context
               (magent-events-create-subagent-context
-               (format "Agent %s" agent-name))))
-        (magent-agent-info-apply-gptel-overrides
-         agent
-         (lambda ()
-           (let ((request-buffer (generate-new-buffer " *magent-delegate-request*")))
-             (magent-tools--register-cancel-cleanup
-              (lambda ()
-                (gptel-abort request-buffer)
-                (when (buffer-live-p request-buffer)
-                  (kill-buffer request-buffer))))
-             (with-current-buffer request-buffer
-               (setq-local gptel-tools tools)
-               (setq-local gptel-use-tools (if tools t nil)))
-             (gptel-request
-                 prompt-list
-               :buffer request-buffer
-               :system system-msg
-               :stream nil
-               :callback (lambda (response _info)
-                           ;; Defer buffer kill so gptel's sentinel can
-                           ;; finish using it after this callback returns.
-                           (run-at-time 0 nil
-                                        (lambda ()
-                                          (when (buffer-live-p request-buffer)
-                                            (kill-buffer request-buffer))))
-                           (when (stringp response)
-                             (magent-events-emit 'text-delta
-                                                 :context subagent-context
-                                                 :text response))
-                           (magent-events-stop-subagent subagent-context)
-                           (funcall callback
-                                    (cond
-                                     ((stringp response) response)
-                                     ((null response) "Error: subagent request failed")
-                                     (t (format "%s" response))))))))))))))
+               (format "Agent %s" agent-name)
+               (and parent-context
+                    (magent-request-context-event-context parent-context))))
+             (child-request-context
+              (magent-request-context-create
+               :id (magent-events-generate-id)
+               :scope (and parent-context
+                           (magent-request-context-scope parent-context))
+               :session child-session
+               :approval-session approval-session
+               :origin-buffer-name (and parent-context
+                                        (magent-request-context-origin-buffer-name
+                                         parent-context))
+               :origin-context (and parent-context
+                                    (magent-request-context-origin-context
+                                     parent-context))
+               :ui-visibility 'summary-only
+               :parent-request-id (and parent-context
+                                       (magent-request-context-id parent-context))
+               :live-p (and parent-context
+                            (magent-request-context-live-p parent-context))
+               :event-context subagent-context))
+             child-fsm)
+        (condition-case err
+            (progn
+              (setq child-fsm
+                    (magent-agent-process
+                     prompt
+                     (lambda (response)
+                       (magent-events-stop-subagent subagent-context)
+                       (funcall callback
+                                (cond
+                                 ((stringp response) response)
+                                 ((null response) "Error: subagent request failed")
+                                 (t (format "%s" response)))))
+                     agent
+                     nil
+                     subagent-context
+                     (magent-request-context-origin-context child-request-context)
+                     nil
+                     nil
+                     nil
+                     child-request-context))
+              (magent-tools--register-cancel-cleanup
+               (lambda ()
+                 (when child-fsm
+                   (magent-fsm-abort child-fsm)))))
+          (error
+           (magent-events-stop-subagent subagent-context)
+           (funcall callback
+                    (format "Error: subagent request failed: %s"
+                            (error-message-string err))))))))))
 
 (defun magent-tools--web-search (callback query &optional max-results)
   "Search the web using DuckDuckGo asynchronously.
