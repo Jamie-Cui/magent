@@ -14,6 +14,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'magent-session)
 
 (defvar magent-by-pass-permission)  ; from magent-config.el
 
@@ -193,23 +194,27 @@ Returns t if ask, nil otherwise."
 
 ;;; Session overrides
 
-(defvar magent-permission--session-overrides (make-hash-table :test 'eq)
-  "Session-level permission overrides.
-Maps permission key symbols to `allow' or `deny'.
-Set by user responses to interactive prompts (Always allow / Deny always).
-Cleared on session reset.")
+(defun magent-permission--target-session (&optional session)
+  "Return SESSION or the current Magent session."
+  (or session
+      (and (fboundp 'magent-session-get)
+           (ignore-errors (magent-session-get)))))
 
-(defun magent-permission-session-override (perm-key)
-  "Return session override for PERM-KEY, or nil if none."
-  (gethash perm-key magent-permission--session-overrides))
+(defun magent-permission-session-override (perm-key &optional session)
+  "Return session override for PERM-KEY in SESSION, or nil if none."
+  (when-let ((target (magent-permission--target-session session)))
+    (magent-session-approval-override target perm-key)))
 
-(defun magent-permission-set-session-override (perm-key value)
-  "Set session override for PERM-KEY to VALUE (\\='allow or \\='deny)."
-  (puthash perm-key value magent-permission--session-overrides))
+(defun magent-permission-set-session-override (perm-key value &optional session)
+  "Set session override for PERM-KEY to VALUE in SESSION.
+VALUE must be \\='allow or \\='deny."
+  (when-let ((target (magent-permission--target-session session)))
+    (magent-session-set-approval-override target perm-key value)))
 
-(defun magent-permission-clear-session-overrides ()
-  "Clear all session-level permission overrides."
-  (clrhash magent-permission--session-overrides))
+(defun magent-permission-clear-session-overrides (&optional session)
+  "Clear all session-level permission overrides in SESSION."
+  (when-let ((target (magent-permission--target-session session)))
+    (magent-session-clear-approval-overrides target)))
 
 ;;; Tool availability
 

@@ -8,7 +8,8 @@
 
 ;;; Commentary:
 
-;; Capability registry and progressive-disclosure resolver for magent.
+;; Capability registry, file-backed loading, and progressive-disclosure
+;; resolver for magent.
 ;;
 ;; Capabilities sit above skills and below user intent.  They model
 ;; problem-oriented ability surfaces such as "runtime inspection" or
@@ -30,6 +31,8 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'magent-config)
+(require 'magent-file-loader)
+(require 'magent-runtime)
 
 (declare-function magent-log "magent-ui")
 
@@ -41,6 +44,8 @@
   description
   family
   (source-kind 'builtin)
+  (source-layer 'builtin)
+  source-scope
   source-name
   skills
   modes
@@ -114,6 +119,23 @@ The output shape is intentionally inspectable:
 (defconst magent-capability--keyword-match-score 1
   "Score contribution for a prompt keyword match.")
 
+(defconst magent-capability--builtin-dir
+  (expand-file-name "capabilities"
+                    (file-name-directory (or load-file-name buffer-file-name)))
+  "Directory containing built-in capability files bundled with magent.")
+
+(defcustom magent-capability-directories
+  (list (expand-file-name "magent/capabilities" user-emacs-directory))
+  "List of directories to scan for capability files.
+Each directory can contain subdirectories with CAPABILITY.md files."
+  :type '(repeat directory)
+  :group 'magent)
+
+(defcustom magent-capability-file-name "CAPABILITY.md"
+  "Name of the capability definition file."
+  :type 'string
+  :group 'magent)
+
 (defun magent-capability-register (capability)
   "Register CAPABILITY in the registry."
   (let ((name (magent-capability-name capability)))
@@ -133,6 +155,15 @@ The output shape is intentionally inspectable:
   "Clear the capability registry."
   (setq magent-capability--registry nil))
 
+(defun magent-capability-remove-project-scope (scope)
+  "Remove project-local capabilities registered for SCOPE."
+  (setq magent-capability--registry
+        (magent-file-loader-remove-project-scope-entries
+         magent-capability--registry
+         #'magent-capability-source-layer
+         #'magent-capability-source-scope
+         scope)))
+
 (defun magent-capability-get (name)
   "Return capability NAME from the registry."
   (cdr (assoc name magent-capability--registry)))
@@ -140,6 +171,206 @@ The output shape is intentionally inspectable:
 (defun magent-capability-list ()
   "Return a sorted list of registered capability names."
   (sort (mapcar #'car magent-capability--registry) #'string<))
+
+(defun magent-capability--source-owner (filepath)
+  "Classify FILEPATH for capability governance purposes."
+  (pcase (plist-get
+          (magent-file-loader-classify-source
+           filepath
+           :builtin-dirs (list magent-capability--builtin-dir)
+           :user-dirs magent-capability-directories
+           :project-relative-dir ".magent/capabilities"
+           :default-layer 'external-metadata)
+          :layer)
+    ('builtin 'maintainer)
+    ('project 'project)
+    ('user 'user)
+    (_ 'external-metadata)))
+
+(defun magent-capability--list-files (&optional directories)
+  "List all capability files in DIRECTORIES."
+  (if directories
+      (magent-file-loader-list-named-files directories magent-capability-file-name)
+    (magent-file-loader-list-definition-files
+     magent-capability-file-name
+     :builtin-dirs (list magent-capability--builtin-dir)
+     :user-dirs magent-capability-directories
+     :project-relative-dir ".magent/capabilities")))
+
+(defun magent-capability--parse-source-kind (value)
+  "Parse capability source kind VALUE."
+  (pcase (if (symbolp value) (symbol-name value) (downcase (format "%s" value)))
+    ("package" 'package)
+    (_ 'builtin)))
+
+(defun magent-capability--normalize-list (value)
+  "Normalize VALUE into a flat list of strings."
+  (cond
+   ((null value) nil)
+   ((listp value)
+    (apply #'append
+           (mapcar #'magent-capability--normalize-list value)))
+   ((symbolp value)
+    (list (symbol-name value)))
+   ((stringp value)
+    (let* ((trimmed (string-trim value))
+           (parts (split-string trimmed "," t "[[:space:]\n]*")))
+      (if (> (length parts) 1)
+          (mapcar #'string-trim parts)
+        (list trimmed))))
+   (t (list (string-trim (format "%s" value))))))
+
+(defun magent-capability--parse-symbol-list (value)
+  "Parse VALUE into a list of symbols."
+  (mapcar #'intern (magent-capability--normalize-list value)))
+
+(defun magent-capability--parse-string-list (value)
+  "Parse VALUE into a list of strings."
+  (magent-capability--normalize-list value))
+
+(defun magent-capability--parse-disclosure (value)
+  "Parse disclosure VALUE."
+  (pcase (if (symbolp value) (symbol-name value) (downcase (format "%s" value)))
+    ("hidden" 'hidden)
+    ("active" 'active)
+    (_ 'suggested)))
+
+(defun magent-capability--parse-risk (value)
+  "Parse risk VALUE."
+  (pcase (if (symbolp value) (symbol-name value) (downcase (format "%s" value)))
+    ("medium" 'medium)
+    ("high" 'high)
+    (_ 'low)))
+
+(defun magent-capability--policy-family (frontmatter source-kind source-name owner)
+  "Return the policy family for FRONTMATTER under SOURCE-KIND and OWNER."
+  (if (eq owner 'external-metadata)
+      (or (and source-name (format "%s" source-name))
+          (symbol-name source-kind))
+    (or (plist-get frontmatter :family)
+        (and source-name (format "%s" source-name))
+        (symbol-name source-kind))))
+
+(defun magent-capability--policy-disclosure (frontmatter owner)
+  "Return maintainer-controlled disclosure from FRONTMATTER for OWNER."
+  (if (eq owner 'external-metadata)
+      'suggested
+    (magent-capability--parse-disclosure
+     (plist-get frontmatter :disclosure))))
+
+(defun magent-capability--policy-risk (frontmatter owner)
+  "Return maintainer-controlled risk from FRONTMATTER for OWNER."
+  (if (eq owner 'external-metadata)
+      'low
+    (magent-capability--parse-risk
+     (plist-get frontmatter :risk))))
+
+(defun magent-capability-load-file (filepath)
+  "Load a capability definition from FILEPATH."
+  (condition-case err
+      (let* ((definition (magent-file-loader-read-definition filepath))
+             (frontmatter (plist-get definition :frontmatter))
+             (body (string-trim (plist-get definition :body)))
+             (source (magent-file-loader-classify-source
+                      filepath
+                      :builtin-dirs (list magent-capability--builtin-dir)
+                      :user-dirs magent-capability-directories
+                      :project-relative-dir ".magent/capabilities")))
+        (when frontmatter
+          (let* ((name (or (plist-get frontmatter :name)
+                           (file-name-nondirectory
+                            (directory-file-name
+                             (file-name-directory filepath)))))
+                 (source-kind (magent-capability--parse-source-kind
+                               (plist-get frontmatter :source)))
+                 (source-name (or (plist-get frontmatter :source-name)
+                                  (plist-get frontmatter :feature)
+                                  (plist-get frontmatter :package)))
+                 (owner (magent-capability--source-owner filepath))
+                 (capability
+                  (magent-capability-create
+                   :name name
+                   :title (or (plist-get frontmatter :title) name)
+                   :description (plist-get frontmatter :description)
+                   :family (magent-capability--policy-family
+                            frontmatter source-kind source-name owner)
+                   :source-kind source-kind
+                   :source-layer (plist-get source :layer)
+                   :source-scope (plist-get source :scope)
+                   :source-name (when source-name
+                                  (format "%s" source-name))
+                   :skills (magent-capability--parse-string-list
+                            (plist-get frontmatter :skills))
+                   :modes (magent-capability--parse-symbol-list
+                           (plist-get frontmatter :modes))
+                   :features (magent-capability--parse-symbol-list
+                              (or (plist-get frontmatter :features)
+                                  (plist-get frontmatter :feature)))
+                   :files (magent-capability--parse-string-list
+                           (plist-get frontmatter :files))
+                   :prompt-keywords (magent-capability--parse-string-list
+                                     (or (plist-get frontmatter :prompt-keywords)
+                                         (plist-get frontmatter :keywords)))
+                   :disclosure (magent-capability--policy-disclosure
+                                frontmatter owner)
+                   :risk (magent-capability--policy-risk
+                          frontmatter owner)
+                   :notes (unless (string-empty-p body) body)
+                   :file-path filepath)))
+            (magent-capability-register capability)
+            (magent-log "INFO loaded capability: %s owner=%s" name owner)
+            capability)))
+(error
+     (magent-log "ERROR loading capability file %s: %s"
+                 filepath (error-message-string err))
+     nil)))
+
+(defun magent-capability-load-all (&optional directories)
+  "Load all capability files from DIRECTORIES."
+  (let* ((files (magent-capability--list-files directories))
+         (count (magent-file-loader-load-all
+                 files
+                 #'magent-capability-load-file)))
+    (when (> count 0)
+      (magent-log "INFO loaded %d capability file(s)" count))
+    count))
+
+(defun magent-capability-initialize-static ()
+  "Load built-in and user-global capability definitions."
+  (magent-capability-load-all
+   (append (list magent-capability--builtin-dir)
+           magent-capability-directories)))
+
+(defun magent-capability-load-project-scope (scope)
+  "Load project-local capability definitions for SCOPE."
+  (magent-capability-load-all
+   (magent-file-loader-project-subdir-for-scope ".magent/capabilities" scope)))
+
+(defun magent-capability-reload ()
+  "Reload all file-backed capabilities.
+When a project overlay is currently active, restore that project's
+local capabilities after static definitions are reloaded."
+  (interactive)
+  (let ((project-scope
+         (or (when (called-interactively-p 'interactive)
+               (magent-runtime-prepare-command-context)
+               (magent-runtime-active-project-scope))
+             (magent-runtime-active-project-scope))))
+    (magent-file-loader-reload-file-backed-registry
+     'magent-capability--registry
+     #'magent-capability-file-path
+     #'magent-capability-initialize-static)
+    (when project-scope
+      (magent-capability-load-project-scope project-scope))))
+
+;;;###autoload
+(defun magent-reload-capabilities ()
+  "Reload capabilities from disk."
+  (interactive)
+  (magent-runtime-prepare-command-context)
+  (magent-capability-reload)
+  (message "Capabilities reloaded: %s"
+           (mapconcat #'identity (magent-capability-list) ", ")))
 
 (defun magent-capability-enabled-p (capability)
   "Return non-nil when CAPABILITY is enabled."
@@ -205,7 +436,7 @@ source for contextual capability resolution."
                               (file-name-extension file-path))
             :major-mode major-mode
             :major-mode-family major-mode-family
-            :project-root (ignore-errors (magent-project-root))
+            :project-root (ignore-errors (magent-project-root nil t))
             :region-active (use-region-p)
             :buffer-modified-p (buffer-modified-p)
             :features features))))
@@ -406,6 +637,8 @@ source for contextual capability resolution."
           :disclosure (magent-capability-disclosure capability)
           :risk (magent-capability-risk capability)
           :source-kind (magent-capability-source-kind capability)
+          :source-layer (magent-capability-source-layer capability)
+          :source-scope (magent-capability-source-scope capability)
           :source-name (magent-capability-source-name capability))))
 
 (defun magent-capability-resolution-to-plist (resolution)
@@ -585,6 +818,7 @@ When INCLUDE-HIDDEN is non-nil, include hidden matches too."
 (defun magent-list-capabilities ()
   "Display all registered capabilities."
   (interactive)
+  (magent-runtime-prepare-command-context)
   (let ((capabilities (mapcar #'cdr magent-capability--registry)))
     (magent--with-display-buffer "*Magent Capabilities*"
       (insert "Registered Capabilities:\n\n")
@@ -611,8 +845,11 @@ When INCLUDE-HIDDEN is non-nil, include hidden matches too."
 (defun magent-describe-capability (capability-name)
   "Show detailed information about CAPABILITY-NAME."
   (interactive
-   (list (completing-read "Describe capability: "
-                          (magent-capability-list) nil t)))
+   (progn
+     (magent-runtime-prepare-command-context)
+     (list (completing-read "Describe capability: "
+                            (magent-capability-list) nil t))))
+  (magent-runtime-prepare-command-context)
   (let ((capability (magent-capability-get capability-name)))
     (if (not capability)
         (message "Capability '%s' not found" capability-name)
@@ -662,6 +899,7 @@ When INCLUDE-HIDDEN is non-nil, include hidden matches too."
 (defun magent-explain-current-capabilities (&optional prompt)
   "Explain capability matching for PROMPT in the current buffer context."
   (interactive)
+  (magent-runtime-prepare-command-context)
   (let* ((resolution (magent-capability-resolve
                       (or prompt "")
                       (magent-capability-capture-context)
@@ -676,6 +914,7 @@ When INCLUDE-HIDDEN is non-nil, include hidden matches too."
 (defun magent-list-capabilities-for-current-context (&optional prompt)
   "List all capabilities for the current context and optional PROMPT."
   (interactive)
+  (magent-runtime-prepare-command-context)
   (let ((resolution (magent-capability-resolve
                      (or prompt "")
                      (magent-capability-capture-context)
@@ -700,8 +939,11 @@ When INCLUDE-HIDDEN is non-nil, include hidden matches too."
 (defun magent-toggle-capability-locally (capability-name)
   "Toggle CAPABILITY-NAME on or off for the current Emacs session only."
   (interactive
-   (list (completing-read "Toggle capability locally: "
-                          (magent-capability-list) nil t)))
+   (progn
+     (magent-runtime-prepare-command-context)
+     (list (completing-read "Toggle capability locally: "
+                            (magent-capability-list) nil t))))
+  (magent-runtime-prepare-command-context)
   (let ((state (magent-capability-toggle-locally capability-name)))
     (message "Magent: capability '%s' locally %s"
              capability-name

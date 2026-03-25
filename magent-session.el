@@ -17,6 +17,9 @@
 (require 'subr-x)
 (require 'magent-config)
 
+(declare-function magent-agent-info-name "magent-agent-registry")
+(declare-function magent-agent-registry-get "magent-agent-registry")
+
 ;;; Session state structure
 
 (cl-defstruct (magent-session
@@ -26,7 +29,8 @@
   (max-history magent-max-history)
   (id nil)
   (agent nil)
-  (buffer-content nil))      ; Saved buffer text for lossless restore
+  (buffer-content nil)       ; Saved buffer text for lossless restore
+  (approval-overrides nil))  ; Session-scoped approval memory
 
 ;;; Message helpers
 
@@ -96,19 +100,8 @@ This is either the symbol `global' or a normalized project root path.")
 (defvar magent-session--last-id-seq 0
   "Sequence number used when multiple sessions are created in one second.")
 
-(defun magent-session--detect-project-root (&optional directory)
-  "Return the project root for DIRECTORY, or nil when no project is found."
-  (let ((default-directory (or directory default-directory)))
-    (or (when (bound-and-true-p magent-project-root-function)
-          (funcall magent-project-root-function))
-        (when (fboundp 'projectile-project-root)
-          (ignore-errors (projectile-project-root)))
-        (when (fboundp 'project-current)
-          (ignore-errors
-            (when-let ((proj (project-current nil)))
-              (if (fboundp 'project-root)
-                  (project-root proj)
-                (car (with-no-warnings (project-roots proj))))))))))
+(defconst magent-session-schema-version 2
+  "Current schema version written to session JSON files.")
 
 (defun magent-session--normalize-project-root (root)
   "Normalize project ROOT for use as a stable scope key."
@@ -119,7 +112,7 @@ This is either the symbol `global' or a normalized project root path.")
   "Return the session scope derived from DIRECTORY.
 Returns a normalized project root string or the symbol `global'."
   (or (magent-session--normalize-project-root
-       (magent-session--detect-project-root directory))
+       (magent-project-root directory t))
       'global))
 
 (defun magent-session-current-scope ()
@@ -132,6 +125,31 @@ Returns a normalized project root string or the symbol `global'."
       (let ((session (magent-session-create)))
         (puthash scope session magent-session--scoped-sessions)
         session)))
+
+(defun magent-session-get-if-present (scope)
+  "Return the live session object for SCOPE, or nil if none is installed."
+  (gethash scope magent-session--scoped-sessions))
+
+(defun magent-session-approval-override (session perm-key)
+  "Return SESSION's persisted approval override for PERM-KEY, or nil."
+  (cdr (assq perm-key
+             (and session
+                  (magent-session-approval-overrides session)))))
+
+(defun magent-session-set-approval-override (session perm-key decision)
+  "Persist DECISION for PERM-KEY in SESSION and return the override alist."
+  (when session
+    (let ((overrides (assq-delete-all perm-key
+                                      (copy-sequence
+                                       (magent-session-approval-overrides session)))))
+      (push (cons perm-key decision) overrides)
+      (setf (magent-session-approval-overrides session) overrides)
+      overrides)))
+
+(defun magent-session-clear-approval-overrides (session)
+  "Clear all persisted approval overrides from SESSION."
+  (when session
+    (setf (magent-session-approval-overrides session) nil)))
 
 (defun magent-session-activate (&optional scope)
   "Activate SCOPE and return its session.
@@ -148,10 +166,11 @@ SCOPE must be either `global' or a normalized project root string."
 (defun magent-session-reset ()
   "Reset the current session, clearing all messages and permission overrides."
   (interactive)
+  (let ((session magent--current-session))
+    (when session
+      (magent-session-clear-approval-overrides session)))
   (remhash magent-session--current-scope magent-session--scoped-sessions)
   (setq magent--current-session nil)
-  (when (fboundp 'magent-permission-clear-session-overrides)
-    (magent-permission-clear-session-overrides))
   (when (fboundp 'magent-capability-clear-local-overrides)
     (magent-capability-clear-local-overrides))
   (magent-log "INFO session cleared for scope %s" magent-session--current-scope))
@@ -308,13 +327,20 @@ before calling this function."
                (id (magent-session-get-id session))
                (filepath (expand-file-name (concat id ".json") storage-dir))
                (summary-title (magent-session--summary-title-from-messages messages))
+               (approval-overrides
+                (mapcar (lambda (entry)
+                          `((tool . ,(symbol-name (car entry)))
+                            (decision . ,(symbol-name (cdr entry)))))
+                        (magent-session-approval-overrides session)))
                (data `((id . ,id)
+                       (schema-version . ,magent-session-schema-version)
                        (scope . ,(if (eq scope 'global) "global" "project"))
                        ,@(unless (eq scope 'global)
                            `((project-root . ,scope)))
                        ,@(when summary-title
                            `((summary-title . ,summary-title)))
                        (messages . ,(vconcat (mapcar #'magent-session--msg-to-alist messages)))
+                       (approval-overrides . ,(vconcat approval-overrides))
                        (buffer-content . ,(or (magent-session-buffer-content session) "")))))
           (with-temp-file filepath
             (insert (json-encode data)))
@@ -334,6 +360,7 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
                (scope-name (cdr (assq 'scope data)))
                (project-root (cdr (assq 'project-root data)))
                (msgs-raw (cdr (assq 'messages data)))
+               (approval-raw (cdr (assq 'approval-overrides data)))
                (bc (or (cdr (assq 'buffer-content data)) ""))
                (scope (pcase scope-name
                         ("project"
@@ -342,9 +369,16 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
                         ("global" 'global)
                         (_ (magent-session--infer-file-scope filepath))))
                (messages (mapcar #'magent-session--alist-to-msg msgs-raw))
+               (approval-overrides
+                (mapcar
+                 (lambda (entry)
+                   (cons (intern (cdr (assq 'tool entry)))
+                         (intern (cdr (assq 'decision entry)))))
+                 approval-raw))
                (session (magent-session-create
                          :id id
                          :messages messages
+                         :approval-overrides approval-overrides
                          :buffer-content (when (> (length bc) 0) bc))))
           (list :scope scope
                 :session session
@@ -357,6 +391,16 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
   "Install SESSION for SCOPE and make it active."
   (puthash scope session magent-session--scoped-sessions)
   (magent-session-activate scope)
+  session)
+
+(defun magent-session-refresh-agent (session)
+  "Refresh SESSION's agent pointer from the current registry.
+When the session references a custom agent that is no longer active for the
+current scope, clear it so Magent falls back to the default agent."
+  (when-let ((agent (magent-session-agent session)))
+    (when (fboundp 'magent-agent-registry-get)
+      (setf (magent-session-agent session)
+            (magent-agent-registry-get (magent-agent-info-name agent)))))
   session)
 
 (defun magent-session-load (filepath)

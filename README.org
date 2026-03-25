@@ -124,7 +124,7 @@ Magent keeps a single ~*magent*~ buffer, but session state is scoped by project:
 
 - In a recognized project, prompts, agent selection, clear, and resume operate on that project's current session.
 - Saved project sessions live under ~magent-session-directory/projects/<sha1(project-root)>/~.
-- Outside any project, Magent falls back to the legacy global session behavior and saves directly under ~magent-session-directory~.
+- Outside any project, Magent falls back to the global session behavior and saves directly under ~magent-session-directory~.
 - Compact audit logs for permission decisions and sensitive tools are written as daily JSONL files under ~magent-session-directory/audit/~ unless ~magent-audit-directory~ is set.
 - ~magent-resume-session~ shows all sessions grouped by project, with the current project's group first and global sessions in their own group.
 
@@ -255,32 +255,34 @@ Tool availability is controlled by:
 
 1. *Entry Point* (~magent.el~): Defines ~magent-mode~ minor mode with the ~C-c m~ keybinding prefix. Full initialization (agent registry, skills) is lazy -- triggered on first command via ~magent--ensure-initialized~.
 
-2. *Agent System*: Multi-agent architecture with permission-based tool access:
+2. *Runtime* (~magent-runtime.el~): Centralizes static initialization and project-local overlay activation for agents, skills, and capabilities.
+
+3. *Agent System*: Multi-agent architecture with permission-based tool access:
    - ~magent-agent.el~: Builds gptel prompts, applies per-agent overrides, calls ~gptel-request~
    - ~magent-agent-registry.el~: Agent info struct, built-in agent definitions, and central registry
    - ~magent-agent-file.el~: Custom agent loader (~.magent/agent/*.md~)
 
-3. *Permission System* (~magent-permission.el~): Rule-based tool access control per agent with file-pattern matching (glob syntax).
+4. *Permission System* (~magent-permission.el~): Rule-based tool access control per agent with file-pattern matching (glob syntax).
 
-4. *FSM* (~magent-fsm.el~): Finite state machine for the tool-calling loop (~INIT -> SEND -> WAIT -> PROCESS -> TOOL -> DONE/ERROR~). Currently delegates HTTP to gptel.
+5. *Capability System* (~magent-capability.el~): File-backed capability definitions score each request context and attach matching instruction skills.
 
-5. *LLM Integration* (via gptel): All LLM communication is handled by [[https://github.com/karthink/gptel][gptel]]. Provider, model, and API key configuration is managed entirely by gptel.
+6. *FSM* (~magent-fsm.el~): Finite state machine for the tool-calling loop (~INIT -> SEND -> WAIT -> PROCESS -> TOOL -> DONE/ERROR~). Currently delegates HTTP to gptel.
 
-6. *Tools* (~magent-tools.el~): 10 tool implementations registered as ~gptel-tool~ structs, filtered per agent based on permission rules.
+7. *LLM Integration* (via gptel): All LLM communication is handled by [[https://github.com/karthink/gptel][gptel]]. Provider, model, and API key configuration is managed entirely by gptel.
 
-7. *Skills* (~magent-skills.el~): Two skill types -- ~instruction~ (markdown injected into the system prompt) and ~tool~ (invoked via ~skill_invoke~). The module contains the registry, built-in ~skill-creator~ definition, file-based skill loading, and interactive inspection commands. Skills load in priority order from: (1) built-in ~skills/~ directory bundled with magent, (2) user directory =~/.emacs.d/magent-skills/<name>/SKILL.md=, (3) project-local ~.magent/skills/<name>/SKILL.md~.
+8. *Tools* (~magent-tools.el~): 10 tool implementations registered as ~gptel-tool~ structs, filtered per agent based on permission rules.
 
-8. *Session* (~magent-session.el~): Conversation history management with per-project active sessions, global fallback outside projects, and JSON persistence. The ~buffer-content~ slot stores raw buffer text for lossless restore.
+9. *Skills* (~magent-skills.el~): Two skill types -- ~instruction~ (markdown injected into the system prompt) and ~tool~ (invoked via ~skill_invoke~). The module contains the registry, built-in ~skill-creator~ definition, file-based skill loading, and interactive inspection commands. Skills load in priority order from: (1) built-in ~skills/~ directory bundled with magent, (2) user directory =~/.emacs.d/magent-skills/<name>/SKILL.md=, (3) project-local ~.magent/skills/<name>/SKILL.md~.
 
-9. *Audit* (~magent-audit.el~): Persistent JSONL audit logging for permission prompts and decisions plus sensitive actions such as ~bash~, ~emacs_eval~, ~write_file~, ~edit_file~, and ~delegate~. Payloads are redacted to metadata and truncated previews.
+10. *Session* (~magent-session.el~): Conversation history management with per-project active sessions, global fallback outside projects, and JSON persistence. The ~buffer-content~ slot stores raw buffer text for lossless restore.
 
-10. *Queue* (~magent-queue.el~): Single-request serialization. When a request is in flight, additional prompts are rejected with a busy message instead of being buffered.
+11. *Audit* (~magent-audit.el~): Persistent JSONL audit logging for permission prompts and decisions plus sensitive actions such as ~bash~, ~emacs_eval~, ~write_file~, ~edit_file~, and ~delegate~. Payloads are redacted to metadata and truncated previews.
 
-11. *UI* (~magent-ui.el~): The ~*magent*~ buffer derives from ~org-mode~. It uses in-buffer input with ~* [USER]~ sections. Tool calls render as ~#+begin_tool~/~#+end_tool~ blocks; reasoning blocks as ~#+begin_think~/~#+end_think~.
+12. *UI* (~magent-ui.el~): The ~*magent*~ buffer derives from ~org-mode~. It uses in-buffer input with ~* [USER]~ sections. Tool calls render as ~#+begin_tool~/~#+end_tool~ blocks; reasoning blocks as ~#+begin_think~/~#+end_think~. Single-request serialization now lives here via ~magent-ui--processing~ and ~magent-ui--enqueue~.
 
-12. *Markdown-to-Org* (~magent-md2org.el~): Converts markdown assistant output to org-mode format for rendering.
+13. *Markdown-to-Org* (~magent-md2org.el~): Converts markdown assistant output to org-mode format for rendering.
 
-13. *File Loader* (~magent-file-loader.el~): Shared definition loader for agent, skill, and capability files. It includes frontmatter parsing and supports booleans, numbers, quoted strings, and comma-separated lists.
+14. *File Loader* (~magent-file-loader.el~): Shared definition loader for agent, skill, and capability files. It includes frontmatter parsing and supports booleans, numbers, quoted strings, and comma-separated lists.
 
 ** File Structure
 
@@ -288,16 +290,20 @@ Tool availability is controlled by:
 magent/
 |-- magent.el                      # Main entry point and mode definition
 |-- magent-config.el               # Configuration (customize group, defcustom vars)
+|-- magent-runtime.el              # Static initialization and project overlay activation
 |-- magent-session.el              # Session and message history (JSON persistence)
-|-- magent-queue.el                # FIFO prompt serialization
+|-- magent-capability.el           # Capability registry and prompt-time resolution
+|-- magent-audit.el                # Audit logging and JSONL persistence
 |-- magent-tools.el                # Tool implementations (10 gptel-tool structs)
 |-- magent-agent.el                # Agent logic (gptel integration)
+|-- magent-agent-info.el           # Compatibility shim for legacy agent-info feature
+|-- magent-agent-types.el          # Compatibility shim for legacy agent-types feature
 |-- magent-agent-registry.el       # Agent struct, built-in definitions, and registry
 |-- magent-agent-file.el           # Custom agent file loader (.magent/agent/*.md)
 |-- magent-permission.el           # Permission system (allow/deny/ask with glob patterns)
 |-- magent-fsm.el                  # FSM API (dispatches to gptel backend)
 |-- magent-fsm-backend-gptel.el    # gptel FSM backend implementation
-|-- magent-fsm-backend-native.el   # Native FSM backend (struct defs, not active)
+|-- magent-fsm-shared.el           # Shared FSM structs, tool wrapping, permission flow
 |-- magent-file-loader.el          # Shared definition loader and frontmatter parser
 |-- magent-md2org.el               # Markdown to org-mode converter
 |-- magent-skills.el               # Skill registry, built-in skills, file loading, and skill commands

@@ -1,5 +1,10 @@
 # Magent API Reference
 
+This file documents the current public surface of the in-repo Elisp modules.
+It is intentionally concise and tracks the cleaned architecture: one gptel FSM
+backend, project-scoped runtime overlays, file-backed skills/capabilities, and
+an org-mode output buffer.
+
 ## Interactive Commands
 
 ### Primary Commands
@@ -7,256 +12,379 @@
 #### `magent-dwim`
 **Keybinding:** `C-c m p`
 
-Smart prompt command. Opens output buffer if not visible, or prompts for input with auto-context attachment.
+Open the Magent buffer and insert a prompt, optionally attaching structured
+buffer context when `magent-auto-context` is enabled.
 
 #### `magent-prompt-region`
 **Keybinding:** `C-c m r`
 
-Send selected region to AI with optional prompt.
+Send the active region plus an optional prompt.
 
 #### `magent-ask-at-point`
 **Keybinding:** `C-c m a`
 
-Ask about symbol at point.
+Ask about the symbol or form at point.
 
-### Session Management
+### Session And Agent Commands
 
 #### `magent-clear-session`
 **Keybinding:** `C-c m c`
 
-Clear current session (messages, permissions, queue).
+Clear the active scoped session and local capability overrides.
 
 #### `magent-resume-session`
-**Keybinding:** None
+**Keybinding:** `C-c m R`
 
-Resume a saved session from history.
+Resume a saved session from disk.
 
 #### `magent-select-agent`
 **Keybinding:** `C-c m A`
 
-Select an agent for the current session.
+Select the active session agent.
 
 #### `magent-show-current-agent`
 **Keybinding:** `C-c m i`
 
-Display current session's agent info.
+Show the current session agent.
 
 #### `magent-list-agents`
 **Keybinding:** `C-c m v`
 
-List all available agents.
+List built-in and project-loaded agents.
 
-### Diagnostics
+### Capability Commands
+
+#### `magent-list-capabilities-for-current-context`
+**Keybinding:** `C-c m x`
+
+Resolve and display capabilities for the current buffer context.
+
+#### `magent-explain-last-capability-resolution`
+**Keybinding:** `C-c m e`
+
+Show the most recent capability resolution with scores and reasons.
+
+#### `magent-toggle-capability-locally`
+**Keybinding:** `C-c m k`
+
+Toggle a capability on or off for the current Emacs session.
+
+#### `magent-reload-capabilities`
+**Keybinding:** None
+
+Reload capability definitions from bundled, user, and project directories.
+
+### Diagnostics And UI Commands
 
 #### `magent-diagnose-emacs`
 **Keybinding:** `C-c m d`
 
-Start structured diagnosis of current Emacs session.
+Start a structured diagnosis flow for the running Emacs session.
 
 #### `magent-doctor`
 **Keybinding:** `C-c m D`
 
-Run magent self-check and diagnose issues.
+Run Magent self-checks and emit a diagnosis prompt.
 
 #### `magent-show-log`
 **Keybinding:** `C-c m l`
 
-View API request/response log.
+Show the Magent log buffer.
 
 #### `magent-clear-log`
 **Keybinding:** `C-c m L`
 
-Clear the log buffer.
-
-### UI Commands
+Clear the Magent log buffer.
 
 #### `magent-ui-toggle-section`
 **Keybinding:** `C-c m t`
 
-Toggle fold/unfold of section at point.
+Fold or unfold the org section at point in `*magent*`.
 
-#### `magent-toggle-by-pass-permission`
+### Skill Inspection Commands
+
+#### `magent-list-skills`
 **Keybinding:** None
 
-Toggle permission bypass for tool filtering and approval prompts.
+List currently registered skills.
+
+#### `magent-reload-skills`
+**Keybinding:** None
+
+Reload bundled, user, and project-local skills from disk.
+
+#### `magent-describe-skill`
+**Keybinding:** None
+
+Show the full description, tools, prompt, and source path for one skill.
 
 ## Programmatic API
 
 ### Session Functions
 
 #### `magent-session-reset`
-Clear session state, permission overrides, and queue.
 
 ```elisp
 (magent-session-reset)
 ```
 
+Reset the active scoped session.
+
 #### `magent-session-add-message`
-Add a message to the session history.
 
 ```elisp
-(magent-session-add-message role content &optional tool-calls tool-results)
+(magent-session-add-message session role content)
 ```
 
-- `role`: "user" or "assistant"
-- `content`: Message text
-- `tool-calls`: Optional list of tool call plists
-- `tool-results`: Optional list of tool result plists
+Append one message to `session`.
+
+- `session`: a `magent-session` struct
+- `role`: one of `user`, `assistant`, or `tool`
+- `content`: a string or a list of content blocks
 
 #### `magent-session-save`
-Save current session to disk.
 
 ```elisp
 (magent-session-save)
 ```
 
+Persist the current scoped session to disk.
+
 #### `magent-session-load`
-Load session from file.
 
 ```elisp
-(magent-session-load file)
+(magent-session-load filepath)
 ```
+
+Load a saved session JSON file and activate it.
 
 ### Agent Functions
 
 #### `magent-agent-process`
-Process a prompt with the current agent.
 
 ```elisp
 (magent-agent-process prompt &optional callback)
 ```
 
-- `prompt`: User prompt string
-- `callback`: Optional completion callback
-
-#### `magent-agent-get`
-Get agent info by name.
-
-```elisp
-(magent-agent-get name)
-```
-
-Returns `magent-agent-info` struct or nil.
-
-### Permission Functions
-
-#### `magent-permission-resolve`
-Resolve permission for a tool and optional file path.
-
-```elisp
-(magent-permission-resolve tool-name &optional file-path permissions)
-```
-
-Returns: `allow`, `deny`, or `ask`
-
-#### `magent-permission-set-override`
-Set a temporary permission override for the session.
-
-```elisp
-(magent-permission-set-override tool-name action &optional file-pattern)
-```
-
-### Tool Functions
-
-#### `magent-tools-get-enabled`
-Get list of enabled tool structs filtered by permissions.
-
-```elisp
-(magent-tools-get-enabled &optional permissions)
-```
+Build the prompt, resolve skills/capabilities, and dispatch one request through
+the gptel-backed FSM.
 
 ### Skill Functions
 
 #### `magent-skills-get`
-Get skill by name.
 
 ```elisp
 (magent-skills-get name)
 ```
 
+Return one skill struct by name.
+
 #### `magent-skills-list`
-List all loaded skills.
 
 ```elisp
-(magent-skills-list &optional type)
+(magent-skills-list)
 ```
 
-- `type`: Optional filter by "instruction" or "tool"
+Return all skill names.
+
+#### `magent-skills-load-file`
+
+```elisp
+(magent-skills-load-file filepath)
+```
+
+Load one `SKILL.md` definition.
+
+#### `magent-skills-load-all`
+
+```elisp
+(magent-skills-load-all &optional directories)
+```
+
+Load all skill definitions from the given directories, or from the configured
+skill search roots when `directories` is nil.
+
+#### `magent-skills-reload`
+
+```elisp
+(magent-skills-reload)
+```
+
+Drop file-backed skills and reload them while preserving built-ins.
+
+### Capability Functions
+
+#### `magent-capability-load-file`
+
+```elisp
+(magent-capability-load-file filepath)
+```
+
+Load one `CAPABILITY.md` definition.
+
+#### `magent-capability-load-all`
+
+```elisp
+(magent-capability-load-all &optional directories)
+```
+
+Load all capability definitions from bundled, user, or project paths.
+
+#### `magent-capability-reload`
+
+```elisp
+(magent-capability-reload)
+```
+
+Reload file-backed capabilities in place.
+
+#### `magent-capability-resolve`
+
+```elisp
+(magent-capability-resolve prompt context explicit-skills)
+```
+
+Score capabilities against prompt text plus structured context and return a
+`magent-capability-resolution`.
+
+### Permission And Tool Functions
+
+#### `magent-permission-resolve`
+
+```elisp
+(magent-permission-resolve tool-name &optional file-path permissions)
+```
+
+Resolve `allow`, `deny`, or `ask` for a tool call.
+
+#### `magent-tools-get-enabled`
+
+```elisp
+(magent-tools-get-enabled &optional permissions)
+```
+
+Return globally registered tools filtered by permissions.
 
 ## Data Structures
 
 ### `magent-agent-info`
-Agent configuration struct.
 
-**Fields:**
-- `name` — Agent name (string)
-- `description` — Brief description
-- `mode` — `primary`, `subagent`, or `all`
-- `hidden` — Hide from UI (boolean)
-- `temperature` — Override temperature (number or nil)
-- `model` — Override model (string or nil)
-- `prompt` — System prompt (string)
-- `permission` — Permission rules (alist)
+Agent configuration struct defined in `magent-agent-registry.el`.
+
+Key fields:
+- `name`
+- `description`
+- `mode`
+- `native`
+- `hidden`
+- `temperature`
+- `top-p`
+- `color`
+- `model`
+- `prompt`
+- `options`
+- `steps`
+- `permission`
+- `file-path`
+- `source-layer`
+- `source-scope`
 
 ### `magent-session`
-Session state struct.
 
-**Fields:**
-- `messages` — Message history (list)
-- `agent` — Current agent name (string)
-- `project-root` — Project root path (string or nil)
-- `buffer-content` — Raw buffer text for restore (string)
+Scoped conversation state defined in `magent-session.el`.
+
+Key fields:
+- `messages`
+- `max-history`
+- `id`
+- `agent`
+- `buffer-content`
+- `approval-overrides`
 
 ### `magent-skill`
-Skill definition struct.
 
-**Fields:**
-- `name` — Skill name (string)
-- `description` — Brief description (string)
-- `type` — "instruction" or "tool"
-- `tools` — Required tools (list of symbols)
-- `body` — Skill content (string)
-- `dir` — Source directory (string)
+Skill definition struct defined in `magent-skills.el`.
 
-## Customization Variables
+Key fields:
+- `name`
+- `description`
+- `type`
+- `tools`
+- `prompt`
+- `invoke-function`
+- `file-path`
+- `source-layer`
+- `source-scope`
+
+### `magent-capability`
+
+Capability definition struct defined in `magent-capability.el`.
+
+Key fields:
+- `name`
+- `title`
+- `description`
+- `family`
+- `source-kind`
+- `source-layer`
+- `source-scope`
+- `source-name`
+- `skills`
+- `modes`
+- `features`
+- `files`
+- `prompt-keywords`
+- `disclosure`
+- `risk`
+- `notes`
+- `file-path`
+
+### `magent-capability-resolution`
+
+Resolver output struct defined in `magent-capability.el`.
+
+Key fields:
+- `prompt`
+- `context`
+- `explicit-skills`
+- `matches`
+- `active-capabilities`
+- `suggested-capabilities`
+- `skill-names`
+
+## Key Customization Variables
 
 ### Core Settings
 
-- `magent-system-prompt` — Default system prompt
-- `magent-buffer-name` — Output buffer name (default: `"*magent*"`)
-- `magent-default-agent` — Default agent (default: `"build"`)
-- `magent-enable-tools` — Globally enabled tools (list of symbols)
+- `magent-buffer-name`
+- `magent-default-agent`
+- `magent-enable-tools`
+- `magent-fsm-backend` (single supported value: `gptel`)
 
-### Session & History
+### Session, Audit, And History
 
-- `magent-session-directory` — Session storage directory
-- `magent-max-history` — Max messages in history (default: 100)
-- `magent-audit-directory` — Audit log directory
+- `magent-session-directory`
+- `magent-audit-directory`
+- `magent-enable-audit-log`
+- `magent-max-history`
 
 ### Timeouts
 
-- `magent-request-timeout` — LLM request timeout (default: 120s)
-- `magent-bash-timeout` — Bash command timeout (default: 30s)
-- `magent-emacs-eval-timeout` — Emacs eval timeout (default: 10s)
+- `magent-request-timeout`
+- `magent-bash-timeout`
+- `magent-emacs-eval-timeout`
 
-### UI Settings
+### UI
 
-- `magent-auto-scroll` — Auto-scroll output buffer (default: t)
-- `magent-include-reasoning` — Display reasoning blocks (default: t)
-- `magent-ui-batch-insert-delay` — Streaming batch delay (default: 0.05s)
-- `magent-ui-fontify-threshold` — Async fontification threshold (default: 500 chars)
+- `magent-auto-scroll`
+- `magent-ui-fontify-threshold`
+- `magent-ui-batch-insert-delay`
+- `magent-include-reasoning`
 
-### Tool Settings
+### Search
 
-- `magent-grep-program` — Ripgrep binary path (default: `"rg"`)
-- `magent-grep-max-matches` — Max grep matches (default: 100)
-
-### Permissions
-
-- `magent-by-pass-permission` — Bypass permission prompts (default: nil)
-- `magent-enable-audit-log` — Enable audit logging (default: t)
-
-## Hooks
+- `magent-grep-program`
+- `magent-grep-max-matches`
 
 ### `magent-mode-hook`
 Run when `magent-mode` is enabled.

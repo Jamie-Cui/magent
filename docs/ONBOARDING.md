@@ -25,16 +25,16 @@ The foundation layer that initializes the system and manages settings.
 
 **What it does:** Lazy initialization triggered on first command via `magent--ensure-initialized`. Mode enable only adds modeline construct; full setup (agent registry, skills) happens on demand.
 
-### Layer 2: Session & State Management
+### Layer 2: Session & Runtime State Management
 
-Manages conversation history and request serialization.
+Manages conversation history, scoped overlays, and runtime state.
 
 **Key Files:**
 - `magent-session.el` — Conversation state with message list, JSON persistence, per-project sessions
-- `magent-queue.el` — Single-request serialization (rejects new prompts when busy)
+- `magent-runtime.el` — Static initialization plus project-local overlay activation for agents, skills, and capabilities
 - `magent-audit.el` — Persistent JSONL audit logging for permissions and sensitive actions
 
-**What it does:** Maintains conversation history scoped by project, persists to `~/.emacs.d/magent-sessions/`, stores raw buffer content for lossless restore. Queue ensures only one LLM request runs at a time.
+**What it does:** Maintains conversation history scoped by project, persists to `~/.emacs.d/magent-sessions/`, stores raw buffer content for lossless restore, and activates or unloads project-local overlays as scope changes. Request serialization itself lives in `magent-ui.el` via a single in-flight processing lock.
 
 ### Layer 3: Agent System
 
@@ -42,7 +42,7 @@ Multi-agent architecture with specialized agents for different tasks.
 
 **Key Files:**
 - `magent-agent.el` — Core agent processing: builds gptel prompts, applies overrides, calls `gptel-request`
-- `magent-agent-registry.el` — Agent struct definitions, 8 built-in agents, hash-table registry
+- `magent-agent-registry.el` — Agent struct definitions, 7 built-in agents, hash-table registry
 - `magent-agent-file.el` — Loads custom agents from `.magent/agent/*.md` files
 - `magent-permission.el` — Rule-based tool access control (allow/deny/ask with glob patterns)
 
@@ -55,8 +55,7 @@ The action layer that executes operations requested by agents.
 **Key Files:**
 - `magent-tools.el` — 10 `gptel-tool` structs: read_file, write_file, edit_file, grep, glob, bash, emacs_eval, delegate, skill_invoke, web_search
 - `magent-skills.el` — Skill registry, built-in skills, file loading, inspection commands
-- `magent-capability.el` — Capability definitions and management
-- `magent-capability-file.el` — File-based capability loading
+- `magent-capability.el` — Capability definitions, resolution, and file-backed loading
 - `magent-approval.el` — User approval prompts for sensitive operations
 
 **What it does:** Tools provide concrete actions (file I/O, shell commands, web search). Skills extend agent behavior (instruction-type injected into prompts, tool-type invoked via skill_invoke). Approval system gates dangerous operations.
@@ -67,11 +66,10 @@ Orchestrates the tool-calling loop and LLM communication.
 
 **Key Files:**
 - `magent-fsm.el` — Unified FSM API (INIT → SEND → WAIT → PROCESS → TOOL → DONE/ERROR)
-- `magent-fsm-shared.el` — FSM creation, tool conversion to gptel format
+- `magent-fsm-shared.el` — Shared FSM structs, resource cleanup, tool conversion, permission confirmation
 - `magent-fsm-backend-gptel.el` — Active backend: gptel callback, streaming state, unknown-tool advice
-- `magent-fsm-backend-native.el` — Struct definitions (native execution disabled)
 
-**What it does:** FSM manages the request lifecycle. Currently only gptel backend is active. Handles streaming responses, tool execution, and error recovery. `magent--handle-unknown-tools-a` advice prevents hangs from hallucinated tool names.
+**What it does:** FSM manages the request lifecycle. Currently only gptel backend is active. Shared helpers own the FSM struct, resource cleanup, and tool/permission plumbing. `magent--handle-unknown-tools-a` advice prevents hangs from hallucinated tool names.
 
 ### Layer 6: User Interface
 
@@ -188,27 +186,25 @@ Look at `test/magent-test.el` to see how the codebase is tested. Tests mock `gpt
 
 ### State Management
 - **magent-session.el** — Conversation history, per-project sessions, JSON persistence
-- **magent-queue.el** — Single-request serialization (busy rejection)
+- **magent-runtime.el** — Static initialization and project-local overlay activation
 - **magent-audit.el** — JSONL audit logs for permissions and sensitive actions
 
 ### Agent System
 - **magent-agent.el** — Core processing: builds prompts, filters tools, calls gptel
-- **magent-agent-registry.el** — Agent struct, 8 built-in agents, registry
+- **magent-agent-registry.el** — Agent struct, 7 built-in agents, registry
 - **magent-agent-file.el** — Custom agent loader from `.magent/agent/*.md`
 - **magent-permission.el** — Tool access control with glob patterns
 
 ### Tools & Skills
 - **magent-tools.el** — 10 tool implementations as gptel-tool structs
 - **magent-skills.el** — Skill registry, built-in skills, file loading, commands
-- **magent-capability.el** — Capability definitions
-- **magent-capability-file.el** — File-based capability loading
+- **magent-capability.el** — Capability definitions, resolution, and file-backed loading
 - **magent-approval.el** — User approval prompts for sensitive operations
 
 ### FSM & LLM Integration
 - **magent-fsm.el** — FSM API, dispatches to backend
-- **magent-fsm-shared.el** — FSM creation, tool conversion
+- **magent-fsm-shared.el** — Shared FSM structs, resource cleanup, tool conversion, permission confirmation
 - **magent-fsm-backend-gptel.el** — Active backend: streaming, callbacks, unknown-tool handling
-- **magent-fsm-backend-native.el** — Struct definitions (execution disabled)
 
 ### User Interface
 - **magent-ui.el** — Org-mode derived buffer, streaming, sections, transient menu
@@ -357,5 +353,3 @@ Skill instructions for the agent.
 ---
 
 **Welcome to magent!** This guide should help you get oriented. The codebase follows clear separation of concerns with each module handling a specific responsibility. Start with the guided tour and don't hesitate to dive into the code—it's well-structured and documented.
-
-
