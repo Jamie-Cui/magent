@@ -1439,6 +1439,18 @@
             (should (string-match-p "Do the thing" (magent-skill-prompt skill)))))
       (delete-directory tmpdir t))))
 
+(ert-deftest magent-test-skill-file-load-all-includes-systematic-debugging ()
+  "Test builtin skill loading includes the systematic debugging workflow."
+  (require 'magent-skills)
+  (let ((magent-skills--registry nil))
+    (cl-letf (((symbol-function 'magent-log) #'ignore))
+      (magent-skill-file-load-all (list magent-skill-file--builtin-dir)))
+    (let ((skill (magent-skills-get "systematic-debugging")))
+      (should skill)
+      (should (eq (magent-skill-type skill) 'instruction))
+      (should (string-match-p "Systematic Debugging"
+                              (or (magent-skill-prompt skill) ""))))))
+
 (ert-deftest magent-test-capability-file-load-from-temp ()
   "Test loading a capability from a temporary file."
   (require 'magent-capability-file)

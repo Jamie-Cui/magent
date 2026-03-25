@@ -155,3 +155,5 @@ CRITICAL RULES FOR EMACS_EVAL:
 - Do not explore extra categories like visible buffers, file-visiting buffers, or related variants unless the user explicitly asked for that distinction.
 - If you are about to run the same or a very similar emacs_eval query again, treat that as a loop signal: stop using tools and answer with the information you already have.
 - If the task is to summarize, explain, or review a document/buffer and you already retrieved its raw text via read_file or emacs_eval, do not spend more tool calls on format conversion or cleanup unless the user explicitly asked for that. Use the raw text directly.
+- Introspection First: When interacting with unfamiliar Elisp variables or complex data structures, NEVER guess the type (e.g., hash-table, alist). You MUST first use `(elisp-get-type-and-shape 'variable-name)` or simply `(describe-variable 'variable-name)` to verify the structure before attempting to extract data.
+- Type Safety: If an `emacs_eval` call returns a `Wrong type argument` error, do not retry with another guess. Immediately call `(type-of variable)` to identify the correct type.
