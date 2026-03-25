@@ -1435,10 +1435,23 @@ one and renders it in the output buffer."
                                   (cons (car choice)
                                         (magent-session--file-group (cdr choice))))
                                 choices))
+             (time-map (mapcar (lambda (choice)
+                                 (cons (car choice)
+                                       (format "[%s] "
+                                               (magent-session--format-display-timestamp
+                                                (cdr choice)))))
+                               choices))
              (completion-extra-properties
               `(:group-function
                 ,(lambda (candidate _transform)
-                   (cdr (assoc candidate group-map)))))
+                   (cdr (assoc candidate group-map)))
+                :affixation-function
+                ,(lambda (candidates)
+                   (mapcar (lambda (candidate)
+                             (list candidate
+                                   (or (cdr (assoc candidate time-map)) "")
+                                   ""))
+                           candidates))))
              (selected (completing-read "Resume session: "
                                         (mapcar #'car choices) nil t
                                         nil nil (caar choices)))

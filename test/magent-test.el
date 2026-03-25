@@ -3843,6 +3843,70 @@
                          '("2026-03-17 12:00:00  (global)  Resume label"))))
       (delete-directory magent-session-directory t))))
 
+(ert-deftest magent-test-resume-session-affixation-shows-time ()
+  "Test `magent-resume-session' provides a visible date/time prefix."
+  (require 'magent-ui)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (session-file (expand-file-name "session-20260317-120000.json"
+                                         magent-session-directory))
+         captured-collection
+         captured-properties)
+    (unwind-protect
+        (progn
+          (with-temp-file session-file
+            (insert "{\"scope\":\"global\",\"summary-title\":\"Resume label\"}"))
+          (cl-letf (((symbol-function 'magent-ui--activate-context-session) #'ignore)
+                    ((symbol-function 'completing-read)
+                     (lambda (_prompt collection &rest _args)
+                       (setq captured-collection collection
+                             captured-properties completion-extra-properties)
+                       nil))
+                    ((symbol-function 'message) #'ignore))
+            (magent-resume-session))
+          (let* ((affixation (plist-get captured-properties :affixation-function))
+                 (rows (funcall affixation captured-collection)))
+            (should (equal rows
+                           '(("2026-03-17 12:00:00  (global)  Resume label"
+                              "[2026-03-17 12:00:00] "
+                              ""))))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-session-format-file-legacy-name-falls-back-to-mtime ()
+  "Test legacy session filenames still display a timestamp."
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (session-file (expand-file-name "default.json" magent-session-directory))
+         (mtime (encode-time 6 5 4 3 2 2026)))
+    (unwind-protect
+        (progn
+          (with-temp-file session-file
+            (insert "{\"scope\":\"global\",\"summary-title\":\"Legacy session\"}"))
+          (set-file-times session-file mtime)
+          (should (equal (magent-session--format-file session-file)
+                         "2026-02-03 04:05:06  (global)  Legacy session")))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-session-list-files-sorts-within-group-by-session-time ()
+  "Test files inside one group are ordered newest-to-oldest by session time."
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (newer-file (expand-file-name "session-20260317-120000.json"
+                                       magent-session-directory))
+         (older-file (expand-file-name "session-20260317-110000.json"
+                                       magent-session-directory))
+         (newer-mtime (encode-time 0 0 1 1 1 2020))
+         (older-mtime (encode-time 0 0 1 1 1 2030)))
+    (unwind-protect
+        (progn
+          (with-temp-file newer-file
+            (insert "{\"scope\":\"global\",\"summary-title\":\"Newer session\"}"))
+          (with-temp-file older-file
+            (insert "{\"scope\":\"global\",\"summary-title\":\"Older session\"}"))
+          ;; Reverse mtimes so the test catches accidental mtime-based sorting.
+          (set-file-times newer-file newer-mtime)
+          (set-file-times older-file older-mtime)
+          (should (equal (magent-session-list-files)
+                         (list newer-file older-file))))
+      (delete-directory magent-session-directory t))))
+
 (ert-deftest magent-test-runtime-activate-scope-switches-project-overlays ()
   "Test runtime activation unloads the old overlay before loading the new one."
   (require 'magent-runtime)
