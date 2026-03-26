@@ -302,9 +302,10 @@ magent/
 |-- magent-agent-registry.el       # Agent struct, built-in definitions, and registry
 |-- magent-agent-file.el           # Custom agent file loader (.magent/agent/*.md)
 |-- magent-permission.el           # Permission system (allow/deny/ask with glob patterns)
-|-- magent-fsm.el                  # FSM API (dispatches to gptel backend)
-|-- magent-fsm-backend-gptel.el    # gptel FSM backend implementation
-|-- magent-fsm-shared.el           # Shared FSM structs, tool wrapping, permission flow
+|-- magent-fsm.el                  # Active FSM implementation and public API
+|-- magent-fsm-tools.el            # Tool wrapping, queues, and permission flow
+|-- magent-fsm-backend-gptel.el    # Compatibility shim for legacy backend feature
+|-- magent-fsm-shared.el           # Compatibility shim for legacy shared feature
 |-- magent-file-loader.el          # Shared definition loader and frontmatter parser
 |-- magent-md2org.el               # Markdown to org-mode converter
 |-- magent-skills.el               # Skill registry, built-in skills, file loading, and skill commands

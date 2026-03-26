@@ -65,11 +65,11 @@ The action layer that executes operations requested by agents.
 Orchestrates the tool-calling loop and LLM communication.
 
 **Key Files:**
-- `magent-fsm.el` — Unified FSM API (INIT → SEND → WAIT → PROCESS → TOOL → DONE/ERROR)
-- `magent-fsm-shared.el` — Shared FSM structs, resource cleanup, tool conversion, permission confirmation
-- `magent-fsm-backend-gptel.el` — Active backend: gptel callback, streaming state, unknown-tool advice
+- `magent-fsm.el` — Active FSM implementation and public API
+- `magent-fsm-tools.el` — Tool conversion, queueing, permission confirmation, abort helpers
+- `magent-fsm-backend-gptel.el` / `magent-fsm-shared.el` — Compatibility shims for legacy `require` forms
 
-**What it does:** FSM manages the request lifecycle. Currently only gptel backend is active. Shared helpers own the FSM struct, resource cleanup, and tool/permission plumbing. `magent--handle-unknown-tools-a` advice prevents hangs from hallucinated tool names.
+**What it does:** FSM manages the request lifecycle. Currently only gptel backend is active. `magent-fsm.el` owns the live streaming/request loop, while `magent-fsm-tools.el` owns tool/permission plumbing. `magent--handle-unknown-tools-a` advice prevents hangs from hallucinated tool names.
 
 ### Layer 6: User Interface
 
@@ -151,8 +151,8 @@ Read `magent-ui.el` to see how the `*magent*` buffer works. Key insight: it deri
 
 Trace a request through these files in order:
 1. `magent-agent.el` — `magent-agent-process` builds the prompt
-2. `magent-fsm.el` — FSM dispatches to backend
-3. `magent-fsm-backend-gptel.el` — Handles streaming and tool execution
+2. `magent-fsm.el` — Handles the active gptel request loop and streaming callback
+3. `magent-fsm-tools.el` — Converts tools, serializes execution, resolves permissions
 4. `magent-tools.el` — Tool implementations execute
 5. `magent-ui.el` — Results render in buffer
 
@@ -202,9 +202,9 @@ Look at `test/magent-test.el` to see how the codebase is tested. Tests mock `gpt
 - **magent-approval.el** — User approval prompts for sensitive operations
 
 ### FSM & LLM Integration
-- **magent-fsm.el** — FSM API, dispatches to backend
-- **magent-fsm-shared.el** — Shared FSM structs, resource cleanup, tool conversion, permission confirmation
-- **magent-fsm-backend-gptel.el** — Active backend: streaming, callbacks, unknown-tool handling
+- **magent-fsm.el** — Active FSM implementation, streaming, callbacks, unknown-tool handling
+- **magent-fsm-tools.el** — Tool conversion, queues, permission confirmation, abort helpers
+- **magent-fsm-backend-gptel.el** / **magent-fsm-shared.el** — Compatibility shims
 
 ### User Interface
 - **magent-ui.el** — Org-mode derived buffer, streaming, sections, transient menu
@@ -219,8 +219,8 @@ Look at `test/magent-test.el` to see how the codebase is tested. Tests mock `gpt
 
 These areas require careful attention when modifying:
 
-### 1. magent-fsm-backend-gptel.el (High Complexity)
-**Why it's complex:** Manages streaming state, tool execution callbacks, and handles edge cases like qwen3-max splitting tool calls with empty names. Contains `magent--handle-unknown-tools-a` advice that merges split tool entries.
+### 1. magent-fsm.el (High Complexity)
+**Why it's complex:** Manages streaming state, request callbacks, and handles edge cases like qwen3-max splitting tool calls with empty names. Contains `magent--handle-unknown-tools-a` advice that merges split tool entries.
 
 **Approach carefully:** Any changes to streaming logic or tool-use handling can break the FSM loop. Test thoroughly with multiple LLM providers.
 

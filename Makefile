@@ -51,6 +51,7 @@ SRCS = magent-config.el \
        magent-permission.el \
        magent-md2org.el \
        magent-ui.el \
+       magent-fsm-tools.el \
        magent-fsm.el \
        magent-fsm-backend-gptel.el \
        magent-fsm-shared.el \
