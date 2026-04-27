@@ -29,6 +29,8 @@
 (require 'magent-fsm)
 
 (defvar magent--spinner)
+(defvar magent-enable-logging)
+(defvar magent-log-level)
 
 (defvar magent--current-fsm nil
   "Current active FSM instance, if any.")
@@ -195,6 +197,32 @@ When SCOPE is nil, use the current session scope."
         (magent-log-mode)))
     buffer))
 
+(defconst magent-ui--log-level-order
+  '((debug . 10)
+    (info . 20)
+    (warn . 30)
+    (error . 40))
+  "Priority order for `magent-log' filtering.")
+
+(defun magent-ui--log-message-level (message)
+  "Return normalized severity symbol for log MESSAGE."
+  (let ((prefix (and (string-match "\\`\\([A-Z]+\\)\\(?:\\s-\\|:\\|$\\)" message)
+                     (match-string 1 message))))
+    (pcase prefix
+      ("DEBUG" 'debug)
+      ((or "INFO" "PERM") 'info)
+      ("WARN" 'warn)
+      ("ERROR" 'error)
+      (_ 'info))))
+
+(defun magent-ui--loggable-message-p (message)
+  "Return non-nil when MESSAGE should be written to `*magent-log*'."
+  (and magent-enable-logging
+       (>= (alist-get (magent-ui--log-message-level message)
+                      magent-ui--log-level-order)
+           (alist-get magent-log-level
+                      magent-ui--log-level-order))))
+
 (defmacro magent-ui--with-insert (buffer &rest body)
   "Execute BODY at end of BUFFER with `inhibit-read-only' set.
 After BODY, marks the newly inserted region as read-only and
@@ -228,14 +256,16 @@ Uses a simple insert rather than `magent-ui--with-insert' because
 the log buffer already has `buffer-read-only' and should not get
 per-character `read-only' text properties (they would travel with
 yanked text)."
-  (let ((buf (magent-ui-get-log-buffer)))
-    (with-current-buffer buf
-      (let ((inhibit-read-only t))
-        (goto-char (point-max))
-        (let ((timestamp (format-time-string "%Y-%m-%d %H:%M:%S")))
-          (insert (format "[%s] %s\n"
-                          timestamp
-                          (apply #'format format-string args))))))))
+  (let ((message (apply #'format format-string args)))
+    (when (magent-ui--loggable-message-p message)
+      (let ((buf (magent-ui-get-log-buffer)))
+        (with-current-buffer buf
+          (let ((inhibit-read-only t))
+            (goto-char (point-max))
+            (let ((timestamp (format-time-string "%Y-%m-%d %H:%M:%S")))
+              (insert (format "[%s] %s\n"
+                              timestamp
+                              message)))))))))
 
 (defun magent-ui-get-buffer (&optional scope)
   "Get or create the Magent output buffer for SCOPE."
@@ -1391,7 +1421,8 @@ Handles both streaming and non-streaming completion."
 (defun magent-resume-session ()
   "Select and resume a saved session.
 Presents all saved sessions sorted newest-first for selection,
-then loads the chosen one and renders it in the output buffer."
+including each session's saved date/time, then loads the chosen
+one and renders it in the output buffer."
   (interactive)
   (magent-ui--activate-context-session)
   (let ((files (magent-session-list-files)))
@@ -1404,10 +1435,23 @@ then loads the chosen one and renders it in the output buffer."
                                   (cons (car choice)
                                         (magent-session--file-group (cdr choice))))
                                 choices))
+             (time-map (mapcar (lambda (choice)
+                                 (cons (car choice)
+                                       (format "[%s] "
+                                               (magent-session--format-display-timestamp
+                                                (cdr choice)))))
+                               choices))
              (completion-extra-properties
               `(:group-function
                 ,(lambda (candidate _transform)
-                   (cdr (assoc candidate group-map)))))
+                   (cdr (assoc candidate group-map)))
+                :affixation-function
+                ,(lambda (candidates)
+                   (mapcar (lambda (candidate)
+                             (list candidate
+                                   (or (cdr (assoc candidate time-map)) "")
+                                   ""))
+                           candidates))))
              (selected (completing-read "Resume session: "
                                         (mapcar #'car choices) nil t
                                         nil nil (caar choices)))

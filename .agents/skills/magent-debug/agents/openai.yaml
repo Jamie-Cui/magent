@@ -1,0 +1,4 @@
+interface:
+  display_name: "Magent Debug"
+  short_description: "Debug live and batch Magent failures"
+  default_prompt: "Use $magent-debug to reproduce, diagnose, fix, and verify a Magent issue in live Emacs."
