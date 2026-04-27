@@ -158,6 +158,17 @@ When enabled, API requests and responses are logged for debugging."
   :type 'boolean
   :group 'magent)
 
+(defcustom magent-log-level 'info
+  "Minimum log severity written to the `*magent-log*' buffer.
+Recognized message prefixes are DEBUG, INFO, WARN, ERROR, and PERM.
+`PERM' is treated as `info', and messages without a recognized prefix
+are also treated as `info'."
+  :type '(choice (const :tag "Debug" debug)
+                 (const :tag "Info" info)
+                 (const :tag "Warn" warn)
+                 (const :tag "Error" error))
+  :group 'magent)
+
 (defcustom magent-enable-audit-log t
   "Enable persistent audit logging for permission and sensitive actions.
 When enabled, Magent writes a compact JSONL audit trail to disk."
