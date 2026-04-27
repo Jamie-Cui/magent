@@ -119,7 +119,7 @@ emacsclient --eval '(magent-clear-session)'
 5. Write tests in `test/magent-test.el`
 
 ### Modifying the FSM
-- Only touch `magent-fsm-backend-gptel.el` (native backend disabled)
+- Most FSM work now lives in `magent-fsm.el` and `magent-fsm-tools.el`; `magent-fsm-backend-gptel.el` is only a compatibility shim
 - Test with multiple LLM providers
 - Handle streaming edge cases
 - Update request generation counter if needed

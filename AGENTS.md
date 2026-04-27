@@ -31,7 +31,7 @@ emacs -Q --batch -L . -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'gptel-*' -typ
 - Registry tests bind `magent-agent-registry--agents` to a fresh hash table
 - Skills tests bind `magent-skills--registry` to nil
 - Session tests call `magent-session-reset` to clear global state
-- FSM struct and shared permission tests should load `magent-fsm-shared`
+- FSM tool/permission tests should load `magent-fsm-tools`; compatibility tests may still load `magent-fsm-shared`
 
 ### End-to-End Testing
 
@@ -64,7 +64,8 @@ magent.el (entry point: magent-mode, global-magent-mode)
   ├─ magent-agent-file.el      (loads custom agents from .magent/agent/*.md)
   ├─ magent-permission.el      (rule-based tool access control per agent)
   ├─ magent-ui.el              (in-buffer input/output, org-mode derived, overlay sections)
-  ├─ magent-fsm.el             (unified FSM API, dispatches to gptel backend)
+  ├─ magent-fsm.el             (active gptel FSM implementation + public API)
+  ├─ magent-fsm-tools.el       (tool wrapping, queueing, permission flow, abort helpers)
   ├─ magent-file-loader.el     (shared file-backed definition loader and frontmatter parser)
   ├─ magent-md2org.el          (markdown → org-mode conversion for assistant output)
   └─ magent-skills.el          (skill registry, built-in skill definitions, file loading, and interactive commands)
@@ -88,7 +89,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
 
 5. **Tools** (`magent-tools.el`): 10 `gptel-tool` structs — `read_file`, `write_file`, `edit_file`, `grep`, `glob`, `bash`, `emacs_eval`, `delegate`, `skill_invoke`, `web_search`. Tools are registered globally but filtered per-agent through permissions. `web_search` uses DuckDuckGo via `url-retrieve` + `libxml-parse-html-region` (requires Emacs built with `--with-xml2`).
 
-6. **FSM** (`magent-fsm.el`): Only the **gptel backend** is active. Shared FSM structs, tool wrapping, permission prompting, and resource cleanup live in `magent-fsm-shared.el`. The gptel backend handles the full tool-calling loop including permission-aware confirmation via `:confirm` functions installed by `magent-fsm--convert-tools-to-gptel`.
+6. **FSM** (`magent-fsm.el`): Only the **gptel backend** is active. The full request lifecycle, streaming callback, and gptel advice now live in `magent-fsm.el`. Tool wrapping, permission prompting, queueing, and abort helpers live in `magent-fsm-tools.el`. The legacy features `magent-fsm-backend-gptel` and `magent-fsm-shared` remain as compatibility shims.
 
 7. **Permissions** (`magent-permission.el`): Rules map tool names to `allow`/`deny`/`ask`, with optional file-pattern sub-rules (glob syntax). Resolution: exact tool match → file-pattern rules → wildcard (`*`) fallback → **default allow**. File-pattern rules are order-dependent (first match wins); more specific patterns must come before less specific ones.
 
@@ -103,7 +104,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
 - **`magent-output-mode` derives from `org-mode`**: All org keybindings, font-lock, and folding apply. Use `inhibit-read-only` for insertions; org fontification can trigger re-entrancy.
 - **`magent-ui--with-insert` suppresses buffer-boundary signals**: Catches `beginning-of-buffer`, `end-of-buffer`, etc. to suppress evil-mode cursor adjustment errors from gptel process filters.
 - **`magent-log` is a stub in `magent-config.el`**: No-op until `magent-ui` is loaded. In batch tests, logs go nowhere unless you explicitly load `magent-ui`.
-- **Shared FSM definitions live in `magent-fsm-shared.el`**: the gptel backend no longer depends on the native backend shim for struct definitions or permission helpers.
+- **Tool execution helpers live in `magent-fsm-tools.el`**: `magent-fsm-backend-gptel.el` and `magent-fsm-shared.el` are compatibility shims only.
 - **`magent--handle-unknown-tools-a`**: An `around` advice on `gptel--handle-tool-use` that pre-fills error results for hallucinated tool names, preventing FSM hangs.
 - **Request generation counter**: `magent-ui--request-generation` increments on dispatch and interrupt. Stale callbacks compare their captured generation and discard themselves if mismatched.
 - **`revert-buffer` in output buffer**: Bound to `magent-ui--revert-buffer` → `magent-ui-render-history`. Safe to use `g` in evil mode.

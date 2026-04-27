@@ -198,25 +198,43 @@ SCOPE must be either `global' or a normalized project root string."
       'global
     'project))
 
-(defun magent-session--sort-files-by-mtime (files)
-  "Return FILES sorted by modification time, newest first."
+(defun magent-session--file-display-time (filepath)
+  "Return FILEPATH's logical session time.
+Prefer the timestamp embedded in `session-YYYYMMDD-HHMMSS' filenames.
+Fall back to the file modification time for legacy filenames."
+  (let ((name (file-name-sans-extension (file-name-nondirectory filepath))))
+    (if (string-match
+         "session-\\([0-9]\\{4\\}\\)\\([0-9]\\{2\\}\\)\\([0-9]\\{2\\}\\)-\\([0-9]\\{2\\}\\)\\([0-9]\\{2\\}\\)\\([0-9]\\{2\\}\\)"
+         name)
+        (encode-time
+         (string-to-number (match-string 6 name))
+         (string-to-number (match-string 5 name))
+         (string-to-number (match-string 4 name))
+         (string-to-number (match-string 3 name))
+         (string-to-number (match-string 2 name))
+         (string-to-number (match-string 1 name)))
+      (file-attribute-modification-time
+       (file-attributes filepath)))))
+
+(defun magent-session--sort-files-by-time (files)
+  "Return FILES sorted by logical session time, newest first."
   (sort files
         (lambda (a b)
           (time-less-p
-           (file-attribute-modification-time (file-attributes b))
-           (file-attribute-modification-time (file-attributes a))))))
+           (magent-session--file-display-time b)
+           (magent-session--file-display-time a)))))
 
 (defun magent-session--list-files-in-directory (directory)
   "Return session JSON files in DIRECTORY, newest first."
   (when (file-directory-p directory)
-    (magent-session--sort-files-by-mtime
+    (magent-session--sort-files-by-time
      (directory-files directory t "\\.json$"))))
 
 (defun magent-session--project-files ()
   "Return all project-scoped session files under `magent-session-directory'."
   (let ((projects-dir (expand-file-name "projects" magent-session-directory)))
     (when (file-directory-p projects-dir)
-      (magent-session--sort-files-by-mtime
+      (magent-session--sort-files-by-time
        (directory-files-recursively projects-dir "\\.json$")))))
 
 (defun magent-session--read-file-metadata (filepath)
@@ -295,8 +313,22 @@ SCOPE must be either `global' or a normalized project root string."
               (string-lessp group-a group-b))
              (t
               (time-less-p
-               (file-attribute-modification-time (file-attributes b))
-               (file-attribute-modification-time (file-attributes a)))))))))
+               (magent-session--file-display-time b)
+               (magent-session--file-display-time a))))))))
+
+(defun magent-session--format-display-timestamp (filepath)
+  "Return a display timestamp for session FILEPATH.
+Prefer the timestamp embedded in `session-YYYYMMDD-HHMMSS' filenames.
+Fall back to the file modification time for legacy filenames."
+  (format-time-string "%Y-%m-%d %H:%M:%S"
+                      (magent-session--file-display-time filepath)))
+
+(defun magent-session--format-display-time (filepath)
+  "Return the time-of-day portion of FILEPATH's display timestamp."
+  (let ((timestamp (magent-session--format-display-timestamp filepath)))
+    (if (string-match "[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\} \\([0-9:]+\\)\\'" timestamp)
+        (match-string 1 timestamp)
+      timestamp)))
 
 ;;; Session persistence
 
@@ -423,20 +455,12 @@ Restores `magent--current-session'.  Returns the session or nil."
 
 (defun magent-session--format-file (filepath)
   "Return a human-readable label for session FILEPATH.
-Parses the session-YYYYMMDD-HHMMSS filename pattern into a date string."
-  (let* ((name (file-name-sans-extension (file-name-nondirectory filepath)))
-         (meta (magent-session--read-file-metadata filepath))
+Parses the session-YYYYMMDD-HHMMSS filename pattern into a date/time string."
+  (let* ((meta (magent-session--read-file-metadata filepath))
          (scope (plist-get meta :scope))
          (project-root (plist-get meta :project-root))
          (summary-title (plist-get meta :summary-title))
-         (timestamp
-          (if (string-match
-               "session-\\([0-9]\\{4\\}\\)\\([0-9]\\{2\\}\\)\\([0-9]\\{2\\}\\)-\\([0-9]\\{2\\}\\)\\([0-9]\\{2\\}\\)\\([0-9]\\{2\\}\\)"
-               name)
-              (format "%s-%s-%s %s:%s:%s"
-                      (match-string 1 name) (match-string 2 name) (match-string 3 name)
-                      (match-string 4 name) (match-string 5 name) (match-string 6 name))
-            name)))
+         (timestamp (magent-session--format-display-timestamp filepath)))
     (concat
      (if (eq scope 'global)
          (format "%s  (global)" timestamp)

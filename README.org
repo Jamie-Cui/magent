@@ -75,6 +75,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-default-agent~         | ~"build"~                     | Default agent for new sessions                                                        |
 | ~magent-load-custom-agents~    | ~t~                           | Load custom agents from ~.magent/agent/*.md~                                            |
 | ~magent-enable-logging~        | ~t~                           | Enable logging to ~*magent-log*~ buffer                                                 |
+| ~magent-log-level~             | ~info~                        | Minimum displayed log level; ~PERM~ and unprefixed messages count as ~info~           |
 | ~magent-enable-audit-log~      | ~t~                           | Persist compact audit logs for permission and sensitive actions                       |
 | ~magent-assistant-prompt~      | ~"ASSISTANT"~                 | Tag text in assistant section headers                                                 |
 | ~magent-user-prompt~           | ~"USER"~                      | Tag text in user section headers                                                      |
@@ -126,7 +127,7 @@ Magent keeps a single ~*magent*~ buffer, but session state is scoped by project:
 - Saved project sessions live under ~magent-session-directory/projects/<sha1(project-root)>/~.
 - Outside any project, Magent falls back to the global session behavior and saves directly under ~magent-session-directory~.
 - Compact audit logs for permission decisions and sensitive tools are written as daily JSONL files under ~magent-session-directory/audit/~ unless ~magent-audit-directory~ is set.
-- ~magent-resume-session~ shows all sessions grouped by project, with the current project's group first and global sessions in their own group.
+- ~magent-resume-session~ shows all sessions grouped by project, with date and time in each candidate, the current project's group first, and global sessions in their own group.
 
 ** Quick Example
 
@@ -301,9 +302,10 @@ magent/
 |-- magent-agent-registry.el       # Agent struct, built-in definitions, and registry
 |-- magent-agent-file.el           # Custom agent file loader (.magent/agent/*.md)
 |-- magent-permission.el           # Permission system (allow/deny/ask with glob patterns)
-|-- magent-fsm.el                  # FSM API (dispatches to gptel backend)
-|-- magent-fsm-backend-gptel.el    # gptel FSM backend implementation
-|-- magent-fsm-shared.el           # Shared FSM structs, tool wrapping, permission flow
+|-- magent-fsm.el                  # Active FSM implementation and public API
+|-- magent-fsm-tools.el            # Tool wrapping, queues, and permission flow
+|-- magent-fsm-backend-gptel.el    # Compatibility shim for legacy backend feature
+|-- magent-fsm-shared.el           # Compatibility shim for legacy shared feature
 |-- magent-file-loader.el          # Shared definition loader and frontmatter parser
 |-- magent-md2org.el               # Markdown to org-mode converter
 |-- magent-skills.el               # Skill registry, built-in skills, file loading, and skill commands
@@ -372,7 +374,8 @@ Sessions are automatically saved to =~/.emacs.d/magent-sessions/= (configurable)
 View request and response logs:
 
 #+begin_src elisp
-(setq magent-enable-logging t)
+(setq magent-enable-logging t
+      magent-log-level 'debug)
 M-x magent-show-log    ; C-c m l
 #+end_src
 

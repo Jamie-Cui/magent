@@ -93,7 +93,7 @@ Package requirements: ~emacs 27.1+~, ~gptel 0.9.8~, ~spinner 1.7.4~, ~transient 
 
 All magent-specific configuration is in the ~magent~ customize group. LLM provider, model, and API key settings are managed entirely by gptel.
 
-33 defcustom variables organized by category:
+34 defcustom variables organized by category:
 
 Core settings:
 - ~magent-system-prompt~: System prompt for the AI agent (includes org-mode formatting instructions)
@@ -104,6 +104,7 @@ Core settings:
 - ~magent-max-history~: Max session messages (default: 100)
 - ~magent-request-timeout~: LLM request timeout in seconds (default: 120)
 - ~magent-enable-logging~: Enable ~*magent-log*~ buffer
+- ~magent-log-level~: Minimum displayed log level (default: ~info~)
 - ~magent-default-agent~: Default agent name (default: "build")
 - ~magent-load-custom-agents~: Load agents from ~.magent/agent/*.md~
 
@@ -328,11 +329,11 @@ active; ~magent-fsm-backend~ remains as a single-value compatibility setting.
 
 All dispatch to the gptel backend.
 
-*** Shared FSM State (magent-fsm-shared.el)
+*** Tool Execution Helpers (magent-fsm-tools.el)
 
-Shared FSM structs, abort state, and transient resource cleanup live in
-~magent-fsm-shared.el~.  The active execution path lives in
-~magent-fsm-backend-gptel.el~.
+Abort state, tool queueing, wrapping, and permission-aware execution live in
+~magent-fsm-tools.el~.  The active gptel request loop and streaming callback
+live in ~magent-fsm.el~.
 
 States:
 - ~INIT~: Validate inputs (session, backend, model)
@@ -367,9 +368,9 @@ Tool confirmation flow:
 
 Tool function wrapping: ~magent-fsm--wrap-tool-function~ wraps each tool to display call/result in the UI before/after execution.
 
-*** Gptel Backend (magent-fsm-backend-gptel.el)
+*** Active Gptel FSM (magent-fsm.el)
 
-Lightweight wrapper around ~gptel-request~ that delegates the entire tool-calling loop to gptel.
+Active FSM implementation around ~gptel-request~ that delegates the entire tool-calling loop to gptel.
 
 - Uses a hidden request buffer
 - Tools auto-execute without interactive confirmation (gptel's confirm UI requires a visible buffer)
@@ -611,37 +612,30 @@ Messages are stored as alists:
 
 Accessed via ~magent-msg-role~ and ~magent-msg-content~ (defsubst accessors). Content can be a string or a list of content blocks; ~magent-session--content-to-string~ coerces to plain string.
 
-** magent-fsm struct
+** FSM request params plist
 
 #+begin_src elisp
-(cl-defstruct (magent-fsm (:constructor magent-fsm-struct-create)
-                          (:copier magent-fsm-copy))
-  (state 'INIT)              ; Current state (INIT/SEND/WAIT/PROCESS/TOOL/DONE/ERROR)
-  (session nil)              ; magent-session struct
-  (agent nil)                ; magent-agent-info struct
-  (backend nil)              ; gptel-backend
-  (model nil)                ; Model symbol
-  (prompt-list nil)          ; Conversation history as prompt list
-  (system-prompt nil)        ; System prompt string
-  (tools nil)                ; List of available tools (magent plist format)
-  (streaming-p nil)          ; Whether to stream responses
-  (pending-tools nil)        ; Tool calls awaiting execution
-  (accumulated-text "")      ; Accumulated text response
-  (streamed-chunks "")       ; Streaming chunks buffer
-  (reasoning-text "")        ; Accumulated reasoning text
-  (in-reasoning-block nil)   ; Whether in reasoning block
-  (http-status nil)          ; Last HTTP status code
-  (http-message nil)         ; Last HTTP status message
-  (error nil)                ; Error message if any
-  (callback nil)             ; User callback (called on DONE/ERROR)
-  (ui-callback nil)          ; UI callback for streaming chunks
-  (request-buffer nil)       ; Buffer for HTTP request
-  (process nil)              ; HTTP process object
-  (permission nil)           ; Agent permission rules
-  (aborted nil))             ; Whether FSM has been aborted
+(list :backend 'gptel          ; Active backend tag
+      :session session         ; magent-session struct
+      :agent agent             ; magent-agent-info struct
+      :gptel-backend backend   ; gptel backend instance
+      :model model             ; Model symbol
+      :prompt-list prompt-list ; Conversation history as prompt list
+      :system-prompt prompt    ; Final system prompt string
+      :tools tools             ; Available tools (magent plist format)
+      :max-tool-rounds steps   ; Per-agent tool round limit
+      :event-context context   ; Event stream context
+      :permission permission   ; Permission rules
+      :request-state state     ; UI/request context
+      :abort-controller ...    ; Request-scoped cancellation state
+      :tool-queue nil          ; Serialized tool execution queue
+      :request-buffer nil      ; Hidden gptel request buffer
+      :live-p live-p           ; Stale-callback guard
+      :callback callback       ; Final response callback
+      :ui-callback ui-callback); Streaming UI callback
 #+end_src
 
-The gptel backend uses a plain plist instead of a struct.
+The active FSM implementation uses a plain plist instead of a dedicated runtime struct.
 
 ** magent-permission
 
@@ -837,7 +831,8 @@ The Makefile auto-detects gptel and spinner in ~$HOME/.emacs.d/elpa~. Override w
 ** Enable Logging
 
 #+begin_src elisp
-(setq magent-enable-logging t)
+(setq magent-enable-logging t
+      magent-log-level 'debug)
 M-x magent-show-log  ; C-c m l
 #+end_src
 
@@ -872,9 +867,10 @@ magent/
 ├── magent-agent-registry.el       ; Agent struct + registry + built-ins
 ├── magent-agent-file.el           ; Custom agent loader/saver
 ├── magent-permission.el           ; Permission system
-├── magent-fsm.el                  ; FSM unified API + backend dispatch
-├── magent-fsm-backend-gptel.el    ; Gptel FSM backend (lightweight wrapper)
-├── magent-fsm-shared.el           ; Shared FSM structs and cleanup helpers
+├── magent-fsm.el                  ; Active FSM implementation + public API
+├── magent-fsm-tools.el            ; Tool execution and permission helpers
+├── magent-fsm-backend-gptel.el    ; Compatibility shim for legacy backend feature
+├── magent-fsm-shared.el           ; Compatibility shim for legacy shared feature
 ├── magent-ui.el                   ; UI, output buffer, streaming, transient menu
 ├── magent-md2org.el               ; Markdown to org-mode converter
 ├── magent-skills.el               ; Skill registry, built-ins, file loader, interactive commands

@@ -8,7 +8,8 @@
 
 (require 'ert)
 (require 'magent)
-(require 'magent-fsm-shared)
+(require 'gptel-openai)
+(require 'magent-fsm-tools)
 
 (defun magent-test--read-audit-records (directory)
   "Return all JSONL audit records stored under DIRECTORY."
@@ -166,6 +167,22 @@
           (should (equal (magent-file-loader-list-named-files
                           (list tmpdir) "SKILL.md")
                          (list direct-file nested-file))))
+      (delete-directory tmpdir t))))
+
+(ert-deftest magent-test-file-loader-skips-missing-definition-files ()
+  "Test shared file loader skips missing direct and nested definition files."
+  (require 'magent-file-loader)
+  (let* ((tmpdir (make-temp-file "magent-file-loader-" t))
+         (nested-dir (expand-file-name "nested" tmpdir))
+         (nested-file (expand-file-name "SKILL.md" nested-dir)))
+    (unwind-protect
+        (progn
+          (make-directory nested-dir t)
+          (with-temp-file nested-file
+            (insert "---\nname: nested\n---\n"))
+          (should (equal (magent-file-loader-list-named-files
+                          (list tmpdir) "SKILL.md")
+                         (list nested-file))))
       (delete-directory tmpdir t))))
 
 (ert-deftest magent-test-file-loader-read-definition-without-frontmatter ()
@@ -738,6 +755,15 @@
   (should (featurep 'magent-agent-info))
   (should (featurep 'magent-agent-types))
   (should (featurep 'magent-agent-registry)))
+
+(ert-deftest magent-test-fsm-legacy-features-remain-requireable ()
+  "Test old FSM feature names load through explicit shim files."
+  (require 'magent-fsm-backend-gptel)
+  (require 'magent-fsm-shared)
+  (should (featurep 'magent-fsm))
+  (should (featurep 'magent-fsm-backend-gptel))
+  (should (featurep 'magent-fsm-tools))
+  (should (featurep 'magent-fsm-shared)))
 
 (ert-deftest magent-test-agent-registry-register-and-get ()
   "Test agent registration and retrieval."
@@ -2309,7 +2335,7 @@
 
 (ert-deftest magent-test-gptel-backend-installs-permission-confirmation ()
   "Test gptel backend keeps permission-aware confirmation active."
-  (require 'magent-fsm-backend-gptel)
+  (require 'magent-fsm)
   (let ((captured-permission nil)
         (captured-confirm-mode nil)
         (permission '((bash . ask)))
@@ -2338,7 +2364,7 @@
 
 (ert-deftest magent-test-gptel-backend-routes-tool-call-confirmation ()
   "Test gptel backend routes pending tool calls through magent permissions."
-  (require 'magent-fsm-backend-gptel)
+  (require 'magent-fsm)
   (let ((captured nil)
         (tool-calls '((tool-spec arg-values callback)))
         (permission '((bash . ask)))
@@ -2357,7 +2383,7 @@
 
 (ert-deftest magent-test-gptel-backend-streams-reasoning-blocks ()
   "Test gptel backend forwards reasoning chunks to the Magent UI."
-  (require 'magent-fsm-backend-gptel)
+  (require 'magent-fsm)
   (let ((events nil)
         (stream-state (magent-fsm-backend-gptel--make-stream-state))
         (request-buffer (generate-new-buffer " *magent-gptel-test*")))
@@ -2391,7 +2417,7 @@
 
 (ert-deftest magent-test-gptel-backend-closes-reasoning-before-tool-call ()
   "Test gptel backend closes reasoning blocks before prompting for tools."
-  (require 'magent-fsm-backend-gptel)
+  (require 'magent-fsm)
   (let ((events nil)
         (tool-calls '((tool-spec arg-values callback)))
         (permission '((bash . ask)))
@@ -2419,7 +2445,7 @@
 
 (ert-deftest magent-test-gptel-backend-closes-reasoning-on-tool-result ()
   "Test gptel backend closes reasoning blocks before continuing after tool use."
-  (require 'magent-fsm-backend-gptel)
+  (require 'magent-fsm)
   (let ((events nil)
         (stream-state (magent-fsm-backend-gptel--make-stream-state))
         (request-buffer (generate-new-buffer " *magent-gptel-test*")))
@@ -2441,7 +2467,7 @@
 
 (ert-deftest magent-test-gptel-backend-closes-reasoning-on-final-response ()
   "Test gptel backend auto-closes reasoning when streaming ends."
-  (require 'magent-fsm-backend-gptel)
+  (require 'magent-fsm)
   (let ((events nil)
         (final-response nil)
         (stream-state (magent-fsm-backend-gptel--make-stream-state))
@@ -2468,7 +2494,7 @@
 
 (ert-deftest magent-test-gptel-backend-drops-stale-callbacks-before-ui-mutation ()
   "Test stale gptel callbacks do not mutate UI or complete the request."
-  (require 'magent-fsm-backend-gptel)
+  (require 'magent-fsm)
   (let ((events nil)
         (final-response 'unset)
         (request-buffer (generate-new-buffer " *magent-gptel-test*")))
@@ -2510,7 +2536,7 @@
 
 (ert-deftest magent-test-gptel-backend-surfaces-error-text-on-failure ()
   "Test gptel backend shows backend errors instead of returning a blank response."
-  (require 'magent-fsm-backend-gptel)
+  (require 'magent-fsm)
   (let ((events nil)
         (error-text "Error: synthetic failure.")
         (final-response 'unset)
@@ -2537,7 +2563,7 @@
 (ert-deftest magent-test-gptel-backend-emits-llm-request-usage-event ()
   "Test gptel backend emits machine-readable request usage metadata."
   (require 'magent-events)
-  (require 'magent-fsm-backend-gptel)
+  (require 'magent-fsm)
   (let ((captured nil)
         (backend (gptel-make-openai "test" :key "test-key"))
         (stream-state (magent-fsm-backend-gptel--make-stream-state))
@@ -2570,7 +2596,7 @@
 
 (ert-deftest magent-test-gptel-backend-skips-reasoning-when-disabled ()
   "Test gptel backend ignores reasoning events when reasoning is disabled."
-  (require 'magent-fsm-backend-gptel)
+  (require 'magent-fsm)
   (let ((magent-include-reasoning nil)
         (events nil)
         (stream-state (magent-fsm-backend-gptel--make-stream-state))
@@ -2597,7 +2623,7 @@
 
 (ert-deftest magent-test-gptel-backend-hides-reasoning-when-ignored ()
   "Test gptel backend keeps ignored reasoning out of the Magent UI."
-  (require 'magent-fsm-backend-gptel)
+  (require 'magent-fsm)
   (let ((magent-include-reasoning 'ignore)
         (events nil)
         (stream-state (magent-fsm-backend-gptel--make-stream-state))
@@ -2628,7 +2654,7 @@
 
 (ert-deftest magent-test-permission-prompt-choice-once-allow ()
   "Test tool confirmation accepts a one-time allow choice."
-  (require 'magent-fsm-shared)
+  (require 'magent-fsm-tools)
   (require 'magent-permission)
   (magent-permission-clear-session-overrides)
   (let ((result nil)
@@ -2656,7 +2682,7 @@
 
 (ert-deftest magent-test-permission-prompt-choice-once-deny ()
   "Test tool confirmation accepts a one-time deny choice."
-  (require 'magent-fsm-shared)
+  (require 'magent-fsm-tools)
   (require 'magent-permission)
   (magent-permission-clear-session-overrides)
   (let ((result nil)
@@ -2682,7 +2708,7 @@
 
 (ert-deftest magent-test-permission-prompt-choice-always-allow ()
   "Test tool confirmation persists an always-allow choice."
-  (require 'magent-fsm-shared)
+  (require 'magent-fsm-tools)
   (require 'magent-permission)
   (magent-permission-clear-session-overrides)
   (let ((result nil)
@@ -2711,7 +2737,7 @@
 
 (ert-deftest magent-test-permission-prompt-choice-always-deny ()
   "Test tool confirmation persists an always-deny choice."
-  (require 'magent-fsm-shared)
+  (require 'magent-fsm-tools)
   (require 'magent-permission)
   (magent-permission-clear-session-overrides)
   (let ((result nil)
@@ -2738,7 +2764,7 @@
 
 (ert-deftest magent-test-permission-bypass-disables-confirm-function ()
   "Test bypass config removes permission confirm hooks."
-  (require 'magent-fsm-shared)
+  (require 'magent-fsm-tools)
   (let ((magent-by-pass-permission t))
     (should-not
      (magent-fsm--make-confirm-function
@@ -2748,7 +2774,7 @@
 
 (ert-deftest magent-test-permission-bypass-skips-deny-and-prompt ()
   "Test bypass config executes tool calls without prompting."
-  (require 'magent-fsm-shared)
+  (require 'magent-fsm-tools)
   (require 'magent-permission)
   (magent-permission-clear-session-overrides)
   (let ((magent-by-pass-permission t)
@@ -2814,7 +2840,7 @@
 
 (ert-deftest magent-test-gptel-backend-streaming-tool-roundtrip-sequence ()
   "Test gptel backend handles streaming with a tool round-trip in order."
-  (require 'magent-fsm-backend-gptel)
+  (require 'magent-fsm)
   (let ((events nil)
         (final-response nil)
         (request-callback nil)
@@ -2863,7 +2889,7 @@
 
 (ert-deftest magent-test-gptel-backend-aborts-when-tool-round-limit-is-exceeded ()
   "Test runaway tool loops are aborted before another tool round runs."
-  (require 'magent-fsm-backend-gptel)
+  (require 'magent-fsm)
   (let* ((captured-response 'unset)
          (orig-called nil)
          (info (list :buffer (current-buffer)
@@ -2892,7 +2918,7 @@
 
 (ert-deftest magent-test-gptel-backend-unknown-tool-advice-ignores-unmanaged-fsm ()
   "Test unknown-tool advice leaves non-Magent gptel FSMs untouched."
-  (require 'magent-fsm-backend-gptel)
+  (require 'magent-fsm)
   (let* ((orig-called nil)
          (info (list :tool-use (list (list :id "call_1" :name "missing-tool"))
                      :reasoning-block 'in))
@@ -2906,7 +2932,7 @@
 
 (ert-deftest magent-test-gptel-backend-reset-reasoning-advice-ignores-unmanaged-fsm ()
   "Test reasoning reset advice does not mutate non-Magent gptel FSMs."
-  (require 'magent-fsm-backend-gptel)
+  (require 'magent-fsm)
   (let* ((info (list :reasoning-block 'in))
          (fsm (gptel-make-fsm :state 'WAIT :info info)))
     (magent--reset-reasoning-block-a fsm)
@@ -2914,7 +2940,7 @@
 
 (ert-deftest magent-test-tool-guard-intercepts-duplicate-emacs-eval ()
   "Test duplicate emacs_eval calls are short-circuited within one turn."
-  (require 'magent-fsm-shared)
+  (require 'magent-fsm-tools)
   (let* ((guard-state (magent-fsm--tool-guard-state-create))
          (args '(:sexp "(length (buffer-list))"))
          (first (magent-fsm--maybe-intercept-tool-call "emacs_eval" args guard-state))
@@ -2926,7 +2952,7 @@
 
 (ert-deftest magent-test-tool-guard-intercepts-emacs-eval-after-third-call ()
   "Test emacs_eval is capped at three executions per turn."
-  (require 'magent-fsm-shared)
+  (require 'magent-fsm-tools)
   (let ((guard-state (magent-fsm--tool-guard-state-create))
         (magent-emacs-eval-max-calls-per-turn 3))
     (should-not
@@ -2949,7 +2975,7 @@
 
 (ert-deftest magent-test-tool-guard-limit-message-includes-large-raw-content-guidance ()
   "Test emacs_eval limit guidance mentions previously fetched raw content."
-  (require 'magent-fsm-shared)
+  (require 'magent-fsm-tools)
   (let ((guard-state (magent-fsm--tool-guard-state-create))
         (magent-emacs-eval-max-calls-per-turn 1))
     (puthash :emacs-eval-count 1 guard-state)
@@ -2964,7 +2990,7 @@
 
 (ert-deftest magent-test-tool-guard-tracks-large-raw-results ()
   "Test large raw results are remembered for later guidance."
-  (require 'magent-fsm-shared)
+  (require 'magent-fsm-tools)
   (let ((guard-state (magent-fsm--tool-guard-state-create))
         (large-result (make-string 70000 ?x)))
     (magent-fsm--tool-guard-track-result "emacs_eval" large-result guard-state)
@@ -2974,7 +3000,7 @@
 
 (ert-deftest magent-test-tool-guard-respects-configured-emacs-eval-limit ()
   "Test emacs_eval guard uses `magent-emacs-eval-max-calls-per-turn'."
-  (require 'magent-fsm-shared)
+  (require 'magent-fsm-tools)
   (let ((guard-state (magent-fsm--tool-guard-state-create))
         (magent-emacs-eval-max-calls-per-turn 1))
     (should-not
@@ -2991,7 +3017,7 @@
 
 (ert-deftest magent-test-gptel-backend-aborts-on-fourth-emacs-eval-round ()
   "Test the backend hard-stops after three prior emacs_eval rounds."
-  (require 'magent-fsm-backend-gptel)
+  (require 'magent-fsm)
   (let* ((captured-response 'unset)
          (orig-called nil)
          (magent-emacs-eval-max-calls-per-turn 3)
@@ -3027,7 +3053,7 @@
 
 (ert-deftest magent-test-gptel-backend-respects-configured-emacs-eval-limit ()
   "Test backend hard-stop uses `magent-emacs-eval-max-calls-per-turn'."
-  (require 'magent-fsm-backend-gptel)
+  (require 'magent-fsm)
   (let* ((captured-response 'unset)
          (orig-called nil)
          (magent-emacs-eval-max-calls-per-turn 2)
@@ -3061,7 +3087,7 @@
 
 (ert-deftest magent-test-interrupt-drops-stale-async-tool-result ()
   "Test aborted requests ignore late async tool completions."
-  (require 'magent-fsm-shared)
+  (require 'magent-fsm-tools)
   (let ((controller (magent-fsm--abort-controller-create))
         (queue (magent-fsm--tool-queue-create))
         (tool-callback nil)
@@ -3189,7 +3215,7 @@
 
 (ert-deftest magent-test-gptel-backend-abort-cancels-request-resources ()
   "Test gptel backend abort cancels tool state and tears down the request buffer."
-  (require 'magent-fsm-backend-gptel)
+  (require 'magent-fsm)
   (let* ((controller (magent-fsm--abort-controller-create))
          (queue (magent-fsm--tool-queue-create))
          (request-buffer (generate-new-buffer " *magent-abort*"))
@@ -3223,100 +3249,6 @@
     (should (magent-fsm--tool-queue-aborted queue))
     (should-not (magent-fsm--tool-queue-busy queue))
     (should-not (buffer-live-p request-buffer))))
-
-;; ──────────────────────────────────────────────────────────────────────
-;;; FSM tests
-;; ──────────────────────────────────────────────────────────────────────
-
-(ert-deftest magent-test-fsm-tool-detection ()
-  "Test that the FSM struct correctly detects tool-use in response info."
-  (require 'magent-fsm-shared)
-  (let* ((fsm (magent-fsm-struct-create
-               :session (magent-session-create)
-               :backend (gptel-make-openai "test" :key "test-key")
-               :model 'gpt-4o-mini
-               :prompt-list nil
-               :system-prompt "test"
-               :tools nil
-               :streaming-p t
-               :callback #'ignore
-               :ui-callback nil))
-         (info-with-tools (list :tool-use
-                                (list (list :id "call_1"
-                                            :name "bash"
-                                            :args (list :command "echo test"))))))
-    ;; When info has :tool-use, FSM should have pending tools
-    (setf (magent-fsm-pending-tools fsm) nil)
-    (when (plist-get info-with-tools :tool-use)
-      (setf (magent-fsm-pending-tools fsm)
-            (plist-get info-with-tools :tool-use)))
-    (should (magent-fsm-pending-tools fsm))
-    (should (= (length (magent-fsm-pending-tools fsm)) 1))
-    (let ((tool-call (car (magent-fsm-pending-tools fsm))))
-      (should (equal (plist-get tool-call :name) "bash")))
-    ;; When info has no :tool-use, pending tools should be nil
-    (setf (magent-fsm-pending-tools fsm) nil)
-    (should (null (magent-fsm-pending-tools fsm)))))
-
-(ert-deftest magent-test-fsm-destroy ()
-  "Test FSM resource cleanup."
-  (require 'magent-fsm-shared)
-  (let* ((buf (generate-new-buffer " *test-fsm*"))
-         (fsm (magent-fsm-struct-create
-               :session (magent-session-create)
-               :backend (gptel-make-openai "test" :key "test-key")
-               :model 'gpt-4o-mini
-               :prompt-list nil
-               :system-prompt "test"
-               :tools nil
-               :streaming-p t
-               :callback #'ignore
-               :ui-callback nil
-               :request-buffer buf)))
-    ;; Buffer should exist
-    (should (buffer-live-p buf))
-    ;; Release resources directly from the shared FSM layer.
-    (magent-fsm-release-resources fsm)
-    ;; Buffer should be killed
-    (should-not (buffer-live-p buf))))
-
-(ert-deftest magent-test-fsm-multiple-tool-calls ()
-  "Test FSM struct handling of multiple tool calls in one response."
-  (require 'magent-fsm-shared)
-  (let* ((fsm (magent-fsm-struct-create
-               :session (magent-session-create)
-               :backend (gptel-make-openai "test" :key "test-key")
-               :model 'gpt-4o-mini
-               :prompt-list nil
-               :system-prompt "test"
-               :tools nil
-               :streaming-p t
-               :callback #'ignore
-               :ui-callback nil))
-         (tools (list (list :id "call_1" :name "bash" :args '(:command "ls"))
-                      (list :id "call_2" :name "grep" :args '(:pattern "foo" :path "."))
-                      (list :id "call_3" :name "read_file" :args '(:path "test.el")))))
-    (setf (magent-fsm-pending-tools fsm) tools)
-    (should (= (length (magent-fsm-pending-tools fsm)) 3))
-    (should (equal (plist-get (nth 0 (magent-fsm-pending-tools fsm)) :name) "bash"))
-    (should (equal (plist-get (nth 1 (magent-fsm-pending-tools fsm)) :name) "grep"))
-    (should (equal (plist-get (nth 2 (magent-fsm-pending-tools fsm)) :name) "read_file"))))
-
-(ert-deftest magent-test-fsm-create-initial-state ()
-  "Test FSM struct is created in INIT state."
-  (require 'magent-fsm-shared)
-  (let ((fsm (magent-fsm-struct-create
-              :session (magent-session-create)
-              :backend (gptel-make-openai "test" :key "test-key")
-              :model 'gpt-4o-mini
-              :prompt-list nil
-              :system-prompt "test"
-              :tools nil
-              :streaming-p t
-              :callback #'ignore
-              :ui-callback nil)))
-    (should (eq (magent-fsm-state fsm) 'INIT))
-    (should (null (magent-fsm-pending-tools fsm)))))
 
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; UI/session regression tests
@@ -3805,6 +3737,92 @@
                          "2026-03-17 12:00:00  (global)  Investigate resume menu title rendering regre...")))
       (delete-directory magent-session-directory t))))
 
+(ert-deftest magent-test-resume-session-candidates-include-time ()
+  "Test `magent-resume-session' presents timestamps with time-of-day."
+  (require 'magent-ui)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (session-file (expand-file-name "session-20260317-120000.json"
+                                         magent-session-directory))
+         captured-collection)
+    (unwind-protect
+        (progn
+          (with-temp-file session-file
+            (insert "{\"scope\":\"global\",\"summary-title\":\"Resume label\"}"))
+          (cl-letf (((symbol-function 'magent-ui--activate-context-session) #'ignore)
+                    ((symbol-function 'completing-read)
+                     (lambda (_prompt collection &rest _args)
+                       (setq captured-collection collection)
+                       nil))
+                    ((symbol-function 'message) #'ignore))
+            (magent-resume-session))
+          (should (equal captured-collection
+                         '("2026-03-17 12:00:00  (global)  Resume label"))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-resume-session-affixation-shows-time ()
+  "Test `magent-resume-session' provides a visible date/time prefix."
+  (require 'magent-ui)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (session-file (expand-file-name "session-20260317-120000.json"
+                                         magent-session-directory))
+         captured-collection
+         captured-properties)
+    (unwind-protect
+        (progn
+          (with-temp-file session-file
+            (insert "{\"scope\":\"global\",\"summary-title\":\"Resume label\"}"))
+          (cl-letf (((symbol-function 'magent-ui--activate-context-session) #'ignore)
+                    ((symbol-function 'completing-read)
+                     (lambda (_prompt collection &rest _args)
+                       (setq captured-collection collection
+                             captured-properties completion-extra-properties)
+                       nil))
+                    ((symbol-function 'message) #'ignore))
+            (magent-resume-session))
+          (let* ((affixation (plist-get captured-properties :affixation-function))
+                 (rows (funcall affixation captured-collection)))
+            (should (equal rows
+                           '(("2026-03-17 12:00:00  (global)  Resume label"
+                              "[2026-03-17 12:00:00] "
+                              ""))))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-session-format-file-legacy-name-falls-back-to-mtime ()
+  "Test legacy session filenames still display a timestamp."
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (session-file (expand-file-name "default.json" magent-session-directory))
+         (mtime (encode-time 6 5 4 3 2 2026)))
+    (unwind-protect
+        (progn
+          (with-temp-file session-file
+            (insert "{\"scope\":\"global\",\"summary-title\":\"Legacy session\"}"))
+          (set-file-times session-file mtime)
+          (should (equal (magent-session--format-file session-file)
+                         "2026-02-03 04:05:06  (global)  Legacy session")))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-session-list-files-sorts-within-group-by-session-time ()
+  "Test files inside one group are ordered newest-to-oldest by session time."
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (newer-file (expand-file-name "session-20260317-120000.json"
+                                       magent-session-directory))
+         (older-file (expand-file-name "session-20260317-110000.json"
+                                       magent-session-directory))
+         (newer-mtime (encode-time 0 0 1 1 1 2020))
+         (older-mtime (encode-time 0 0 1 1 1 2030)))
+    (unwind-protect
+        (progn
+          (with-temp-file newer-file
+            (insert "{\"scope\":\"global\",\"summary-title\":\"Newer session\"}"))
+          (with-temp-file older-file
+            (insert "{\"scope\":\"global\",\"summary-title\":\"Older session\"}"))
+          ;; Reverse mtimes so the test catches accidental mtime-based sorting.
+          (set-file-times newer-file newer-mtime)
+          (set-file-times older-file older-mtime)
+          (should (equal (magent-session-list-files)
+                         (list newer-file older-file))))
+      (delete-directory magent-session-directory t))))
+
 (ert-deftest magent-test-runtime-activate-scope-switches-project-overlays ()
   "Test runtime activation unloads the old overlay before loading the new one."
   (require 'magent-runtime)
@@ -4092,6 +4110,71 @@
           (magent-log "reload-safe %s" 1)
           (with-current-buffer buffer
             (should (string-match-p "reload-safe 1" (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-ui-log-level-info-hides-debug ()
+  "Test INFO log level suppresses DEBUG messages."
+  (require 'magent-ui)
+  (let ((magent-enable-logging t)
+        (magent-log-level 'info)
+        (buffer (magent-ui-get-log-buffer)))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (let ((inhibit-read-only t))
+              (erase-buffer)))
+          (magent-log "DEBUG hidden")
+          (magent-log "INFO shown")
+          (magent-log "PERM shown")
+          (magent-log "plain shown")
+          (with-current-buffer buffer
+            (let ((contents (buffer-string)))
+              (should-not (string-match-p "DEBUG hidden" contents))
+              (should (string-match-p "INFO shown" contents))
+              (should (string-match-p "PERM shown" contents))
+              (should (string-match-p "plain shown" contents)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-ui-log-level-warn-hides-info-and-perm ()
+  "Test WARN log level keeps only WARN and ERROR messages."
+  (require 'magent-ui)
+  (let ((magent-enable-logging t)
+        (magent-log-level 'warn)
+        (buffer (magent-ui-get-log-buffer)))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (let ((inhibit-read-only t))
+              (erase-buffer)))
+          (magent-log "INFO hidden")
+          (magent-log "PERM hidden")
+          (magent-log "WARN shown")
+          (magent-log "ERROR shown")
+          (with-current-buffer buffer
+            (let ((contents (buffer-string)))
+              (should-not (string-match-p "INFO hidden" contents))
+              (should-not (string-match-p "PERM hidden" contents))
+              (should (string-match-p "WARN shown" contents))
+              (should (string-match-p "ERROR shown" contents)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-ui-log-level-disabled-suppresses-output ()
+  "Test disabled logging suppresses all log output."
+  (require 'magent-ui)
+  (let ((magent-enable-logging nil)
+        (magent-log-level 'debug)
+        (buffer (magent-ui-get-log-buffer)))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (let ((inhibit-read-only t))
+              (erase-buffer)))
+          (magent-log "ERROR hidden")
+          (with-current-buffer buffer
+            (should (equal (buffer-string) ""))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

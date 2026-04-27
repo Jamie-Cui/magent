@@ -80,8 +80,9 @@ magent-session.el   + permissions     |
     |         FSM API + backend       |
     |     magent-fsm.el               |
     |        |                        |
-    |        +-- magent-fsm-backend-gptel.el
-    |        +-- magent-fsm-shared.el
+    |        +-- magent-fsm-tools.el
+    |        +-- magent-fsm-backend-gptel.el (shim)
+    |        +-- magent-fsm-shared.el (shim)
     v
 gptel (external)</pre>
 
@@ -156,7 +157,7 @@ gptel (external)</pre>
     </table>
 
     <h3>Finite State Machine (magent-fsm.el)</h3>
-    <p>The FSM API dispatches only to the gptel backend. Shared structs, abort state, and transient process cleanup live in <code>magent-fsm-shared.el</code>; streaming and tool-calling orchestration live in <code>magent-fsm-backend-gptel.el</code>.</p>
+    <p>The active FSM implementation lives in <code>magent-fsm.el</code>. Tool conversion, permission confirmation, queueing, and abort helpers live in <code>magent-fsm-tools.el</code>; <code>magent-fsm-backend-gptel.el</code> and <code>magent-fsm-shared.el</code> remain compatibility shims.</p>
 
     <h2 id="data">Core Data Structures</h2>
 

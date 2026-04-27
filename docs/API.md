@@ -35,7 +35,8 @@ Clear the active scoped session and local capability overrides.
 #### `magent-resume-session`
 **Keybinding:** `C-c m R`
 
-Resume a saved session from disk.
+Resume a saved session from disk.  Completion candidates include the saved
+date and time.
 
 #### `magent-select-agent`
 **Keybinding:** `C-c m A`
