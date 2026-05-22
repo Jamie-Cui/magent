@@ -3140,6 +3140,31 @@
                    (concat "^\\* " (regexp-quote magent-error-prompt) " +$")
                    (buffer-string))))))
 
+(ert-deftest magent-test-ui-interrupt-does-not-double-abort-turn-fsm ()
+  "Test interrupt aborts the active turn FSM only once."
+  (require 'magent-turn)
+  (let ((buffer (magent-ui-get-buffer))
+        (magent--current-fsm 'same-fsm)
+        (magent-turn--current-fsm 'same-fsm)
+        (magent-turn--active
+         (magent-turn-submission-create
+          :id "sub-interrupt"
+          :op (magent-protocol-interrupt-op)
+          :status 'running))
+        (magent-turn--queue nil)
+        aborted)
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)))
+    (cl-letf (((symbol-function 'magent-fsm-abort)
+               (lambda (fsm) (push fsm aborted)))
+              ((symbol-function 'magent-approval-drop-requests) #'ignore)
+              ((symbol-function 'spinner-stop) #'ignore)
+              ((symbol-function 'magent-ui--clear-processing) #'ignore)
+              ((symbol-function 'magent-ui--maybe-show-input-prompt) #'ignore))
+      (magent-interrupt))
+    (should (equal aborted '(same-fsm)))))
+
 (ert-deftest magent-test-emacs-eval-cancel-cleanup-prevents-late-callback ()
   "Test cancelling emacs_eval before its timer fires suppresses the callback."
   (require 'magent-tools)
@@ -5189,6 +5214,79 @@
        (condition-case nil
            (transient-get-suffix 'magit-diff "x")
          (error nil))))))
+
+;; ──────────────────────────────────────────────────────────────────────
+;;; Codex-like runtime skeleton tests
+;; ──────────────────────────────────────────────────────────────────────
+
+(ert-deftest magent-test-turn-runtime-queues-submissions ()
+  "Test turn runtime queues submissions and starts the next one on finish."
+  (require 'magent-turn)
+  (let ((magent-turn--active nil)
+        (magent-turn--queue nil)
+        (magent-turn--current-fsm nil)
+        started)
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_secs _repeat fn &rest args)
+                 (apply fn args)
+                 'timer)))
+      (magent-turn-submit
+       (magent-protocol-user-input-op "one")
+       "one"
+       (lambda (submission)
+         (push (magent-turn-submission-payload submission) started)))
+      (magent-turn-submit
+       (magent-protocol-user-input-op "two")
+       "two"
+       (lambda (submission)
+         (push (magent-turn-submission-payload submission) started)))
+      (should (equal (nreverse started) '("one")))
+      (should (magent-turn-processing-p))
+      (should (magent-turn-pending-p))
+      (magent-turn-finish 'completed)
+      (should (equal (nreverse started) '("one" "two")))
+      (should (magent-turn-processing-p))
+      (should-not (magent-turn-pending-p)))))
+
+(ert-deftest magent-test-session-records-structured-context-items ()
+  "Test session messages also populate Codex-like context items."
+  (require 'magent-session)
+  (let ((session (magent-session-create)))
+    (magent-session-add-message session 'user "hello")
+    (magent-session-add-message session 'assistant "world")
+    (let ((items (magent-session-context-items session)))
+      (should (= (length items) 2))
+      (should (eq (magent-response-item-type (car items)) 'message))
+      (should (eq (magent-response-item-role (car items)) 'user))
+      (should (equal (magent-response-item-content (cadr items)) "world")))))
+
+(ert-deftest magent-test-tool-orchestrator-denies-file-rule ()
+  "Test tool orchestrator preserves Magent file-rule denial behavior."
+  (require 'magent-tool-orchestrator)
+  (require 'gptel)
+  (let* ((permission (magent-permission-defaults))
+         (tool (gptel-make-tool
+                :name "write_file"
+                :description "write"
+                :args (list '(:name "path" :type string)
+                            '(:name "content" :type string))
+                :function (lambda (_path _content) "ok")
+                :async nil))
+         result ran)
+    (magent-tool-orchestrator-handle-tool-calls
+     (magent-tool-orchestrator-create
+      :permission permission
+      :run-tool-function
+      (lambda (tool-spec cb arg-values)
+        (setq ran t)
+        (funcall cb (apply (gptel-tool-function tool-spec) arg-values)))
+      :file-arg-index-function (lambda (_args-spec) 0)
+      :args-to-plist-function (lambda (_args-spec arg-values) arg-values)
+      :summarize-function (lambda (arg-values _args-spec) (car arg-values)))
+     (list (list tool (list ".env" "SECRET=1")
+                 (lambda (value) (setq result value)))))
+    (should-not ran)
+    (should (string-match-p "access denied" result))))
 
 (provide 'magent-test)
 ;;; magent-test.el ends here

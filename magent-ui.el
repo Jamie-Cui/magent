@@ -27,6 +27,8 @@
 (require 'magent-agent)
 (require 'magent-agent-registry)
 (require 'magent-fsm)
+(require 'magent-protocol)
+(require 'magent-turn)
 
 (defvar magent--spinner)
 (defvar magent-enable-logging)
@@ -82,15 +84,19 @@
   (timestamp 0.0 :type float))
 
 (defvar magent-ui--processing nil
-  "Non-nil while an LLM request is in flight.")
+  "Legacy UI processing flag.
+Kept for compatibility with older tests and external callers.  The
+active runtime state is owned by `magent-turn'.")
 
 (defun magent-ui-processing-p ()
   "Return non-nil if a request is currently being processed."
-  magent-ui--processing)
+  (or magent-ui--processing
+      (magent-turn-processing-p)
+      (magent-turn-pending-p)))
 
 (defun magent-ui--enqueue
     (prompt source &optional display skills agent request-context capability-resolution)
-  "Dispatch PROMPT immediately, or reject with a message if busy.
+  "Submit PROMPT to the runtime queue.
 SOURCE is a symbol identifying the calling command.
 DISPLAY is the text to show in the user message heading; defaults to PROMPT.
 SKILLS is a list of skill name strings selected via slash commands.
@@ -99,19 +105,20 @@ REQUEST-CONTEXT is an optional structured context plist captured from
 the originating buffer.
 CAPABILITY-RESOLUTION is an optional precomputed resolver result for
 this turn.
-Returns nil always (never queued)."
-  (if magent-ui--processing
-      (message "Magent: busy — wait for the current request to finish")
-    (magent-ui--dispatch (magent-ui--request-create
-                          :prompt prompt
-                          :display display
-                          :source source
-                          :skills skills
-                          :agent agent
-                          :request-context request-context
-                          :capability-resolution capability-resolution
-                          :timestamp (float-time))))
-  nil)
+Returns the submitted operation id."
+  (let ((item (magent-ui--request-create
+               :prompt prompt
+               :display display
+               :source source
+               :skills skills
+               :agent agent
+               :request-context request-context
+               :capability-resolution capability-resolution
+               :timestamp (float-time))))
+    (magent-turn-submit
+     (magent-protocol-user-input-op item)
+     item
+     #'magent-ui--dispatch-submission)))
 
 (defun magent-ui--clear-processing ()
   "Release the processing lock.
@@ -125,6 +132,12 @@ Uses `run-at-time' to defer dispatch so callers finish their
 stack frame before UI mutations happen."
   (setq magent-ui--processing t)
   (run-at-time 0 nil #'magent-ui--run-item item))
+
+(defun magent-ui--dispatch-submission (submission)
+  "Dispatch a queued runtime SUBMISSION to the UI runner."
+  (setq magent-ui--processing t)
+  (magent-ui--run-item (magent-turn-submission-payload submission)
+                       (magent-turn-submission-id submission)))
 
 (defvar magent-ui--request-generation 0
   "Monotonically increasing counter for request dispatch cycles.
@@ -521,9 +534,12 @@ newly loaded session snapshot."
 Bumps the generation counter so stale callbacks from the aborted
 request are discarded."
   (interactive)
-  (when magent--current-fsm
-    (magent-fsm-abort magent--current-fsm)
-    (setq magent--current-fsm nil))
+  (let ((turn-fsm (magent-turn-current-fsm)))
+    (magent-turn-interrupt #'magent-fsm-abort)
+    (when magent--current-fsm
+      (unless (eq magent--current-fsm turn-fsm)
+        (magent-fsm-abort magent--current-fsm))
+      (setq magent--current-fsm nil)))
   (magent-approval-drop-requests)
   (cl-incf magent-ui--request-generation)
   (when (and (boundp 'magent--spinner) magent--spinner)
@@ -1307,7 +1323,7 @@ AGENT is an optional `magent-agent-info' override for this request."
     (magent-ui-process prompt source display skills agent)))
 
 (defun magent-ui-process (prompt &optional source display skills agent)
-  "Dispatch PROMPT, rejecting if a request is already in flight.
+  "Submit PROMPT to Magent's runtime queue.
 SOURCE is a symbol identifying the caller (default: \\='prompt).
 DISPLAY is the text shown in the buffer's user-message heading;
 defaults to PROMPT when nil.
@@ -1322,7 +1338,7 @@ AGENT is an optional `magent-agent-info' override for this request."
     (magent-ui--enqueue prompt (or source 'prompt)
                         display skills agent request-context capability-resolution)))
 
-(defun magent-ui--run-item (item)
+(defun magent-ui--run-item (item &optional submission-id)
   "Dispatch ITEM (a `magent-ui--request') to the agent.
 Called exclusively by `magent-ui--dispatch' after the lock is held.
 Inserts the user message into the output buffer, starts the spinner,
@@ -1350,7 +1366,9 @@ stale callbacks are discarded."
     (condition-case err
         (let ((request-live-p
                (lambda ()
-                 (= gen magent-ui--request-generation))))
+                 (and (= gen magent-ui--request-generation)
+                      (or (null submission-id)
+                          (magent-turn-active-id-p submission-id))))))
           (setq request-state
                 (magent-request-context-create
                  :id (magent-events-generate-id)
@@ -1368,8 +1386,10 @@ stale callbacks are discarded."
                 (magent-agent-process
                  input
                  (lambda (response)
-                   (if (= gen magent-ui--request-generation)
-                       (magent-ui--finish-processing response)
+                   (if (and (= gen magent-ui--request-generation)
+                            (or (null submission-id)
+                                (magent-turn-active-id-p submission-id)))
+                       (magent-ui--finish-processing response submission-id)
                      (magent-log "DEBUG discarding stale callback gen=%d (current=%d)"
                                  gen magent-ui--request-generation)))
                  (magent-ui--request-agent item)
@@ -1379,17 +1399,21 @@ stale callbacks are discarded."
                  (magent-ui--request-capability-resolution item)
                  #'magent-ui-insert-streaming
                  request-live-p
-                 request-state)))
+                 request-state))
+          (when submission-id
+            (magent-turn-set-current-fsm magent--current-fsm)))
       (error
        (magent-log "ERROR in run-item: %s" (error-message-string err))
        (magent-ui-insert-error (error-message-string err))
        (setq magent--current-fsm nil)
+       (when submission-id
+         (magent-turn-finish 'failed (error-message-string err)))
        (when (and (boundp 'magent--spinner) magent--spinner)
          (spinner-stop magent--spinner))
        (magent-ui--clear-processing)
        (magent-ui--maybe-show-input-prompt scope)))))
 
-(defun magent-ui--finish-processing (response)
+(defun magent-ui--finish-processing (response &optional submission-id)
   "Finish processing with RESPONSE and advance the queue.
 Handles both streaming and non-streaming completion."
   (setq magent--current-fsm nil)
@@ -1404,6 +1428,8 @@ Handles both streaming and non-streaming completion."
     (magent-log "ERROR request failed or aborted")
     (magent-ui-insert-error "Request failed or was aborted")))
   (magent-ui--clear-processing)
+  (when submission-id
+    (magent-turn-finish (if (stringp response) 'completed 'failed) response))
   (magent-ui--maybe-show-input-prompt (magent-session-current-scope)))
 
 ;;; Session management commands

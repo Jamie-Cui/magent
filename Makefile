@@ -36,13 +36,17 @@ endif
 
 SRCS = magent-config.el \
        magent-audit.el \
-       magent.el \
+       magent-protocol.el \
        magent-events.el \
        magent-approval.el \
        magent-file-loader.el \
        magent-session.el \
+       magent-context.el \
        magent-runtime.el \
        magent-tools.el \
+       magent-tool-registry.el \
+       magent-tool-orchestrator.el \
+       magent-turn.el \
        magent-agent.el \
        magent-agent-info.el \
        magent-agent-types.el \
@@ -57,6 +61,7 @@ SRCS = magent-config.el \
        magent-fsm-shared.el \
        magent-skills.el \
        magent-capability.el \
+       magent.el \
        $(OPTIONAL_SRCS)
 
 COMPILED = $(SRCS:.el=.elc)
@@ -79,8 +84,10 @@ compile: $(COMPILED)
 
 %.elc: %.el
 	@echo "Compiling $<..."
-	@$(EMACS_BATCH) $(LOADPATH) $(BYTE_COMPILE_FLAGS) -f batch-byte-compile $< 2>&1 | \
-		grep -v "^Compiling" | grep -v "^Wrote" || true
+	@out=$$($(EMACS_BATCH) $(LOADPATH) $(BYTE_COMPILE_FLAGS) -f batch-byte-compile $< 2>&1); \
+	status=$$?; \
+	printf "%s\n" "$$out" | grep -v "^Compiling" | grep -v "^Wrote" || true; \
+	exit $$status
 
 test:
 	@echo "Running unit tests..."
