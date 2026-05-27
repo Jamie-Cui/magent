@@ -28,7 +28,9 @@
   audit-function
   file-arg-index-function
   args-to-plist-function
-  summarize-function)
+  summarize-function
+  result-callback
+  done-callback)
 
 (defun magent-tool-orchestrator--approval-session (request-context)
   "Return approval session for REQUEST-CONTEXT."
@@ -49,6 +51,12 @@
   (funcall (magent-tool-orchestrator-run-tool-function orchestrator)
            tool-spec cb arg-values))
 
+(defun magent-tool-orchestrator--finish-one
+    (orchestrator tool-spec arg-values raw-call result)
+  "Record one tool RESULT through ORCHESTRATOR callbacks."
+  (when-let ((fn (magent-tool-orchestrator-result-callback orchestrator)))
+    (funcall fn tool-spec arg-values raw-call result)))
+
 (defun magent-tool-orchestrator--file-arg-index (orchestrator args-spec)
   "Return file arg index for ARGS-SPEC using ORCHESTRATOR."
   (when-let ((fn (magent-tool-orchestrator-file-arg-index-function orchestrator)))
@@ -68,26 +76,45 @@
 
 (defun magent-tool-orchestrator-handle-tool-calls (orchestrator tool-calls)
   "Handle TOOL-CALLS using ORCHESTRATOR.
-TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK)' shape."
+TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
   (let* ((permission (magent-tool-orchestrator-permission orchestrator))
          (request-context (magent-tool-orchestrator-request-context orchestrator))
          (approval-session
-          (magent-tool-orchestrator--approval-session request-context)))
+          (magent-tool-orchestrator--approval-session request-context))
+         (remaining (length tool-calls)))
+    (cl-labels ((complete-one
+                 (tool-spec arg-values raw-call result)
+                 (magent-tool-orchestrator--finish-one
+                  orchestrator tool-spec arg-values raw-call result)
+                 (cl-decf remaining)
+                 (when (and (<= remaining 0)
+                            (magent-tool-orchestrator-done-callback
+                             orchestrator))
+                   (funcall (magent-tool-orchestrator-done-callback
+                             orchestrator)))))
     (if (magent-permission-bypass-p)
         (dolist (tc tool-calls)
           (let* ((tool-spec (car tc))
                  (arg-values (cadr tc))
                  (cb (caddr tc))
+                 (raw-call (nth 3 tc))
                  (tool-name (gptel-tool-name tool-spec)))
             (magent-log "PERM bypass allow: %s" tool-name)
             (magent-tool-orchestrator--call-audit
              orchestrator tool-spec arg-values 'allow 'bypass)
-            (magent-tool-orchestrator--run orchestrator tool-spec cb arg-values)))
+            (magent-tool-orchestrator--run
+             orchestrator tool-spec
+             (lambda (result)
+               (when cb
+                 (funcall cb result))
+               (complete-one tool-spec arg-values raw-call result))
+             arg-values)))
       (let (pending)
         (dolist (tc tool-calls)
           (let* ((tool-spec (car tc))
                  (arg-values (cadr tc))
                  (cb (caddr tc))
+                 (raw-call (nth 3 tc))
                  (tool-name (gptel-tool-name tool-spec))
                  (perm-key (magent-tools-permission-key tool-name))
                  (file-path
@@ -97,7 +124,7 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK)' shape."
                                 (gptel-tool-args tool-spec))))
                       (when idx
                         (nth idx arg-values)))))
-                 (resolved (when (and permission perm-key)
+                 (resolved (when perm-key
                              (magent-permission-resolve
                               permission perm-key file-path)))
                  (override (when perm-key
@@ -117,35 +144,65 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK)' shape."
               (magent-tool-orchestrator--call-audit
                orchestrator tool-spec arg-values
                'allow 'session-override-allow)
-              (magent-tool-orchestrator--run orchestrator tool-spec cb arg-values))
+              (magent-tool-orchestrator--run
+               orchestrator tool-spec
+               (lambda (result)
+                 (when cb
+                   (funcall cb result))
+                 (complete-one tool-spec arg-values raw-call result))
+               arg-values))
              ((eq override 'deny)
               (magent-log "PERM auto-deny (session override): %s" tool-name)
               (magent-tool-orchestrator--call-audit
                orchestrator tool-spec arg-values
                'deny 'session-override-deny)
-              (funcall cb (format "Error: tool '%s' denied by session policy"
-                                  tool-name)))
+              (let ((result (format "Error: tool '%s' denied by session policy"
+                                    tool-name)))
+                (when cb
+                  (funcall cb result))
+                (complete-one tool-spec arg-values raw-call result)))
              ((eq resolved 'deny)
               (magent-log "PERM auto-deny (file rule): %s %s"
                           tool-name (or file-path ""))
               (magent-tool-orchestrator--call-audit
                orchestrator tool-spec arg-values 'deny 'file-rule-deny)
-              (funcall cb (format "Error: access denied for %s on %s"
-                                  tool-name
-                                  (or file-path "this resource"))))
+              (let ((result (format "Error: access denied for %s on %s"
+                                    tool-name
+                                    (or file-path "this resource"))))
+                (when cb
+                  (funcall cb result))
+                (complete-one tool-spec arg-values raw-call result)))
              ((and file-path (eq resolved 'allow))
               (magent-log "PERM auto-allow (file rule): %s %s"
                           tool-name file-path)
               (magent-tool-orchestrator--call-audit
                orchestrator tool-spec arg-values 'allow 'file-rule-allow)
-              (magent-tool-orchestrator--run orchestrator tool-spec cb arg-values))
+              (magent-tool-orchestrator--run
+               orchestrator tool-spec
+               (lambda (result)
+                 (when cb
+                   (funcall cb result))
+                 (complete-one tool-spec arg-values raw-call result))
+               arg-values))
+             ((eq resolved 'allow)
+              (magent-log "PERM auto-allow: %s" tool-name)
+              (magent-tool-orchestrator--call-audit
+               orchestrator tool-spec arg-values 'allow 'rule-allow)
+              (magent-tool-orchestrator--run
+               orchestrator tool-spec
+               (lambda (result)
+                 (when cb
+                   (funcall cb result))
+                 (complete-one tool-spec arg-values raw-call result))
+               arg-values))
              (t
               (push tc pending)))))
         (when pending
           (magent-tool-orchestrator-prompt-next
-           orchestrator (nreverse pending)))))))
+           orchestrator (nreverse pending) #'complete-one)))))))
 
-(defun magent-tool-orchestrator-prompt-next (orchestrator tool-calls)
+(defun magent-tool-orchestrator-prompt-next
+    (orchestrator tool-calls &optional complete-one)
   "Prompt for TOOL-CALLS one by one through ORCHESTRATOR."
   (when tool-calls
     (let* ((tc (car tool-calls))
@@ -153,6 +210,7 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK)' shape."
            (tool-spec (car tc))
            (arg-values (cadr tc))
            (cb (caddr tc))
+           (raw-call (nth 3 tc))
            (tool-name (gptel-tool-name tool-spec))
            (perm-key (magent-tools-permission-key tool-name))
            (request-context
@@ -177,12 +235,23 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK)' shape."
             (magent-log "PERM user allowed (once): %s" tool-name)
             (magent-tool-orchestrator--call-audit
              orchestrator tool-spec arg-values 'allow 'user-allow-once)
-            (magent-tool-orchestrator--run orchestrator tool-spec cb arg-values))
+            (magent-tool-orchestrator--run
+             orchestrator tool-spec
+             (lambda (result)
+               (when cb
+                 (funcall cb result))
+               (when complete-one
+                 (funcall complete-one tool-spec arg-values raw-call result)))
+             arg-values))
            ('deny-once
             (magent-log "PERM user denied (once): %s" tool-name)
             (magent-tool-orchestrator--call-audit
              orchestrator tool-spec arg-values 'deny 'user-deny-once)
-            (funcall cb (format "Error: tool '%s' denied by user" tool-name)))
+            (let ((result (format "Error: tool '%s' denied by user" tool-name)))
+              (when cb
+                (funcall cb result))
+              (when complete-one
+                (funcall complete-one tool-spec arg-values raw-call result))))
            ('allow-session
             (magent-log "PERM user always-allow: %s" tool-name)
             (when perm-key
@@ -190,7 +259,14 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK)' shape."
                perm-key 'allow approval-session))
             (magent-tool-orchestrator--call-audit
              orchestrator tool-spec arg-values 'allow 'user-allow-session)
-            (magent-tool-orchestrator--run orchestrator tool-spec cb arg-values))
+            (magent-tool-orchestrator--run
+             orchestrator tool-spec
+             (lambda (result)
+               (when cb
+                 (funcall cb result))
+               (when complete-one
+                 (funcall complete-one tool-spec arg-values raw-call result)))
+             arg-values))
            ('deny-session
             (magent-log "PERM user always-deny: %s" tool-name)
             (when perm-key
@@ -198,8 +274,13 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK)' shape."
                perm-key 'deny approval-session))
             (magent-tool-orchestrator--call-audit
              orchestrator tool-spec arg-values 'deny 'user-deny-session)
-            (funcall cb (format "Error: tool '%s' denied by user" tool-name))))
-         (magent-tool-orchestrator-prompt-next orchestrator rest))))))
+            (let ((result (format "Error: tool '%s' denied by user" tool-name)))
+              (when cb
+                (funcall cb result))
+              (when complete-one
+                (funcall complete-one tool-spec arg-values raw-call result)))))
+         (magent-tool-orchestrator-prompt-next
+          orchestrator rest complete-one))))))
 
 (provide 'magent-tool-orchestrator)
 ;;; magent-tool-orchestrator.el ends here
