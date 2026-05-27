@@ -16,6 +16,7 @@
 (require 'json)
 (require 'subr-x)
 (require 'magent-config)
+(require 'magent-protocol)
 
 (declare-function magent-agent-info-name "magent-agent-registry")
 (declare-function magent-agent-registry-get "magent-agent-registry")
@@ -30,7 +31,8 @@
   (id nil)
   (agent nil)
   (buffer-content nil)       ; Saved buffer text for lossless restore
-  (approval-overrides nil))  ; Session-scoped approval memory
+  (approval-overrides nil)   ; Session-scoped approval memory
+  (context-items nil))       ; Structured Codex-like transcript items
 
 ;;; Message helpers
 
@@ -339,6 +341,14 @@ Fall back to the file modification time for legacy filenames."
     `((role . ,(symbol-name role))
       (content . ,(magent-session--content-to-string content)))))
 
+(defun magent-session--context-item-to-alist (item)
+  "Convert structured context ITEM to a JSON-serializable alist."
+  (magent-protocol-response-item-to-alist item))
+
+(defun magent-session--alist-to-context-item (alist)
+  "Reconstruct a structured context item from JSON-decoded ALIST."
+  (magent-protocol-response-item-from-alist alist))
+
 (defun magent-session--alist-to-msg (alist)
   "Reconstruct a session message from JSON-decoded ALIST."
   (let ((role (intern (cdr (assq 'role alist))))
@@ -372,6 +382,10 @@ before calling this function."
                        ,@(when summary-title
                            `((summary-title . ,summary-title)))
                        (messages . ,(vconcat (mapcar #'magent-session--msg-to-alist messages)))
+                       (context-items . ,(vconcat
+                                          (mapcar
+                                           #'magent-session--context-item-to-alist
+                                           (magent-session-context-items session))))
                        (approval-overrides . ,(vconcat approval-overrides))
                        (buffer-content . ,(or (magent-session-buffer-content session) "")))))
           (with-temp-file filepath
@@ -392,6 +406,7 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
                (scope-name (cdr (assq 'scope data)))
                (project-root (cdr (assq 'project-root data)))
                (msgs-raw (cdr (assq 'messages data)))
+               (context-raw (cdr (assq 'context-items data)))
                (approval-raw (cdr (assq 'approval-overrides data)))
                (bc (or (cdr (assq 'buffer-content data)) ""))
                (scope (pcase scope-name
@@ -401,6 +416,8 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
                         ("global" 'global)
                         (_ (magent-session--infer-file-scope filepath))))
                (messages (mapcar #'magent-session--alist-to-msg msgs-raw))
+               (context-items (mapcar #'magent-session--alist-to-context-item
+                                      context-raw))
                (approval-overrides
                 (mapcar
                  (lambda (entry)
@@ -410,6 +427,7 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
                (session (magent-session-create
                          :id id
                          :messages messages
+                         :context-items context-items
                          :approval-overrides approval-overrides
                          :buffer-content (when (> (length bc) 0) bc))))
           (list :scope scope
@@ -497,6 +515,10 @@ CONTENT can be a string or a list of content blocks."
          (messages (magent-session-messages session))
          (new-messages (nconc messages (list msg))))
     (setf (magent-session-messages session) new-messages)
+    (when (memq role '(user assistant))
+      (setf (magent-session-context-items session)
+            (nconc (magent-session-context-items session)
+                   (list (magent-protocol-message-item role content)))))
     (when (> (length new-messages) (+ (magent-session-max-history session) 10))
       (magent-session--trim-history session)))
   session)
@@ -509,7 +531,26 @@ CONTENT can be a string or a list of content blocks."
          (to-remove (- count max)))
     (when (> to-remove 0)
       (setf (magent-session-messages session) (nthcdr to-remove messages))
+      (setf (magent-session-context-items session)
+            (magent-session--trim-context-items-for-messages
+             (magent-session-context-items session)
+             max))
       (magent-log "INFO Trimmed session history: removed %d old messages" to-remove))))
+
+(defun magent-session--trim-context-items-for-messages (items max-messages)
+  "Trim structured ITEMS to roughly MAX-MESSAGES message items.
+Non-message items are retained only after the retained message boundary."
+  (let ((message-count 0)
+        start)
+    (cl-loop for item in (reverse items)
+             for index from (1- (length items)) downto 0
+             do (when (eq (magent-response-item-type item) 'message)
+                  (cl-incf message-count)
+                  (when (<= message-count max-messages)
+                    (setq start index))))
+    (if start
+        (nthcdr start items)
+      items)))
 
 (defun magent-session-get-messages (session)
   "Get all messages from SESSION in chronological order."
