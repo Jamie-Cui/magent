@@ -542,7 +542,7 @@ must not be forwarded to the actual tool implementation."
        :args args-plist))))
 
 (defun magent-fsm--handle-tool-call-confirmation-with-permission
-    (permission tool-calls &optional request-context)
+    (permission tool-calls &optional request-context result-callback done-callback)
   "Handle TOOL-CALLS using PERMISSION rules."
   (magent-tool-orchestrator-handle-tool-calls
    (magent-tool-orchestrator-create
@@ -552,17 +552,22 @@ must not be forwarded to the actual tool implementation."
     :audit-function #'magent-fsm--audit-permission-decision
     :file-arg-index-function #'magent-fsm--find-file-arg-index
     :args-to-plist-function #'magent-fsm--args-to-plist
-    :summarize-function #'magent-fsm--summarize-args)
+    :summarize-function #'magent-fsm--summarize-args
+    :result-callback result-callback
+    :done-callback done-callback)
    tool-calls))
 
-(defun magent-fsm--prompt-next-tool-call (tool-calls &optional request-context)
+(defun magent-fsm--prompt-next-tool-call
+    (tool-calls &optional request-context result-callback done-callback)
   "Prompt for the next tool call in TOOL-CALLS."
   (when tool-calls
+    (require 'magent-tools)
     (let* ((tc (car tool-calls))
            (rest (cdr tool-calls))
            (tool-spec (car tc))
            (arg-values (cadr tc))
            (cb (caddr tc))
+           (raw-call (nth 3 tc))
            (tool-name (gptel-tool-name tool-spec))
            (perm-key (magent-tools-permission-key tool-name))
            (approval-session (or (and request-context
@@ -584,23 +589,50 @@ must not be forwarded to the actual tool implementation."
          (pcase decision
            ('allow-once
             (magent-log "PERM user allowed (once): %s" tool-name)
-            (magent-fsm--run-tool tool-spec cb arg-values))
+            (magent-fsm--run-tool
+             tool-spec
+             (lambda (result)
+               (when cb (funcall cb result))
+               (when result-callback
+                 (funcall result-callback tool-spec arg-values raw-call result))
+               (when (and (null rest) done-callback)
+                 (funcall done-callback)))
+             arg-values))
            ('deny-once
             (magent-log "PERM user denied (once): %s" tool-name)
-           (funcall cb (format "Error: tool '%s' denied by user" tool-name)))
+            (let ((result (format "Error: tool '%s' denied by user" tool-name)))
+              (when cb (funcall cb result))
+              (when result-callback
+                (funcall result-callback tool-spec arg-values raw-call result))
+              (when (and (null rest) done-callback)
+                (funcall done-callback))))
            ('allow-session
             (magent-log "PERM user always-allow: %s" tool-name)
             (when perm-key
               (magent-permission-set-session-override
                perm-key 'allow approval-session))
-            (magent-fsm--run-tool tool-spec cb arg-values))
+            (magent-fsm--run-tool
+             tool-spec
+             (lambda (result)
+               (when cb (funcall cb result))
+               (when result-callback
+                 (funcall result-callback tool-spec arg-values raw-call result))
+               (when (and (null rest) done-callback)
+                 (funcall done-callback)))
+             arg-values))
            ('deny-session
             (magent-log "PERM user always-deny: %s" tool-name)
             (when perm-key
               (magent-permission-set-session-override
                perm-key 'deny approval-session))
-            (funcall cb (format "Error: tool '%s' denied by user" tool-name))))
-         (magent-fsm--prompt-next-tool-call rest request-context))))))
+            (let ((result (format "Error: tool '%s' denied by user" tool-name)))
+              (when cb (funcall cb result))
+              (when result-callback
+                (funcall result-callback tool-spec arg-values raw-call result))
+              (when (and (null rest) done-callback)
+                (funcall done-callback)))))
+         (magent-fsm--prompt-next-tool-call rest request-context
+                                           result-callback done-callback))))))
 
 (defun magent-fsm--run-tool (tool-spec cb arg-values)
   "Execute TOOL-SPEC with ARG-VALUES and call CB with the result."

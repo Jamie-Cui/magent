@@ -589,18 +589,63 @@
       (should (equal (car (nth 2 prompt-list)) 'prompt))
       (should (equal (cdr (nth 2 prompt-list)) "Tell me more.")))))
 
-(ert-deftest magent-test-session-to-gptel-prompt-list-skips-tool ()
-  "Test that tool messages are skipped in gptel prompt list."
+(ert-deftest magent-test-session-to-gptel-prompt-list-keeps-structured-tool ()
+  "Test structured tool messages are included in gptel prompt list."
+  (require 'magent-session)
+  (let ((session (magent-session-create)))
+    (magent-session-add-message session 'user "Run ls")
+    (magent-session-add-tool-message
+     session "call_1" "bash" '(:command "ls") "file1.txt\nfile2.txt")
+    (magent-session-add-message session 'assistant "Here are the files.")
+    (let ((prompt-list (magent-session-to-gptel-prompt-list session)))
+      (should (= (length prompt-list) 3))
+      (should (equal (nth 0 prompt-list) '(prompt . "Run ls")))
+      (should (equal (nth 1 prompt-list)
+                     '(tool . (:id "call_1"
+                               :name "bash"
+                               :args (:command "ls")
+                               :result "file1.txt\nfile2.txt"))))
+      (should (equal (nth 2 prompt-list)
+                     '(response . "Here are the files."))))))
+
+(ert-deftest magent-test-session-to-gptel-prompt-list-json-sanitizes-tool-args ()
+  "Test tool data reused in gptel prompts is safe for `json-serialize'."
+  (require 'magent-session)
+  (let ((session (magent-session-create)))
+    (magent-session-add-message session 'user "Run tool")
+    (magent-session-add-tool-message
+     session "call_1" 'emacs_eval
+     '(:sexp "(+ 20 22)" :tool emacs_eval :values [emacs_eval nil])
+     "42")
+    (let* ((prompt-list (magent-session-to-gptel-prompt-list session))
+           (tool (cdr (nth 1 prompt-list)))
+           (args (plist-get tool :args)))
+      (should (equal (plist-get tool :name) "emacs_eval"))
+      (should (equal args
+                     '(:sexp "(+ 20 22)"
+                       :tool "emacs_eval"
+                       :values ["emacs_eval" :null])))
+      (should
+       (if (fboundp 'json-serialize)
+           (json-serialize (list :name (plist-get tool :name)
+                                 :args args)
+                           :null-object :null
+                           :false-object :json-false)
+         (let ((json-null :null)
+               (json-false :json-false))
+           (json-encode (list :name (plist-get tool :name)
+                              :args args))))))))
+
+(ert-deftest magent-test-session-to-gptel-prompt-list-skips-legacy-tool-string ()
+  "Test old string-only tool messages are skipped in gptel prompt list."
   (require 'magent-session)
   (let ((session (magent-session-create)))
     (magent-session-add-message session 'user "Run ls")
     (magent-session-add-message session 'tool "file1.txt\nfile2.txt")
     (magent-session-add-message session 'assistant "Here are the files.")
-    (let ((prompt-list (magent-session-to-gptel-prompt-list session)))
-      ;; Tool message should be skipped
-      (should (= (length prompt-list) 2))
-      (should (equal (car (nth 0 prompt-list)) 'prompt))
-      (should (equal (car (nth 1 prompt-list)) 'response)))))
+    (should (equal (magent-session-to-gptel-prompt-list session)
+                   '((prompt . "Run ls")
+                     (response . "Here are the files."))))))
 
 (ert-deftest magent-test-session-to-gptel-prompt-list-drops-failed-turns ()
   "Test failed turns do not leak into later prompt reuse."
@@ -2360,7 +2405,7 @@
              :gptel-backend gptel-backend
              :model 'gpt-4o-mini)))
     (should (equal captured-permission permission))
-    (should (eq captured-confirm-mode 'auto))))
+    (should (eq captured-confirm-mode t))))
 
 (ert-deftest magent-test-gptel-backend-routes-tool-call-confirmation ()
   "Test gptel backend routes pending tool calls through magent permissions."
@@ -2380,6 +2425,232 @@
       (when (buffer-live-p request-buffer)
         (kill-buffer request-buffer)))
     (should (equal captured (list permission tool-calls nil)))))
+
+(ert-deftest magent-test-gptel-backend-tool-call-owned-by-magent-runtime ()
+  "Test tool calls are recorded by Magent and continued with a fresh request."
+  (require 'magent-fsm)
+  (let* ((session (magent-session-create))
+         (tool (gptel-make-tool
+                :name "grep"
+                :description "test"
+                :args '((:name "query" :type string))
+                :function (lambda (_query) "tool result")))
+         (raw-call (list :id "call_1" :name "grep" :args '(:query "abc")))
+         (request-buffer (generate-new-buffer " *magent-gptel-test*"))
+         (params (list :session session
+                       :max-tool-rounds 3
+                       :tools nil
+                       :permission nil
+                       :request-state nil
+                       :event-context nil
+                       :callback #'ignore
+                       :ui-callback nil))
+         (continued nil)
+         (gptel-cb-called nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-fsm-backend-gptel-start)
+                   (lambda (_params)
+                     (setq continued t)))
+                  ((symbol-function 'magent-ui-continue-streaming) #'ignore))
+          (magent-fsm-backend-gptel--callback
+           (cons 'tool-call
+                 (list (list tool '(:query "abc")
+                             (lambda (_result)
+                               (setq gptel-cb-called t))
+                             raw-call)))
+           nil #'ignore nil request-buffer nil nil
+           nil (magent-fsm-backend-gptel--make-stream-state)
+           "req" nil nil nil params))
+      (when (buffer-live-p request-buffer)
+        (kill-buffer request-buffer)))
+    (should continued)
+    (should-not gptel-cb-called)
+    (let ((messages (magent-session-get-messages session)))
+      (should (= (length messages) 1))
+      (should (eq (magent-msg-role (car messages)) 'tool))
+      (should (equal (magent-msg-content (car messages))
+                     '(:id "call_1"
+                       :name "grep"
+                       :args (:query "abc")
+                       :result "tool result"))))))
+
+(ert-deftest magent-test-gptel-backend-sanitizes-symbol-tool-call-info ()
+  "Test gptel callback sanitizes symbol tool names and args before reuse."
+  (require 'magent-fsm)
+  (let* ((tool (gptel-make-tool
+                :name "emacs_eval"
+                :description "test"
+                :args '((:name "sexp" :type string)
+                        (:name "tool" :type string :optional t))
+                :function (lambda (_sexp _tool) "42")))
+         (raw-call (list :id "call_1"
+                         :name 'emacs_eval
+                         :args '(:sexp "(+ 20 22)"
+                                 :tool emacs_eval
+                                 :values [emacs_eval nil])))
+         (info (list :tool-use (list raw-call)
+                     :data
+                     (list :messages
+                           (vector
+                            (list :role "assistant"
+                                  :tool_calls
+                                  (vector
+                                   (list :type "function"
+                                         :id "call_1"
+                                         :function
+                                         (list :name 'emacs_eval
+                                               :arguments
+                                               '(:sexp "(+ 20 22)"
+                                                 :tool emacs_eval
+                                                 :values [emacs_eval nil])))))))))
+         (request-buffer (generate-new-buffer " *magent-gptel-test*"))
+         captured)
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-fsm--handle-tool-call-confirmation-with-permission)
+                   (lambda (_permission tool-calls &rest _)
+                     (setq captured tool-calls))))
+          (magent-fsm-backend-gptel--callback
+           (cons 'tool-call (list (list tool (plist-get raw-call :args)
+                                  nil raw-call)))
+           info nil nil request-buffer nil nil))
+      (when (buffer-live-p request-buffer)
+        (kill-buffer request-buffer)))
+    (should (equal (plist-get raw-call :name) "emacs_eval"))
+    (should (equal (plist-get raw-call :args)
+                   '(:sexp "(+ 20 22)"
+                     :tool "emacs_eval"
+                     :values ["emacs_eval" :null])))
+    (let* ((messages (plist-get (plist-get info :data) :messages))
+           (tool-calls (plist-get (aref messages 0) :tool_calls))
+           (func (plist-get (aref tool-calls 0) :function)))
+      (should (equal (plist-get func :name) "emacs_eval"))
+      (should (stringp (plist-get func :arguments)))
+      (should (string-match-p "\"tool\":\"emacs_eval\""
+                              (plist-get func :arguments)))
+      (should
+       (if (fboundp 'json-serialize)
+           (json-serialize (plist-get info :data)
+                           :null-object :null
+                           :false-object :json-false)
+         (let ((json-null :null)
+               (json-false :json-false))
+           (json-encode (plist-get info :data))))))
+    (should captured)))
+
+(ert-deftest magent-test-gptel-backend-sanitizes-context-managed-stream-info ()
+  "Test stream-parser advice sanitizes Magent info before callback dispatch."
+  (require 'magent-fsm)
+  (let* ((function-call (list :name 'emacs_eval
+                              :arguments '(:tool emacs_eval)))
+         (assistant-message
+          (list :role "assistant"
+                :tool_calls
+                (vector (list :type "function"
+                              :id "call_1"
+                              :function function-call))))
+         (info (list :context '(:magent-managed t)
+                     :tool-use (list (list :id "call_1"
+                                           :name 'emacs_eval
+                                           :args '(:tool emacs_eval)))
+                     :data (list :messages (vector assistant-message))))
+         (response
+          (magent--sanitize-stream-data-after-parse-a
+           (lambda (_backend _info) "chunk")
+           nil info)))
+    (should (equal response "chunk"))
+    (should (equal (plist-get (car (plist-get info :tool-use)) :name)
+                   "emacs_eval"))
+    (let* ((messages (plist-get (plist-get info :data) :messages))
+           (tool-calls (plist-get (aref messages 0) :tool_calls))
+           (func (plist-get (aref tool-calls 0) :function)))
+      (should (equal (plist-get func :name) "emacs_eval"))
+      (should (stringp (plist-get func :arguments)))
+      (should
+       (if (fboundp 'json-serialize)
+           (json-serialize (plist-get info :data)
+                           :null-object :null
+                           :false-object :json-false)
+         (let ((json-null :null)
+               (json-false :json-false))
+           (json-encode (plist-get info :data))))))))
+
+(ert-deftest magent-test-gptel-backend-sanitizes-context-managed-curl-data ()
+  "Test curl request advice sanitizes Magent info before JSON encoding."
+  (require 'magent-fsm)
+  (let* ((function-call (list :name 'emacs_eval
+                              :arguments '(:tool emacs_eval)))
+         (assistant-message
+          (list :role "assistant"
+                :tool_calls
+                (vector (list :type "function"
+                              :id "call_1"
+                              :function function-call))))
+         (info (list :context '(:magent-managed t)
+                     :data (list :messages (vector assistant-message))))
+         called)
+    (magent--sanitize-request-data-before-curl-a
+     (lambda (arg-info &rest _args)
+       (setq called t)
+       (if (fboundp 'json-serialize)
+           (json-serialize (plist-get arg-info :data)
+                           :null-object :null
+                           :false-object :json-false)
+         (let ((json-null :null)
+               (json-false :json-false))
+           (json-encode (plist-get arg-info :data)))))
+     info "uuid" nil)
+    (should called)
+    (let* ((messages (plist-get (plist-get info :data) :messages))
+           (tool-calls (plist-get (aref messages 0) :tool_calls))
+           (func (plist-get (aref tool-calls 0) :function)))
+      (should (equal (plist-get func :name) "emacs_eval"))
+      (should (stringp (plist-get func :arguments))))))
+
+(ert-deftest magent-test-gptel-backend-unknown-tool-records-error ()
+  "Test unknown tool calls are returned to the model as tool errors."
+  (require 'magent-fsm)
+  (let* ((session (magent-session-create))
+         (raw-call (list :id "call_missing"
+                         :name "missing_tool"
+                         :args '(:query "abc")))
+         (request-buffer (generate-new-buffer " *magent-gptel-test*"))
+         (params (list :session session
+                       :max-tool-rounds 3
+                       :tools nil
+                       :permission nil
+                       :request-state nil
+                       :event-context nil
+                       :callback #'ignore
+                       :ui-callback nil))
+         (continued nil)
+         (permission-handler-called nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-fsm-backend-gptel-start)
+                   (lambda (_params)
+                     (setq continued t)))
+                  ((symbol-function 'magent-fsm--handle-tool-call-confirmation-with-permission)
+                   (lambda (&rest _args)
+                     (setq permission-handler-called t)))
+                  ((symbol-function 'magent-ui-continue-streaming) #'ignore))
+          (magent-fsm-backend-gptel--callback
+           (cons 'tool-call
+                 (list (list nil '(:query "abc") nil raw-call)))
+           nil #'ignore nil request-buffer nil nil
+           nil (magent-fsm-backend-gptel--make-stream-state)
+           "req" nil nil nil params))
+      (when (buffer-live-p request-buffer)
+        (kill-buffer request-buffer)))
+    (should continued)
+    (should-not permission-handler-called)
+    (let ((messages (magent-session-get-messages session)))
+      (should (= (length messages) 1))
+      (should (eq (magent-msg-role (car messages)) 'tool))
+      (let ((content (magent-msg-content (car messages))))
+        (should (equal (plist-get content :id) "call_missing"))
+        (should (equal (plist-get content :name) "missing_tool"))
+        (should (equal (plist-get content :args) '(:query "abc")))
+        (should (string-match-p "tool 'missing_tool' not found"
+                                (plist-get content :result)))))))
 
 (ert-deftest magent-test-gptel-backend-streams-reasoning-blocks ()
   "Test gptel backend forwards reasoning chunks to the Magent UI."
@@ -2839,17 +3110,23 @@
     (should-not (magent-approval-pending-request "req-local"))))
 
 (ert-deftest magent-test-gptel-backend-streaming-tool-roundtrip-sequence ()
-  "Test gptel backend handles streaming with a tool round-trip in order."
+  "Test Magent-owned tool continuation preserves streaming order."
   (require 'magent-fsm)
-  (let ((events nil)
-        (final-response nil)
-        (request-callback nil)
-        (gptel-backend (gptel-make-openai "test" :key "test-key")))
+  (let* ((events nil)
+         (final-response nil)
+         (request-count 0)
+         (gptel-backend (gptel-make-openai "test" :key "test-key"))
+         (tool (gptel-make-tool
+                :name "grep"
+                :description "test"
+                :args '((:name "query" :type string))
+                :function (lambda (_query) "tool result")))
+         (raw-call (list :id "call_1" :name "grep" :args '(:query "abc"))))
     (cl-letf (((symbol-function 'magent-fsm--convert-tools-to-gptel)
                (lambda (_tools _permission
                         &optional _request-state _event-context
                         _abort-controller _tool-queue)
-                 nil))
+                 (list tool)))
               ((symbol-function 'magent-ui-start-streaming)
                (lambda () (push 'start events)))
               ((symbol-function 'magent-ui-continue-streaming)
@@ -2858,17 +3135,26 @@
                (lambda () (push 'finish events)))
               ((symbol-function 'gptel-request)
                (lambda (_prompt &rest kwargs)
-                 (setq request-callback (plist-get kwargs :callback))
-                 (funcall request-callback "Hello " nil)
-                 (funcall request-callback
-                          (cons 'tool-call '((tool-spec args cb))) nil)
-                 (funcall request-callback
-                          (cons 'tool-result '((tool-spec args "ok"))) nil)
-                 (funcall request-callback "world" nil)
-                 (funcall request-callback t (list :content "Hello world"))))
+                 (cl-incf request-count)
+                 (let ((request-callback (plist-get kwargs :callback)))
+                   (if (= request-count 1)
+                       (progn
+                         (funcall request-callback "Hello " nil)
+                         (funcall request-callback
+                                  (cons 'tool-call
+                                        (list (list tool '(:query "abc")
+                                                    (lambda (_result)
+                                                      (ert-fail "gptel tool callback should not be called"))
+                                                    raw-call)))
+                                  nil))
+                     (funcall request-callback "world" nil)
+                     (funcall request-callback t (list :content "Hello world"))))))
               ((symbol-function 'magent-fsm--handle-tool-call-confirmation-with-permission)
-               (lambda (_permission tool-calls &optional _request-state)
-                 (push (list 'tool-call tool-calls) events))))
+               (lambda (_permission tool-calls &optional _request-state
+                                    result-callback done-callback)
+                 (push (list 'tool-call tool-calls) events)
+                 (funcall result-callback tool (list "abc") raw-call "tool result")
+                 (funcall done-callback))))
       (magent-fsm-backend-gptel-start
        (list :prompt-list nil
              :system-prompt "test"
@@ -2879,11 +3165,13 @@
              :gptel-backend gptel-backend
              :model 'gpt-4o-mini)))
     (should (equal final-response "Hello world"))
+    (should (= request-count 2))
     (should (equal (nreverse events)
                    (list 'start
                          (list 'chunk "Hello ")
-                         (list 'tool-call '((tool-spec args cb)))
                          'continue
+                         (list 'tool-call
+                               (list (list tool (list "abc") nil raw-call)))
                          (list 'chunk "world")
                          'finish)))))
 
@@ -3627,7 +3915,8 @@
 
 (ert-deftest magent-test-session-scope-from-directory-falls-back-to-global ()
   "Test session scope is global when no project root is detected."
-  (let ((magent-project-root-function (lambda () nil)))
+  (cl-letf (((symbol-function 'magent-project-root)
+             (lambda (&optional _directory _no-fallback) nil)))
     (should (eq (magent-session-scope-from-directory "/tmp/") 'global))))
 
 (ert-deftest magent-test-session-save-uses-project-storage-directory ()
@@ -3693,6 +3982,61 @@
                  (loaded-session (plist-get loaded :session)))
             (should (eq (magent-session-approval-override loaded-session 'bash)
                         'allow))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-session-save-load-preserves-tool-message ()
+  "Test structured tool messages persist through save/load."
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil))
+    (unwind-protect
+        (progn
+          (magent-session-activate 'global)
+          (let ((session (magent-session-get)))
+            (magent-session-add-message session 'user "Run ls")
+            (magent-session-add-tool-message
+             session "call_1" "bash" '(:command "ls") "ok")
+            (magent-session-save))
+          (let* ((files (directory-files magent-session-directory t "\\.json$"))
+                 (loaded (magent-session-read-file (car files)))
+                 (loaded-session (plist-get loaded :session))
+                 (messages (magent-session-get-messages loaded-session)))
+            (should (= (length messages) 2))
+            (should (equal (magent-msg-content (nth 1 messages))
+                           '(:id "call_1"
+                             :name "bash"
+                             :args (:command "ls")
+                             :result "ok")))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-session-save-load-sanitizes-symbol-tool-args ()
+  "Test session persistence handles symbol tool names and arguments."
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil))
+    (unwind-protect
+        (progn
+          (magent-session-activate 'global)
+          (let ((session (magent-session-get)))
+            (magent-session-add-message session 'user "Run tool")
+            (magent-session-add-tool-message
+             session "call_1" 'emacs_eval
+             '(:sexp "(+ 20 22)" :tool emacs_eval :values [emacs_eval nil])
+             "42")
+            (magent-session-save))
+          (let* ((files (directory-files magent-session-directory t "\\.json$"))
+                 (loaded (magent-session-read-file (car files)))
+                 (loaded-session (plist-get loaded :session))
+                 (messages (magent-session-get-messages loaded-session)))
+            (should (equal (magent-msg-content (nth 1 messages))
+                           '(:id "call_1"
+                             :name "emacs_eval"
+                             :args (:sexp "(+ 20 22)"
+                                    :tool "emacs_eval"
+                                    :values ("emacs_eval" nil))
+                             :result "42")))))
       (delete-directory magent-session-directory t))))
 
 (ert-deftest magent-test-session-list-files-prefers-project-then-global ()
@@ -4113,6 +4457,32 @@
           (should (eq (nth 1 captured) 'buffer-input)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest magent-test-evil-c-g-interrupts-only-in-normal-state ()
+  "Test Evil C-g only interrupts in normal state."
+  (skip-unless (require 'evil nil t))
+  (dolist (case '((normal . magent-interrupt)
+                  (insert . evil-normal-state)
+                  (replace . evil-normal-state)
+                  (visual . keyboard-quit)
+                  (emacs . keyboard-quit)))
+    (with-temp-buffer
+      (insert "x")
+      (magent-output-mode)
+      (evil-local-mode 1)
+      (pcase (car case)
+        ('normal (evil-normal-state))
+        ('insert (evil-insert-state))
+        ('replace (evil-replace-state))
+        ('visual
+         (set-mark (point-min))
+         (goto-char (point-max))
+         (evil-visual-state))
+        ('emacs (evil-emacs-state)))
+      (should (eq evil-state (car case)))
+      (should (eq (key-binding (kbd "C-g")) (cdr case)))
+      (unless (eq (car case) 'normal)
+        (should-not (eq (key-binding (kbd "C-g")) 'magent-interrupt))))))
 
 (ert-deftest magent-test-config-reload-preserves-ui-logger ()
   "Test reloading config does not clobber the UI log implementation."
@@ -4864,6 +5234,19 @@
       (should (equal (buffer-string) "alpha\n"))
       (should (null magent-ui--reasoning-start))
       (should magent-ui--streaming-has-text))))
+
+(ert-deftest magent-test-ui-tool-call-renders-symbol-args ()
+  "Test tool-call rendering tolerates symbol values in structured args."
+  (require 'magent-ui)
+  (magent-ui-clear-buffer)
+  (magent-ui-insert-tool-call
+   "emacs_eval"
+   '(:tool emacs_eval :values [emacs_eval nil]))
+  (with-current-buffer (magent-ui-get-buffer)
+    (let ((text (buffer-string)))
+      (should (string-match-p "#\\+begin_tool emacs_eval" text))
+      (should (string-match-p "\"tool\":\"emacs_eval\"" text))
+      (should (string-match-p "\"values\":\\[\"emacs_eval\",null\\]" text)))))
 
 (ert-deftest magent-test-mode-map-binds-diagnose-emacs ()
   "Test `magent-mode-map' binds the Emacs diagnosis command."

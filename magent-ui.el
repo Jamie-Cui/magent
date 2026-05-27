@@ -59,7 +59,6 @@
 (declare-function magent-session--session-for-scope "magent-session")
 
 ;; Forward declarations for evil (loaded via with-eval-after-load)
-(declare-function evil-define-key "evil-core")
 (declare-function evil-define-key* "evil-core")
 (declare-function evil-visual-state-p "evil-states")
 (declare-function evil-insert-state "evil-states")
@@ -628,7 +627,14 @@ Skips keys already reserved by the static parts of `magent-transient-menu'."
   "Keymap for `magent-output-mode'.")
 
 (with-eval-after-load 'evil
-  (evil-define-key 'normal magent-output-mode-map (kbd "?") #'magent-transient-menu))
+  (evil-define-key* 'normal magent-output-mode-map
+    (kbd "?") #'magent-transient-menu)
+  (evil-define-key* 'normal magent-output-mode-map
+    (kbd "C-g") #'magent-interrupt)
+  (evil-define-key* '(insert replace) magent-output-mode-map
+    (kbd "C-g") #'evil-normal-state)
+  (evil-define-key* '(visual motion operator emacs) magent-output-mode-map
+    (kbd "C-g") #'keyboard-quit))
 
 (define-derived-mode magent-output-mode org-mode "M"
   "Major mode for Magent output.
@@ -954,7 +960,8 @@ Wraps in #+begin_tool block."
                       (if (stringp input)
                           input
                         (truncate-string-to-width
-                         (json-encode input) magent-ui-tool-input-max-length nil nil "...")))))
+                         (magent-json-encode input)
+                         magent-ui-tool-input-max-length nil nil "...")))))
       (insert (propertize input-str 'face 'magent-tool-args) "\n"))))
 
 (defun magent-ui-insert-tool-result (_tool-name result)

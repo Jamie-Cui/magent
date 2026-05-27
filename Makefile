@@ -1,4 +1,5 @@
 EMACS ?= emacs
+EMACSCLIENT ?= emacsclient
 EMACS_BATCH = $(EMACS) -Q --batch
 
 # Auto-detect dependency paths
@@ -66,7 +67,7 @@ SRCS = magent-config.el \
 
 COMPILED = $(SRCS:.el=.elc)
 
-.PHONY: all compile clean test help
+.PHONY: all compile clean test test-unit test-live test-live-smoke help
 
 all: compile
 
@@ -75,7 +76,10 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  compile       - Byte compile all Elisp files"
-	@echo "  test          - Run unit tests"
+	@echo "  test          - Run unit tests and deterministic live smoke tests"
+	@echo "  test-unit     - Run batch unit tests"
+	@echo "  test-live     - Run real live gptel tests; consumes tokens and requires Emacs server"
+	@echo "  test-live-smoke - Run live Emacs smoke tests with stubbed gptel transport"
 	@echo "  clean         - Remove compiled files"
 	@echo "  help          - Show this help message"
 
@@ -89,12 +93,22 @@ compile: $(COMPILED)
 	printf "%s\n" "$$out" | grep -v "^Compiling" | grep -v "^Wrote" || true; \
 	exit $$status
 
-test:
+test: test-unit test-live-smoke
+
+test-unit:
 	@echo "Running unit tests..."
 	@$(EMACS) -Q --batch $(LOADPATH) \
 		-l ert \
 		-l test/magent-test.el \
 		-f ert-run-tests-batch-and-exit
+
+test-live:
+	@echo "Running real live Emacs/gptel tests..."
+	@$(EMACSCLIENT) -e "(progn (load-file \"$(CURDIR)/test/magent-live-test.el\") (magent-live-test-run))"
+
+test-live-smoke:
+	@echo "Running live Emacs smoke tests..."
+	@$(EMACSCLIENT) -e "(progn (load-file \"$(CURDIR)/test/magent-live-test.el\") (magent-live-test-run-smoke))"
 
 clean:
 	@echo "Cleaning compiled files..."

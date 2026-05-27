@@ -21,6 +21,7 @@
 (require 'magent-events)
 (require 'magent-fsm-tools)
 (require 'magent-runtime)
+(require 'magent-session)
 (declare-function magent-ui-start-streaming "magent-ui")
 (declare-function magent-ui-continue-streaming "magent-ui")
 (declare-function magent-ui-insert-streaming "magent-ui")
@@ -30,6 +31,10 @@
 (declare-function magent-ui-finish-streaming-fontify "magent-ui")
 (declare-function magent-log "magent-config")
 (declare-function gptel-abort "gptel")
+(declare-function gptel--handle-post "gptel-request")
+(declare-function gptel--handle-wait "gptel-request")
+(declare-function gptel--error-p "gptel-request")
+(declare-function gptel--tool-use-p "gptel-request")
 
 (defvar magent-include-reasoning)
 
@@ -104,9 +109,17 @@ Both t and `ignore' keep reasoning in STATE.  Only nil discards it."
       (not (magent-request-context-p request-state))
       (magent-request-context-ui-visible-p request-state)))
 
+(defun magent-fsm-backend-gptel--managed-context-p (context)
+  "Return non-nil when gptel CONTEXT marks a Magent request."
+  (and (listp context)
+       (plist-get context :magent-managed)))
+
 (defun magent-fsm-backend-gptel--managed-info-p (info)
   "Return non-nil when INFO belongs to a Magent-managed request."
-  (and info (plist-get info :magent-managed)))
+  (and info
+       (or (plist-get info :magent-managed)
+           (magent-fsm-backend-gptel--managed-context-p
+            (plist-get info :context)))))
 
 (defun magent-fsm-backend-gptel--final-text (state info)
   "Return the final assistant text assembled from STATE and INFO."
@@ -189,9 +202,73 @@ Both t and `ignore' keep reasoning in STATE.  Only nil discards it."
                do (cl-loop for tc across (plist-get msg :tool_calls)
                            for func = (plist-get tc :function)
                            for name = (and func (plist-get func :name))
-                           when (equal name tool-name)
-                           do (cl-incf count))))
+                            when (equal name tool-name)
+                            do (cl-incf count))))
     count))
+
+(defun magent-fsm-backend-gptel--normalize-name (name &optional fallback)
+  "Return NAME as a JSON-safe tool name string.
+FALLBACK is used when NAME is nil."
+  (magent-json-safe-name name fallback))
+
+(defun magent-fsm-backend-gptel--sanitize-tool-call (tool-call)
+  "Sanitize one gptel TOOL-CALL plist in place and return it."
+  (when (listp tool-call)
+    (when (plist-member tool-call :name)
+      (plist-put tool-call
+                 :name
+                 (magent-fsm-backend-gptel--normalize-name
+                  (plist-get tool-call :name))))
+    (when (plist-member tool-call :args)
+      (plist-put tool-call
+                 :args
+                 (magent-json-safe-tool-args
+                  (plist-get tool-call :args)))))
+  tool-call)
+
+(defun magent-fsm-backend-gptel--sanitize-tool-use (info)
+  "Sanitize gptel INFO's `:tool-use' values in place."
+  (when-let ((tool-use (and info (plist-get info :tool-use))))
+    (dolist (tool-call tool-use)
+      (magent-fsm-backend-gptel--sanitize-tool-call tool-call))))
+
+(defun magent-fsm-backend-gptel--sanitize-assistant-tool-calls (info)
+  "Sanitize assistant tool call history in gptel INFO's request data.
+Some provider/gptel paths preserve raw Lisp symbols in streamed tool call
+metadata.  Emacs 31's native JSON serializer rejects those symbols when gptel
+logs or sends the continuation request, so Magent normalizes this boundary."
+  (let* ((data (and info (plist-get info :data)))
+         (messages (and data (plist-get data :messages))))
+    (when (vectorp messages)
+      (cl-loop for msg across messages
+               when (and (listp msg)
+                         (equal (plist-get msg :role) "assistant")
+                         (vectorp (plist-get msg :tool_calls)))
+               do (cl-loop for tc across (plist-get msg :tool_calls)
+                           do (let ((func (and (listp tc)
+                                               (plist-get tc :function))))
+                                (when (listp func)
+                                  (when (plist-member func :name)
+                                    (plist-put func
+                                               :name
+                                               (magent-fsm-backend-gptel--normalize-name
+                                                (plist-get func :name))))
+                                  (when (plist-member func :arguments)
+                                    (let ((arguments
+                                           (plist-get func :arguments)))
+                                      (unless (stringp arguments)
+                                        (plist-put
+                                         func
+                                         :arguments
+                                         (magent-json-encode
+                                          (magent-json-safe-tool-args
+                                           arguments)))))))))))))
+
+(defun magent-fsm-backend-gptel--sanitize-info (info)
+  "Sanitize gptel INFO structures that may be serialized as JSON."
+  (magent-fsm-backend-gptel--sanitize-tool-use info)
+  (magent-fsm-backend-gptel--sanitize-assistant-tool-calls info)
+  info)
 
 (defun magent-fsm-backend-gptel--emacs-eval-limit-message ()
   "Return the hard-stop message for repeated emacs_eval exploration."
@@ -201,6 +278,87 @@ Both t and `ignore' keep reasoning in STATE.  Only nil discards it."
       (concat "Error: tool_use_limit_reached. emacs_eval exceeded the configured "
               "per-turn limit. Stop exploring and answer the user directly. "
               (magent-fsm--emacs-eval-direct-answer-guidance)))))
+
+(defun magent-fsm-backend-gptel--make-sampling-fsm ()
+  "Create a gptel FSM that stops after one model sampling request.
+Unlike gptel's default request FSM, this does not execute tools or inject
+tool results.  Tool continuation is owned by Magent."
+  (gptel-make-fsm
+   :table `((INIT . ((t . WAIT)))
+            (WAIT . ((t . TYPE)))
+            (TYPE . ((,#'gptel--error-p . ERRS)
+                     (,#'gptel--tool-use-p . TOOL)
+                     (t . DONE)))
+            (TOOL . ((t . DONE))))
+   :handlers `((WAIT ,#'gptel--handle-wait)
+               (TOOL ,#'magent-fsm-backend-gptel--handle-tool-use)
+               (DONE ,#'gptel--handle-post)
+               (ERRS ,#'gptel--handle-post)
+               (ABRT ,#'gptel--handle-post))))
+
+(defun magent-fsm-backend-gptel--handle-tool-use (fsm)
+  "Report pending tool calls from FSM to Magent without running them."
+  (when-let* ((info (gptel-fsm-info fsm))
+              (callback (plist-get info :callback))
+              (tools (plist-get info :tools))
+              (_ (magent-fsm-backend-gptel--sanitize-info info))
+              (tool-use (cl-remove-if (lambda (tc) (plist-get tc :result))
+                                      (plist-get info :tool-use))))
+    (let (pending-calls)
+      (dolist (tool-call tool-use)
+        (let* ((name (plist-get tool-call :name))
+               (tool-spec (cl-find-if
+                           (lambda (ts) (equal (gptel-tool-name ts) name))
+                           tools))
+               (args (plist-get tool-call :args)))
+          (push (list tool-spec args nil tool-call) pending-calls)))
+      (funcall callback (cons 'tool-call (nreverse pending-calls)) info))))
+
+(defun magent-fsm-backend-gptel--map-tool-args (tool-spec args-plist)
+  "Return positional arg values for TOOL-SPEC from ARGS-PLIST."
+  (mapcar
+   (lambda (arg)
+     (plist-get args-plist (intern (concat ":" (plist-get arg :name)))))
+   (gptel-tool-args tool-spec)))
+
+(defun magent-fsm-backend-gptel--normalize-tool-call (call)
+  "Return CALL as (TOOL-SPEC ARG-VALUES CB RAW-CALL)."
+  (let* ((tool-spec (nth 0 call))
+         (raw-args (magent-json-safe-tool-args (nth 1 call)))
+         ;; In Magent-owned continuation mode the provider callback must not
+         ;; be invoked; Magent records the tool result and starts the next
+         ;; sampling request itself.
+         (cb nil)
+         (raw-call (magent-fsm-backend-gptel--sanitize-tool-call
+                    (or (nth 3 call)
+                        (list :name (and (gptel-tool-p tool-spec)
+                                         (gptel-tool-name tool-spec))
+                              :args raw-args))))
+         (arg-values
+          (if (and (gptel-tool-p tool-spec)
+                   (listp raw-args)
+                   (or (keywordp (car raw-args))
+                       (null raw-args)))
+              (magent-fsm-backend-gptel--map-tool-args tool-spec raw-args)
+            raw-args)))
+    (list tool-spec arg-values cb raw-call)))
+
+(defun magent-fsm-backend-gptel--record-tool-result
+    (params tool-spec arg-values raw-call result)
+  "Record TOOL-SPEC RESULT in PARAMS' session for Magent-owned continuation."
+  (when-let ((session (plist-get params :session)))
+    (magent-session-add-tool-message
+     session
+     (or (plist-get raw-call :id)
+         (magent-events-generate-id))
+     (if (gptel-tool-p tool-spec)
+         (gptel-tool-name tool-spec)
+       (or (plist-get raw-call :name) "unknown"))
+     (magent-json-safe-tool-args
+      (if (gptel-tool-p tool-spec)
+          (magent-fsm--args-to-plist (gptel-tool-args tool-spec) arg-values)
+        (or (plist-get raw-call :args) nil)))
+     result)))
 
 (defun magent-fsm-backend-gptel-create (&rest args)
   "Create gptel FSM from keyword ARGS (returns plist with parameters).
@@ -219,6 +377,8 @@ Accepts the same keyword arguments as `magent-fsm-create'."
         :request-state (plist-get args :request-state)
         :abort-controller (magent-fsm--abort-controller-create)
         :tool-queue nil
+        :tool-guard-state nil
+        :tool-round-count 0
         :request-buffer nil
         :live-p (plist-get args :live-p)
         :callback (plist-get args :callback)
@@ -226,7 +386,10 @@ Accepts the same keyword arguments as `magent-fsm-create'."
 
 (defun magent-fsm-backend-gptel-start (params)
   "Start gptel request with PARAMS plist."
-  (let* ((prompt-list (plist-get params :prompt-list))
+  (let* ((session (plist-get params :session))
+         (prompt-list (if session
+                          (magent-session-to-gptel-prompt-list session)
+                        (plist-get params :prompt-list)))
          (system-prompt (plist-get params :system-prompt))
          (tools (plist-get params :tools))
          (event-context (plist-get params :event-context))
@@ -242,7 +405,8 @@ Accepts the same keyword arguments as `magent-fsm-create'."
          (request-buffer (generate-new-buffer " *magent-gptel-request*"))
          (tool-queue (or (plist-get params :tool-queue)
                          (magent-fsm--tool-queue-create)))
-         (tool-guard-state (magent-fsm--tool-guard-state-create))
+         (tool-guard-state (or (plist-get params :tool-guard-state)
+                               (magent-fsm--tool-guard-state-create)))
          (max-tool-rounds (plist-get params :max-tool-rounds))
          ;; Install permission-aware :confirm functions and handle
          ;; `(tool-call . ...)' callbacks ourselves instead of relying on
@@ -251,15 +415,20 @@ Accepts the same keyword arguments as `magent-fsm-create'."
                         (magent-fsm--convert-tools-to-gptel
                          tools permission request-state event-context
                          abort-controller tool-queue)))
-         (stream-state (magent-fsm-backend-gptel--make-stream-state)))
+         (stream-state (or (plist-get params :stream-state)
+                           (magent-fsm-backend-gptel--make-stream-state))))
 
     (plist-put params :request-buffer request-buffer)
     (plist-put params :tool-queue tool-queue)
+    (plist-put params :tool-guard-state tool-guard-state)
+    (plist-put params :stream-state stream-state)
     (when request-state
       (setf (magent-request-context-abort-controller request-state)
             abort-controller))
 
-    (when (magent-fsm-backend-gptel--ui-visible-p request-state)
+    (when (and (magent-fsm-backend-gptel--ui-visible-p request-state)
+               (not (plist-get params :streaming-started)))
+      (plist-put params :streaming-started t)
       (magent-ui-start-streaming))
     (magent-events-emit
      'llm-request-start
@@ -276,25 +445,31 @@ Accepts the same keyword arguments as `magent-fsm-create'."
       (setq-local gptel-model model)
       (setq-local gptel-tools gptel-tools)
       (setq-local gptel-use-tools (and gptel-tools t))
-      (setq-local gptel-confirm-tool-calls 'auto)
+      ;; Magent owns tool execution and continuation.  gptel only exposes
+      ;; parsed tool-call requests for this sampling request.
+      (setq-local gptel-confirm-tool-calls t)
       (setq-local gptel-include-reasoning magent-include-reasoning)
       (let* ((gptel-fsm
               (gptel-request
                   prompt-list
                 :buffer (current-buffer)
+                :context (list :magent-managed t
+                               :magent-request-id request-id)
                 :system system-prompt
                 :stream t
+                :fsm (magent-fsm-backend-gptel--make-sampling-fsm)
                 :callback (lambda (response info)
                             (magent-fsm-backend-gptel--callback
                              response info callback ui-callback request-buffer
                              permission event-context request-state stream-state
-                             request-id backend model live-p))))
+                             request-id backend model live-p params))))
              (info (and (gptel-fsm-p gptel-fsm)
                         (gptel-fsm-info gptel-fsm))))
         (when info
           (plist-put info :magent-managed t)
           (plist-put info :magent-request-id request-id)
-          (plist-put info :magent-tool-round-count 0)
+          (plist-put info :magent-tool-round-count
+                     (or (plist-get params :tool-round-count) 0))
           (when (numberp max-tool-rounds)
             (plist-put info :magent-tool-round-limit max-tool-rounds)))))))
 
@@ -303,11 +478,12 @@ Accepts the same keyword arguments as `magent-fsm-create'."
                                                     &optional request-state
                                                     stream-state
                                                     request-id backend model
-                                                    live-p)
+                                                    live-p params)
   "Handle gptel response.
 Wraps all UI operations in `condition-case' to suppress benign
 cursor-boundary signals that can leak from evil-mode adjustments
 inside gptel's process filter."
+  (magent-fsm-backend-gptel--sanitize-info info)
   (if (not (magent-fsm-backend-gptel--request-live-p live-p))
       (progn
         (magent-log "DEBUG discarding stale gptel callback request=%s response=%S"
@@ -346,8 +522,69 @@ inside gptel's process filter."
               (funcall ui-callback response)))
            ((and (consp response) (eq (car response) 'tool-call))
             (magent-fsm-backend-gptel--close-reasoning-block state request-state)
-            (magent-fsm--handle-tool-call-confirmation-with-permission
-             permission (cdr response) request-state))
+            (if (null params)
+                (magent-fsm--handle-tool-call-confirmation-with-permission
+                 permission (cdr response) request-state)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer))
+              (when (magent-fsm-backend-gptel--ui-visible-p request-state)
+                (magent-ui-continue-streaming))
+              (let* ((tool-calls (mapcar
+                                  #'magent-fsm-backend-gptel--normalize-tool-call
+                                  (cdr response)))
+                     (round (1+ (or (plist-get params :tool-round-count) 0)))
+                     (limit (plist-get params :max-tool-rounds)))
+                (plist-put params :tool-round-count round)
+                (if (and (numberp limit) (> round limit))
+                    (let ((message
+                           (format "Error: tool loop exceeded %d round%s. The model kept requesting more tools instead of answering."
+                                   limit
+                                   (if (= limit 1) "" "s"))))
+                      (magent-log "WARN aborting Magent-owned tool loop count=%s limit=%s"
+                                  round limit)
+                      (when (and ui-callback
+                                 (magent-fsm-backend-gptel--ui-visible-p request-state))
+                        (funcall ui-callback message))
+                      (when (magent-fsm-backend-gptel--ui-visible-p request-state)
+                        (magent-ui-finish-streaming-fontify))
+                      (when callback
+                        (funcall callback message)))
+                  (let ((unknown-calls (cl-remove-if
+                                        (lambda (tc)
+                                          (gptel-tool-p (car tc)))
+                                        tool-calls)))
+                    (dolist (tc unknown-calls)
+                      (let* ((raw-call (nth 3 tc))
+                             (name (or (plist-get raw-call :name) "unknown"))
+                             (available
+                              (mapconcat
+                               (lambda (tool)
+                                 (if (gptel-tool-p tool)
+                                     (gptel-tool-name tool)
+                                   "unknown"))
+                               (delq nil (mapcar #'car tool-calls))
+                               ", "))
+                             (result
+                              (format "Error: tool '%s' not found. Available: %s"
+                                      name available)))
+                        (magent-log "WARN unknown tool '%s'(id=%S) — returned error to model"
+                                    name (plist-get raw-call :id))
+                        (magent-fsm-backend-gptel--record-tool-result
+                         params nil (nth 1 tc) raw-call result)))
+                    (setq tool-calls (cl-remove-if-not
+                                      (lambda (tc)
+                                        (gptel-tool-p (car tc)))
+                                      tool-calls))
+                    (when (null tool-calls)
+                      (magent-fsm-backend-gptel-start params)))
+                  (when tool-calls
+                  (magent-fsm--handle-tool-call-confirmation-with-permission
+                   permission tool-calls request-state
+                   (lambda (tool-spec arg-values raw-call result)
+                     (magent-fsm-backend-gptel--record-tool-result
+                      params tool-spec arg-values raw-call result))
+                   (lambda ()
+                     (magent-fsm-backend-gptel-start params))))))))
            ((and (consp response) (eq (car response) 'tool-result))
             (magent-fsm-backend-gptel--close-reasoning-block state request-state)
             (magent-log "DEBUG tool-result received stop-reason=%S"
@@ -379,10 +616,11 @@ inside gptel's process filter."
                :model (format "%s" model)
                (magent-fsm-backend-gptel--usage-plist info final-text))
               (if (plist-get info :tool-use)
-                  ;; Tool use round: gptel will continue the loop.
-                  ;; Stay in the same section — don't finalize or create a new heading.
-                  (when (magent-fsm-backend-gptel--ui-visible-p request-state)
-                    (magent-ui-continue-streaming))
+                  ;; Tool-use sampling round: the TOOL handler will dispatch
+                  ;; Magent-owned tools and continue the turn.
+                  (unless params
+                    (when (magent-fsm-backend-gptel--ui-visible-p request-state)
+                      (magent-ui-continue-streaming)))
                 ;; Final response: finalize the streaming section and finish.
                 (when (magent-fsm-backend-gptel--ui-visible-p request-state)
                   (magent-ui-finish-streaming-fontify))
@@ -472,6 +710,26 @@ silent empty final response (Variant A of the qwen3-max empty-response
 
 (advice-add 'gptel--handle-wait :before #'magent--reset-reasoning-block-a)
 
+;;; Advice to keep Magent-managed gptel request data JSON-safe
+
+(defun magent--sanitize-request-data-before-curl-a (orig-fn info &rest args)
+  "Sanitize Magent-managed INFO before gptel serializes request data."
+  (when (magent-fsm-backend-gptel--managed-info-p info)
+    (magent-fsm-backend-gptel--sanitize-info info))
+  (apply orig-fn info args))
+
+(advice-add 'gptel-curl--get-args
+            :around #'magent--sanitize-request-data-before-curl-a)
+
+(defun magent--sanitize-stream-data-after-parse-a (orig-fn backend info)
+  "Sanitize Magent-managed INFO after gptel parses streamed tool calls."
+  (prog1 (funcall orig-fn backend info)
+    (when (magent-fsm-backend-gptel--managed-info-p info)
+      (magent-fsm-backend-gptel--sanitize-info info))))
+
+(advice-add 'gptel-curl--parse-stream
+            :around #'magent--sanitize-stream-data-after-parse-a)
+
 ;;; Unknown-tool advice for gptel FSM
 
 (defun magent--handle-unknown-tools-a (orig-fn fsm)
@@ -482,6 +740,7 @@ preventing the FSM from hanging when the model hallucinates tool names."
          (patched nil))
     (if (not (magent-fsm-backend-gptel--managed-info-p info))
         (funcall orig-fn fsm)
+      (magent-fsm-backend-gptel--sanitize-info info)
       (if (magent-fsm-backend-gptel--tool-round-limit-reached-p info)
         (magent-fsm-backend-gptel--abort-tool-loop fsm info)
         (when-let* ((all-tool-use (plist-get info :tool-use))

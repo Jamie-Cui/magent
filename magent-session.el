@@ -44,12 +44,23 @@
   "Return the content of message MSG (string or content-block list)."
   (cdr (assq 'content msg)))
 
+(defun magent-session--tool-content-p (content)
+  "Return non-nil when CONTENT is a structured tool-call result."
+  (and (listp content)
+       (plist-member content :name)
+       (plist-member content :result)))
+
 (defsubst magent-session--content-to-string (content)
   "Coerce CONTENT to a plain string.
 If CONTENT is a string, return it unchanged.
 If CONTENT is a list of content blocks, concatenate their text fields."
-  (if (stringp content) content
-    (mapconcat (lambda (b) (or (cdr (assq 'text b)) "")) content "")))
+  (cond
+   ((stringp content) content)
+   ((magent-session--tool-content-p content)
+    (or (plist-get content :result) ""))
+   ((listp content)
+    (mapconcat (lambda (b) (or (cdr (assq 'text b)) "")) content ""))
+   (t "")))
 
 (defun magent-session--assistant-response-reusable-p (content)
   "Return non-nil when assistant CONTENT should be reused in prompts.
@@ -339,7 +350,16 @@ Fall back to the file modification time for legacy filenames."
   (let ((role (magent-msg-role msg))
         (content (magent-msg-content msg)))
     `((role . ,(symbol-name role))
-      (content . ,(magent-session--content-to-string content)))))
+      (content . ,(if (and (eq role 'tool)
+                           (magent-session--tool-content-p content))
+                      `((id . ,(plist-get content :id))
+                        (name . ,(magent-json-safe-name
+                                  (plist-get content :name)))
+                        (args-json . ,(magent-json-encode
+                                       (magent-json-safe-tool-args
+                                        (plist-get content :args))))
+                        (result . ,(plist-get content :result)))
+                    (magent-session--content-to-string content))))))
 
 (defun magent-session--context-item-to-alist (item)
   "Convert structured context ITEM to a JSON-serializable alist."
@@ -353,7 +373,22 @@ Fall back to the file modification time for legacy filenames."
   "Reconstruct a session message from JSON-decoded ALIST."
   (let ((role (intern (cdr (assq 'role alist))))
         (content (cdr (assq 'content alist))))
-    `((role . ,role) (content . ,content))))
+    `((role . ,role)
+      (content . ,(if (and (eq role 'tool)
+                           (listp content))
+                      (let* ((args-json (cdr (assq 'args-json content)))
+                             (args (when (and (stringp args-json)
+                                              (> (length args-json) 0))
+                                     (let ((json-object-type 'plist)
+                                           (json-array-type 'list))
+                                       (ignore-errors
+                                         (json-read-from-string args-json))))))
+                        (list :id (cdr (assq 'id content))
+                              :name (magent-json-safe-name
+                                     (cdr (assq 'name content)))
+                              :args args
+                              :result (cdr (assq 'result content))))
+                    content)))))
 
 (defun magent-session-save ()
   "Save the current session to disk as <session-id>.json.
@@ -552,6 +587,17 @@ Non-message items are retained only after the retained message boundary."
         (nthcdr start items)
       items)))
 
+(defun magent-session-add-tool-message (session id name args result)
+  "Add a structured tool result message to SESSION.
+ID is the provider tool-call id, NAME is the tool name, ARGS is the
+tool argument plist, and RESULT is the model-visible tool result."
+  (magent-session-add-message
+   session 'tool
+   (list :id id
+         :name (magent-json-safe-name name)
+         :args (magent-json-safe-tool-args args)
+         :result (if (stringp result) result (format "%s" result)))))
+
 (defun magent-session-get-messages (session)
   "Get all messages from SESSION in chronological order."
   ;; Messages are now stored in chronological order, no reverse needed
@@ -581,8 +627,8 @@ Returns a condensed version of the conversation."
   "Convert SESSION messages to a gptel-request prompt list.
 Returns a list in gptel's advanced format:
   ((prompt . \"user msg\") (response . \"assistant msg\") ...)
-Tool result messages are skipped; gptel handles tool round-trips
-internally within each request.
+Structured tool result messages are emitted as `(tool . PLIST)' entries so
+gptel can serialize historical tool calls/results for the active backend.
 
 Only completed turns are reused.  When an assistant reply is empty or a
 synthetic error string, Magent drops both that reply and its paired user
@@ -590,24 +636,50 @@ prompt from future prompt reuse.  The final pending user prompt is still
 included so the current turn is preserved."
   (let ((messages (magent-session-get-messages session))
         pending-user
+        pending-tools
         prompt-list)
-    (dolist (msg messages)
-      (let ((role (magent-msg-role msg))
-            (content (magent-msg-content msg)))
-        (pcase role
-          ('user
-           (setq pending-user (magent-session--content-to-string content)))
-          ('assistant
-           (when pending-user
-             (if (magent-session--assistant-response-reusable-p content)
-                 (let ((assistant-text (magent-session--content-to-string content)))
-                   (push (cons 'prompt pending-user) prompt-list)
-                   (push (cons 'response assistant-text) prompt-list))
-               (magent-log "INFO dropping failed session turn from prompt reuse")))
-           (setq pending-user nil))
-          (_ nil))))
+    (cl-labels
+        ((append-pending-turn
+          (assistant-content)
+          (when pending-user
+            (if (magent-session--assistant-response-reusable-p assistant-content)
+                (progn
+                  (push (cons 'prompt pending-user) prompt-list)
+                  (dolist (tool (nreverse pending-tools))
+                    (push (cons 'tool tool) prompt-list))
+                  (push (cons 'response
+                              (magent-session--content-to-string assistant-content))
+                        prompt-list))
+              (magent-log "INFO dropping failed session turn from prompt reuse")))
+          (setq pending-user nil
+                pending-tools nil)))
+      (dolist (msg messages)
+        (let ((role (magent-msg-role msg))
+             (content (magent-msg-content msg)))
+          (pcase role
+            ('user
+             (setq pending-user (magent-session--content-to-string content)
+                   pending-tools nil))
+            ('tool
+             (when (and pending-user
+                        (magent-session--tool-content-p content))
+               (let ((tool (copy-sequence content)))
+                 (plist-put tool
+                            :name
+                            (magent-json-safe-name
+                             (plist-get content :name)))
+                 (plist-put tool
+                            :args
+                            (magent-json-safe-tool-args
+                             (plist-get content :args)))
+                 (push tool pending-tools))))
+            ('assistant
+             (append-pending-turn content))
+            (_ nil)))))
     (when pending-user
-      (push (cons 'prompt pending-user) prompt-list))
+      (push (cons 'prompt pending-user) prompt-list)
+      (dolist (tool (nreverse pending-tools))
+        (push (cons 'tool tool) prompt-list)))
     (nreverse prompt-list)))
 
 (provide 'magent-session)
