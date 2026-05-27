@@ -19,6 +19,7 @@
 (require 'magent-fsm)
 (require 'magent-runtime)
 (require 'magent-tools)
+(require 'magent-tool-registry)
 (require 'magent-session)
 (require 'magent-agent-registry)
 (require 'magent-permission)
@@ -109,7 +110,8 @@ The tool calling loop is managed by magent-fsm.  This function:
                                    "\n\n# Active Skills\n\n"
                                    (mapconcat #'identity skill-prompts "\n\n"))
                          base-system-msg))
-           (tools (magent-tools-get-magent-tools agent)))
+           (tools (mapcar #'magent-tool-registry-runtime-to-plist
+                          (magent-tool-registry-for-agent agent))))
       (when capability-resolution
         (magent-events-emit
          'capability-resolution

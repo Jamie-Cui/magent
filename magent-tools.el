@@ -720,7 +720,10 @@ This is the single source of truth for all tool names in the permission system."
 
 (defun magent-tools-permission-key (tool-name)
   "Return the permission key symbol for TOOL-NAME, or nil if unknown."
-  (cdr (assoc tool-name magent-tools--name-to-permission-key)))
+  (let ((name (if (symbolp tool-name)
+                  (symbol-name tool-name)
+                tool-name)))
+    (cdr (assoc name magent-tools--name-to-permission-key))))
 
 (defvar magent-tools--all-gptel-tools
   (list magent-tools--read-file-tool

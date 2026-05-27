@@ -18,6 +18,7 @@
 (require 'magent-approval)
 (require 'magent-events)
 (require 'magent-runtime)
+(require 'magent-tool-orchestrator)
 
 (declare-function gptel-request "gptel")
 (declare-function gptel-make-tool "gptel")
@@ -543,66 +544,16 @@ must not be forwarded to the actual tool implementation."
 (defun magent-fsm--handle-tool-call-confirmation-with-permission
     (permission tool-calls &optional request-context)
   "Handle TOOL-CALLS using PERMISSION rules."
-  (require 'magent-permission)
-  (let ((approval-session (or (and request-context
-                                   (magent-request-context-approval-session
-                                    request-context))
-                              (and request-context
-                                   (magent-request-context-session request-context)))))
-    (if (magent-permission-bypass-p)
-      (dolist (tc tool-calls)
-        (let* ((tool-spec (car tc))
-               (arg-values (cadr tc))
-               (cb (caddr tc))
-               (tool-name (gptel-tool-name tool-spec)))
-          (magent-log "PERM bypass allow: %s" tool-name)
-          (magent-fsm--audit-permission-decision
-           tool-spec arg-values 'allow 'bypass request-context)
-          (magent-fsm--run-tool tool-spec cb arg-values)))
-      (let (pending)
-        (dolist (tc tool-calls)
-          (let* ((tool-spec (car tc))
-                 (arg-values (cadr tc))
-                 (cb (caddr tc))
-                 (tool-name (gptel-tool-name tool-spec))
-                 (perm-key (magent-tools-permission-key tool-name))
-                 (file-path (when perm-key
-                              (let ((idx (magent-fsm--find-file-arg-index
-                                          (gptel-tool-args tool-spec))))
-                                (when idx
-                                  (nth idx arg-values)))))
-                 (resolved (when (and permission perm-key)
-                             (magent-permission-resolve permission perm-key file-path)))
-                 (override (when perm-key
-                             (magent-permission-session-override
-                              perm-key approval-session))))
-            (cond
-             ((eq override 'allow)
-              (magent-log "PERM auto-allow (session override): %s" tool-name)
-              (magent-fsm--audit-permission-decision
-               tool-spec arg-values 'allow 'session-override-allow request-context)
-              (magent-fsm--run-tool tool-spec cb arg-values))
-             ((eq override 'deny)
-              (magent-log "PERM auto-deny (session override): %s" tool-name)
-              (magent-fsm--audit-permission-decision
-               tool-spec arg-values 'deny 'session-override-deny request-context)
-              (funcall cb (format "Error: tool '%s' denied by session policy" tool-name)))
-             ((eq resolved 'deny)
-              (magent-log "PERM auto-deny (file rule): %s %s" tool-name (or file-path ""))
-              (magent-fsm--audit-permission-decision
-               tool-spec arg-values 'deny 'file-rule-deny request-context)
-              (funcall cb (format "Error: access denied for %s on %s"
-                                  tool-name (or file-path "this resource"))))
-             ((and file-path (eq resolved 'allow))
-              (magent-log "PERM auto-allow (file rule): %s %s" tool-name file-path)
-              (magent-fsm--audit-permission-decision
-               tool-spec arg-values 'allow 'file-rule-allow request-context)
-              (magent-fsm--run-tool tool-spec cb arg-values))
-             (t
-              (push tc pending)))))
-        (when pending
-          (magent-fsm--prompt-next-tool-call
-           (nreverse pending) request-context))))))
+  (magent-tool-orchestrator-handle-tool-calls
+   (magent-tool-orchestrator-create
+    :permission permission
+    :request-context request-context
+    :run-tool-function #'magent-fsm--run-tool
+    :audit-function #'magent-fsm--audit-permission-decision
+    :file-arg-index-function #'magent-fsm--find-file-arg-index
+    :args-to-plist-function #'magent-fsm--args-to-plist
+    :summarize-function #'magent-fsm--summarize-args)
+   tool-calls))
 
 (defun magent-fsm--prompt-next-tool-call (tool-calls &optional request-context)
   "Prompt for the next tool call in TOOL-CALLS."
