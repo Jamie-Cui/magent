@@ -82,15 +82,12 @@ Org-mode derived buffer for interaction and output rendering.
 
 **What it does:** `*magent*` buffer uses org-mode with custom faces. In-buffer input via `* [USER]` sections. Tool calls render as `#+begin_tool`/`#+end_tool` blocks (auto-folded). Streaming uses chunk batching and async fontification.
 
-### Layer 7: Integrations
-
-Optional integrations with other Emacs packages.
+### Layer 7: Events
 
 **Key Files:**
-- `magent-magit.el` — Magit integration for AI-assisted commit messages and diff explanations
 - `magent-events.el` — Event system for extensibility
 
-**What it does:** Provides hooks into other Emacs workflows. Magit integration drafts commit messages and explains diffs through isolated `gptel-request` calls.
+**What it does:** Provides structured lifecycle hooks for turns, subagents, and tool calls.
 
 ## Key Concepts
 
@@ -211,8 +208,7 @@ Look at `test/magent-test.el` to see how the codebase is tested. Tests mock `gpt
 - **magent-md2org.el** — Markdown to org-mode converter
 - **magent-file-loader.el** — Shared frontmatter parser
 
-### Integrations
-- **magent-magit.el** — Magit integration for commit messages and diff explanations
+### Events
 - **magent-events.el** — Event system for extensibility
 
 ## Complexity Hotspots
