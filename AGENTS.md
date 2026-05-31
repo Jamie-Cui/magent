@@ -1,6 +1,22 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to agentic coding tools when working with code in this repository.
+
+## Active Project Goal
+
+The current active architecture goal is to analyze the agent workflow differences between this project and the local Codex checkout at `~/proj/codex`, then align Magent with Codex-style collaborative agent behavior where it fits Emacs.
+
+Persistent handoff document:
+
+- `docs/plans/2026-05-30-codex-agent-workflow-alignment.md`
+
+Important boundaries:
+
+- Do not implement Codex sandbox, seatbelt, bubblewrap, or shell isolation parity as part of this goal.
+- Preserve Magent's Emacs-native workflow: live buffers, `emacs_eval`, org output, project-scoped sessions, and gptel transport.
+- Keep using `gptel-request` for provider/request/HTTP/SSE plumbing. Do not rewrite gptel provider integration.
+- Breaking changes are allowed for this goal. Prefer replacing `delegate` with a durable child-agent/job lifecycle on top of the Magent-owned agent loop.
+- When work is interrupted, update the plan file before stopping so progress can be recovered from git on another machine.
 
 ## Build Commands
 
@@ -27,11 +43,11 @@ emacs -Q --batch -L . -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'gptel-*' -typ
 
 ### Unit Tests
 
-`test/magent-test.el` contains ~92 ERT tests across 10 suites. Tests mock `gptel-request` and UI functions via `cl-letf`. Key patterns:
+`test/magent-test.el` contains the main ERT suite. Tests mock `gptel-request` and UI functions via `cl-letf`. Key patterns:
 - Registry tests bind `magent-agent-registry--agents` to a fresh hash table
 - Skills tests bind `magent-skills--registry` to nil
 - Session tests call `magent-session-reset` to clear global state
-- FSM tool/permission tests should load `magent-fsm-tools`; compatibility tests may still load `magent-fsm-shared`
+- Loop/tool permission tests should use `magent-agent-loop.el` and `magent-tool-orchestrator.el`
 
 ### End-to-End Testing
 
@@ -41,7 +57,7 @@ After elisp code changes, test in the running Emacs via `emacsclient --eval`:
 2. Clear: `(magent-clear-session)`
 3. Test prompts:
    - Non-tool: `"你好"` — verifies streaming text and assistant section
-   - Tool-use: `"帮我看下 emacs 里面有多少 buffer"` — verifies `emacs_eval` tool calling, UI rendering, FSM
+   - Tool-use: `"帮我看下 emacs 里面有多少 buffer"` — verifies `emacs_eval` tool calling, UI rendering, Magent-owned loop
    - Multi-step: `"帮我在 emacs 里面打开 magent 的 magit buffer"` — verifies chained tool execution
 4. Check `*magent*`, `*magent-log*`, and `*Messages*` for errors
 
@@ -56,6 +72,11 @@ magent.el (entry point: magent-mode, global-magent-mode)
   ├─ magent-config.el     (defcustoms, deffaces, shared utilities, magent-log stub)
   ├─ magent-runtime.el    (static init + project overlay activation)
   ├─ magent-session.el    (conversation state, JSON persistence)
+  ├─ magent-agent-job.el  (durable child-agent job state and JSON shape)
+  ├─ magent-llm.el        (provider-neutral request/event protocol)
+  ├─ magent-llm-gptel.el  (gptel-request sampling adapter; hides gptel callback/FSM details)
+  ├─ magent-agent-loop.el (Magent-owned normalized event loop, tool dispatch, queueing, guards, abort)
+  ├─ magent-tool-orchestrator.el (permission, approval, audit, and tool-call orchestration)
   ├─ magent-capability.el (capability registry and prompt-time resolution)
   ├─ magent-tools.el      (10 gptel-tool structs)
   ├─ magent-agent.el      (magent-agent-process: builds gptel prompt, calls gptel-request)
@@ -64,8 +85,6 @@ magent.el (entry point: magent-mode, global-magent-mode)
   ├─ magent-agent-file.el      (loads custom agents from .magent/agent/*.md)
   ├─ magent-permission.el      (rule-based tool access control per agent)
   ├─ magent-ui.el              (in-buffer input/output, org-mode derived, overlay sections)
-  ├─ magent-fsm.el             (active gptel FSM implementation + public API)
-  ├─ magent-fsm-tools.el       (tool wrapping, queueing, permission flow, abort helpers)
   ├─ magent-file-loader.el     (shared file-backed definition loader and frontmatter parser)
   ├─ magent-md2org.el          (markdown → org-mode conversion for assistant output)
   └─ magent-skills.el          (skill registry, built-in skill definitions, file loading, and interactive commands)
@@ -85,17 +104,17 @@ magent.el (entry point: magent-mode, global-magent-mode)
    - Request serialization is owned here via `magent-ui--processing` and `magent-ui--enqueue`; concurrent prompts are rejected with a busy message instead of buffered
    - `?` opens a transient menu; `TAB`/`S-TAB` fold sections; `C-g` interrupts
 
-4. **Agent processing** (`magent-agent.el`): `magent-agent-process` builds a gptel prompt list from the session, applies per-agent overrides (model, temperature via `default-value` — intentionally avoids buffer-local gptel settings), filters tools by permissions, then calls `gptel-request`.
+4. **Agent processing** (`magent-agent.el`): `magent-agent-process` builds a gptel prompt list from the session, applies per-agent overrides (model, temperature via `default-value` — intentionally avoids buffer-local gptel settings), exposes filtered tools to the provider, then starts `magent-agent-loop`.
 
 5. **Tools** (`magent-tools.el`): 10 `gptel-tool` structs — `read_file`, `write_file`, `edit_file`, `grep`, `glob`, `bash`, `emacs_eval`, `delegate`, `skill_invoke`, `web_search`. Tools are registered globally but filtered per-agent through permissions. `web_search` uses DuckDuckGo via `url-retrieve` + `libxml-parse-html-region` (requires Emacs built with `--with-xml2`).
 
-6. **FSM** (`magent-fsm.el`): Only the **gptel backend** is active. The full request lifecycle, streaming callback, and gptel advice now live in `magent-fsm.el`. Tool wrapping, permission prompting, queueing, and abort helpers live in `magent-fsm-tools.el`. The legacy features `magent-fsm-backend-gptel` and `magent-fsm-shared` remain as compatibility shims.
+6. **Agent Loop**: `magent-agent.el` starts the Magent-owned loop through `magent-agent-loop.el`. `magent-llm.el` defines normalized request/events, and `magent-llm-gptel.el` calls `gptel-request` while hiding gptel callback/FSM details. The loop owns tool dispatch through `magent-tool-orchestrator`, serial tool queueing, permission audit hooks, visible tool rendering, repeated `emacs_eval` guards, request abort cleanup, tool-result session recording, and continuation.
 
 7. **Permissions** (`magent-permission.el`): Rules map tool names to `allow`/`deny`/`ask`, with optional file-pattern sub-rules (glob syntax). Resolution: exact tool match → file-pattern rules → wildcard (`*`) fallback → **default allow**. File-pattern rules are order-dependent (first match wins); more specific patterns must come before less specific ones.
 
 8. **Capabilities** (`magent-capability.el`): File-backed capability definitions score the current request context and attach matching instruction skills. Bundled, user, and project-local capability overlays all feed the same resolver.
 
-9. **Session** (`magent-session.el`): Conversation state with messages list and history trimming. Persists to `magent-session-directory` as JSON. The `buffer-content` slot stores raw buffer text for lossless restore (preserving tool/reasoning blocks not in the message list). `magent-session-reset` clears the scoped session plus approval and capability overrides.
+9. **Session** (`magent-session.el`): Conversation state with messages list and history trimming. Persists to `magent-session-directory` as JSON. The `buffer-content` slot stores raw buffer text for lossless restore (preserving tool/reasoning blocks not in the message list). The `agent-jobs` slot stores durable child-agent job metadata for the Codex workflow alignment work. `magent-session-reset` clears the scoped session plus approval and capability overrides.
 
 10. **Skills** (`magent-skills.el`): Two types — `instruction` (markdown injected into system prompt) and `tool` (invoked via `skill_invoke`). The module now contains the registry, built-in `skill-creator`, file-based skill loading, and interactive inspection commands. Skills load in priority order from (1) built-in `skills/`, (2) user directory `~/.emacs.d/magent-skills/<name>/SKILL.md`, and (3) project-local `.magent/skills/<name>/SKILL.md`.
 
@@ -104,8 +123,8 @@ magent.el (entry point: magent-mode, global-magent-mode)
 - **`magent-output-mode` derives from `org-mode`**: All org keybindings, font-lock, and folding apply. Use `inhibit-read-only` for insertions; org fontification can trigger re-entrancy.
 - **`magent-ui--with-insert` suppresses buffer-boundary signals**: Catches `beginning-of-buffer`, `end-of-buffer`, etc. to suppress evil-mode cursor adjustment errors from gptel process filters.
 - **`magent-log` is a stub in `magent-config.el`**: No-op until `magent-ui` is loaded. In batch tests, logs go nowhere unless you explicitly load `magent-ui`.
-- **Tool execution helpers live in `magent-fsm-tools.el`**: `magent-fsm-backend-gptel.el` and `magent-fsm-shared.el` are compatibility shims only.
-- **`magent--handle-unknown-tools-a`**: An `around` advice on `gptel--handle-tool-use` that pre-fills error results for hallucinated tool names, preventing FSM hangs.
+- **Tool execution helpers live in `magent-agent-loop.el`**: serial queueing, abort cleanup, visible tool rendering, duplicate/excessive `emacs_eval` guards, and tool-result recording are all loop-owned.
+- **Provider transport stays in gptel**: `magent-llm-gptel.el` may use gptel private FSM details internally for one sampling request, but the Magent loop consumes only normalized events.
 - **Request generation counter**: `magent-ui--request-generation` increments on dispatch and interrupt. Stale callbacks compare their captured generation and discard themselves if mismatched.
 - **`revert-buffer` in output buffer**: Bound to `magent-ui--revert-buffer` → `magent-ui-render-history`. Safe to use `g` in evil mode.
 
@@ -134,7 +153,7 @@ Tool-type skills can have companion `.el` files defining `magent-skill-<name>-in
 
 All `defcustom` variables are in `magent-config.el` under `customize-group magent`. LLM provider/model/key settings are managed entirely by gptel.
 
-Key settings: `magent-fsm-backend` (only `gptel` currently), `magent-default-agent` (`"build"`), `magent-enable-tools` (list of enabled tool symbols), `magent-include-reasoning` (`t`/`ignore`/`nil`), `magent-request-timeout` (120s), `magent-bash-timeout` (30s), `magent-emacs-eval-timeout` (10s), `magent-max-history` (100).
+Key settings: `magent-default-agent` (`"build"`), `magent-enable-tools` (list of enabled tool symbols), `magent-include-reasoning` (`t`/`ignore`/`nil`), `magent-request-timeout` (120s), `magent-bash-timeout` (30s), `magent-emacs-eval-timeout` (10s), `magent-max-history` (100).
 
 ### Keybindings
 

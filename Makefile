@@ -29,6 +29,10 @@ BYTE_COMPILE_FLAGS = --eval "(setq byte-compile-error-on-warn nil)" \
 SRCS = magent-config.el \
        magent-audit.el \
        magent-protocol.el \
+       magent-agent-job.el \
+       magent-llm.el \
+       magent-llm-gptel.el \
+       magent-agent-loop.el \
        magent-events.el \
        magent-approval.el \
        magent-file-loader.el \
@@ -47,10 +51,6 @@ SRCS = magent-config.el \
        magent-permission.el \
        magent-md2org.el \
        magent-ui.el \
-       magent-fsm-tools.el \
-       magent-fsm.el \
-       magent-fsm-backend-gptel.el \
-       magent-fsm-shared.el \
        magent-skills.el \
        magent-capability.el \
        magent.el

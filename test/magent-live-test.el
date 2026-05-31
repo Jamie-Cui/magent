@@ -49,23 +49,6 @@
     (magent-live-test--add-load-path
      (magent-live-test--first-elpa-directory pattern))))
 
-(defun magent-live-test--remove-fsm-advice-before-reload ()
-  "Remove Magent FSM advice before reloading source files."
-  (when (and (fboundp 'gptel--handle-wait)
-             (fboundp 'magent--reset-reasoning-block-a))
-    (advice-remove 'gptel--handle-wait #'magent--reset-reasoning-block-a))
-  (when (and (fboundp 'gptel--handle-tool-use)
-             (fboundp 'magent--handle-unknown-tools-a))
-    (advice-remove 'gptel--handle-tool-use #'magent--handle-unknown-tools-a))
-  (when (and (fboundp 'gptel-curl--get-args)
-             (fboundp 'magent--sanitize-request-data-before-curl-a))
-    (advice-remove 'gptel-curl--get-args
-                   #'magent--sanitize-request-data-before-curl-a))
-  (when (and (fboundp 'gptel-curl--parse-stream)
-             (fboundp 'magent--sanitize-stream-data-after-parse-a))
-    (advice-remove 'gptel-curl--parse-stream
-                   #'magent--sanitize-stream-data-after-parse-a)))
-
 (defun magent-live-test--load-source-file (file)
   "Load FILE from the repository root, bypassing stale .elc files."
   (load (expand-file-name file magent-live-test--root-directory) nil t))
@@ -74,8 +57,11 @@
   "Reload Magent source files into the live Emacs instance."
   (interactive)
   (magent-live-test--prepare-load-path)
-  (magent-live-test--remove-fsm-advice-before-reload)
   (dolist (file '("magent-config.el"
+                  "magent-agent-job.el"
+                  "magent-llm.el"
+                  "magent-llm-gptel.el"
+                  "magent-agent-loop.el"
                   "magent-events.el"
                   "magent-audit.el"
                   "magent-session.el"
@@ -87,10 +73,11 @@
                   "magent-agent-types.el"
                   "magent-permission.el"
                   "magent-tools.el"
+                  "magent-tool-registry.el"
+                  "magent-tool-orchestrator.el"
+                  "magent-turn.el"
                   "magent-agent-file.el"
                   "magent-md2org.el"
-                  "magent-fsm-tools.el"
-                  "magent-fsm.el"
                   "magent-agent.el"
                   "magent-skills.el"
                   "magent-capability.el"

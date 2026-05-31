@@ -27,7 +27,8 @@
 (declare-function magent-agent-process "magent-agent")
 (declare-function magent-events-create-subagent-context "magent-events")
 (declare-function magent-events-stop-subagent "magent-events")
-(declare-function magent-fsm-abort "magent-fsm")
+(declare-function magent-agent-loop-abort "magent-agent-loop")
+(declare-function magent-agent-loop-p "magent-agent-loop")
 
 ;; dom.el functions used for web search result parsing (requires --with-xml2 build)
 (declare-function dom-by-class "dom")
@@ -355,7 +356,7 @@ CALLBACK is called with the command output (stdout + stderr)."
   "Delegate PROMPT to subagent AGENT-NAME asynchronously.
 CALLBACK is the gptel process-tool-result function.
 Looks up the agent in the registry, validates it is a subagent,
-then spawns a Magent child request that runs through the normal FSM."
+then spawns a Magent child request that runs through the normal agent loop."
   (let ((agent (magent-agent-registry-get agent-name)))
     (cond
      ((null agent)
@@ -419,7 +420,9 @@ then spawns a Magent child request that runs through the normal FSM."
               (magent-tools--register-cancel-cleanup
                (lambda ()
                  (when child-fsm
-                   (magent-fsm-abort child-fsm)))))
+                   (when (and (fboundp 'magent-agent-loop-p)
+                              (magent-agent-loop-p child-fsm))
+                     (magent-agent-loop-abort child-fsm))))))
           (error
            (magent-events-stop-subagent subagent-context)
            (funcall callback
@@ -513,7 +516,7 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
     :optional t)
   "Display-only arg appended to every tool's :args list.
 The value is shown in the UI but stripped before the tool function is called.
-See `magent-fsm--filter-display-args'.")
+See `magent-agent-loop-filter-display-args'.")
 
 (defvar magent-tools--read-file-tool
   (gptel-make-tool

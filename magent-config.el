@@ -133,8 +133,8 @@ available, or `default-directory'."
 
 (defcustom magent-request-timeout 120
   "Timeout in seconds for LLM requests.
-If no callback activity occurs within this period, the FSM
-transitions to ERROR.  Set to 0 to disable."
+If no callback activity occurs within this period, the request
+transitions to an error state.  Set to 0 to disable."
   :type 'integer
   :group 'magent)
 
@@ -367,13 +367,6 @@ When nil, displayed reasoning is inserted as plain assistant text.
 This only affects reasoning shown in the Magent UI, so it has no
 effect unless `magent-include-reasoning' is t."
   :type 'boolean
-  :group 'magent)
-
-;; Only the gptel backend is supported.
-(defcustom magent-fsm-backend 'gptel
-  "FSM backend to use for tool calling loop.
-`gptel' uses gptel's built-in FSM (gptel-request.el)."
-  :type '(const gptel)
   :group 'magent)
 
 (defcustom magent-auto-context t

@@ -17,6 +17,7 @@
 (require 'subr-x)
 (require 'magent-config)
 (require 'magent-protocol)
+(require 'magent-agent-job)
 
 (declare-function magent-agent-info-name "magent-agent-registry")
 (declare-function magent-agent-registry-get "magent-agent-registry")
@@ -32,7 +33,8 @@
   (agent nil)
   (buffer-content nil)       ; Saved buffer text for lossless restore
   (approval-overrides nil)   ; Session-scoped approval memory
-  (context-items nil))       ; Structured Codex-like transcript items
+  (context-items nil)        ; Structured Codex-like transcript items
+  (agent-jobs nil))          ; Durable child-agent job state
 
 ;;; Message helpers
 
@@ -163,6 +165,30 @@ Returns a normalized project root string or the symbol `global'."
   "Clear all persisted approval overrides from SESSION."
   (when session
     (setf (magent-session-approval-overrides session) nil)))
+
+(defun magent-session-add-agent-job (session job)
+  "Add JOB to SESSION, replacing any existing job with the same id.
+Return JOB."
+  (when session
+    (setf (magent-session-agent-jobs session)
+          (cons job
+                (cl-remove (magent-agent-job-id job)
+                           (magent-session-agent-jobs session)
+                           :key #'magent-agent-job-id
+                           :test #'equal))))
+  job)
+
+(defun magent-session-agent-job (session id)
+  "Return SESSION's child-agent job with ID, or nil."
+  (and session
+       (magent-agent-job-find (magent-session-agent-jobs session) id)))
+
+(defun magent-session-set-agent-job-status
+    (session id status &optional result error)
+  "Set SESSION child-agent job ID to STATUS.
+Optionally record RESULT or ERROR.  Return the updated job, or nil."
+  (when-let ((job (magent-session-agent-job session id)))
+    (magent-agent-job-set-status job status result error)))
 
 (defun magent-session-activate (&optional scope)
   "Activate SCOPE and return its session.
@@ -421,6 +447,10 @@ before calling this function."
                                           (mapcar
                                            #'magent-session--context-item-to-alist
                                            (magent-session-context-items session))))
+                       (agent-jobs . ,(vconcat
+                                       (mapcar
+                                        #'magent-agent-job-to-alist
+                                        (magent-session-agent-jobs session))))
                        (approval-overrides . ,(vconcat approval-overrides))
                        (buffer-content . ,(or (magent-session-buffer-content session) "")))))
           (with-temp-file filepath
@@ -442,6 +472,7 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
                (project-root (cdr (assq 'project-root data)))
                (msgs-raw (cdr (assq 'messages data)))
                (context-raw (cdr (assq 'context-items data)))
+               (jobs-raw (cdr (assq 'agent-jobs data)))
                (approval-raw (cdr (assq 'approval-overrides data)))
                (bc (or (cdr (assq 'buffer-content data)) ""))
                (scope (pcase scope-name
@@ -453,6 +484,7 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
                (messages (mapcar #'magent-session--alist-to-msg msgs-raw))
                (context-items (mapcar #'magent-session--alist-to-context-item
                                       context-raw))
+               (agent-jobs (mapcar #'magent-agent-job-from-alist jobs-raw))
                (approval-overrides
                 (mapcar
                  (lambda (entry)
@@ -463,6 +495,7 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
                          :id id
                          :messages messages
                          :context-items context-items
+                         :agent-jobs agent-jobs
                          :approval-overrides approval-overrides
                          :buffer-content (when (> (length bc) 0) bc))))
           (list :scope scope

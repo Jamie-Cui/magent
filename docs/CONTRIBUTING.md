@@ -2,6 +2,12 @@
 
 Thank you for your interest in contributing to magent! This guide will help you get started.
 
+## Current Focus
+
+The active architecture focus is Codex-style agent workflow alignment. Before changing agent lifecycle behavior, read and update `docs/plans/2026-05-30-codex-agent-workflow-alignment.md`.
+
+The target direction is a durable child-agent/job lifecycle for Magent: spawn, message, wait, list, inspect/resume, and close. Codex sandboxing, seatbelt, bubblewrap, and shell isolation parity are out of scope for this work.
+
 ## Development Setup
 
 ### Prerequisites
@@ -39,7 +45,8 @@ All files must include:
 - Use `;;;` for section headers
 - Use `;;` for inline comments
 - Update README.org for user-facing changes
-- Update CLAUDE.md for developer-facing changes
+- Update AGENTS.md for developer-facing changes
+- Update the active plan before stopping interrupted agent workflow work
 
 ## Testing
 
@@ -86,6 +93,7 @@ emacsclient --eval '(magent-clear-session)'
 ## Areas for Contribution
 
 ### High Priority
+- Codex-style collaborative agent workflow, excluding sandbox parity
 - Additional tool implementations
 - Performance optimizations
 - Test coverage improvements
@@ -111,18 +119,23 @@ emacsclient --eval '(magent-clear-session)'
 4. Add tests
 5. Document in README.org
 
+Agent lifecycle tools are a special case. If the tool participates in spawning, messaging, waiting for, listing, resuming, inspecting, or closing child agents, keep the implementation aligned with `docs/plans/2026-05-30-codex-agent-workflow-alignment.md`.
+
 ### Creating a New Module
-1. Follow dependency graph (see CLAUDE.md)
+1. Follow dependency graph (see AGENTS.md)
 2. Use `;;; -*- lexical-binding: t; -*-`
 3. Require dependencies explicitly
 4. Add to `magent.el` if needed
 5. Write tests in `test/magent-test.el`
 
-### Modifying the FSM
-- Most FSM work now lives in `magent-fsm.el` and `magent-fsm-tools.el`; `magent-fsm-backend-gptel.el` is only a compatibility shim
-- Test with multiple LLM providers
-- Handle streaming edge cases
-- Update request generation counter if needed
+For a new child-agent/job module, prefer a focused module such as `magent-agent-job.el` over expanding `magent-tools.el` until the lifecycle becomes hard to isolate.
+
+### Modifying the Agent Loop
+- Active request/tool-loop behavior belongs in `magent-agent-loop.el`
+- Keep using `magent-llm-gptel.el` and `gptel-request` for provider transport
+- Add focused tests for normalized events, tool queueing, permission decisions, abort behavior, and session recording
+- Update request generation and live-request checks when callbacks can arrive after interruption
+- Do not reintroduce removed agent-loop modules; add provider-specific transport handling only in `magent-llm-gptel.el`
 
 ## Getting Help
 
