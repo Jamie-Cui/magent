@@ -1,7 +1,6 @@
 # Magent Onboarding Guide
 
-**Generated:** 2026-03-24
-**Git Commit:** 6f45f490a2a34f064a052e9844731388ce70eecb
+**Updated:** 2026-05-31
 
 ## Project Overview
 
@@ -11,6 +10,12 @@
 - **Primary Dependency:** [gptel](https://github.com/karthink/gptel) (handles all LLM communication)
 - **Requirements:** Emacs 27.1+, spinner, transient, ripgrep
 - **Purpose:** Provide AI-assisted coding capabilities within Emacs with fine-grained control over agent permissions and tool access
+
+## Active Goal
+
+The active architecture goal is to compare Magent's current agent workflow with the local Codex checkout at `~/proj/codex` and evolve Magent toward Codex-style collaborative agents where that fits Emacs.
+
+Read `docs/plans/2026-05-30-codex-agent-workflow-alignment.md` before changing `delegate`, subagent behavior, session persistence, or agent-related tools. The goal is a durable child-agent lifecycle: spawn, message, wait, list, inspect/resume, and close. Codex sandbox behavior is explicitly out of scope.
 
 ## Architecture Layers
 
@@ -48,6 +53,8 @@ Multi-agent architecture with specialized agents for different tasks.
 
 **What it does:** Provides specialized agents (build, plan, explore, general, etc.) with different capabilities. Permission system filters tools per agent. Custom agents extend functionality via markdown files with YAML frontmatter.
 
+**Current direction:** The existing `delegate` tool is one-shot. The active plan moves Magent toward durable child-agent jobs with stable ids, status, transcript/result storage, and parent/child session relationships.
+
 ### Layer 4: Tools & Capabilities
 
 The action layer that executes operations requested by agents.
@@ -60,16 +67,16 @@ The action layer that executes operations requested by agents.
 
 **What it does:** Tools provide concrete actions (file I/O, shell commands, web search). Skills extend agent behavior (instruction-type injected into prompts, tool-type invoked via skill_invoke). Approval system gates dangerous operations.
 
-### Layer 5: FSM & LLM Integration
+### Layer 5: Agent Loop & LLM Integration
 
 Orchestrates the tool-calling loop and LLM communication.
 
 **Key Files:**
-- `magent-fsm.el` — Active FSM implementation and public API
-- `magent-fsm-tools.el` — Tool conversion, queueing, permission confirmation, abort helpers
-- `magent-fsm-backend-gptel.el` / `magent-fsm-shared.el` — Compatibility shims for legacy `require` forms
+- `magent-agent-loop.el` — Active Magent-owned loop, tool dispatch, serial queueing, guards, abort helpers, continuation
+- `magent-llm.el` — Provider-neutral request/event protocol
+- `magent-llm-gptel.el` — Thin `gptel-request` sampling adapter
 
-**What it does:** FSM manages the request lifecycle. Currently only gptel backend is active. `magent-fsm.el` owns the live streaming/request loop, while `magent-fsm-tools.el` owns tool/permission plumbing. `magent--handle-unknown-tools-a` advice prevents hangs from hallucinated tool names.
+**What it does:** `magent-agent-loop.el` consumes normalized LLM events, records assistant/tool state into the session, dispatches tools through `magent-tool-orchestrator`, handles visible tool rendering, repeated `emacs_eval` guards, abort cleanup, and continuation. `magent-llm-gptel.el` still calls `gptel-request`; Magent does not rewrite provider transport.
 
 ### Layer 6: User Interface
 
@@ -101,6 +108,8 @@ Magent uses specialized agents with different capabilities:
 - **compaction**, **title**, **summary** — Hidden utility agents
 
 Agents have modes: `primary` (user-facing), `subagent` (internal), `all` (either).
+
+Planned workflow alignment is tracked in `docs/plans/2026-05-30-codex-agent-workflow-alignment.md`. Treat it as the handoff document for subagent/job work.
 
 ### Permission System
 
@@ -148,9 +157,9 @@ Read `magent-ui.el` to see how the `*magent*` buffer works. Key insight: it deri
 
 Trace a request through these files in order:
 1. `magent-agent.el` — `magent-agent-process` builds the prompt
-2. `magent-fsm.el` — Handles the active gptel request loop and streaming callback
-3. `magent-fsm-tools.el` — Converts tools, serializes execution, resolves permissions
-4. `magent-tools.el` — Tool implementations execute
+2. `magent-agent-loop.el` — Owns normalized events, tool dispatch, queueing, guards, abort, and continuation
+3. `magent-llm-gptel.el` — Calls `gptel-request` for one sampling request
+4. `magent-tool-orchestrator.el` / `magent-tools.el` — Resolve permissions and execute tool implementations
 5. `magent-ui.el` — Results render in buffer
 
 ### Step 4: Understand Permissions
@@ -198,10 +207,10 @@ Look at `test/magent-test.el` to see how the codebase is tested. Tests mock `gpt
 - **magent-capability.el** — Capability definitions, resolution, and file-backed loading
 - **magent-approval.el** — User approval prompts for sensitive operations
 
-### FSM & LLM Integration
-- **magent-fsm.el** — Active FSM implementation, streaming, callbacks, unknown-tool handling
-- **magent-fsm-tools.el** — Tool conversion, queues, permission confirmation, abort helpers
-- **magent-fsm-backend-gptel.el** / **magent-fsm-shared.el** — Compatibility shims
+### Agent Loop & LLM Integration
+- **magent-agent-loop.el** — Active normalized event loop, tool dispatch, queueing, guards, abort, continuation
+- **magent-llm.el** — Provider-neutral request/event protocol
+- **magent-llm-gptel.el** — `gptel-request` adapter
 
 ### User Interface
 - **magent-ui.el** — Org-mode derived buffer, streaming, sections, transient menu
@@ -215,22 +224,27 @@ Look at `test/magent-test.el` to see how the codebase is tested. Tests mock `gpt
 
 These areas require careful attention when modifying:
 
-### 1. magent-fsm.el (High Complexity)
-**Why it's complex:** Manages streaming state, request callbacks, and handles edge cases like qwen3-max splitting tool calls with empty names. Contains `magent--handle-unknown-tools-a` advice that merges split tool entries.
+### 1. magent-agent-loop.el (High Complexity)
+**Why it's complex:** Owns the active request/tool loop: normalized event accumulation, tool-call batching, serial execution, permission orchestration, UI tool rendering, repeated `emacs_eval` guard state, abort cleanup, tool-result session recording, and continuation.
 
-**Approach carefully:** Any changes to streaming logic or tool-use handling can break the FSM loop. Test thoroughly with multiple LLM providers.
+**Approach carefully:** Any changes to loop state, tool callback ordering, or abort handling can hang a turn or corrupt session history. Add focused ERT coverage first, then verify live with tool-use prompts when Emacs is available.
 
-### 2. magent-ui.el (High Complexity)
+### 2. magent-llm-gptel.el (Medium Complexity)
+**Why it's complex:** It is intentionally the only place that may touch gptel callback/FSM details. It converts provider callback shapes into normalized Magent events without letting gptel's tool-loop semantics leak into the main loop.
+
+**Approach carefully:** Keep provider transport concerns here and loop behavior in `magent-agent-loop.el`. Do not add new main-loop dependencies on gptel private FSM handlers.
+
+### 3. magent-ui.el (High Complexity)
 **Why it's complex:** Org-mode derived buffer with custom insertion logic, async fontification, chunk batching, and read-only region management. The `magent-ui--with-insert` macro suppresses buffer-boundary signals to prevent evil-mode errors.
 
 **Approach carefully:** Insertions must use `inhibit-read-only`. Org fontification can trigger re-entrancy. Request generation counter prevents stale callbacks.
 
-### 3. magent-permission.el (Medium Complexity)
+### 4. magent-permission.el (Medium Complexity)
 **Why it's complex:** Order-dependent file-pattern matching with glob syntax. Resolution order matters: exact match → file patterns → wildcard → default allow.
 
 **Approach carefully:** More specific patterns must come before less specific ones. Test with various glob patterns.
 
-### 4. magent-tools.el (Medium Complexity)
+### 5. magent-tools.el (Medium Complexity)
 **Why it's complex:** 10 different tool implementations with varying side effects, timeouts, and error handling. `emacs_eval` uses `magent-tools--request-buffer-name` to execute in correct buffer context.
 
 **Approach carefully:** Tools run in process filters. Timeout handling must be robust. Context capture for `emacs_eval` is critical.
@@ -298,6 +312,8 @@ Check `*magent*`, `*magent-log*`, and `*Messages*` buffers for errors.
 2. Add to `magent-enable-tools` default in `magent-config.el`
 3. Update agent permissions in `magent-agent-registry.el`
 
+For agent lifecycle tools such as `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, or `close_agent`, update the active Codex workflow plan first. These tools should be designed as one coherent job lifecycle rather than unrelated standalone tools.
+
 ### Creating a Custom Agent
 
 Create `.magent/agent/my-agent.md`:
@@ -333,7 +349,8 @@ Skill instructions for the agent.
 
 ## Getting Help
 
-- **Documentation:** `README.org`, `CLAUDE.md` in repo root
+- **Documentation:** `README.org`, `AGENTS.md` in repo root
+- **Active plan:** `docs/plans/2026-05-30-codex-agent-workflow-alignment.md`
 - **Interactive help:** `M-x magent-doctor` for self-diagnostics
 - **Logs:** `C-c m l` to view request/response log
 - **Agent info:** `C-c m v` to list agents, `C-c m i` for current agent

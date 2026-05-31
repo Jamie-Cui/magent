@@ -3,6 +3,12 @@
 
 An Emacs Lisp AI coding agent with multi-agent architecture, permission-based tool access, and LLM integration via [[https://github.com/karthink/gptel][gptel]].
 
+* Active Development Goal
+
+The current active architecture goal is to compare Magent's agent workflow with the local Codex checkout at =~/proj/codex= and move Magent toward Codex-style collaborative agent behavior where it fits Emacs.
+
+The planned direction is a durable child-agent lifecycle -- spawn, message, wait, list, resume/inspect, and close -- on top of a Magent-owned agent loop that keeps using ~gptel-request~ for provider integration. Breaking changes are allowed for this work, including replacing ~delegate~ directly once the new tool surface exists. Codex sandbox behavior is explicitly out of scope. The working plan and recovery checklist live in [[file:docs/plans/2026-05-30-codex-agent-workflow-alignment.md][docs/plans/2026-05-30-codex-agent-workflow-alignment.md]].
+
 * Features
 
 - *Multi-agent system* with specialized agents (build, plan, explore, general)
@@ -267,7 +273,7 @@ Tool availability is controlled by:
 
 5. *Capability System* (~magent-capability.el~): File-backed capability definitions score each request context and attach matching instruction skills.
 
-6. *FSM* (~magent-fsm.el~): Finite state machine for the tool-calling loop (~INIT -> SEND -> WAIT -> PROCESS -> TOOL -> DONE/ERROR~). Currently delegates HTTP to gptel.
+6. *Agent Loop*: ~magent-agent.el~ starts the Magent-owned loop in ~magent-agent-loop.el~. ~magent-llm.el~ defines normalized request/events, and ~magent-llm-gptel.el~ calls ~gptel-request~ for one sampling request while hiding gptel callback/FSM details. The loop owns tool dispatch, serial queueing, visible tool rendering, repeated ~emacs_eval~ guards, abort cleanup, permission audit hooks, tool-result session recording, and continuation.
 
 7. *LLM Integration* (via gptel): All LLM communication is handled by [[https://github.com/karthink/gptel][gptel]]. Provider, model, and API key configuration is managed entirely by gptel.
 
@@ -293,19 +299,20 @@ magent/
 |-- magent-config.el               # Configuration (customize group, defcustom vars)
 |-- magent-runtime.el              # Static initialization and project overlay activation
 |-- magent-session.el              # Session and message history (JSON persistence)
+|-- magent-agent-job.el            # Durable child-agent job state
+|-- magent-llm.el                  # Provider-neutral LLM request/event protocol
+|-- magent-llm-gptel.el            # gptel-request sampling adapter
+|-- magent-agent-loop.el           # Magent-owned event loop, tools, guards, aborts
 |-- magent-capability.el           # Capability registry and prompt-time resolution
 |-- magent-audit.el                # Audit logging and JSONL persistence
 |-- magent-tools.el                # Tool implementations (10 gptel-tool structs)
+|-- magent-tool-orchestrator.el    # Permission, approval, audit, and tool-call orchestration
 |-- magent-agent.el                # Agent logic (gptel integration)
 |-- magent-agent-info.el           # Compatibility shim for legacy agent-info feature
 |-- magent-agent-types.el          # Compatibility shim for legacy agent-types feature
 |-- magent-agent-registry.el       # Agent struct, built-in definitions, and registry
 |-- magent-agent-file.el           # Custom agent file loader (.magent/agent/*.md)
 |-- magent-permission.el           # Permission system (allow/deny/ask with glob patterns)
-|-- magent-fsm.el                  # Active FSM implementation and public API
-|-- magent-fsm-tools.el            # Tool wrapping, queues, and permission flow
-|-- magent-fsm-backend-gptel.el    # Compatibility shim for legacy backend feature
-|-- magent-fsm-shared.el           # Compatibility shim for legacy shared feature
 |-- magent-file-loader.el          # Shared definition loader and frontmatter parser
 |-- magent-md2org.el               # Markdown to org-mode converter
 |-- magent-skills.el               # Skill registry, built-in skills, file loading, and skill commands
@@ -339,7 +346,7 @@ magent/
 
 - ~magent-agent-info~: Agent configuration struct (name, description, mode, permissions, prompt, temperature, model, and related settings)
 - ~magent-session~: Conversation state with message list, assigned agent, and history trimming
-- ~magent-fsm~: FSM state for the tool-calling loop (state, session, agent, tools, pending-tools, and related fields)
+- ~magent-agent-loop~: Active turn state for normalized LLM events, tool queueing, guards, aborts, and continuation
 - ~magent-skill~: Loaded skill definition (name, description, tools, body, dir)
 
 * Development

@@ -26,7 +26,7 @@
 (require 'magent-session)
 (require 'magent-agent)
 (require 'magent-agent-registry)
-(require 'magent-fsm)
+(require 'magent-agent-loop)
 (require 'magent-protocol)
 (require 'magent-turn)
 
@@ -35,7 +35,7 @@
 (defvar magent-log-level)
 
 (defvar magent--current-fsm nil
-  "Current active FSM instance, if any.")
+  "Current active agent loop instance, if any.")
 
 ;; Forward declarations for buffer-local input state (defined in
 ;; "In-buffer input" section below).
@@ -66,6 +66,11 @@
 
 ;; Forward declaration for magent entry point (magent.el loaded first)
 (declare-function magent--ensure-initialized "magent")
+
+(defun magent-ui--abort-active-request (request)
+  "Abort active REQUEST when it is a Magent-owned loop."
+  (when (magent-agent-loop-p request)
+    (magent-agent-loop-abort request)))
 
 ;;; Request dispatch
 
@@ -534,10 +539,10 @@ Bumps the generation counter so stale callbacks from the aborted
 request are discarded."
   (interactive)
   (let ((turn-fsm (magent-turn-current-fsm)))
-    (magent-turn-interrupt #'magent-fsm-abort)
+    (magent-turn-interrupt #'magent-ui--abort-active-request)
     (when magent--current-fsm
       (unless (eq magent--current-fsm turn-fsm)
-        (magent-fsm-abort magent--current-fsm))
+        (magent-ui--abort-active-request magent--current-fsm))
       (setq magent--current-fsm nil)))
   (magent-approval-drop-requests)
   (cl-incf magent-ui--request-generation)
@@ -1214,7 +1219,7 @@ Returns a context string or nil if context should not be captured."
    "Start by collecting evidence instead of guessing.\n"
    "Focus on Magent's own runtime state, commands, buffers, and logs.\n"
    "Inspect the live Emacs state with emacs_eval when useful.\n"
-   "Check whether Magent features are loaded, whether `magent-mode' is enabled, the current session scope and agent, queue/FSM state, and whether there are pending approvals or recent errors.\n"
+   "Check whether Magent features are loaded, whether `magent-mode' is enabled, the current session scope and agent, queue/request state, and whether there are pending approvals or recent errors.\n"
    "Inspect the relevant `*magent:*` buffer, `*magent-log*`, `*Messages*`, `*Warnings*`, and `*Backtrace*` when available.\n"
    "If the problem seems request-specific, inspect the latest Magent conversation and log entries to identify the failing step.\n"
    "If no concrete failure is visible yet, summarize the suspicious signals you can observe and ask for the smallest missing reproduction detail.\n"
@@ -1349,7 +1354,7 @@ AGENT is an optional `magent-agent-info' override for this request."
   "Dispatch ITEM (a `magent-ui--request') to the agent.
 Called exclusively by `magent-ui--dispatch' after the lock is held.
 Inserts the user message into the output buffer, starts the spinner,
-and creates the FSM.  Captures the current request generation so
+and creates the agent loop.  Captures the current request generation so
 stale callbacks are discarded."
   (let* ((input (magent-ui--request-prompt item))
          (gen (cl-incf magent-ui--request-generation))
