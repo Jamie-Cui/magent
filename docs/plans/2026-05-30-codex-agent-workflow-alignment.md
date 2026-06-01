@@ -1,9 +1,9 @@
 # Codex Agent Workflow Alignment Plan
 
 **Date:** 2026-05-30
-**Status:** Active implementation
+**Status:** Implemented; documentation/migration closure complete
 **Goal:** Analyze the agent workflow differences between Magent and the local Codex checkout at `~/proj/codex`, then move Magent toward Codex-like agent behavior where it makes sense inside Emacs. Do not implement Codex-style sandboxing.
-**Compatibility:** Breaking changes are allowed for this plan. Prefer a clean Magent-owned loop and child-agent lifecycle over preserving the current `delegate` surface. The old `magent-fsm*` modules have been removed.
+**Compatibility:** Breaking changes were allowed for this plan. Magent now uses a clean Magent-owned loop and child-agent lifecycle instead of preserving the old `delegate` surface. The old `magent-fsm*` modules have been removed.
 
 ## Latest Checkpoint
 
@@ -181,14 +181,24 @@ Next recommended step: render child-agent lifecycle activity in the main Magent 
 
 Next recommended step: complete Task 7 documentation and migration notes for the final child-agent architecture and `delegate` replacement.
 
+2026-06-01 implementation checkpoint 15:
+
+- Added `docs/AGENT_JOBS.md` as the stable child-agent job architecture reference.
+- Updated `README.org`, `AGENTS.md`, `docs/README.md`, `docs/ONBOARDING.md`, `docs/CONTRIBUTING.md`, and `docs/TROUBLESHOOTING.md` to describe the implemented child-agent lifecycle.
+- Documented the public replacement for `delegate`: `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, and `close_agent`.
+- Updated command documentation for `magent-resume-session` (`C-c m R`) and `magent-show-agent-transcript` (`C-c m j`).
+- Marked Task 7 complete.
+
+Next recommended step: treat `docs/AGENT_JOBS.md` as the stable reference for future child-agent lifecycle changes; keep this plan as implementation history.
+
 ## Scope
 
 This plan is about agent workflow, not provider setup or UI polish in isolation.
 
 In scope:
 
-- Compare Magent's current `delegate`-based subagent flow with Codex's collaborative agent lifecycle.
-- Design a persistent subagent/job model for Magent that can spawn, message, wait for, list, resume, and close child agents.
+- Compare Magent's former `delegate`-based subagent flow with Codex's collaborative agent lifecycle.
+- Design and implement a persistent subagent/job model for Magent that can spawn, message, wait for, list, resume/inspect, and close child agents.
 - Keep Magent's Emacs-native strengths: live buffers, `emacs_eval`, org output, project-scoped sessions, and gptel transport.
 - Preserve existing permission prompts and audit logging while improving the workflow model.
 - Replace Magent's dependency on gptel's request FSM with a Magent-owned agent loop while continuing to use `gptel-request` for provider requests.
@@ -205,17 +215,19 @@ Out of scope:
 
 ## Current Magent Workflow
 
-Magent currently has a multi-agent registry, per-agent permissions, and a Magent-owned tool loop, but the subagent workflow is still mostly one-shot:
+Magent has a multi-agent registry, per-agent permissions, a Magent-owned tool loop, and durable child-agent jobs:
 
 - `build`, `plan`, `explore`, `general`, `compaction`, `title`, and `summary` are registered agent profiles.
 - The primary session owns the visible `*magent*` buffer and message history.
 - Tool calls run through `magent-agent-loop.el` and `magent-tool-orchestrator.el`.
-- The `delegate` tool starts a nested request using a named subagent, but it behaves like a one-shot helper call.
-- There is no durable child-agent identity, child transcript, wait loop, list/close operation, or resumable agent job surface.
+- The public child-agent tool surface is `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, and `close_agent`.
+- Each child job has a stable id, status, prompt, metadata, result/error state, and transcript stored in the parent session's `agent-jobs` slot.
+- The parent `*magent*` buffer renders compact `#+begin_agent` lifecycle blocks; full child job details are inspected with `magent-show-agent-transcript` (`C-c m j`).
+- `magent-resume-session` restores persisted child job metadata with the parent session.
 
 ## Agent Loop Inventory
 
-Current call chain after checkpoint 11:
+Current call chain after checkpoint 15:
 
 1. `magent-agent-process` builds session prompt, system prompt, skill/capability prompt, tool list, and per-agent gptel overrides.
 2. `magent-agent-process` constructs a `magent-llm-request` and starts `magent-agent-loop-start`.
@@ -266,9 +278,9 @@ Additional Codex loop traits relevant to replacing gptel FSM:
 - Child-agent work is part of the same orchestration layer as ordinary tools.
 - Abort, timeout, status, and wait behavior are turn-owned state transitions.
 
-## Target Behavior For Magent
+## Implemented Target Behavior For Magent
 
-Magent should move from one-shot delegation toward a small collaborative agent lifecycle:
+Magent moved from one-shot delegation to a small collaborative agent lifecycle:
 
 - A primary agent can spawn one or more child agents with a task name, role, prompt, and inherited context.
 - Each child has a stable id, status, transcript, parent session id, optional task name, and agent profile.
@@ -276,38 +288,38 @@ Magent should move from one-shot delegation toward a small collaborative agent l
 - The primary agent can wait for one or more children and receive structured status/result summaries.
 - The primary agent can list active children for the current session.
 - The primary agent can close a child and record the final result.
-- Child agents should inherit the parent's live Magent context where practical: project root, current session, model overrides, capability/skill activation context, approval state, and permission profile.
-- The UI should make child activity visible without forcing every child transcript into the main conversation body.
+- Child agents inherit the parent's live Magent context where practical: project root, current session, model/backend, temperature/top-p, capability/skill activation context, request depth, and effective permission profile.
+- The UI makes child activity visible without forcing every child transcript into the main conversation body.
 
 ## Comparison Table
 
-| Concept | Codex observed shape | Current Magent shape | Target Magent shape |
+| Concept | Codex observed shape | Previous Magent shape | Implemented Magent shape |
 | --- | --- | --- | --- |
-| Root interaction | Session turn drives tool calls and can coordinate child agents | `*magent*` session owns visible turn and FSM | Keep visible Emacs session as root coordinator |
-| Child identity | Stable thread id plus path/task-oriented references | No durable child id for `delegate` | Stable job id plus optional task name and parent session key |
-| Spawn | Collaboration tool starts a child from live turn config | `delegate` starts a nested one-shot request | `spawn_agent` creates durable job and starts child request |
-| Message follow-up | Send input/message to an existing child | Not available after `delegate` returns | `send_agent_message` appends input to a child job |
-| Wait/status | Wait tools return structured status/result data | Parent waits synchronously for nested delegate result | `wait_agent` can poll one or more jobs with timeout |
+| Root interaction | Session turn drives tool calls and can coordinate child agents | `*magent*` session owned visible turn and FSM | Visible Emacs session remains root coordinator |
+| Child identity | Stable thread id plus path/task-oriented references | Old subagent surface had no durable child id | Stable job id plus optional task name and parent session key |
+| Spawn | Collaboration tool starts a child from live turn config | `delegate` started a nested one-shot request | `spawn_agent` creates durable job and starts child request |
+| Message follow-up | Send input/message to an existing child | Not available after `delegate` returned | `send_agent_message` appends input to a child job |
+| Wait/status | Wait tools return structured status/result data | Parent waited synchronously for nested delegate result | `wait_agent` can poll one or more jobs with timeout |
 | List | V2 tool can list collaborative agents | `magent-list-agents` lists agent definitions, not running children | `list_agents` reports active child jobs for current session |
 | Close | Explicit close operation for child agent | Not available | `close_agent` marks child closed and records final state |
-| Inheritance | Child derives effective live turn config | Agent profile overrides are applied per request | Child inherits project/session/model/capability/permission context where practical |
-| Persistence | Threads/jobs have durable metadata in Codex state | Magent persists parent session messages and buffer content | Persist child job metadata and inspectable transcript/result state |
+| Inheritance | Child derives effective live turn config | Agent profile overrides were applied per request | Child inherits project/session/model/capability/permission context where practical |
+| Persistence | Threads/jobs have durable metadata in Codex state | Magent persisted parent session messages and buffer content | Child job metadata and inspectable transcript/result state persist in parent session |
 | Sandbox | Codex carries approval/sandbox runtime state | Magent has permission prompts and audit logs, not sandboxing | Preserve permissions/audit; do not copy sandbox behavior |
 
-## Proposed Architecture Direction
+## Implemented Architecture Direction
 
-Introduce a Magent-side agent job layer instead of expanding `delegate` until it becomes hard to reason about.
+Magent introduced a Magent-side agent job layer instead of expanding `delegate`.
 
-Likely modules:
+Implemented modules:
 
 - `magent-agent-job.el`: data structures, registry, status transitions, parent/child relationship, result storage.
-- `magent-agent-job-tools.el` or a focused section in `magent-tools.el`: tool wrappers for `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, and `close_agent`.
+- A focused section in `magent-tools.el`: tool wrappers for `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, and `close_agent`.
 - `magent-session.el`: persist child job metadata and enough transcript state to resume after Emacs restart.
 - `magent-ui.el`: render compact child-agent events and provide inspection commands.
 - `magent-agent.el`: derive child prompt/config from parent session and selected child agent profile.
-- `magent-agent-registry.el`: decide whether existing `subagent` mode is enough or whether agent roles need additional metadata.
+- `magent-agent-registry.el`: existing `subagent` mode remains the profile boundary for child agents.
 
-Because breaking changes are allowed, `delegate` does not need a long-term compatibility wrapper. Prefer replacing it with the new child-agent tool surface directly; keep it only as a short-lived migration aid if that makes the patch sequence easier.
+Because breaking changes were allowed, `delegate` was replaced directly and does not have a long-term compatibility wrapper.
 
 ## gptel-request / Loop Decoupling Direction
 
@@ -448,10 +460,10 @@ Decision: store compact child-agent job metadata and transcript/result state in 
 
 ### Task 7: Documentation And Migration
 
-- [ ] Update `README.org` tool and architecture sections when the new tools exist.
-- [ ] Update the current docs index and any restored API/design reference docs after public commands or functions are introduced.
-- [ ] Document the final agent-job architecture in the active docs set before closing this plan.
-- [ ] Document the `delegate` removal/replacement direction once the new tools supersede it.
+- [x] Update `README.org` tool and architecture sections when the new tools exist.
+- [x] Update the current docs index and any restored API/design reference docs after public commands or functions are introduced.
+- [x] Document the final agent-job architecture in the active docs set before closing this plan.
+- [x] Document the `delegate` removal/replacement direction once the new tools supersede it.
 - [x] Document the final `gptel-request` sampling boundary after deleting the old FSM modules.
 
 ## Acceptance Criteria
@@ -477,6 +489,7 @@ emacsclient --eval '(magent-clear-session)'
 Current verification status:
 
 - Static checks passed in the current shell: `git diff --check HEAD`.
+- Documentation closure static checks passed: stale public docs were scanned for old one-shot `delegate`/10-tool migration wording, and `git diff --check` passed.
 - Focused ERT passed for the child-agent tool surface:
 
 ```bash

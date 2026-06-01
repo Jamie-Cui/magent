@@ -1,6 +1,6 @@
 # Magent Documentation
 
-Welcome to the Magent documentation. This directory is intentionally small right now: the active project focus is captured in the Codex agent workflow alignment plan, while stable user-facing material remains in the root README.
+Welcome to the Magent documentation. Stable user-facing material remains in the root README, while this directory holds developer guides, architecture notes, troubleshooting docs, and historical implementation plans.
 
 ## Documentation Index
 
@@ -8,12 +8,15 @@ Welcome to the Magent documentation. This directory is intentionally small right
 - **[ONBOARDING.md](ONBOARDING.md)** — New developer onboarding guide with architecture overview, guided tour, and complexity hotspots
 - **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** — Common issues and solutions
 
+### Architecture
+- **[AGENT_JOBS.md](AGENT_JOBS.md)** — Durable child-agent job lifecycle, tool surface, persistence, UI, and boundaries
+
 ### Contribution
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — Contribution guidelines, code style, testing, and PR process
 
-### Active Planning
+### Planning History
 - **[plans/](plans/)** — Implementation plans and design proposals
-  - `2026-05-30-codex-agent-workflow-alignment.md` — Active plan for aligning Magent's agent workflow with Codex-style collaborative agents, excluding sandbox parity
+  - `2026-05-30-codex-agent-workflow-alignment.md` — Historical plan for aligning Magent's agent workflow with Codex-style collaborative agents, excluding sandbox parity
 
 ### Project Root Documentation
 - **[../README.org](../README.org)** — Main project README with features, installation, and usage
@@ -24,8 +27,8 @@ Welcome to the Magent documentation. This directory is intentionally small right
 ### For New Contributors
 1. Start with [ONBOARDING.md](ONBOARDING.md)
 2. Read [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow
-3. Read [../AGENTS.md](../AGENTS.md) for current architecture notes and active goals
-4. Read [plans/2026-05-30-codex-agent-workflow-alignment.md](plans/2026-05-30-codex-agent-workflow-alignment.md) before changing agent workflow behavior
+3. Read [../AGENTS.md](../AGENTS.md) for current architecture notes and development guidance
+4. Read [AGENT_JOBS.md](AGENT_JOBS.md) before changing child-agent lifecycle behavior
 
 ### For Users
 1. [../README.org](../README.org) — Installation and configuration
@@ -35,9 +38,10 @@ Welcome to the Magent documentation. This directory is intentionally small right
 
 ### For Developers
 1. [CONTRIBUTING.md](CONTRIBUTING.md) — Code style and PR process
-2. [../AGENTS.md](../AGENTS.md) — Build commands, testing, architecture notes, and active goals
+2. [../AGENTS.md](../AGENTS.md) — Build commands, testing, architecture notes, and development guidance
 3. [ONBOARDING.md](ONBOARDING.md) — Architecture overview and guided code tour
-4. [plans/2026-05-30-codex-agent-workflow-alignment.md](plans/2026-05-30-codex-agent-workflow-alignment.md) — Current Codex agent workflow comparison and migration plan
+4. [AGENT_JOBS.md](AGENT_JOBS.md) — Current child-agent job architecture
+5. [plans/2026-05-30-codex-agent-workflow-alignment.md](plans/2026-05-30-codex-agent-workflow-alignment.md) — Codex workflow comparison and migration history
 
 ## Documentation Standards
 

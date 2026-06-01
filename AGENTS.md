@@ -2,9 +2,9 @@
 
 This file provides guidance to agentic coding tools when working with code in this repository.
 
-## Active Project Goal
+## Current Architecture Status
 
-The current active architecture goal is to analyze the agent workflow differences between this project and the local Codex checkout at `~/proj/codex`, then align Magent with Codex-style collaborative agent behavior where it fits Emacs.
+The current architecture work aligned Magent with Codex-style collaborative agent behavior where it fits Emacs. Magent now uses a durable child-agent/job lifecycle on top of the Magent-owned agent loop.
 
 Persistent handoff document:
 
@@ -15,7 +15,7 @@ Important boundaries:
 - Do not implement Codex sandbox, seatbelt, bubblewrap, or shell isolation parity as part of this goal.
 - Preserve Magent's Emacs-native workflow: live buffers, `emacs_eval`, org output, project-scoped sessions, and gptel transport.
 - Keep using `gptel-request` for provider/request/HTTP/SSE plumbing. Do not rewrite gptel provider integration.
-- Breaking changes are allowed for this goal. Prefer replacing `delegate` with a durable child-agent/job lifecycle on top of the Magent-owned agent loop.
+- The old `delegate` tool has been replaced by `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, and `close_agent`; do not reintroduce a compatibility wrapper unless explicitly requested.
 - When work is interrupted, update the plan file before stopping so progress can be recovered from git on another machine.
 
 ## Build Commands
@@ -78,7 +78,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
   ├─ magent-agent-loop.el (Magent-owned normalized event loop, tool dispatch, queueing, guards, abort)
   ├─ magent-tool-orchestrator.el (permission, approval, audit, and tool-call orchestration)
   ├─ magent-capability.el (capability registry and prompt-time resolution)
-  ├─ magent-tools.el      (10 gptel-tool structs)
+  ├─ magent-tools.el      (14 gptel-tool structs)
   ├─ magent-agent.el      (magent-agent-process: builds gptel prompt, calls gptel-request)
   ├─ magent-agent-registry.el  (cl-defstruct, 7 built-in agents, hash-table registry)
   ├─ magent-agent-info.el / magent-agent-types.el  (legacy feature-name compatibility shims)
@@ -100,6 +100,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
    - Message sections use level-1 org headings with custom faces
    - Tool calls render as `#+begin_tool`/`#+end_tool` blocks (auto-folded via deferred `org-cycle`)
    - Reasoning blocks render as `#+begin_think`/`#+end_think` (auto-folded)
+   - Child-agent lifecycle events render as `#+begin_agent`/`#+end_agent` blocks; `magent-show-agent-transcript` (`C-c m j`) opens persisted child transcript details
    - Streaming uses chunk batching (`magent-ui-batch-insert-delay`) and async fontification above `magent-ui-fontify-threshold`
    - Request serialization is owned here via `magent-ui--processing` and `magent-ui--enqueue`; concurrent prompts are rejected with a busy message instead of buffered
    - `?` opens a transient menu; `TAB`/`S-TAB` fold sections; `C-g` interrupts
@@ -114,7 +115,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
 
 8. **Capabilities** (`magent-capability.el`): File-backed capability definitions score the current request context and attach matching instruction skills. Bundled, user, and project-local capability overlays all feed the same resolver.
 
-9. **Session** (`magent-session.el`): Conversation state with messages list and history trimming. Persists to `magent-session-directory` as JSON. The `buffer-content` slot stores raw buffer text for lossless restore (preserving tool/reasoning blocks not in the message list). The `agent-jobs` slot stores durable child-agent job metadata for the Codex workflow alignment work. `magent-session-reset` clears the scoped session plus approval and capability overrides.
+9. **Session** (`magent-session.el`): Conversation state with messages list and history trimming. Persists to `magent-session-directory` as JSON. The `buffer-content` slot stores raw buffer text for lossless restore (preserving tool/reasoning/agent blocks not in the message list). The `agent-jobs` slot stores durable child-agent job metadata, result/error state, and transcripts. `magent-session-reset` clears the scoped session plus approval and capability overrides.
 
 10. **Skills** (`magent-skills.el`): Two types — `instruction` (markdown injected into system prompt) and `tool` (invoked via `skill_invoke`). The module now contains the registry, built-in `skill-creator`, file-based skill loading, and interactive inspection commands. Skills load in priority order from (1) built-in `skills/`, (2) user directory `~/.emacs.d/magent-skills/<name>/SKILL.md`, and (3) project-local `.magent/skills/<name>/SKILL.md`.
 
@@ -171,6 +172,8 @@ Key settings: `magent-default-agent` (`"build"`), `magent-enable-tools` (list of
 | `C-c m L` | `magent-clear-log` |
 | `C-c m t` | `magent-ui-toggle-section` |
 | `C-c m A` | `magent-select-agent` |
+| `C-c m R` | `magent-resume-session` |
+| `C-c m j` | `magent-show-agent-transcript` |
 | `C-c m i` | `magent-show-current-agent` |
 | `C-c m v` | `magent-list-agents` |
 
