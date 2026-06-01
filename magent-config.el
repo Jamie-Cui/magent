@@ -292,6 +292,15 @@ count-based cap."
                  (natnum :tag "Max calls per turn"))
   :group 'magent)
 
+(defcustom magent-child-agent-max-depth 1
+  "Maximum depth for recursive child-agent spawning.
+A value of 1 allows the visible root agent to spawn direct child agents,
+but prevents those children from spawning their own children.  Set to nil
+to disable the depth guard."
+  :type '(choice (const :tag "No child-agent depth limit" nil)
+                 (natnum :tag "Maximum child-agent depth"))
+  :group 'magent)
+
 (defcustom magent-ui-header-strike-through nil
   "Whether to draw a strike-through line after section headers.
 When non-nil, a dash line extends from the header label to the

@@ -155,6 +155,20 @@ Next recommended step: implement the child-agent tool surface on top of `magent-
 
 Next recommended step: define and test deeper child config inheritance rules: project root, model/temperature/top-p, capability context, permission profile, max-depth/recursive spawn guards, and separation from the parent visible buffer.
 
+2026-06-01 implementation checkpoint 13:
+
+- Added request-context fields for child-agent inheritance: agent depth, project root, backend/model, temperature/top-p, skill names, capability context, and effective permission profile.
+- `magent-agent-process` now records the effective runtime sampling/context settings on the active request context and passes temperature/top-p through normalized request metadata.
+- `magent-llm-gptel-sample` applies request metadata for `gptel-temperature` in the request buffer, keeping inherited sampling settings across child requests and continuations.
+- Child-agent jobs now persist inheritance metadata, including project root, model/backend names, sampling values, active skill names, UI visibility, depth, and a compact permission profile.
+- Child tools now resolve relative file paths and bash working directories from the inherited request project root.
+- Added `magent-child-agent-max-depth`, defaulting to 1, so root agents can spawn direct children while recursive child spawning is blocked by default.
+- Child agents now receive an effective permission profile bounded by both the parent request permissions and the child agent's own permissions.
+- Verification performed: focused ERT for runtime inheritance, gptel temperature metadata, child-agent spawn/depth, and inherited project-root file resolution passed 5/5; byte-compilation of `magent-runtime.el`, `magent-config.el`, `magent-agent.el`, `magent-tools.el`, and `magent-llm-gptel.el` passed. Emacs 31 emitted existing obsolete `when-let`/`if-let` warnings and the existing `magent-tools--bash` free-variable warning.
+- Full `make test` currently reaches 248/249 passing and fails on the pre-existing `magent-test-skills-load-all-includes-systematic-debugging` check because `skills/systematic-debugging/SKILL.md` was removed in `b8eee97` while tests/capabilities still reference that skill.
+
+Next recommended step: render child-agent lifecycle activity in the main Magent buffer as compact event blocks and add an inspection command for child transcripts.
+
 ## Scope
 
 This plan is about agent workflow, not provider setup or UI polish in isolation.
@@ -408,10 +422,10 @@ Decision: store compact child-agent job metadata and transcript/result state in 
 
 ### Task 5: Runtime And Prompt Inheritance
 
-- [ ] Define child config inheritance rules for Magent: project root, gptel model override, temperature/top-p, active capability context, permission profile, and current session metadata.
-- [ ] Ensure child agents do not mutate the parent visible buffer directly.
-- [ ] Add safeguards for max depth and recursive spawn loops.
-- [ ] Add tests that verify child agents inherit expected settings without sharing mutable loop state.
+- [x] Define child config inheritance rules for Magent: project root, gptel model override, temperature/top-p, active capability context, permission profile, and current session metadata.
+- [x] Ensure child agents do not mutate the parent visible buffer directly.
+- [x] Add safeguards for max depth and recursive spawn loops.
+- [x] Add tests that verify child agents inherit expected settings without sharing mutable loop state.
 
 ### Task 6: UI And Resume
 
