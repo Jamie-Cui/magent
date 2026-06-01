@@ -15,7 +15,7 @@
 
 Magent has a Magent-owned agent loop and a durable child-agent lifecycle for collaborative work. Root agents can spawn, message, wait for, list, inspect/resume, and close child-agent jobs.
 
-Read `docs/AGENT_JOBS.md` before changing child-agent behavior, session persistence, or agent-related tools. Codex sandbox behavior is explicitly out of scope. The historical implementation plan lives in `docs/plans/2026-05-30-codex-agent-workflow-alignment.md`.
+Read `docs/AGENT_JOBS.md` before changing child-agent behavior, session persistence, or agent-related tools. Codex sandbox behavior is explicitly out of scope.
 
 ## Architecture Layers
 
@@ -355,7 +355,6 @@ Skill instructions for the agent.
 
 - **Documentation:** `README.org`, `AGENTS.md` in repo root
 - **Child-agent architecture:** `docs/AGENT_JOBS.md`
-- **Plan history:** `docs/plans/2026-05-30-codex-agent-workflow-alignment.md`
 - **Interactive help:** `M-x magent-doctor` for self-diagnostics
 - **Logs:** `C-c m l` to view request/response log
 - **Agent info:** `C-c m v` to list agents, `C-c m i` for current agent

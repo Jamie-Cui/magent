@@ -1,6 +1,6 @@
 # Magent Documentation
 
-Welcome to the Magent documentation. Stable user-facing material remains in the root README, while this directory holds developer guides, architecture notes, troubleshooting docs, and historical implementation plans.
+Welcome to the Magent documentation. Stable user-facing material remains in the root README, while this directory holds developer guides, architecture notes, and troubleshooting docs.
 
 ## Documentation Index
 
@@ -14,13 +14,9 @@ Welcome to the Magent documentation. Stable user-facing material remains in the 
 ### Contribution
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — Contribution guidelines, code style, testing, and PR process
 
-### Planning History
-- **[plans/](plans/)** — Implementation plans and design proposals
-  - `2026-05-30-codex-agent-workflow-alignment.md` — Historical plan for aligning Magent's agent workflow with Codex-style collaborative agents, excluding sandbox parity
-
 ### Project Root Documentation
 - **[../README.org](../README.org)** — Main project README with features, installation, and usage
-- **[../AGENTS.md](../AGENTS.md)** — Development guide for agentic coding tools with build commands, architecture notes, and active project goals
+- **[../AGENTS.md](../AGENTS.md)** — Development guide for agentic coding tools with build commands, architecture notes, and repository conventions
 
 ## Quick Links
 
@@ -41,14 +37,12 @@ Welcome to the Magent documentation. Stable user-facing material remains in the 
 2. [../AGENTS.md](../AGENTS.md) — Build commands, testing, architecture notes, and development guidance
 3. [ONBOARDING.md](ONBOARDING.md) — Architecture overview and guided code tour
 4. [AGENT_JOBS.md](AGENT_JOBS.md) — Current child-agent job architecture
-5. [plans/2026-05-30-codex-agent-workflow-alignment.md](plans/2026-05-30-codex-agent-workflow-alignment.md) — Codex workflow comparison and migration history
 
 ## Documentation Standards
 
 When adding new documentation:
 - Place user-facing docs in project root (README.org)
 - Place developer docs in `docs/`
-- Place implementation plans in `docs/plans/`
 - Prefer markdown for docs under `docs/` unless there is a clear reason to use org-mode
 - Update this index when adding new files
-- Keep the active plan updated before stopping work so another machine can resume from git
+- Keep stable docs or active task notes updated before stopping work so another machine can resume from git
