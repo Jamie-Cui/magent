@@ -454,7 +454,9 @@ before calling this function."
                        (approval-overrides . ,(vconcat approval-overrides))
                        (buffer-content . ,(or (magent-session-buffer-content session) "")))))
           (with-temp-file filepath
-            (insert (json-encode data)))
+            (let ((json-null :null)
+                  (json-false :json-false))
+              (insert (json-encode data))))
           (magent-log "INFO session saved to %s (%d messages) scope=%s"
                       id (length messages) scope))))))
 

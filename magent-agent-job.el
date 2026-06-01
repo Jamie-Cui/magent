@@ -15,6 +15,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'magent-config)
 
 (defconst magent-agent-job-statuses
   '(queued running waiting completed failed closed cancelled)
@@ -122,10 +123,15 @@ Return JOB."
     (prompt . ,(magent-agent-job-prompt job))
     (created-at . ,(magent-agent-job-created-at job))
     (updated-at . ,(magent-agent-job-updated-at job))
-    (transcript . ,(vconcat (or (magent-agent-job-transcript job) nil)))
-    (result . ,(magent-agent-job-result job))
-    (error . ,(magent-agent-job-error job))
-    (metadata . ,(magent-agent-job-metadata job))))
+    (transcript . ,(vconcat
+                    (mapcar #'magent-json-safe-value
+                            (or (magent-agent-job-transcript job) nil))))
+    (result . ,(let ((result (magent-agent-job-result job)))
+                 (and result (magent-json-safe-value result))))
+    (error . ,(let ((error (magent-agent-job-error job)))
+                (and error (magent-json-safe-value error))))
+    (metadata . ,(let ((metadata (magent-agent-job-metadata job)))
+                   (and metadata (magent-json-safe-value metadata))))))
 
 (defun magent-agent-job-from-alist (alist)
   "Create a `magent-agent-job' from JSON-decoded ALIST."

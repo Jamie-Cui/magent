@@ -308,8 +308,7 @@ Evaluation runs in the user's context buffer when known
              (when timer
                (cancel-timer timer)
                (setq timer nil))
-             (interrupt-worker)
-             (setq quit-flag t)))))
+             (interrupt-worker)))))
     (error (funcall callback (format "Error evaluating sexp: %s" (error-message-string err))))))
 
 (defun magent-tools--bash (callback command &optional timeout)
