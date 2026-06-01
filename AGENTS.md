@@ -61,6 +61,14 @@ After elisp code changes, test in the running Emacs via `emacsclient --eval`:
    - Multi-step: `"帮我在 emacs 里面打开 magent 的 magit buffer"` — verifies chained tool execution
 4. Check `*magent*`, `*magent-log*`, and `*Messages*` for errors
 
+For real gptel/tool debugging, prefer an isolated server and the playbook in
+`docs/TROUBLESHOOTING.md#live-emacs-tests-fail-or-hang`. Key rules:
+- Use `emacs --daemon=magent-live-test`; do not risk hanging or killing the main Emacs.
+- Invoke make targets with `EMACSCLIENT="emacsclient -s magent-live-test"` when testing against that daemon.
+- Load `test/magent-live-test.el`, run `magent-live-test-reload-source`, and verify `magent-live-test--repo-source-summary` points at this checkout rather than `~/.emacs.d/elpa/magent`.
+- Run `make clean` before live/batch verification if any `.elc` files may be stale.
+- For long real provider tests, use `magent-live-test-run-async` plus `/tmp/magent-live-*.el` status files and redacted gptel traces.
+
 ## Architecture
 
 Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and permission-based tool access. All LLM communication is delegated to **gptel** (the sole external dependency beyond Emacs 27.1+, `spinner`, and `transient`).
