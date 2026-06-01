@@ -82,6 +82,18 @@ emacsclient --eval '(magent-clear-session)'
 # - Multi-step: "帮我在 emacs 里面打开 magent 的 magit buffer"
 ```
 
+When running real live tests against the configured gptel provider, enable
+`debug-on-error` in the running Emacs first:
+
+```bash
+emacsclient --eval '(setq debug-on-error t)'
+```
+
+During and after the run, inspect `*Messages*`, `*Backtrace*`,
+`*magent-log*` or `*magent-live-test-log*`, and `*gptel-log*`.  Do not paste
+raw `*gptel-log*` output into issues or commits without checking for provider
+headers, request bodies, or API-key material.
+
 ## Pull Request Process
 
 1. **Fork and branch** — Create a feature branch from `dev`

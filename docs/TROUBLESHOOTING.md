@@ -27,6 +27,32 @@ make compile  # Auto-detects dependencies in ~/.emacs.d/elpa/
 
 ### Runtime Issues
 
+#### Live Emacs tests fail or hang
+**Problem:** `make test-live` fails, times out, or reports an async timer error while using the real configured gptel provider.
+
+**Diagnosis:**
+1. Enable backtraces in the live Emacs session before reproducing:
+   ```elisp
+   (setq debug-on-error t)
+   ```
+2. Re-run the failing live test from `emacsclient` or `make test-live`.
+3. While the run is active and immediately after it finishes, inspect:
+   - `*Messages*` for timer, process filter, and byte-code errors
+   - `*Backtrace*` when `debug-on-error` opens one
+   - `*magent-log*` or the test-local `*magent-live-test-log*`
+   - `*gptel-log*` for provider/request failures; redact API keys or headers before sharing
+4. For a single real tool test, reload the live suite and run:
+   ```elisp
+   (progn
+     (load-file "/path/to/magent/test/magent-live-test.el")
+     (setq debug-on-error t)
+     (magent-live-test-run 'magent-live-test-real-emacs-eval-tool))
+   ```
+
+**Solution:**
+- Fix the first concrete error in `*Backtrace*` or `*Messages*`, then re-run the single failing live test before running the whole live suite.
+- Treat `*gptel-log*` as sensitive diagnostic material; summarize it or share only redacted snippets.
+
 #### "No response from LLM"
 **Problem:** Request hangs or times out.
 

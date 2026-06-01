@@ -2666,6 +2666,33 @@
     (should (plist-get magent-tool :function))
     (should (plist-get magent-tool :perm-key))))
 
+(ert-deftest magent-test-agent-loop-tools-to-gptel-json-sanitizes-schema ()
+  "Test gptel tool schemas are safe for strict JSON serialization."
+  (require 'magent-agent-loop)
+  (let* ((tools (magent-agent-loop-tools-to-gptel
+                 (list (list :name "emacs_eval"
+                             :description "Eval"
+                             :args '((:name "sexp"
+                                      :type string
+                                      :description "Expression")
+                                     (:name "timeout"
+                                      :type integer
+                                      :description "Timeout"
+                                      :optional t))
+                             :function #'ignore
+                             :async t))))
+         (tool (car tools))
+         (args (gptel-tool-args tool)))
+    (should (equal (plist-get (car args) :type) "string"))
+    (should (equal (plist-get (cadr args) :type) "integer"))
+    (if (fboundp 'json-serialize)
+        (json-serialize (vconcat args)
+                        :null-object :null
+                        :false-object :json-false)
+      (let ((json-null :null)
+            (json-false :json-false))
+        (json-encode (vconcat args))))))
+
 (ert-deftest magent-test-tools-format-search-results ()
   "Test web search result formatting."
   (require 'magent-tools)
@@ -2968,7 +2995,7 @@
           (funcall registered-cleanup)
           (should (eq cancelled 'fake-timer))
           (should (equal signaled '(fake-thread quit nil)))
-          (setq quit-flag nil))
+          (should-not quit-flag))
         (funcall scheduled)))
     (should-not callback-result)))
 
@@ -3417,7 +3444,7 @@
           (magent-session-add-message (magent-session-get) 'user "hello")
           (magent-session-save)
           (should (= (length (directory-files magent-session-directory nil "\\.json$")) 1)))
-      (delete-directory magent-session-directory t)))
+      (delete-directory magent-session-directory t))))
 
 (ert-deftest magent-test-session-save-load-preserves-approval-overrides ()
   "Test session approval overrides persist through save/load."
@@ -3563,7 +3590,7 @@
               :created-at 100.0
               :updated-at 120.0
               :transcript '(((role . "assistant") (content . "found it")))
-              :result "found it")))
+              :result "found it"))
             (magent-session-save))
           (let* ((files (directory-files magent-session-directory t "\\.json$"))
                  (loaded (magent-session-read-file (car files)))
@@ -5928,6 +5955,96 @@
                  (lambda (value) (setq result value)))))
     (should-not ran)
     (should (string-match-p "access denied" result))))
+
+(ert-deftest magent-test-session-save-load-sanitizes-structured-context ()
+  "Test structured context items persist with JSON-safe metadata."
+  (require 'magent-protocol)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil))
+    (unwind-protect
+        (progn
+          (magent-session-activate 'global)
+          (let ((session (magent-session-get)))
+            (magent-session-add-message session 'user "Run tool")
+            (setf (magent-session-context-items session)
+                  (list (magent-response-item-create
+                         :id "item-1"
+                         :type 'tool-call
+                         :role 'assistant
+                         :content '(:tool emacs_eval :values [emacs_eval nil])
+                         :name 'emacs_eval
+                         :call-id "call-1"
+                         :output '(:result ok)
+                         :status 'completed
+                         :phase 'tool
+                         :metadata '(:provider gptel :tool emacs_eval))))
+            (magent-session-save))
+          (let* ((files (directory-files magent-session-directory t "\\.json$"))
+                 (loaded (magent-session-read-file (car files)))
+                 (loaded-session (plist-get loaded :session))
+                 (item (car (magent-session-context-items loaded-session))))
+            (should (equal (cdr (assq 'tool (magent-response-item-content item)))
+                           "emacs_eval"))
+            (should (equal (cdr (assq 'values (magent-response-item-content item)))
+                           '("emacs_eval" nil)))
+            (should (equal (magent-response-item-name item) "emacs_eval"))
+            (should (equal (cdr (assq 'result (magent-response-item-output item)))
+                           "ok"))
+            (should (equal (cdr (assq 'provider (magent-response-item-metadata item)))
+                           "gptel"))
+            (should (equal (cdr (assq 'tool (magent-response-item-metadata item)))
+                           "emacs_eval"))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-session-save-load-sanitizes-agent-job-transcript-and-metadata ()
+  "Test child-agent job persistence sanitizes transcript and metadata."
+  (require 'magent-agent-job)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil))
+    (unwind-protect
+        (progn
+          (magent-session-activate 'global)
+          (let ((session (magent-session-get)))
+            (magent-session-add-message session 'user "spawn child")
+            (magent-session-add-agent-job
+             session
+             (magent-agent-job-create
+              :id "agent-1"
+              :parent-session-id "parent"
+              :agent-name "explore"
+              :task-name "scan"
+              :status 'completed
+              :prompt "inspect files"
+              :created-at 100.0
+              :updated-at 120.0
+              :transcript '(((role . assistant)
+                             (content . (:tool emacs_eval :values [emacs_eval nil]))))
+              :result 'ok
+              :error nil
+              :metadata '((permission-profile . (agent bash emacs_eval))
+                           (model . gpt-4o-mini)))))
+            (magent-session-save))
+          (let* ((files (directory-files magent-session-directory t "\\.json$"))
+                 (loaded (magent-session-read-file (car files)))
+                 (loaded-session (plist-get loaded :session))
+                 (job (magent-session-agent-job loaded-session "agent-1")))
+            (should (equal (magent-agent-job-result job) "ok"))
+            (let ((entry (car (magent-agent-job-transcript job))))
+              (should (equal (cdr (assq 'role entry)) "assistant"))
+              (let ((content (cdr (assq 'content entry))))
+                (should (equal (cdr (assq 'tool content)) "emacs_eval"))
+                (should (equal (cdr (assq 'values content))
+                               '("emacs_eval" nil)))))
+            (let ((metadata (magent-agent-job-metadata job)))
+              (should (equal (cdr (assq 'permission-profile metadata))
+                             '("agent" "bash" "emacs_eval")))
+              (should (equal (cdr (assq 'model metadata))
+                             "gpt-4o-mini")))))
+      (delete-directory magent-session-directory t)))
 
 (provide 'magent-test)
 ;;; magent-test.el ends here

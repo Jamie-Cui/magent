@@ -11,6 +11,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'magent-config)
 
 (defun magent-protocol-generate-id (&optional prefix)
   "Return a lowercase identifier with optional PREFIX."
@@ -148,15 +149,19 @@ TYPE is a symbol such as `message', `tool-call', `tool-output',
               (magent-response-item-type item)))
     (role . ,(magent-protocol--symbol-name-or-nil
               (magent-response-item-role item)))
-    (content . ,(magent-response-item-content item))
-    (name . ,(magent-response-item-name item))
+    (content . ,(let ((content (magent-response-item-content item)))
+                  (and content (magent-json-safe-value content))))
+    (name . ,(magent-json-safe-name
+              (magent-response-item-name item) nil))
     (call-id . ,(magent-response-item-call-id item))
-    (output . ,(magent-response-item-output item))
+    (output . ,(let ((output (magent-response-item-output item)))
+                 (and output (magent-json-safe-value output))))
     (status . ,(magent-protocol--symbol-name-or-nil
                 (magent-response-item-status item)))
     (phase . ,(magent-protocol--symbol-name-or-nil
                (magent-response-item-phase item)))
-    (metadata . ,(magent-response-item-metadata item))))
+    (metadata . ,(let ((metadata (magent-response-item-metadata item)))
+                   (and metadata (magent-json-safe-value metadata))))))
 
 (defun magent-protocol-response-item-from-alist (alist)
   "Reconstruct a response item from JSON-decoded ALIST."

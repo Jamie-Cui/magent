@@ -558,11 +558,20 @@ This function increments the loop's round count."
      (gptel-make-tool
       :name (plist-get tool :name)
       :description (plist-get tool :description)
-      :args (plist-get tool :args)
+      :args (magent-agent-loop--json-safe-tool-args
+             (plist-get tool :args))
       :function (plist-get tool :function)
       :async (plist-get tool :async)
       :category "magent"))
    tools))
+
+(defun magent-agent-loop--json-safe-tool-args (args)
+  "Return ARGS with schema values acceptable to `json-serialize'."
+  (mapcar (lambda (spec)
+            (if (listp spec)
+                (magent-json-safe-value (copy-sequence spec))
+              spec))
+          args))
 
 (defun magent-agent-loop-create-orchestrator
     (loop permission request-context)

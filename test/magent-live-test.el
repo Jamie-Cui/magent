@@ -101,9 +101,49 @@
       (ert-fail (or message "Timed out waiting for live Magent condition")))
     value))
 
+(defun magent-live-test--redact-sensitive-text (text)
+  "Return TEXT with likely provider secrets redacted."
+  (when (stringp text)
+    (let ((redacted text))
+      (dolist (pattern '("\\(Authorization:[ \t]*\\)[^\n\r]+"
+                         "\\(api-key[\"':= \t]+\\)[^\"' \t\n\r,)}]+"
+                         "\\(x-api-key:[ \t]*\\)[^\n\r]+"
+                         "\\(Bearer[ \t]+\\)[A-Za-z0-9._~+/-]+"))
+        (setq redacted
+              (replace-regexp-in-string
+               pattern "\\1[REDACTED]" redacted t t)))
+      redacted)))
+
+(defun magent-live-test--buffer-tail (name &optional limit)
+  "Return redacted tail text from buffer NAME, or nil when absent."
+  (when-let ((buffer (get-buffer name)))
+    (with-current-buffer buffer
+      (magent-live-test--redact-sensitive-text
+       (buffer-substring-no-properties
+        (max (point-min) (- (point-max) (or limit 1200)))
+        (point-max))))))
+
+(defun magent-live-test--gptel-error-summary ()
+  "Return a redacted, filtered `*gptel-log*' diagnostic summary."
+  (when-let ((tail (magent-live-test--buffer-tail "*gptel-log*" 6000)))
+    (let* ((lines (split-string tail "\n" t))
+           (interesting
+            (cl-remove-if-not
+             (lambda (line)
+               (string-match-p
+                (rx (or "error" "Error" "ERROR" "failed" "Failed"
+                        "wrong-type" "json" "status" "HTTP"))
+                line))
+             lines)))
+      (mapconcat #'identity
+                 (last interesting (min 20 (length interesting)))
+                 "\n"))))
+
 (defun magent-live-test--debug-state ()
   "Return compact live Magent state for assertion failures."
-  (format "processing=%S current-scope=%S magent-buffer=%S log-tail=%S"
+  (format (concat "processing=%S current-scope=%S"
+                  " magent-buffer=%S log-tail=%S"
+                  " messages-tail=%S backtrace-tail=%S gptel-summary=%S")
           (and (fboundp 'magent-ui-processing-p)
                (magent-ui-processing-p))
           (and (fboundp 'magent-session-current-scope)
@@ -120,7 +160,10 @@
             (with-current-buffer magent-log-buffer-name
               (buffer-substring-no-properties
                (max (point-min) (- (point-max) 1200))
-               (point-max))))))
+               (point-max))))
+          (magent-live-test--buffer-tail "*Messages*" 2000)
+          (magent-live-test--buffer-tail "*Backtrace*" 2000)
+          (magent-live-test--gptel-error-summary)))
 
 (defun magent-live-test--wait-for-assistant (&optional timeout)
   "Wait for a completed assistant message and return its text."
