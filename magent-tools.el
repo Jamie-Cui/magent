@@ -21,6 +21,7 @@
 (require 'magent-agent-job)
 (require 'magent-agent-registry)
 (require 'magent-events)
+(require 'magent-permission)
 (require 'magent-runtime)
 (require 'magent-session)
 
@@ -32,6 +33,7 @@
 (declare-function magent-events-stop-subagent "magent-events")
 (declare-function magent-agent-loop-abort "magent-agent-loop")
 (declare-function magent-agent-loop-p "magent-agent-loop")
+(declare-function gptel-backend-name "gptel")
 
 ;; dom.el functions used for web search result parsing (requires --with-xml2 build)
 (declare-function dom-by-class "dom")
@@ -57,6 +59,16 @@ parent `magent-session' under `agent-jobs'.")
   (and magent-tools--request-context
        (magent-request-context-origin-buffer-name magent-tools--request-context)))
 
+(defun magent-tools--request-project-root ()
+  "Return the current tool request's inherited project root."
+  (or (and magent-tools--request-context
+           (magent-request-context-project-root magent-tools--request-context))
+      (and magent-tools--request-context
+           (let ((scope (magent-request-context-scope
+                         magent-tools--request-context)))
+             (and (stringp scope) scope)))
+      (magent-project-root)))
+
 (defun magent-tools--register-cancel-cleanup (cleanup)
   "Register CLEANUP for the current request when supported."
   (when (functionp magent-tools--register-cancel)
@@ -68,7 +80,7 @@ parent `magent-session' under `agent-jobs'.")
 Expands ~ and environment variables first, then resolves relative
 paths against the project root."
   (let ((path (substitute-in-file-name path))
-        (root (magent-project-root)))
+        (root (magent-tools--request-project-root)))
     (if (file-name-absolute-p path)
         (expand-file-name path)
       (expand-file-name path root))))
@@ -111,7 +123,7 @@ CALLBACK is called with matching lines or error message."
          (default-directory (if (file-directory-p resolved)
                                 resolved
                               (or (file-name-directory resolved)
-                                  (magent-project-root))))
+                                  (magent-tools--request-project-root))))
          (buf (generate-new-buffer " *magent-grep*"))
          (args (list "--no-heading" "--line-number" "--color=never"
                      (format "--max-count=%d" magent-grep-max-matches)))
@@ -154,7 +166,7 @@ CALLBACK is called with list of matching file paths."
              (default-directory (if (file-directory-p resolved)
                                     resolved
                                   (or (file-name-directory resolved)
-                                      (magent-project-root))))
+                                      (magent-tools--request-project-root))))
              (matches
               (if (string-match-p "\\*\\*" pattern)
                   ;; ** requires recursive search
@@ -302,6 +314,7 @@ CALLBACK is called with the command output (stdout + stderr)."
     (funcall callback "Error: 'command' argument is required but was not provided. Please call bash with a valid shell command string.")
     (cl-return-from magent-tools--bash))
   (let* ((timeout (or timeout magent-bash-timeout))
+         (default-directory (magent-tools--request-project-root))
          (buf (generate-new-buffer " *magent-bash*"))
          (timer nil)
          (proc nil)
@@ -369,6 +382,133 @@ CALLBACK is called with the command output (stdout + stderr)."
       (and magent-tools--request-context
            (magent-request-context-session magent-tools--request-context))
       (magent-session-get)))
+
+(defun magent-tools--agent-depth (&optional context)
+  "Return child-agent depth recorded in CONTEXT."
+  (or (and context
+           (magent-request-context-agent-depth context))
+      0))
+
+(defun magent-tools--child-agent-depth (&optional parent-context)
+  "Return the depth a child of PARENT-CONTEXT would have."
+  (1+ (magent-tools--agent-depth parent-context)))
+
+(defun magent-tools--child-agent-depth-error (&optional parent-context)
+  "Return a depth-limit error string when spawning should be blocked."
+  (let ((limit magent-child-agent-max-depth)
+        (child-depth (magent-tools--child-agent-depth parent-context)))
+    (when (and (integerp limit)
+               (> child-depth limit))
+      (format "Error: child-agent max depth %d exceeded; recursive spawn_agent calls are disabled for this request"
+              limit))))
+
+(defun magent-tools--permission-profile-summary (permission)
+  "Return a compact JSON-safe summary for PERMISSION."
+  (let ((rules (cond
+                ((magent-permission-p permission)
+                 (magent-permission-rules permission))
+                (permission permission)
+                (t nil))))
+    `((agent . ,(symbol-name (magent-permission-resolve rules 'agent)))
+      (bash . ,(symbol-name (magent-permission-resolve rules 'bash)))
+      (emacs_eval . ,(symbol-name
+                      (magent-permission-resolve rules 'emacs_eval)))
+      (read . ,(symbol-name (magent-permission-resolve rules 'read)))
+      (write . ,(symbol-name (magent-permission-resolve rules 'write)))
+      (edit . ,(symbol-name (magent-permission-resolve rules 'edit)))
+      (wildcard . ,(symbol-name (magent-permission-resolve rules '*))))))
+
+(defconst magent-tools--permission-rank
+  '((deny . 0)
+    (ask . 1)
+    (allow . 2))
+  "Permission ordering used for inherited child-agent intersections.")
+
+(defun magent-tools--permission-more-restrictive (left right)
+  "Return the more restrictive permission of LEFT and RIGHT."
+  (let ((left-rank (cdr (assq left magent-tools--permission-rank)))
+        (right-rank (cdr (assq right magent-tools--permission-rank))))
+    (if (<= (or left-rank 2) (or right-rank 2))
+        left
+      right)))
+
+(defun magent-tools--effective-child-permission (parent-context agent)
+  "Return AGENT permission restricted by PARENT-CONTEXT's profile."
+  (let ((parent-permission
+         (and parent-context
+              (magent-request-context-permission-profile parent-context)))
+        (child-permission (magent-agent-info-permission agent)))
+    (if (not parent-permission)
+        child-permission
+      (mapcar
+       (lambda (key)
+         (cons key
+               (magent-tools--permission-more-restrictive
+                (magent-permission-resolve parent-permission key)
+                (magent-permission-resolve child-permission key))))
+       (append magent-tools--permission-keys '(*))))))
+
+(defun magent-tools--agent-model-name (model)
+  "Return MODEL as a JSON-safe string."
+  (cond
+   ((null model) nil)
+   ((symbolp model) (symbol-name model))
+   (t (format "%s" model))))
+
+(defun magent-tools--agent-backend-name (backend)
+  "Return BACKEND as a JSON-safe name."
+  (cond
+   ((null backend) nil)
+   ((and (fboundp 'gptel-backend-name)
+         (ignore-errors (gptel-backend-name backend))))
+   (t (format "%s" backend))))
+
+(defun magent-tools--agent-inheritance-metadata
+    (parent-context child-context agent child-session)
+  "Return persisted inheritance metadata for a child-agent JOB."
+  (let* ((capability-context
+          (and parent-context
+               (magent-request-context-capability-context parent-context)))
+         (capability-skills
+          (and (listp capability-context)
+               (plist-get capability-context :skill-names))))
+    `((scope . ,(and child-context
+                     (magent-request-context-scope child-context)))
+      (project-root . ,(and child-context
+                            (magent-request-context-project-root
+                             child-context)))
+      (parent-request-id
+       . ,(and parent-context
+               (magent-request-context-id parent-context)))
+      (agent-depth . ,(magent-tools--agent-depth child-context))
+      (child-session-id . ,(magent-session-get-id child-session))
+      (ui-visibility
+       . ,(symbol-name
+           (or (and child-context
+                    (magent-request-context-ui-visibility child-context))
+               'full)))
+      (model . ,(magent-tools--agent-model-name
+                 (and child-context
+                      (magent-request-context-model child-context))))
+      (backend . ,(magent-tools--agent-backend-name
+                   (and child-context
+                        (magent-request-context-backend child-context))))
+      (temperature . ,(and child-context
+                           (magent-request-context-temperature child-context)))
+      (top-p . ,(and child-context
+                     (magent-request-context-top-p child-context)))
+      (skill-names . ,(vconcat
+                       (or (and child-context
+                                (magent-request-context-skill-names
+                                 child-context))
+                           capability-skills
+                           nil)))
+      (permission-profile
+       . ,(magent-tools--permission-profile-summary
+           (or (and child-context
+                    (magent-request-context-permission-profile
+                     child-context))
+               (magent-agent-info-permission agent)))))))
 
 (defun magent-tools--agent-job-terminal-p (job)
   "Return non-nil when JOB has reached a terminal lifecycle state."
@@ -471,6 +611,8 @@ Return the child loop handle when startup succeeds."
            title
            (and parent-context
                 (magent-request-context-event-context parent-context))))
+         (effective-permission
+          (magent-tools--effective-child-permission parent-context agent))
          (child-request-context
           (magent-request-context-create
            :id (magent-events-generate-id)
@@ -487,6 +629,27 @@ Return the child loop handle when startup succeeds."
            :ui-visibility 'summary-only
            :parent-request-id (and parent-context
                                    (magent-request-context-id parent-context))
+           :agent-depth (magent-tools--child-agent-depth parent-context)
+           :project-root (and parent-context
+                              (magent-request-context-project-root
+                               parent-context))
+           :model (and parent-context
+                       (magent-request-context-model parent-context))
+           :backend (and parent-context
+                         (magent-request-context-backend parent-context))
+           :temperature (and parent-context
+                             (magent-request-context-temperature parent-context))
+           :top-p (and parent-context
+                       (magent-request-context-top-p parent-context))
+           :skill-names (and parent-context
+                             (copy-sequence
+                              (magent-request-context-skill-names
+                               parent-context)))
+           :capability-context (and parent-context
+                                    (copy-tree
+                                     (magent-request-context-capability-context
+                                      parent-context)))
+           :permission-profile effective-permission
            :live-p (and parent-context
                         (magent-request-context-live-p parent-context))
            :event-context subagent-context))
@@ -571,22 +734,47 @@ Return the child loop handle when startup succeeds."
              (parent-session (magent-tools--parent-session))
              (child-session (magent-session-create :agent agent))
              (parent-session-id (magent-session-get-id parent-session))
+             (depth-error (magent-tools--child-agent-depth-error
+                           parent-context))
              (job (magent-agent-job-create
                    :parent-session-id parent-session-id
                    :agent-name agent-name
                    :task-name task-name
                    :prompt prompt
-                   :metadata
-                   `((scope . ,(and parent-context
-                                    (magent-request-context-scope parent-context)))
-                     (parent-request-id
-                      . ,(and parent-context
-                              (magent-request-context-id parent-context)))
-                     (child-session-id
-                      . ,(magent-session-get-id child-session))))))
+                   :metadata nil)))
         (magent-session-add-agent-job parent-session job)
-        (magent-tools--agent-job-start
-         job agent prompt child-session parent-context parent-session)
+        (if depth-error
+            (progn
+              (setf (magent-agent-job-metadata job)
+                    `((scope . ,(and parent-context
+                                     (magent-request-context-scope
+                                      parent-context)))
+                      (project-root
+                       . ,(and parent-context
+                               (magent-request-context-project-root
+                                parent-context)))
+                      (parent-request-id
+                       . ,(and parent-context
+                               (magent-request-context-id parent-context)))
+                      (agent-depth
+                       . ,(magent-tools--child-agent-depth parent-context))
+                      (child-session-id
+                       . ,(magent-session-get-id child-session))
+                      (ui-visibility . "summary-only")
+                      (max-depth . ,magent-child-agent-max-depth)))
+              (magent-agent-job-set-status job 'failed nil depth-error))
+          (let ((child-loop
+                 (magent-tools--agent-job-start
+                  job agent prompt child-session parent-context parent-session)))
+            (when-let ((runtime (magent-tools--agent-job-runtime
+                                 (magent-agent-job-id job))))
+              (setf (magent-agent-job-metadata job)
+                    (magent-tools--agent-inheritance-metadata
+                     parent-context
+                     (plist-get runtime :request-context)
+                     agent
+                     child-session)))
+            child-loop))
         (funcall
          callback
          (magent-tools--agent-job-result-json
@@ -625,6 +813,13 @@ Return the child loop handle when startup succeeds."
         (magent-tools--agent-job-start
          job agent message child-session
          magent-tools--request-context parent-session)
+        (when-let ((runtime (magent-tools--agent-job-runtime job-id)))
+          (setf (magent-agent-job-metadata job)
+                (magent-tools--agent-inheritance-metadata
+                 magent-tools--request-context
+                 (plist-get runtime :request-context)
+                 agent
+                 child-session)))
         (funcall
          callback
          (magent-tools--agent-job-result-json

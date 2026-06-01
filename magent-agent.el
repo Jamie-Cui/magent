@@ -139,8 +139,56 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
       (magent-agent-info-apply-gptel-overrides
        agent
        (lambda ()
-         (let ((backend gptel-backend)
-               (model gptel-model))
+         (let* ((inherited-backend
+                 (and request-state
+                      (magent-request-context-backend request-state)))
+                (inherited-model
+                 (and request-state
+                      (magent-request-context-model request-state)))
+                (inherited-temperature
+                 (and request-state
+                      (magent-request-context-temperature request-state)))
+                (inherited-top-p
+                 (and request-state
+                      (magent-request-context-top-p request-state)))
+                (backend (or inherited-backend gptel-backend))
+                (model (or inherited-model gptel-model))
+                (temperature (or inherited-temperature
+                                 (and (boundp 'gptel-temperature)
+                                      gptel-temperature)))
+                (top-p (or inherited-top-p
+                           (magent-agent-info-top-p agent))))
+           (when request-state
+             (setf (magent-request-context-project-root request-state)
+                   (or (magent-request-context-project-root request-state)
+                       (and request-context
+                            (plist-get request-context :project-root))
+                       (let ((scope (magent-request-context-scope request-state)))
+                         (and (stringp scope) scope))
+                       (ignore-errors (magent-project-root nil t)))
+                   (magent-request-context-model request-state)
+                   (or (magent-request-context-model request-state) model)
+                   (magent-request-context-backend request-state)
+                   (or (magent-request-context-backend request-state) backend)
+                   (magent-request-context-temperature request-state)
+                   (or (magent-request-context-temperature request-state)
+                       temperature)
+                   (magent-request-context-top-p request-state)
+                   (or (magent-request-context-top-p request-state)
+                       top-p)
+                   (magent-request-context-skill-names request-state)
+                   (or (magent-request-context-skill-names request-state)
+                       resolved-skill-names)
+                   (magent-request-context-capability-context request-state)
+                   (or (magent-request-context-capability-context request-state)
+                       (and capability-resolution
+                            (magent-capability-resolution-to-plist
+                             capability-resolution))
+                       request-context)
+                   (magent-request-context-permission-profile request-state)
+                   (or (magent-request-context-permission-profile
+                        request-state)
+                       (magent-agent-info-permission agent))))
            (magent-log "INFO agent=%s backend=%s model=%s tools=[%s]"
                        (magent-agent-info-name agent)
                        (gptel-backend-name backend)
@@ -149,7 +197,10 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
            (when resolved-skill-names
              (magent-log "INFO active skills=[%s]"
                          (mapconcat #'identity resolved-skill-names ", ")))
-           (let* ((gptel-tools (magent-agent-loop-tools-to-gptel tools))
+           (let* ((gptel-backend backend)
+                  (gptel-model model)
+                  (gptel-temperature temperature)
+                  (gptel-tools (magent-agent-loop-tools-to-gptel tools))
                   (live-p (or request-live-p
                               (and request-state
                                    (magent-request-context-live-p
@@ -277,6 +328,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                        :model model
                       :backend backend
                       :stream t
+                      :metadata (list :temperature temperature
+                                      :top-p top-p)
                       :callback #'handle-event)
                       :request-context request-state
                       :sampler #'magent-llm-gptel-sample

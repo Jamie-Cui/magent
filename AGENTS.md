@@ -179,6 +179,7 @@ In `magent-output-mode`: `TAB` fold/unfold, `S-TAB` toggle all, `?` transient me
 ## Conventions
 
 - All files use `;;; -*- lexical-binding: t; -*-`
+- Use Conventional Commits for commit messages.
 - System prompt loaded from `prompt.org` adjacent to `magent-config.el`
 - Tool implementations follow pattern: `magent-tools--<name>` (internal fn) + `magent-tools--<name>-tool` (gptel-tool var)
 - Byte-compile warnings suppressed: `cl-functions`, `obsolete`

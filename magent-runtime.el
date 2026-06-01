@@ -60,6 +60,15 @@
   origin-context
   (ui-visibility 'full)
   parent-request-id
+  (agent-depth 0)
+  project-root
+  model
+  backend
+  temperature
+  top-p
+  skill-names
+  capability-context
+  permission-profile
   live-p
   event-context
   abort-controller)

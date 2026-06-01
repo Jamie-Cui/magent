@@ -93,6 +93,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-grep-program~          | ~"rg"~                        | Path to ripgrep binary                                                                |
 | ~magent-grep-max-matches~      | ~100~                         | Max matches from grep searches                                                        |
 | ~magent-bash-timeout~          | ~30~                          | Timeout in seconds for bash commands                                                  |
+| ~magent-child-agent-max-depth~ | ~1~                           | Max recursive child-agent depth; direct children are allowed by default               |
 | ~magent-emacs-eval-timeout~    | ~10~                          | Timeout in seconds for ~emacs_eval~                                                     |
 | ~magent-audit-preview-length~  | ~120~                         | Max width for persisted audit summaries and previews                                  |
 | ~magent-include-reasoning~     | ~t~                           | Display (~t~), keep out of the UI (~ignore~), or discard (~nil~) reasoning blocks           |

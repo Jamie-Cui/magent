@@ -944,6 +944,97 @@
        (lambda ()
          (should (= gptel-temperature 1.0)))))))
 
+(ert-deftest magent-test-agent-process-records-runtime-inheritance ()
+  "Test request context records inherited runtime sampling settings."
+  (require 'magent-agent)
+  (let* ((backend (gptel-make-openai "inherited" :key "key"))
+         (gptel-backend backend)
+         (gptel-model 'parent-model)
+         (gptel-temperature 0.42)
+         (agent (magent-agent-info-create
+                 :name "build"
+                 :mode 'primary
+                 :top-p 0.88
+                 :permission (magent-permission-from-config
+                              '((agent . ask)
+                                (bash . deny)
+                                (* . allow)))))
+         (session (magent-session-create :id "parent"))
+         (request-state (magent-request-context-create
+                         :id "req"
+                         :scope "/tmp/project"
+                         :session session))
+         (capability-resolution
+          (magent-capability-resolution-create
+           :prompt "inspect"
+           :context '(:project-root "/tmp/project")
+           :skill-names '("cap-skill")))
+         captured-loop)
+    (cl-letf (((symbol-function 'magent-session-get)
+               (lambda () session))
+              ((symbol-function 'magent-agent-loop-start)
+               (lambda (loop)
+                 (setq captured-loop loop)
+                 'started))
+              ((symbol-function 'magent-tool-registry-for-agent)
+               (lambda (_agent) nil))
+              ((symbol-function 'magent-log) #'ignore)
+              ((symbol-function 'magent-events-emit) #'ignore)
+              ((symbol-function 'magent-events-begin-turn)
+               (lambda (_title) 'turn))
+              ((symbol-function 'magent-events-end-turn) #'ignore)
+              ((symbol-function 'magent-skills-get-instruction-prompts)
+               (lambda (_skills) nil)))
+      (magent-agent-process
+       "inspect"
+       nil
+       agent
+       nil
+       nil
+       '(:project-root "/tmp/project")
+       capability-resolution
+       nil
+       nil
+       request-state))
+    (let* ((request (magent-agent-loop-request captured-loop))
+           (metadata (magent-llm-request-metadata request)))
+      (should (eq (magent-request-context-model request-state) 'parent-model))
+      (should (eq (magent-request-context-backend request-state) backend))
+      (should (= (magent-request-context-temperature request-state) 0.42))
+      (should (= (magent-request-context-top-p request-state) 0.88))
+      (should (equal (magent-request-context-project-root request-state)
+                     "/tmp/project"))
+      (should (equal (magent-request-context-skill-names request-state)
+                     '("cap-skill")))
+      (should (equal (plist-get metadata :temperature) 0.42))
+      (should (equal (plist-get metadata :top-p) 0.88))
+      (should (equal (magent-permission-resolve
+                      (magent-request-context-permission-profile request-state)
+                      'agent)
+                     'ask)))))
+
+(ert-deftest magent-test-llm-gptel-applies-temperature-metadata ()
+  "Test the gptel adapter applies request temperature metadata."
+  (require 'magent-llm-gptel)
+  (let ((gptel-backend (gptel-make-openai "test" :key "key"))
+        (gptel-model 'test-model)
+        (gptel-temperature 1.0)
+        captured-temperature)
+    (cl-letf (((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (setq captured-temperature gptel-temperature)
+                 (funcall (plist-get kwargs :callback)
+                          t
+                          (list :content "ok")))))
+      (magent-llm-gptel-sample
+       (magent-llm-request-create
+        :prompt '("hello")
+        :system "sys"
+        :stream t
+        :metadata '(:temperature 0.25)
+        :callback #'ignore)))
+    (should (= captured-temperature 0.25))))
+
 (ert-deftest magent-test-builtin-agents-count ()
   "Test that all 7 built-in agents are created."
   (require 'magent-agent-registry)
@@ -2045,9 +2136,30 @@
                           :approval-session parent-session
                           :origin-buffer-name "*origin*"
                           :origin-context 'origin
+                          :agent-depth 0
+                          :project-root "/tmp/project-parent"
+                          :model 'parent-model
+                          :temperature 0.2
+                          :top-p 0.9
+                          :skill-names '("parent-skill")
+                          :capability-context
+                          '(:skill-names ("parent-skill")
+                            :context (:project-root "/tmp/project-parent"))
+                          :permission-profile
+                          (magent-permission-from-config
+                           '((agent . ask)
+                             (read . allow)
+                             (bash . deny)
+                             (* . allow)))
                           :live-p (lambda () t)
                           :event-context 'parent-event))
-         (agent (magent-agent-info-create :name "explore" :mode 'subagent))
+         (agent (magent-agent-info-create
+                 :name "explore"
+                 :mode 'subagent
+                 :permission (magent-permission-from-config
+                              '((agent . deny)
+                                (read . allow)
+                                (* . deny)))))
          (child-loop (progn
                        (require 'magent-agent-loop)
                        (magent-agent-loop-create)))
@@ -2099,7 +2211,9 @@
            (job-payload (cdr (assq 'job decoded)))
            (job-id (cdr (assq 'id job-payload)))
            (job (magent-session-agent-job parent-session job-id))
-           (child-state (plist-get captured :request-state)))
+           (child-state (plist-get captured :request-state))
+           (metadata (magent-agent-job-metadata job))
+           (permission-profile (cdr (assq 'permission-profile metadata))))
       (should (equal (cdr (assq 'status decoded)) "spawned"))
       (should (magent-agent-job-p job))
       (should (equal (magent-agent-job-agent-name job) "explore"))
@@ -2119,13 +2233,107 @@
       (should (eq (magent-request-context-ui-visibility child-state) 'summary-only))
       (should (equal (magent-request-context-parent-request-id child-state) "req-parent"))
       (should (equal (magent-request-context-scope child-state) "/tmp/project-parent"))
+      (should (equal (magent-request-context-project-root child-state) "/tmp/project-parent"))
+      (should (= (magent-request-context-agent-depth child-state) 1))
+      (should (eq (magent-request-context-model child-state) 'parent-model))
+      (should (= (magent-request-context-temperature child-state) 0.2))
+      (should (= (magent-request-context-top-p child-state) 0.9))
+      (should (equal (magent-request-context-skill-names child-state)
+                     '("parent-skill")))
+      (should (equal (magent-request-context-capability-context child-state)
+                     '(:skill-names ("parent-skill")
+                       :context (:project-root "/tmp/project-parent"))))
+      (should (equal (magent-permission-resolve
+                      (magent-request-context-permission-profile child-state)
+                      'agent)
+                     'deny))
+      (should (equal (magent-permission-resolve
+                      (magent-request-context-permission-profile child-state)
+                      'read)
+                     'allow))
+      (should (equal (magent-permission-resolve
+                      (magent-request-context-permission-profile child-state)
+                      'bash)
+                     'deny))
       (should (eq (magent-request-context-approval-session child-state) parent-session))
       (should-not (eq (magent-request-context-session child-state) parent-session))
       (should (eq (magent-session-agent (magent-request-context-session child-state))
                   agent))
+      (should (equal (cdr (assq 'project-root metadata)) "/tmp/project-parent"))
+      (should (= (cdr (assq 'agent-depth metadata)) 1))
+      (should (equal (cdr (assq 'ui-visibility metadata)) "summary-only"))
+      (should (equal (cdr (assq 'model metadata)) "parent-model"))
+      (should (= (cdr (assq 'temperature metadata)) 0.2))
+      (should (= (cdr (assq 'top-p metadata)) 0.9))
+      (should (equal (append (cdr (assq 'skill-names metadata)) nil)
+                     '("parent-skill")))
+      (should (equal (cdr (assq 'agent permission-profile)) "deny"))
+      (should (equal (cdr (assq 'read permission-profile)) "allow"))
       (should (equal stopped '(:title "Agent explore: scan" :parent parent-event)))
       (should cleanup)
       (should-not aborted))))
+
+(ert-deftest magent-test-tools-spawn-agent-enforces-max-depth ()
+  "Test recursive child-agent spawning is blocked by depth guard."
+  (require 'magent-tools)
+  (let* ((parent-session (magent-session-create :id "parent"))
+         (parent-context (magent-request-context-create
+                          :id "child-req"
+                          :session parent-session
+                          :approval-session parent-session
+                          :agent-depth 1
+                          :project-root "/tmp/project"))
+         (agent (magent-agent-info-create :name "general" :mode 'subagent))
+         (magent-child-agent-max-depth 1)
+         (started nil)
+         result)
+    (let ((magent-tools--request-context parent-context)
+          (magent-tools--agent-job-runtimes (make-hash-table :test #'equal)))
+      (cl-letf (((symbol-function 'magent-agent-registry-get)
+                 (lambda (_name) agent))
+                ((symbol-function 'magent-agent-process)
+                 (lambda (&rest _args)
+                   (setq started t))))
+        (magent-tools--spawn-agent
+         (lambda (value) (setq result value))
+         "general"
+         "nested"
+         "nested-task")))
+    (let* ((decoded (let ((json-object-type 'alist)
+                          (json-array-type 'list))
+                      (json-read-from-string result)))
+           (job-payload (cdr (assq 'job decoded)))
+           (job-id (cdr (assq 'id job-payload)))
+           (job (magent-session-agent-job parent-session job-id))
+           (metadata (magent-agent-job-metadata job)))
+      (should (equal (cdr (assq 'status decoded)) "failed"))
+      (should (magent-agent-job-p job))
+      (should (eq (magent-agent-job-status job) 'failed))
+      (should (string-match-p "max depth 1 exceeded"
+                              (magent-agent-job-error job)))
+      (should (= (cdr (assq 'agent-depth metadata)) 2))
+      (should (= (cdr (assq 'max-depth metadata)) 1))
+      (should-not started))))
+
+(ert-deftest magent-test-tools-resolve-path-uses-request-project-root ()
+  "Test relative file paths resolve against inherited request project root."
+  (require 'magent-tools)
+  (let* ((tmpdir (file-truename
+                  (directory-file-name (make-temp-file "magent-root-" t))))
+         (default-directory "/tmp/")
+         (context (magent-request-context-create
+                   :project-root tmpdir
+                   :scope "/different/scope"))
+         result)
+    (unwind-protect
+        (let ((magent-tools--request-context context))
+          (with-temp-file (expand-file-name "notes.txt" tmpdir)
+            (insert "from inherited root"))
+          (magent-tools--read-file
+           (lambda (value) (setq result value))
+           "notes.txt")
+          (should (equal result "from inherited root")))
+      (delete-directory tmpdir t))))
 
 (ert-deftest magent-test-tools-list-wait-send-close-agent-jobs ()
   "Test child-agent lifecycle tools over durable job state."
