@@ -624,12 +624,27 @@ Non-message items are retained only after the retained message boundary."
   "Add a structured tool result message to SESSION.
 ID is the provider tool-call id, NAME is the tool name, ARGS is the
 tool argument plist, and RESULT is the model-visible tool result."
-  (magent-session-add-message
-   session 'tool
-   (list :id id
-         :name (magent-json-safe-name name)
-         :args (magent-json-safe-tool-args args)
-         :result (if (stringp result) result (format "%s" result)))))
+  (let* ((safe-name (magent-json-safe-name name))
+         (safe-args (magent-json-safe-tool-args args))
+         (safe-result (if (stringp result) result (format "%s" result))))
+    (magent-session-add-message
+     session 'tool
+     (list :id id
+           :name safe-name
+           :args safe-args
+           :result safe-result))
+    (setf (magent-session-context-items session)
+          (nconc (magent-session-context-items session)
+                 (list
+                  (magent-protocol-tool-result-item
+                   (magent-tool-result-create
+                    :call-id id
+                    :name safe-name
+                    :output safe-result
+                    :success (not (and (stringp safe-result)
+                                       (string-prefix-p "Error:" safe-result)))
+                    :metadata (list :args safe-args))))))
+    session))
 
 (defun magent-session-get-messages (session)
   "Get all messages from SESSION in chronological order."

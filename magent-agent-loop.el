@@ -141,6 +141,21 @@ Recognized keys are `:request', `:sampler', `:status', and
   (apply #'concat (nreverse (copy-sequence
                              (magent-agent-loop-reasoning-chunks loop)))))
 
+(defun magent-agent-loop--combined-result (streamed final)
+  "Return a final assistant result from STREAMED chunks and FINAL text."
+  (cond
+   ((or (null streamed) (string-empty-p streamed))
+    (or final ""))
+   ((or (null final) (string-empty-p final))
+    streamed)
+   ((or (string= streamed final)
+        (string-suffix-p final streamed))
+    streamed)
+   ((string-prefix-p streamed final)
+    final)
+   (t
+    (concat streamed final))))
+
 (defun magent-agent-loop-apply-event (loop event)
   "Apply normalized LLM EVENT to LOOP and return LOOP."
   (unless (magent-agent-loop-p loop)
@@ -164,8 +179,9 @@ Recognized keys are `:request', `:sampler', `:status', and
     ('completed
      (setf (magent-agent-loop-status loop) 'completed
            (magent-agent-loop-result loop)
-           (or (magent-llm-event-text event)
-               (magent-agent-loop-text loop))
+           (magent-agent-loop--combined-result
+            (magent-agent-loop-text loop)
+            (magent-llm-event-text event))
            (magent-agent-loop-usage loop)
            (magent-llm-event-usage event)
            (magent-agent-loop-stop-reason loop)

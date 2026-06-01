@@ -22,6 +22,10 @@
 (defvar magent-live-test--latest-results nil
   "Result records from the most recent live ERT run.")
 
+;; Loading this file into a long-lived Emacs process should not leave renamed
+;; smoke tests in ERT's symbol-property registry.
+(put 'magent-live-test-fsm-runs-emacs-eval-and-continues 'ert--test nil)
+
 (defun magent-live-test--add-load-path (directory)
   "Add DIRECTORY to `load-path' when it exists."
   (when (and directory (file-directory-p directory))
@@ -165,8 +169,11 @@
           (magent-ui-batch-insert-delay 0.01)
           (magent-ui--processing nil)
           (magent-ui--request-generation 0)
-          (magent--current-fsm nil)
+          (magent--current-request-handle nil)
           (magent--current-session nil)
+          (magent-turn--active nil)
+          (magent-turn--queue nil)
+          (magent-turn--current-request-handle nil)
           (magent-session--current-scope 'global)
           (magent-session--scoped-sessions (make-hash-table :test #'equal))
           (magent-runtime--active-project-scope nil)
@@ -206,7 +213,7 @@
                       (magent-ui-finish-streaming-fontify)
                       (setq response "live response")
                       (funcall callback "live response")))
-                   'magent-live-test-fsm)))
+                   'magent-live-test-loop)))
         (let ((buffer (magent-ui-get-buffer 'global)))
           (with-current-buffer buffer
             (magent-output-mode)
@@ -227,8 +234,8 @@
               (should magent-ui--input-marker)
               (should (= (marker-position magent-ui--input-marker) (point-max))))))))))
 
-(ert-deftest magent-live-test-fsm-runs-emacs-eval-and-continues ()
-  "Run a live Magent turn through FSM tool execution and continuation."
+(ert-deftest magent-live-test-loop-runs-emacs-eval-and-continues ()
+  "Run a live Magent turn through loop tool execution and continuation."
   :tags '(:magent-live-smoke)
   (require 'magent)
   (require 'gptel)
@@ -288,7 +295,7 @@
              (when (and last-msg
                         (eq (magent-msg-role last-msg) 'assistant))
                (setq final-response (magent-msg-content last-msg)))))
-         8 "Magent live FSM tool turn did not finish")
+         8 "Magent live loop tool turn did not finish")
         (should (equal final-response "Checking buffers. Done."))
         (should (= call-count 2))
         (let* ((messages (magent-session-get-messages (magent-session-get)))
