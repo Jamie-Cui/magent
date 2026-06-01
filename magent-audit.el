@@ -26,7 +26,8 @@
 (declare-function magent-agent-info-name "magent-agent-registry")
 
 (defconst magent-audit--sensitive-tools
-  '("bash" "emacs_eval" "write_file" "edit_file" "delegate")
+  '("bash" "emacs_eval" "write_file" "edit_file" "spawn_agent"
+    "send_agent_message" "wait_agent" "list_agents" "close_agent")
   "Tool names that are always persisted to the audit log.")
 
 (defvar magent-audit--enabled nil
@@ -365,11 +366,24 @@ refresh.  The first two arguments follow `revert-buffer'."
        (magent-audit--compact-alist
         (cons 'sexp (magent-audit--preview (plist-get args :sexp)))
         (cons 'timeout (plist-get args :timeout))))
-      ("delegate"
+      ("spawn_agent"
        (magent-audit--compact-alist
         (cons 'agent (plist-get args :agent))
+        (cons 'task_name (plist-get args :task_name))
         (cons 'prompt_preview (magent-audit--preview (plist-get args :prompt)))
         (cons 'prompt_length (magent-audit--string-length (plist-get args :prompt)))))
+      ((or "send_agent_message" "wait_agent" "close_agent")
+       (magent-audit--compact-alist
+        (cons 'job_id (plist-get args :job_id))
+        (cons 'message_preview (magent-audit--preview
+                                (plist-get args :message)))
+        (cons 'message_length (magent-audit--string-length
+                               (plist-get args :message)))
+        (cons 'close_reason
+              (magent-audit--preview (plist-get args :close_reason)))))
+      ("list_agents"
+       (magent-audit--compact-alist
+        (cons 'include_closed (plist-get args :include_closed))))
       ("read_file"
        (magent-audit--compact-alist
         (cons 'path (plist-get args :path))))

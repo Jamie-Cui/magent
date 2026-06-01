@@ -74,7 +74,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-system-prompt~         | (built-in)                  | Default system prompt for agents                                                      |
 | ~magent-buffer-name~           | ~"*magent*"~                    | Output buffer name                                                                    |
 | ~magent-auto-scroll~           | ~t~                           | Auto-scroll output buffer                                                             |
-| ~magent-enable-tools~          | all 10 tools                | Globally enabled tools                                                                |
+| ~magent-enable-tools~          | default tool set            | Globally enabled tool permission groups                                               |
 | ~magent-project-root-function~ | ~nil~                         | Custom project root finder                                                            |
 | ~magent-max-history~           | ~100~                         | Max messages in history                                                               |
 | ~magent-request-timeout~       | ~120~                         | Timeout in seconds for LLM requests                                                   |
@@ -162,7 +162,7 @@ Magent uses a multi-agent architecture where different agents have different cap
 | ~build~ | primary | Default agent for general coding tasks with full tool access |
 | ~plan~ | primary | Planning agent with restricted file edits (only ~.magent/plan/*.md~) |
 | ~explore~ | subagent | Fast codebase exploration (read/grep/glob/bash only) |
-| ~general~ | subagent | General-purpose subagent for delegated tasks (no delegation) |
+| ~general~ | subagent | General-purpose subagent for child-agent tasks |
 | ~compaction~ | primary (hidden) | Session summarization / conversation compaction |
 | ~title~ | primary (hidden) | Conversation title generation |
 | ~summary~ | primary (hidden) | Pull-request style summary generation |
@@ -245,7 +245,11 @@ The AI agent has access to these tools (can be customized per agent):
 | ~glob~         | no          | Find files matching a glob pattern                    |
 | ~bash~         | yes         | Execute shell commands (default timeout 30s)          |
 | ~emacs_eval~   | yes         | Evaluate Emacs Lisp expressions (default timeout 10s) |
-| ~delegate~     | yes         | Spawn a nested request using a named subagent         |
+| ~spawn_agent~  | yes         | Start a durable child-agent job                       |
+| ~send_agent_message~ | yes   | Send follow-up input to a live child job              |
+| ~wait_agent~   | no          | Wait for child jobs and return status/results         |
+| ~list_agents~  | no          | List child-agent jobs for the current session         |
+| ~close_agent~  | yes         | Close or cancel a child-agent job                     |
 | ~skill_invoke~ | no          | Invoke tool-type skills                               |
 | ~web_search~   | no          | Search the web via DuckDuckGo                         |
 
@@ -277,13 +281,13 @@ Tool availability is controlled by:
 
 7. *LLM Integration* (via gptel): All LLM communication is handled by [[https://github.com/karthink/gptel][gptel]]. Provider, model, and API key configuration is managed entirely by gptel.
 
-8. *Tools* (~magent-tools.el~): 10 tool implementations registered as ~gptel-tool~ structs, filtered per agent based on permission rules.
+8. *Tools* (~magent-tools.el~): 14 tool implementations registered as ~gptel-tool~ structs, filtered per agent based on permission rules. The durable child-agent lifecycle tools are ~spawn_agent~, ~send_agent_message~, ~wait_agent~, ~list_agents~, and ~close_agent~.
 
 9. *Skills* (~magent-skills.el~): Two skill types -- ~instruction~ (markdown injected into the system prompt) and ~tool~ (invoked via ~skill_invoke~). The module contains the registry, built-in ~skill-creator~ definition, file-based skill loading, and interactive inspection commands. Skills load in priority order from: (1) built-in ~skills/~ directory bundled with magent, (2) user directory =~/.emacs.d/magent-skills/<name>/SKILL.md=, (3) project-local ~.magent/skills/<name>/SKILL.md~.
 
 10. *Session* (~magent-session.el~): Conversation history management with per-project active sessions, global fallback outside projects, and JSON persistence. The ~buffer-content~ slot stores raw buffer text for lossless restore.
 
-11. *Audit* (~magent-audit.el~): Persistent JSONL audit logging for permission prompts and decisions plus sensitive actions such as ~bash~, ~emacs_eval~, ~write_file~, ~edit_file~, and ~delegate~. Payloads are redacted to metadata and truncated previews.
+11. *Audit* (~magent-audit.el~): Persistent JSONL audit logging for permission prompts and decisions plus sensitive actions such as ~bash~, ~emacs_eval~, ~write_file~, ~edit_file~, and child-agent lifecycle tools. Payloads are redacted to metadata and truncated previews.
 
 12. *UI* (~magent-ui.el~): The ~*magent*~ buffer derives from ~org-mode~. It uses in-buffer input with ~* [USER]~ sections. Tool calls render as ~#+begin_tool~/~#+end_tool~ blocks; reasoning blocks as ~#+begin_think~/~#+end_think~. Single-request serialization now lives here via ~magent-ui--processing~ and ~magent-ui--enqueue~.
 

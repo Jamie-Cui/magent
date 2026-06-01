@@ -106,7 +106,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
 
 4. **Agent processing** (`magent-agent.el`): `magent-agent-process` builds a gptel prompt list from the session, applies per-agent overrides (model, temperature via `default-value` — intentionally avoids buffer-local gptel settings), exposes filtered tools to the provider, then starts `magent-agent-loop`.
 
-5. **Tools** (`magent-tools.el`): 10 `gptel-tool` structs — `read_file`, `write_file`, `edit_file`, `grep`, `glob`, `bash`, `emacs_eval`, `delegate`, `skill_invoke`, `web_search`. Tools are registered globally but filtered per-agent through permissions. `web_search` uses DuckDuckGo via `url-retrieve` + `libxml-parse-html-region` (requires Emacs built with `--with-xml2`).
+5. **Tools** (`magent-tools.el`): 14 `gptel-tool` structs — `read_file`, `write_file`, `edit_file`, `grep`, `glob`, `bash`, `emacs_eval`, `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, `close_agent`, `skill_invoke`, `web_search`. Tools are registered globally but filtered per-agent through permissions. The child-agent tools share the `agent` permission key. `web_search` uses DuckDuckGo via `url-retrieve` + `libxml-parse-html-region` (requires Emacs built with `--with-xml2`).
 
 6. **Agent Loop**: `magent-agent.el` starts the Magent-owned loop through `magent-agent-loop.el`. `magent-llm.el` defines normalized request/events, and `magent-llm-gptel.el` calls `gptel-request` while hiding gptel callback/FSM details. The loop owns tool dispatch through `magent-tool-orchestrator`, serial tool queueing, permission audit hooks, visible tool rendering, repeated `emacs_eval` guards, request abort cleanup, tool-result session recording, and continuation.
 

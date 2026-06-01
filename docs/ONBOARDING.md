@@ -53,14 +53,14 @@ Multi-agent architecture with specialized agents for different tasks.
 
 **What it does:** Provides specialized agents (build, plan, explore, general, etc.) with different capabilities. Permission system filters tools per agent. Custom agents extend functionality via markdown files with YAML frontmatter.
 
-**Current direction:** The existing `delegate` tool is one-shot. The active plan moves Magent toward durable child-agent jobs with stable ids, status, transcript/result storage, and parent/child session relationships.
+**Current direction:** Magent is replacing the old one-shot `delegate` surface with durable child-agent jobs that have stable ids, status, transcript/result storage, and parent/child session relationships.
 
 ### Layer 4: Tools & Capabilities
 
 The action layer that executes operations requested by agents.
 
 **Key Files:**
-- `magent-tools.el` — 10 `gptel-tool` structs: read_file, write_file, edit_file, grep, glob, bash, emacs_eval, delegate, skill_invoke, web_search
+- `magent-tools.el` — 14 `gptel-tool` structs: read_file, write_file, edit_file, grep, glob, bash, emacs_eval, spawn_agent, send_agent_message, wait_agent, list_agents, close_agent, skill_invoke, web_search
 - `magent-skills.el` — Skill registry, built-in skills, file loading, inspection commands
 - `magent-capability.el` — Capability definitions, resolution, and file-backed loading
 - `magent-approval.el` — User approval prompts for sensitive operations
@@ -104,7 +104,7 @@ Magent uses specialized agents with different capabilities:
 - **build** (default) — Full tool access for general coding
 - **plan** — Restricted file edits (only `.magent/plan/*.md`)
 - **explore** — Fast codebase exploration (read/grep/glob/bash only)
-- **general** — Subagent for delegated tasks (no delegation)
+- **general** — General-purpose subagent for child-agent tasks
 - **compaction**, **title**, **summary** — Hidden utility agents
 
 Agents have modes: `primary` (user-facing), `subagent` (internal), `all` (either).
@@ -175,9 +175,9 @@ Check out:
 
 ### Step 6: Study the Tools
 
-Read `magent-tools.el` to understand the 10 available tools. Pay attention to:
+Read `magent-tools.el` to understand the available tools. Pay attention to:
 - `emacs_eval` — Executes in the request buffer context (uses `magent-tools--request-buffer-name`)
-- `delegate` — Spawns nested requests with subagents
+- `spawn_agent` / `send_agent_message` / `wait_agent` / `list_agents` / `close_agent` — Coordinate durable child-agent jobs
 - `web_search` — DuckDuckGo integration via `url-retrieve`
 
 ### Step 7: Review Testing
@@ -202,7 +202,7 @@ Look at `test/magent-test.el` to see how the codebase is tested. Tests mock `gpt
 - **magent-permission.el** — Tool access control with glob patterns
 
 ### Tools & Skills
-- **magent-tools.el** — 10 tool implementations as gptel-tool structs
+- **magent-tools.el** — 14 tool implementations as gptel-tool structs
 - **magent-skills.el** — Skill registry, built-in skills, file loading, commands
 - **magent-capability.el** — Capability definitions, resolution, and file-backed loading
 - **magent-approval.el** — User approval prompts for sensitive operations

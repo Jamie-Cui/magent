@@ -101,10 +101,10 @@ Output buffers are named like `*magent:global*' or
   :type 'boolean
   :group 'magent)
 
-(defcustom magent-enable-tools '(read write edit grep glob bash emacs_eval delegate skill web_search)
+(defcustom magent-enable-tools '(read write edit grep glob bash emacs_eval agent skill web_search)
   "List of enabled tools.
 Available tools: read, write, edit, grep, glob, bash, emacs_eval,
-delegate, skill, web_search."
+agent, skill, web_search."
   :type '(set (const :tag "Read files" read)
               (const :tag "Write files" write)
               (const :tag "Edit files" edit)
@@ -112,7 +112,7 @@ delegate, skill, web_search."
               (const :tag "Find files (glob)" glob)
               (const :tag "Run shell commands" bash)
               (const :tag "Evaluate Emacs Lisp" emacs_eval)
-              (const :tag "Delegate to subagents" delegate)
+              (const :tag "Coordinate child agents" agent)
               (const :tag "Invoke Claude Code skills" skill)
               (const :tag "Search the web" web_search))
   :group 'magent)

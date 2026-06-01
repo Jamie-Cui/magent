@@ -15,7 +15,10 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'json)
+(require 'subr-x)
 (require 'magent-config)
+(require 'magent-agent-job)
 (require 'magent-agent-registry)
 (require 'magent-events)
 (require 'magent-runtime)
@@ -42,6 +45,12 @@
 
 (defvar magent-tools--register-cancel nil
   "Dynamically bound function used to register request abort cleanups.")
+
+(defvar magent-tools--agent-job-runtimes (make-hash-table :test #'equal)
+  "Runtime state for active child-agent jobs keyed by job id.
+This table intentionally stores non-persistent values such as child sessions,
+request contexts, and live loop handles.  Durable job metadata lives in the
+parent `magent-session' under `agent-jobs'.")
 
 (defun magent-tools--origin-buffer-name ()
   "Return the request origin buffer name for the current tool call."
@@ -352,82 +361,374 @@ CALLBACK is called with the command output (stdout + stderr)."
        (funcall callback (format "Error starting process: %s"
                                  (error-message-string err)))))))
 
-(defun magent-tools--delegate (callback agent-name prompt)
-  "Delegate PROMPT to subagent AGENT-NAME asynchronously.
-CALLBACK is the gptel process-tool-result function.
-Looks up the agent in the registry, validates it is a subagent,
-then spawns a Magent child request that runs through the normal agent loop."
+(defun magent-tools--parent-session ()
+  "Return the parent session for a child-agent tool call."
+  (or (and magent-tools--request-context
+           (magent-request-context-approval-session
+            magent-tools--request-context))
+      (and magent-tools--request-context
+           (magent-request-context-session magent-tools--request-context))
+      (magent-session-get)))
+
+(defun magent-tools--agent-job-terminal-p (job)
+  "Return non-nil when JOB has reached a terminal lifecycle state."
+  (memq (magent-agent-job-status job)
+        '(completed failed closed cancelled)))
+
+(defun magent-tools--agent-job-transcript (session)
+  "Return a compact transcript for child SESSION."
+  (mapcar
+   (lambda (msg)
+     `((role . ,(symbol-name (magent-msg-role msg)))
+       (content . ,(let ((content (magent-msg-content msg)))
+                     (if (stringp content)
+                         content
+                       (format "%S" content))))))
+   (magent-session-get-messages session)))
+
+(defun magent-tools--agent-job-status-string (job)
+  "Return JOB status as a string."
+  (symbol-name (magent-agent-job-status job)))
+
+(defun magent-tools--agent-job-summary (job &optional include-prompt)
+  "Return a JSON-safe summary alist for JOB.
+When INCLUDE-PROMPT is non-nil, include a prompt preview."
+  `((id . ,(magent-agent-job-id job))
+    (agent . ,(magent-agent-job-agent-name job))
+    (task_name . ,(magent-agent-job-task-name job))
+    (status . ,(magent-tools--agent-job-status-string job))
+    ,@(when include-prompt
+        `((prompt_preview
+           . ,(when-let ((prompt (magent-agent-job-prompt job)))
+                (truncate-string-to-width prompt 200 nil nil "...")))))
+    (result . ,(magent-agent-job-result job))
+    (error . ,(magent-agent-job-error job))
+    (created_at . ,(magent-agent-job-created-at job))
+    (updated_at . ,(magent-agent-job-updated-at job))))
+
+(defun magent-tools--agent-job-result-json (payload)
+  "Encode PAYLOAD as model-visible JSON."
+  (let ((json-encoding-pretty-print nil))
+    (json-encode payload)))
+
+(defun magent-tools--agent-job-runtime (job-id)
+  "Return runtime state for child-agent JOB-ID."
+  (gethash job-id magent-tools--agent-job-runtimes))
+
+(defun magent-tools--agent-job-put-runtime (job-id runtime)
+  "Store RUNTIME for child-agent JOB-ID."
+  (puthash job-id runtime magent-tools--agent-job-runtimes)
+  runtime)
+
+(defun magent-tools--agent-job-clear-runtime (job-id)
+  "Remove runtime state for child-agent JOB-ID."
+  (remhash job-id magent-tools--agent-job-runtimes))
+
+(defun magent-tools--agent-job-ids (job-id job-ids)
+  "Normalize JOB-ID and JOB-IDS arguments into a list of ids."
+  (let (ids)
+    (when (and (stringp job-id) (not (string-empty-p job-id)))
+      (push job-id ids))
+    (dolist (id (cond
+                 ((vectorp job-ids) (append job-ids nil))
+                 ((listp job-ids) job-ids)
+                 ((and (stringp job-ids)
+                       (not (string-empty-p job-ids)))
+                  (split-string job-ids "[,[:space:]]+" t))
+                 (t nil)))
+      (when (and (stringp id) (not (string-empty-p id)))
+        (push id ids)))
+    (nreverse (cl-remove-duplicates ids :test #'equal :from-end t))))
+
+(defun magent-tools--agent-jobs-for-ids (session ids)
+  "Return child-agent jobs from SESSION matching IDS.
+When IDS is nil, return all jobs in chronological creation order."
+  (if ids
+      (mapcar (lambda (id)
+                (or (magent-session-agent-job session id)
+                    (error "agent job '%s' not found" id)))
+              ids)
+    (reverse (magent-session-agent-jobs session))))
+
+(defun magent-tools--agent-job-update-from-child
+    (job child-session status response &optional error)
+  "Update JOB from CHILD-SESSION with STATUS, RESPONSE, and optional ERROR."
+  (setf (magent-agent-job-transcript job)
+        (magent-tools--agent-job-transcript child-session))
+  (magent-agent-job-set-status job status response error)
+  job)
+
+(defun magent-tools--agent-job-start
+    (job agent prompt child-session parent-context parent-session)
+  "Start JOB with AGENT and PROMPT using CHILD-SESSION.
+Return the child loop handle when startup succeeds."
+  (let* ((agent-name (magent-agent-info-name agent))
+         (title (if-let ((task-name (magent-agent-job-task-name job)))
+                    (format "Agent %s: %s" agent-name task-name)
+                  (format "Agent %s" agent-name)))
+         (subagent-context
+          (magent-events-create-subagent-context
+           title
+           (and parent-context
+                (magent-request-context-event-context parent-context))))
+         (child-request-context
+          (magent-request-context-create
+           :id (magent-events-generate-id)
+           :scope (and parent-context
+                       (magent-request-context-scope parent-context))
+           :session child-session
+           :approval-session parent-session
+           :origin-buffer-name (and parent-context
+                                    (magent-request-context-origin-buffer-name
+                                     parent-context))
+           :origin-context (and parent-context
+                                (magent-request-context-origin-context
+                                 parent-context))
+           :ui-visibility 'summary-only
+           :parent-request-id (and parent-context
+                                   (magent-request-context-id parent-context))
+           :live-p (and parent-context
+                        (magent-request-context-live-p parent-context))
+           :event-context subagent-context))
+         child-loop)
+    (magent-agent-job-set-status job 'running)
+    (magent-tools--agent-job-put-runtime
+     (magent-agent-job-id job)
+     (list :session child-session
+           :agent agent
+           :request-context child-request-context
+           :subagent-context subagent-context
+           :loop nil))
+    (condition-case err
+        (progn
+          (setq child-loop
+                (magent-agent-process
+                 prompt
+                 (lambda (response)
+                   (magent-events-stop-subagent subagent-context)
+                   (let* ((text (cond
+                                 ((stringp response) response)
+                                 ((null response)
+                                  "Error: child-agent request failed")
+                                 (t (format "%s" response))))
+                          (failed (string-prefix-p "Error:" text)))
+                     (magent-tools--agent-job-update-from-child
+                      job child-session
+                      (if failed 'failed 'completed)
+                      (unless failed text)
+                      (when failed text))))
+                 agent
+                 nil
+                 subagent-context
+                 (magent-request-context-origin-context child-request-context)
+                 nil
+                 nil
+                 nil
+                 child-request-context))
+          (magent-tools--agent-job-put-runtime
+           (magent-agent-job-id job)
+           (list :session child-session
+                 :agent agent
+                 :request-context child-request-context
+                 :subagent-context subagent-context
+                 :loop child-loop))
+          (magent-tools--register-cancel-cleanup
+           (lambda ()
+             (unless (magent-tools--agent-job-terminal-p job)
+               (magent-events-stop-subagent subagent-context)
+               (setf (magent-agent-job-transcript job)
+                     (magent-tools--agent-job-transcript child-session))
+               (magent-agent-job-set-status
+                job 'cancelled nil "Parent request was aborted")
+               (when (and child-loop
+                          (fboundp 'magent-agent-loop-p)
+                          (magent-agent-loop-p child-loop))
+                 (magent-agent-loop-abort child-loop))
+               (magent-tools--agent-job-clear-runtime
+                (magent-agent-job-id job)))))
+          child-loop)
+      (error
+       (magent-events-stop-subagent subagent-context)
+       (magent-tools--agent-job-update-from-child
+        job child-session 'failed nil
+        (format "Error: child-agent request failed: %s"
+                (error-message-string err)))
+       (magent-tools--agent-job-clear-runtime (magent-agent-job-id job))
+       nil))))
+
+(defun magent-tools--spawn-agent (callback agent-name prompt &optional task-name)
+  "Spawn a durable child-agent job using AGENT-NAME and PROMPT."
   (let ((agent (magent-agent-registry-get agent-name)))
     (cond
      ((null agent)
       (funcall callback (format "Error: agent '%s' not found" agent-name)))
      ((not (magent-agent-info-mode-p agent 'subagent))
       (funcall callback (format "Error: agent '%s' is not a subagent" agent-name)))
+     ((not (and (stringp prompt) (not (string-empty-p prompt))))
+      (funcall callback "Error: prompt is required"))
      (t
       (let* ((parent-context magent-tools--request-context)
-             (approval-session
-              (or (and parent-context
-                       (magent-request-context-approval-session parent-context))
-                  (and parent-context
-                       (magent-request-context-session parent-context))
-                  (magent-session-get)))
+             (parent-session (magent-tools--parent-session))
              (child-session (magent-session-create :agent agent))
-             (subagent-context
-              (magent-events-create-subagent-context
-               (format "Agent %s" agent-name)
-               (and parent-context
-                    (magent-request-context-event-context parent-context))))
-             (child-request-context
-              (magent-request-context-create
-               :id (magent-events-generate-id)
-               :scope (and parent-context
-                           (magent-request-context-scope parent-context))
-               :session child-session
-               :approval-session approval-session
-               :origin-buffer-name (and parent-context
-                                        (magent-request-context-origin-buffer-name
-                                         parent-context))
-               :origin-context (and parent-context
-                                    (magent-request-context-origin-context
-                                     parent-context))
-               :ui-visibility 'summary-only
-               :parent-request-id (and parent-context
-                                       (magent-request-context-id parent-context))
-               :live-p (and parent-context
-                            (magent-request-context-live-p parent-context))
-               :event-context subagent-context))
-             child-fsm)
-        (condition-case err
-            (progn
-              (setq child-fsm
-                    (magent-agent-process
-                     prompt
-                     (lambda (response)
-                       (magent-events-stop-subagent subagent-context)
-                       (funcall callback
-                                (cond
-                                 ((stringp response) response)
-                                 ((null response) "Error: subagent request failed")
-                                 (t (format "%s" response)))))
-                     agent
-                     nil
-                     subagent-context
-                     (magent-request-context-origin-context child-request-context)
-                     nil
-                     nil
-                     nil
-                     child-request-context))
+             (parent-session-id (magent-session-get-id parent-session))
+             (job (magent-agent-job-create
+                   :parent-session-id parent-session-id
+                   :agent-name agent-name
+                   :task-name task-name
+                   :prompt prompt
+                   :metadata
+                   `((scope . ,(and parent-context
+                                    (magent-request-context-scope parent-context)))
+                     (parent-request-id
+                      . ,(and parent-context
+                              (magent-request-context-id parent-context)))
+                     (child-session-id
+                      . ,(magent-session-get-id child-session))))))
+        (magent-session-add-agent-job parent-session job)
+        (magent-tools--agent-job-start
+         job agent prompt child-session parent-context parent-session)
+        (funcall
+         callback
+         (magent-tools--agent-job-result-json
+          `((status . ,(if (eq (magent-agent-job-status job) 'failed)
+                           "failed"
+                         "spawned"))
+            (job . ,(magent-tools--agent-job-summary job t))))))))))
+
+(defun magent-tools--send-agent-message (callback job-id message)
+  "Send follow-up MESSAGE to child-agent JOB-ID."
+  (let* ((parent-session (magent-tools--parent-session))
+         (job (and parent-session
+                   (magent-session-agent-job parent-session job-id)))
+         (runtime (and job
+                       (magent-tools--agent-job-runtime job-id))))
+    (cond
+     ((null job)
+      (funcall callback (format "Error: agent job '%s' not found" job-id)))
+     ((memq (magent-agent-job-status job) '(running queued))
+      (funcall callback
+               (format "Error: agent job '%s' is already running; wait before sending another message"
+                       job-id)))
+     ((memq (magent-agent-job-status job) '(closed cancelled))
+      (funcall callback
+               (format "Error: agent job '%s' is %s"
+                       job-id (magent-tools--agent-job-status-string job))))
+     ((not runtime)
+      (funcall callback
+               (format "Error: agent job '%s' has no live runtime; resume support is not available yet"
+                       job-id)))
+     ((not (and (stringp message) (not (string-empty-p message))))
+      (funcall callback "Error: message is required"))
+     (t
+      (let ((agent (plist-get runtime :agent))
+            (child-session (plist-get runtime :session)))
+        (magent-tools--agent-job-start
+         job agent message child-session
+         magent-tools--request-context parent-session)
+        (funcall
+         callback
+         (magent-tools--agent-job-result-json
+          `((status . "sent")
+            (job . ,(magent-tools--agent-job-summary job))))))))))
+
+(defun magent-tools--list-agents (callback &optional include-closed)
+  "List child-agent jobs for the current parent session.
+When INCLUDE-CLOSED is non-nil, include terminal closed/cancelled jobs."
+  (let* ((session (magent-tools--parent-session))
+         (jobs (reverse (magent-session-agent-jobs session)))
+         (visible (if include-closed
+                      jobs
+                    (cl-remove-if
+                     (lambda (job)
+                       (memq (magent-agent-job-status job)
+                             '(closed cancelled)))
+                     jobs))))
+    (funcall
+     callback
+     (magent-tools--agent-job-result-json
+      `((status . "ok")
+        (jobs . ,(vconcat
+                  (mapcar (lambda (job)
+                            (magent-tools--agent-job-summary job t))
+                          visible))))))))
+
+(defun magent-tools--wait-agent (callback &optional job-id job-ids timeout)
+  "Wait for one or more child-agent jobs to reach a terminal state."
+  (let* ((session (magent-tools--parent-session))
+         (ids (magent-tools--agent-job-ids job-id job-ids))
+         (timeout (or timeout 30)))
+    (condition-case err
+        (let* ((jobs (magent-tools--agent-jobs-for-ids session ids))
+               (deadline (+ (float-time) (max 0 timeout)))
+               timer
+               done)
+          (cl-labels
+              ((finish
+                (status)
+                (unless done
+                  (setq done t)
+                  (when timer
+                    (cancel-timer timer))
+                  (funcall
+                   callback
+                   (magent-tools--agent-job-result-json
+                    `((status . ,status)
+                      (jobs . ,(vconcat
+                                (mapcar #'magent-tools--agent-job-summary
+                                        jobs)))))))
+                done)
+               (ready-p
+                ()
+                (cl-every #'magent-tools--agent-job-terminal-p jobs))
+               (poll
+                ()
+                (cond
+                 ((ready-p) (finish "completed"))
+                 ((>= (float-time) deadline) (finish "timeout")))))
+            (if (or (ready-p) (<= timeout 0))
+                (finish (if (ready-p) "completed" "timeout"))
+              (setq timer (run-at-time 0.1 0.1 #'poll))
               (magent-tools--register-cancel-cleanup
                (lambda ()
-                 (when child-fsm
-                   (when (and (fboundp 'magent-agent-loop-p)
-                              (magent-agent-loop-p child-fsm))
-                     (magent-agent-loop-abort child-fsm))))))
-          (error
-           (magent-events-stop-subagent subagent-context)
-           (funcall callback
-                    (format "Error: subagent request failed: %s"
-                            (error-message-string err))))))))))
+                 (when timer
+                   (cancel-timer timer)))))))
+      (error
+       (funcall callback
+                (format "Error: wait_agent failed: %s"
+                        (error-message-string err)))))))
+
+(defun magent-tools--close-agent (callback job-id &optional close-reason)
+  "Close child-agent JOB-ID and abort its live loop when present."
+  (let* ((session (magent-tools--parent-session))
+         (job (and session
+                   (magent-session-agent-job session job-id)))
+         (runtime (and job
+                       (magent-tools--agent-job-runtime job-id))))
+    (cond
+     ((null job)
+      (funcall callback (format "Error: agent job '%s' not found" job-id)))
+     ((eq (magent-agent-job-status job) 'closed)
+      (funcall
+       callback
+       (magent-tools--agent-job-result-json
+        `((status . "already_closed")
+          (job . ,(magent-tools--agent-job-summary job))))))
+     (t
+      (when-let ((loop (and (memq (magent-agent-job-status job)
+                                  '(queued running waiting))
+                            (plist-get runtime :loop))))
+        (when (and (fboundp 'magent-agent-loop-p)
+                   (magent-agent-loop-p loop))
+          (magent-agent-loop-abort loop)))
+      (magent-agent-job-set-status
+       job 'closed (magent-agent-job-result job)
+       (or close-reason (magent-agent-job-error job)))
+      (magent-tools--agent-job-clear-runtime job-id)
+      (funcall
+       callback
+       (magent-tools--agent-job-result-json
+        `((status . "closed")
+          (job . ,(magent-tools--agent-job-summary job)))))))))
 
 (defun magent-tools--web-search (callback query &optional max-results)
   "Search the web using DuckDuckGo asynchronously.
@@ -640,21 +941,94 @@ See `magent-agent-loop-filter-display-args'.")
    :category "magent")
   "gptel-tool struct for emacs_eval.")
 
-(defvar magent-tools--delegate-tool
+(defvar magent-tools--spawn-agent-tool
   (gptel-make-tool
-   :name "delegate"
-   :description "Delegate a task to a subagent. Use 'explore' for codebase search, file finding, and code analysis. Use 'general' for multi-step research and complex tasks. The subagent runs independently and returns its result."
+   :name "spawn_agent"
+   :description "Start a durable child-agent job. Use explore for focused codebase search and general for broader multi-step work. Returns a stable job id that can be listed, waited on, messaged, or closed."
    :args (list '(:name "agent"
                        :type string
-                       :description "Name of the subagent to delegate to (e.g. 'explore', 'general')")
+                       :description "Name of the subagent to start (e.g. 'explore', 'general')")
                '(:name "prompt"
                        :type string
-                       :description "Task description for the subagent")
+                       :description "Task description for the child agent")
+               '(:name "task_name"
+                       :type string
+                       :description "Short task name used to identify this child job"
+                       :optional t)
                magent-tools--reason-arg)
-   :function #'magent-tools--delegate
+   :function #'magent-tools--spawn-agent
    :async t
    :category "magent")
-  "gptel-tool struct for delegate.")
+  "gptel-tool struct for spawn_agent.")
+
+(defvar magent-tools--send-agent-message-tool
+  (gptel-make-tool
+   :name "send_agent_message"
+   :description "Send follow-up input to an existing child-agent job after it has completed or failed and still has live runtime state."
+   :args (list '(:name "job_id"
+                       :type string
+                       :description "Child-agent job id returned by spawn_agent")
+               '(:name "message"
+                       :type string
+                       :description "Follow-up instruction for the child agent")
+               magent-tools--reason-arg)
+   :function #'magent-tools--send-agent-message
+   :async t
+   :category "magent")
+  "gptel-tool struct for send_agent_message.")
+
+(defvar magent-tools--wait-agent-tool
+  (gptel-make-tool
+   :name "wait_agent"
+   :description "Wait for one or more child-agent jobs to finish and return their current status and results. Omit job ids to wait for all current child jobs."
+   :args (list '(:name "job_id"
+                       :type string
+                       :description "Single child-agent job id to wait for"
+                       :optional t)
+               '(:name "job_ids"
+                       :type array
+                       :description "Multiple child-agent job ids to wait for"
+                       :optional t)
+               '(:name "timeout"
+                       :type integer
+                       :description "Maximum seconds to wait, defaults to 30"
+                       :optional t)
+               magent-tools--reason-arg)
+   :function #'magent-tools--wait-agent
+   :async t
+   :category "magent")
+  "gptel-tool struct for wait_agent.")
+
+(defvar magent-tools--list-agents-tool
+  (gptel-make-tool
+   :name "list_agents"
+   :description "List durable child-agent jobs for the current session with their ids, task names, status, and results."
+   :args (list '(:name "include_closed"
+                       :type boolean
+                       :description "When true, include closed and cancelled jobs"
+                       :optional t)
+               magent-tools--reason-arg)
+   :function #'magent-tools--list-agents
+   :async t
+   :category "magent")
+  "gptel-tool struct for list_agents.")
+
+(defvar magent-tools--close-agent-tool
+  (gptel-make-tool
+   :name "close_agent"
+   :description "Close a child-agent job and abort its live request if it is still running."
+   :args (list '(:name "job_id"
+                       :type string
+                       :description "Child-agent job id to close")
+               '(:name "close_reason"
+                       :type string
+                       :description "Optional reason for closing the job"
+                       :optional t)
+               magent-tools--reason-arg)
+   :function #'magent-tools--close-agent
+   :async t
+   :category "magent")
+  "gptel-tool struct for close_agent.")
 
 (defun magent-tools--skill-invoke (callback skill-name operation &rest args)
   "Invoke OPERATION from SKILL-NAME with ARGS asynchronously.
@@ -704,7 +1078,7 @@ automatically included in the system prompt."
 ;;; Tool filtering by agent permissions
 
 (defconst magent-tools--permission-keys
-  '(read write edit grep glob bash emacs_eval delegate skill web_search)
+  '(read write edit grep glob bash emacs_eval agent skill web_search)
   "Canonical list of magent tool permission key symbols.
 This is the single source of truth for all tool names in the permission system.")
 
@@ -716,7 +1090,11 @@ This is the single source of truth for all tool names in the permission system."
     ("glob"         . glob)
     ("bash"         . bash)
     ("emacs_eval"   . emacs_eval)
-    ("delegate"     . delegate)
+    ("spawn_agent"  . agent)
+    ("send_agent_message" . agent)
+    ("wait_agent"   . agent)
+    ("list_agents"  . agent)
+    ("close_agent"  . agent)
     ("skill_invoke" . skill)
     ("web_search"   . web_search))
   "Maps gptel tool names to magent permission key symbols.")
@@ -736,7 +1114,11 @@ This is the single source of truth for all tool names in the permission system."
         magent-tools--glob-tool
         magent-tools--bash-tool
         magent-tools--emacs-eval-tool
-        magent-tools--delegate-tool
+        magent-tools--spawn-agent-tool
+        magent-tools--send-agent-message-tool
+        magent-tools--wait-agent-tool
+        magent-tools--list-agents-tool
+        magent-tools--close-agent-tool
         magent-tools--skill-invoke-tool
         magent-tools--web-search-tool)
   "All magent tools as gptel-tool structs.")

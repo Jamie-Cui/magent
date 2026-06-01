@@ -281,8 +281,16 @@ This function increments the loop's round count."
             (format "%s/%s"
                     (or (plist-get args :skill_name) "?")
                     (or (plist-get args :operation) "?")))
-           ((string= name "delegate")
-            (format "agent: %s" (or (plist-get args :agent) "?")))
+           ((string= name "spawn_agent")
+            (format "%s: %s"
+                    (or (plist-get args :agent) "?")
+                    (or (plist-get args :task_name)
+                        (plist-get args :prompt)
+                        "?")))
+           ((member name '("send_agent_message" "wait_agent" "close_agent"))
+            (or (plist-get args :job_id) "?"))
+           ((string= name "list_agents")
+            "child jobs")
            ((string= name "bash")
             (if-let ((cmd (plist-get args :command)))
                 (truncate-string-to-width

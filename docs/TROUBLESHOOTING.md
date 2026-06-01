@@ -57,16 +57,15 @@ make compile  # Auto-detects dependencies in ~/.emacs.d/elpa/
 - For emacs_eval: Check for syntax errors
 - For grep: Verify ripgrep is installed: `which rg`
 
-#### Subagent or delegate behavior is confusing
-**Problem:** A delegated task behaves like a one-shot nested call instead of a durable child agent that can be messaged, waited on, listed, or closed.
+#### Child-agent behavior is confusing
+**Problem:** A child-agent task does not behave like a durable job that can be messaged, waited on, listed, or closed.
 
 **Diagnosis:**
-1. Check whether the code path is still using the legacy `delegate` tool.
+1. Check whether the code path uses the lifecycle tools: `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, and `close_agent`.
 2. Review `docs/plans/2026-05-30-codex-agent-workflow-alignment.md` for the intended child-agent/job lifecycle.
 3. Check `*magent-log*` for nested request or tool-call errors.
 
 **Solution:**
-- Preserve existing `delegate` compatibility while implementing the new lifecycle.
 - Add or update tests around job status, transcript/result storage, and parent/child session links.
 - Do not add sandbox-specific checks as part of this workflow fix.
 

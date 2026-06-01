@@ -282,7 +282,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                       :sampler #'magent-llm-gptel-sample
                       :max-tool-rounds (magent-agent-info-steps agent)))
                (sample)
-               loop)))))))
+               loop))))))))
 
 (provide 'magent-agent)
 ;;; magent-agent.el ends here
