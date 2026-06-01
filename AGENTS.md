@@ -6,9 +6,9 @@ This file provides guidance to agentic coding tools when working with code in th
 
 The current architecture work aligned Magent with Codex-style collaborative agent behavior where it fits Emacs. Magent now uses a durable child-agent/job lifecycle on top of the Magent-owned agent loop.
 
-Persistent handoff document:
+Stable child-agent architecture document:
 
-- `docs/plans/2026-05-30-codex-agent-workflow-alignment.md`
+- `docs/AGENT_JOBS.md`
 
 Important boundaries:
 
@@ -16,7 +16,7 @@ Important boundaries:
 - Preserve Magent's Emacs-native workflow: live buffers, `emacs_eval`, org output, project-scoped sessions, and gptel transport.
 - Keep using `gptel-request` for provider/request/HTTP/SSE plumbing. Do not rewrite gptel provider integration.
 - The old `delegate` tool has been replaced by `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, and `close_agent`; do not reintroduce a compatibility wrapper unless explicitly requested.
-- When work is interrupted, update the plan file before stopping so progress can be recovered from git on another machine.
+- When work is interrupted, update the relevant stable docs or active task notes before stopping so progress can be recovered from git on another machine.
 
 ## Build Commands
 
