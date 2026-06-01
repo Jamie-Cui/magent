@@ -4,9 +4,9 @@ Thank you for your interest in contributing to magent! This guide will help you 
 
 ## Current Focus
 
-The active architecture focus is Codex-style agent workflow alignment. Before changing agent lifecycle behavior, read and update `docs/plans/2026-05-30-codex-agent-workflow-alignment.md`.
+Magent's Codex-style agent workflow alignment is implemented as a durable child-agent/job lifecycle. Before changing agent lifecycle behavior, read and update `docs/AGENT_JOBS.md`.
 
-The target direction is a durable child-agent/job lifecycle for Magent: spawn, message, wait, list, inspect/resume, and close. Codex sandboxing, seatbelt, bubblewrap, and shell isolation parity are out of scope for this work.
+The lifecycle surface is `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, `close_agent`, plus `magent-show-agent-transcript` for inspection. Codex sandboxing, seatbelt, bubblewrap, and shell isolation parity are out of scope.
 
 ## Development Setup
 
@@ -21,7 +21,7 @@ The target direction is a durable child-agent/job lifecycle for Magent: spawn, m
 
 ```bash
 make compile    # Byte-compile all files
-make test       # Run test suite (~92 tests)
+make test       # Run test suite
 make clean      # Remove compiled files
 ```
 
@@ -46,7 +46,8 @@ All files must include:
 - Use `;;` for inline comments
 - Update README.org for user-facing changes
 - Update AGENTS.md for developer-facing changes
-- Update the active plan before stopping interrupted agent workflow work
+- Update `docs/AGENT_JOBS.md` for child-agent lifecycle changes
+- Update the relevant plan before stopping interrupted plan-driven work
 
 ## Testing
 
@@ -93,7 +94,7 @@ emacsclient --eval '(magent-clear-session)'
 ## Areas for Contribution
 
 ### High Priority
-- Codex-style collaborative agent workflow, excluding sandbox parity
+- Child-agent lifecycle polish and reliability, excluding sandbox parity
 - Additional tool implementations
 - Performance optimizations
 - Test coverage improvements
@@ -119,7 +120,7 @@ emacsclient --eval '(magent-clear-session)'
 4. Add tests
 5. Document in README.org
 
-Agent lifecycle tools are a special case. If the tool participates in spawning, messaging, waiting for, listing, resuming, inspecting, or closing child agents, keep the implementation aligned with `docs/plans/2026-05-30-codex-agent-workflow-alignment.md`.
+Agent lifecycle tools are a special case. If the tool participates in spawning, messaging, waiting for, listing, resuming, inspecting, or closing child agents, keep the implementation aligned with `docs/AGENT_JOBS.md` and update the related tests.
 
 ### Creating a New Module
 1. Follow dependency graph (see AGENTS.md)

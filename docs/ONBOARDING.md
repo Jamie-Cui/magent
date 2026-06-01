@@ -1,6 +1,6 @@
 # Magent Onboarding Guide
 
-**Updated:** 2026-05-31
+**Updated:** 2026-06-01
 
 ## Project Overview
 
@@ -11,11 +11,11 @@
 - **Requirements:** Emacs 27.1+, spinner, transient, ripgrep
 - **Purpose:** Provide AI-assisted coding capabilities within Emacs with fine-grained control over agent permissions and tool access
 
-## Active Goal
+## Current Agent Workflow
 
-The active architecture goal is to compare Magent's current agent workflow with the local Codex checkout at `~/proj/codex` and evolve Magent toward Codex-style collaborative agents where that fits Emacs.
+Magent has a Magent-owned agent loop and a durable child-agent lifecycle for collaborative work. Root agents can spawn, message, wait for, list, inspect/resume, and close child-agent jobs.
 
-Read `docs/plans/2026-05-30-codex-agent-workflow-alignment.md` before changing `delegate`, subagent behavior, session persistence, or agent-related tools. The goal is a durable child-agent lifecycle: spawn, message, wait, list, inspect/resume, and close. Codex sandbox behavior is explicitly out of scope.
+Read `docs/AGENT_JOBS.md` before changing child-agent behavior, session persistence, or agent-related tools. Codex sandbox behavior is explicitly out of scope. The historical implementation plan lives in `docs/plans/2026-05-30-codex-agent-workflow-alignment.md`.
 
 ## Architecture Layers
 
@@ -36,10 +36,11 @@ Manages conversation history, scoped overlays, and runtime state.
 
 **Key Files:**
 - `magent-session.el` — Conversation state with message list, JSON persistence, per-project sessions
+- `magent-agent-job.el` — Durable child-agent job records and JSON shape
 - `magent-runtime.el` — Static initialization plus project-local overlay activation for agents, skills, and capabilities
 - `magent-audit.el` — Persistent JSONL audit logging for permissions and sensitive actions
 
-**What it does:** Maintains conversation history scoped by project, persists to `~/.emacs.d/magent-sessions/`, stores raw buffer content for lossless restore, and activates or unloads project-local overlays as scope changes. Request serialization itself lives in `magent-ui.el` via a single in-flight processing lock.
+**What it does:** Maintains conversation history scoped by project, persists to `~/.emacs.d/magent-sessions/`, stores raw buffer content for lossless restore, persists child-agent jobs under `agent-jobs`, and activates or unloads project-local overlays as scope changes. Request serialization itself lives in `magent-ui.el` via a single in-flight processing lock.
 
 ### Layer 3: Agent System
 
@@ -53,7 +54,7 @@ Multi-agent architecture with specialized agents for different tasks.
 
 **What it does:** Provides specialized agents (build, plan, explore, general, etc.) with different capabilities. Permission system filters tools per agent. Custom agents extend functionality via markdown files with YAML frontmatter.
 
-**Current direction:** Magent is replacing the old one-shot `delegate` surface with durable child-agent jobs that have stable ids, status, transcript/result storage, and parent/child session relationships.
+**Current behavior:** Magent replaced the old one-shot `delegate` surface with durable child-agent jobs that have stable ids, status, transcript/result storage, and parent/child session relationships.
 
 ### Layer 4: Tools & Capabilities
 
@@ -65,7 +66,7 @@ The action layer that executes operations requested by agents.
 - `magent-capability.el` — Capability definitions, resolution, and file-backed loading
 - `magent-approval.el` — User approval prompts for sensitive operations
 
-**What it does:** Tools provide concrete actions (file I/O, shell commands, web search). Skills extend agent behavior (instruction-type injected into prompts, tool-type invoked via skill_invoke). Approval system gates dangerous operations.
+**What it does:** Tools provide concrete actions (file I/O, shell commands, web search) and child-agent coordination (`spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, `close_agent`). Skills extend agent behavior (instruction-type injected into prompts, tool-type invoked via skill_invoke). Approval system gates dangerous operations.
 
 ### Layer 5: Agent Loop & LLM Integration
 
@@ -87,7 +88,7 @@ Org-mode derived buffer for interaction and output rendering.
 - `magent-md2org.el` — Markdown → org-mode conversion for assistant output
 - `magent-file-loader.el` — Shared frontmatter parser for agent/skill/capability files
 
-**What it does:** `*magent*` buffer uses org-mode with custom faces. In-buffer input via `* [USER]` sections. Tool calls render as `#+begin_tool`/`#+end_tool` blocks (auto-folded). Streaming uses chunk batching and async fontification.
+**What it does:** `*magent*` buffer uses org-mode with custom faces. In-buffer input via `* [USER]` sections. Tool calls render as `#+begin_tool`/`#+end_tool` blocks, reasoning as `#+begin_think`/`#+end_think`, and child-agent lifecycle events as `#+begin_agent`/`#+end_agent`. Streaming uses chunk batching and async fontification. `magent-show-agent-transcript` (`C-c m j`) opens persisted child job details.
 
 ### Layer 7: Events
 
@@ -109,7 +110,7 @@ Magent uses specialized agents with different capabilities:
 
 Agents have modes: `primary` (user-facing), `subagent` (internal), `all` (either).
 
-Planned workflow alignment is tracked in `docs/plans/2026-05-30-codex-agent-workflow-alignment.md`. Treat it as the handoff document for subagent/job work.
+Current child-agent architecture is documented in `docs/AGENT_JOBS.md`. The Codex workflow alignment plan remains useful as implementation history.
 
 ### Permission System
 
@@ -138,6 +139,7 @@ Sessions are project-aware:
 - In a project: state scoped to that project
 - Outside projects: global session fallback
 - Persists to `~/.emacs.d/magent-sessions/projects/<sha1>/`
+- Stores durable child-agent job metadata, result/error state, and transcripts in `agent-jobs`
 
 ### Lazy Initialization
 
@@ -179,6 +181,8 @@ Read `magent-tools.el` to understand the available tools. Pay attention to:
 - `emacs_eval` — Executes in the request buffer context (uses `magent-tools--request-buffer-name`)
 - `spawn_agent` / `send_agent_message` / `wait_agent` / `list_agents` / `close_agent` — Coordinate durable child-agent jobs
 - `web_search` — DuckDuckGo integration via `url-retrieve`
+
+Then read `docs/AGENT_JOBS.md` for the lifecycle contract and persistence boundaries.
 
 ### Step 7: Review Testing
 
@@ -245,14 +249,14 @@ These areas require careful attention when modifying:
 **Approach carefully:** More specific patterns must come before less specific ones. Test with various glob patterns.
 
 ### 5. magent-tools.el (Medium Complexity)
-**Why it's complex:** 10 different tool implementations with varying side effects, timeouts, and error handling. `emacs_eval` uses `magent-tools--request-buffer-name` to execute in correct buffer context.
+**Why it's complex:** 14 different tool implementations with varying side effects, timeouts, child-agent runtime state, and error handling. `emacs_eval` uses `magent-tools--request-buffer-name` to execute in correct buffer context.
 
-**Approach carefully:** Tools run in process filters. Timeout handling must be robust. Context capture for `emacs_eval` is critical.
+**Approach carefully:** Tools run in process filters. Timeout handling must be robust. Context capture for `emacs_eval`, child-agent status persistence, and parent/child request-context inheritance are critical.
 
-### 5. magent-session.el (Medium Complexity)
-**Why it's complex:** Per-project session scoping with global fallback, JSON persistence, buffer-content restoration, and history trimming.
+### 6. magent-session.el (Medium Complexity)
+**Why it's complex:** Per-project session scoping with global fallback, JSON persistence, buffer-content restoration, child-agent job persistence, and history trimming.
 
-**Approach carefully:** Session directory calculation uses SHA1 of project root. Buffer content must be preserved for lossless restore.
+**Approach carefully:** Session directory calculation uses SHA1 of project root. Buffer content and `agent-jobs` must be preserved for lossless restore and child transcript inspection.
 
 ## Development Workflow
 
@@ -262,7 +266,7 @@ These areas require careful attention when modifying:
 # Byte-compile all files
 make compile
 
-# Run full test suite (~92 tests)
+# Run full test suite
 make test
 
 # Clean compiled files
@@ -312,7 +316,7 @@ Check `*magent*`, `*magent-log*`, and `*Messages*` buffers for errors.
 2. Add to `magent-enable-tools` default in `magent-config.el`
 3. Update agent permissions in `magent-agent-registry.el`
 
-For agent lifecycle tools such as `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, or `close_agent`, update the active Codex workflow plan first. These tools should be designed as one coherent job lifecycle rather than unrelated standalone tools.
+For agent lifecycle tools such as `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, or `close_agent`, update `docs/AGENT_JOBS.md` and related tests. These tools should remain one coherent job lifecycle rather than unrelated standalone tools.
 
 ### Creating a Custom Agent
 
@@ -350,7 +354,8 @@ Skill instructions for the agent.
 ## Getting Help
 
 - **Documentation:** `README.org`, `AGENTS.md` in repo root
-- **Active plan:** `docs/plans/2026-05-30-codex-agent-workflow-alignment.md`
+- **Child-agent architecture:** `docs/AGENT_JOBS.md`
+- **Plan history:** `docs/plans/2026-05-30-codex-agent-workflow-alignment.md`
 - **Interactive help:** `M-x magent-doctor` for self-diagnostics
 - **Logs:** `C-c m l` to view request/response log
 - **Agent info:** `C-c m v` to list agents, `C-c m i` for current agent

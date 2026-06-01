@@ -2,7 +2,7 @@
 
 ## Active Workflow Notes
 
-If you are debugging agent lifecycle or subagent behavior, first check `docs/plans/2026-05-30-codex-agent-workflow-alignment.md`. The current migration direction is to move from one-shot `delegate` behavior toward durable child-agent jobs. Do not diagnose missing sandbox parity as a Magent bug; Codex sandbox behavior is intentionally out of scope.
+If you are debugging agent lifecycle or subagent behavior, first check `docs/AGENT_JOBS.md`. Magent uses durable child-agent jobs through `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, and `close_agent`; the old one-shot `delegate` tool is not part of the current surface. Do not diagnose missing sandbox parity as a Magent bug; Codex sandbox behavior is intentionally out of scope.
 
 ## Common Issues
 
@@ -62,11 +62,13 @@ make compile  # Auto-detects dependencies in ~/.emacs.d/elpa/
 
 **Diagnosis:**
 1. Check whether the code path uses the lifecycle tools: `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, and `close_agent`.
-2. Review `docs/plans/2026-05-30-codex-agent-workflow-alignment.md` for the intended child-agent/job lifecycle.
-3. Check `*magent-log*` for nested request or tool-call errors.
+2. Review `docs/AGENT_JOBS.md` for the child-agent/job lifecycle contract.
+3. Inspect compact `#+begin_agent` blocks in `*magent*`, or run `M-x magent-show-agent-transcript` / `C-c m j` to view the persisted child transcript.
+4. Check `*magent-log*` for nested request or tool-call errors.
+5. After resume, confirm the parent session still has the expected job metadata in `agent-jobs`.
 
 **Solution:**
-- Add or update tests around job status, transcript/result storage, and parent/child session links.
+- Add or update tests around job status, transcript/result storage, parent/child session links, and resume restoration.
 - Do not add sandbox-specific checks as part of this workflow fix.
 
 #### "Permission denied" errors
