@@ -111,6 +111,34 @@
           (should (eq (magent-msg-role assistant-msg) 'assistant))
           (should (equal (magent-msg-content assistant-msg) "AI response")))))))
 
+(ert-deftest magent-test-agent-process-renders-completed-delta-after-stream-prefix ()
+  "Test final completion text after streamed prefix is still rendered."
+  (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+        (gptel-model 'gpt-4o-mini)
+        (gptel-tools nil)
+        (gptel-use-tools nil)
+        (ui-chunks nil)
+        (response nil))
+    (cl-letf (((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (let ((callback (plist-get kwargs :callback)))
+                   (funcall callback "Checking buffers. " '(:stream t))
+                   (funcall callback t '(:content "Done.")))))
+              ((symbol-function 'magent-tool-registry-for-agent)
+               (lambda (_agent) nil))
+              ((symbol-function 'magent-ui-start-streaming) #'ignore)
+              ((symbol-function 'magent-ui-finish-streaming-fontify)
+               #'ignore))
+      (magent-session-reset)
+      (magent-agent-process
+       "Hello"
+       (lambda (r) (setq response r))
+       nil nil nil nil nil
+       (lambda (text) (push text ui-chunks))))
+    (should (equal response "Checking buffers. Done."))
+    (should (equal (nreverse ui-chunks)
+                   '("Checking buffers. " "Done.")))))
+
 (ert-deftest magent-test-agent-process-passes-max-tool-rounds-to-loop ()
   "Test that agent step limits are forwarded to the Magent loop."
   (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
@@ -1012,6 +1040,41 @@
                       (magent-request-context-permission-profile request-state)
                       'agent)
                      'ask)))))
+
+(ert-deftest magent-test-agent-process-disables-streaming-for-tool-requests ()
+  "Test tool-enabled requests use non-streaming provider sampling."
+  (require 'magent-agent)
+  (let* ((backend (gptel-make-openai "tools" :key "key"))
+         (gptel-backend backend)
+         (gptel-model 'tool-model)
+         (agent (magent-agent-info-create
+                 :name "build"
+                 :mode 'primary
+                 :permission (magent-permission-defaults)))
+         (tool-runtime
+          (magent-tool-runtime-create
+           :name "emacs_eval"
+           :description "Eval"
+           :args (list '(:name "sexp" :type string))
+           :function #'ignore
+           :async t))
+         captured-loop)
+    (cl-letf (((symbol-function 'magent-agent-loop-start)
+               (lambda (loop)
+                 (setq captured-loop loop)
+                 'started))
+              ((symbol-function 'magent-tool-registry-for-agent)
+               (lambda (_agent) (list tool-runtime)))
+              ((symbol-function 'magent-log) #'ignore)
+              ((symbol-function 'magent-events-emit) #'ignore)
+              ((symbol-function 'magent-events-begin-turn)
+               (lambda (_title) 'turn))
+              ((symbol-function 'magent-events-end-turn) #'ignore))
+      (magent-session-reset)
+      (magent-agent-process "use a tool" nil agent))
+    (let ((request (magent-agent-loop-request captured-loop)))
+      (should (magent-llm-request-tools request))
+      (should-not (magent-llm-request-stream request)))))
 
 (ert-deftest magent-test-llm-gptel-applies-temperature-metadata ()
   "Test the gptel adapter applies request temperature metadata."
@@ -3760,7 +3823,7 @@
                        captured-kwargs kwargs)
                  (funcall (plist-get kwargs :callback)
                           "hello"
-                          '(:status "ok"))
+                          '(:status "ok" :stream t))
                  (funcall (plist-get kwargs :callback)
                           t
                           '(:content "hello" :status "ok" :tokens (:total 3)))
@@ -3817,6 +3880,24 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest magent-test-llm-gptel-nonstream-string-completes ()
+  "Test non-streaming gptel string responses map to completion events."
+  (require 'magent-llm-gptel)
+  (let* ((events nil)
+         (request (magent-llm-request-create
+                   :stream nil
+                   :callback (lambda (event) (push event events))))
+         (buffer (generate-new-buffer " *magent-test-gptel*"))
+         (state (magent-llm-gptel--make-state)))
+    (magent-llm-gptel--callback
+     request state buffer "done" '(:status "ok" :tokens (:total 3)))
+    (should-not (buffer-live-p buffer))
+    (should (= (length events) 1))
+    (let ((event (car events)))
+      (should (eq (magent-llm-event-type event) 'completed))
+      (should (equal (magent-llm-event-text event) "done"))
+      (should (equal (magent-llm-event-usage event) '(:total 3))))))
+
 (ert-deftest magent-test-llm-gptel-normalizes-tool-call ()
   "Test gptel adapter maps tool-call callbacks to normalized events."
   (require 'magent-llm-gptel)
@@ -3843,6 +3924,44 @@
                            '(:path "README.org")))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest magent-test-llm-gptel-sanitizes-tool-use-info ()
+  "Test gptel adapter normalizes tool-use data before serialization."
+  (require 'magent-llm-gptel)
+  (let* ((info (list :context '(:magent-llm-gptel t)
+                     :tool-use (list (list :id "call-1"
+                                           :name 'emacs_eval
+                                           :args '(:sexp (+ 20 22)
+                                                   :missing nil)))))
+         (tool-call (car (plist-get info :tool-use))))
+    (magent-llm-gptel--sanitize-info info)
+    (should (equal (plist-get tool-call :name) "emacs_eval"))
+    (should (equal (plist-get tool-call :args)
+                   '(:sexp ["+" 20 22])))))
+
+(ert-deftest magent-test-llm-gptel-sanitizes-assistant-tool-call-history ()
+  "Test assistant tool-call history is safe for gptel JSON encoding."
+  (require 'magent-llm-gptel)
+  (let* ((func (list :name 'emacs_eval
+                     :arguments '(:sexp (+ 20 22)
+                                  :ignored nil)))
+         (tool-call (list :type "function"
+                          :id "call-1"
+                          :function func))
+         (message (list :role "assistant"
+                        :content :null
+                        :tool_calls (vector tool-call)))
+         (data (list :messages (vector message)))
+         (info (list :context '(:magent-llm-gptel t)
+                     :data data)))
+    (magent-llm-gptel--sanitize-info info)
+    (should (equal (plist-get func :name) "emacs_eval"))
+    (should (stringp (plist-get func :arguments)))
+    (should (equal (let ((json-object-type 'plist)
+                         (json-array-type 'list))
+                     (json-read-from-string
+                      (plist-get func :arguments)))
+                   '(:sexp ("+" 20 22))))))
 
 (ert-deftest magent-test-agent-loop-accumulates-normalized-events ()
   "Test agent loop state updates from normalized events."
@@ -4188,6 +4307,69 @@
     (should (eq (magent-agent-loop-start loop) 'handle))
     (should (eq (magent-request-context-abort-controller context)
                 (magent-agent-loop-abort-controller loop)))))
+
+(ert-deftest magent-test-agent-loop-start-schedules-request-timeout ()
+  "Test loop start aborts and reports timeout for hung provider requests."
+  (require 'magent-agent-loop)
+  (let ((scheduled nil)
+        (cancelled nil)
+        (aborted-handle nil)
+        (events nil)
+        (magent-request-timeout 5))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (secs repeat fn &rest args)
+                 (setq scheduled (list secs repeat fn args))
+                 'timeout-timer))
+              ((symbol-function 'cancel-timer)
+               (lambda (timer)
+                 (setq cancelled timer)))
+              ((symbol-function 'magent-agent-loop--abort-request-handle)
+               (lambda (handle)
+                 (setq aborted-handle handle))))
+      (let* ((request (magent-llm-request-create
+                       :prompt '((prompt . "hello"))
+                       :callback (lambda (event) (push event events))))
+             (loop (magent-agent-loop-create
+                    :request request
+                    :sampler (lambda (_request) 'provider-handle))))
+        (should (eq (magent-agent-loop-start loop) 'provider-handle))
+        (should (equal (car scheduled) 5))
+        (should (eq (magent-agent-loop-request-timeout-timer loop)
+                    'timeout-timer))
+        (apply (nth 2 scheduled) (nth 3 scheduled))
+        (should (eq aborted-handle 'provider-handle))
+        (should (eq (magent-agent-loop-status loop) 'failed))
+        (should (string-match-p "Request timed out after 5 seconds"
+                                (magent-agent-loop-error loop)))
+        (should (eq (magent-llm-event-type (car events)) 'error))
+        (should-not (magent-agent-loop-request-timeout-timer loop))
+        (should-not cancelled)))))
+
+(ert-deftest magent-test-agent-loop-terminal-event-cancels-request-timeout ()
+  "Test completed provider requests cancel their timeout timer."
+  (require 'magent-agent-loop)
+  (let ((cancelled nil)
+        (magent-request-timeout 5))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_secs _repeat fn &rest args)
+                 (list :timer fn args)))
+              ((symbol-function 'cancel-timer)
+               (lambda (timer)
+                 (setq cancelled timer))))
+      (let* ((sampled-request nil)
+             (request (magent-llm-request-create
+                       :prompt '((prompt . "hello"))))
+             (loop (magent-agent-loop-create
+                    :request request
+                    :sampler (lambda (sample-request)
+                               (setq sampled-request sample-request)
+                               'provider-handle))))
+        (magent-agent-loop-start loop)
+        (let ((timer (magent-agent-loop-request-timeout-timer loop)))
+          (funcall (magent-llm-request-callback sampled-request)
+                   (magent-llm-completed-event "done"))
+          (should (eq cancelled timer))
+          (should-not (magent-agent-loop-request-timeout-timer loop)))))))
 
 (ert-deftest magent-test-agent-loop-abort-clears-request-context-controller ()
   "Test loop abort clears its request-context abort controller."
@@ -5274,7 +5456,7 @@
     (cl-letf (((symbol-function 'gptel-request)
                (lambda (_prompt &rest kwargs)
                  (let ((cb (plist-get kwargs :callback)))
-                   (funcall cb "Hello" nil)
+                   (funcall cb "Hello" '(:stream t))
                    (funcall cb t (list :content "Hello")))))
               ((symbol-function 'magent-ui-start-streaming) #'ignore)
               ((symbol-function 'magent-ui-insert-streaming) #'ignore)

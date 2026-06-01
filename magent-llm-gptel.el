@@ -18,6 +18,7 @@
 (require 'cl-lib)
 (require 'gptel)
 (require 'gptel-request)
+(require 'magent-config)
 (require 'magent-llm)
 
 (declare-function gptel--error-p "gptel-request")
@@ -35,6 +36,131 @@
 (defvar gptel-include-reasoning)
 (defvar gptel-temperature)
 (defvar magent-include-reasoning)
+
+(defun magent-llm-gptel--managed-context-p (context)
+  "Return non-nil when gptel CONTEXT belongs to this adapter."
+  (and (listp context)
+       (or (plist-get context :magent-llm-gptel)
+           (plist-get context :magent-managed))))
+
+(defun magent-llm-gptel--managed-info-p (info)
+  "Return non-nil when gptel INFO belongs to this adapter."
+  (and (listp info)
+       (or (plist-get info :magent-llm-gptel)
+           (plist-get info :magent-managed)
+           (magent-llm-gptel--managed-context-p
+            (plist-get info :context)))))
+
+(defun magent-llm-gptel--sanitize-tool-call (tool-call)
+  "Sanitize one gptel TOOL-CALL plist in place and return it."
+  (when (listp tool-call)
+    (when (plist-member tool-call :name)
+      (plist-put tool-call
+                 :name
+                 (magent-json-safe-name (plist-get tool-call :name))))
+    (when (plist-member tool-call :args)
+      (plist-put tool-call
+                 :args
+                 (magent-json-safe-tool-args
+                  (plist-get tool-call :args)))))
+  tool-call)
+
+(defun magent-llm-gptel--sanitize-tool-use (info)
+  "Sanitize gptel INFO's `:tool-use' values in place."
+  (when-let ((tool-use (and (listp info) (plist-get info :tool-use))))
+    (dolist (tool-call tool-use)
+      (magent-llm-gptel--sanitize-tool-call tool-call))))
+
+(defun magent-llm-gptel--sanitize-assistant-tool-calls (info)
+  "Sanitize assistant tool call history in gptel INFO's request data.
+Some gptel parsing paths preserve Lisp symbols in tool-call names after
+reading Magent's structured tool result blocks.  Emacs' native JSON
+serializer rejects those symbols when gptel logs or sends continuation
+requests, so Magent normalizes this boundary before curl serializes it."
+  (let* ((data (and (listp info) (plist-get info :data)))
+         (messages (and (listp data) (plist-get data :messages))))
+    (when (vectorp messages)
+      (cl-loop for msg across messages
+               when (and (listp msg)
+                         (equal (plist-get msg :role) "assistant")
+                         (vectorp (plist-get msg :tool_calls)))
+               do (cl-loop for tc across (plist-get msg :tool_calls)
+                           for func = (and (listp tc)
+                                           (plist-get tc :function))
+                           when (listp func)
+                           do (progn
+                                (when (plist-member func :name)
+                                  (plist-put
+                                   func
+                                   :name
+                                   (magent-json-safe-name
+                                    (plist-get func :name))))
+                                (when (plist-member func :arguments)
+                                  (let ((arguments
+                                         (plist-get func :arguments)))
+                                    (unless (stringp arguments)
+                                      (plist-put
+                                       func
+                                       :arguments
+                                       (magent-json-encode
+                                        (magent-json-safe-tool-args
+                                         arguments))))))))))))
+
+(defun magent-llm-gptel--sanitize-info (info)
+  "Sanitize gptel INFO structures that may be serialized as JSON."
+  (magent-llm-gptel--sanitize-tool-use info)
+  (magent-llm-gptel--sanitize-assistant-tool-calls info)
+  info)
+
+(defun magent-llm-gptel--reset-reasoning-block-a (fsm)
+  "Reset managed gptel FSM reasoning state before a request starts."
+  (when-let ((info (and (fboundp 'gptel-fsm-info)
+                        (gptel-fsm-info fsm))))
+    (when (and (magent-llm-gptel--managed-info-p info)
+               (plist-get info :reasoning-block))
+      (plist-put info :reasoning-block nil))))
+
+(defun magent-llm-gptel--sanitize-before-curl-a (orig-fn info &rest args)
+  "Sanitize Magent-managed INFO before gptel serializes request data."
+  (when (magent-llm-gptel--managed-info-p info)
+    (magent-llm-gptel--sanitize-info info))
+  (apply orig-fn info args))
+
+(defun magent-llm-gptel--sanitize-after-parse-response-a
+    (orig-fn backend response info)
+  "Sanitize Magent-managed INFO after gptel parses a response."
+  (prog1 (funcall orig-fn backend response info)
+    (when (magent-llm-gptel--managed-info-p info)
+      (magent-llm-gptel--sanitize-info info))))
+
+(defun magent-llm-gptel--sanitize-after-parse-stream-a
+    (orig-fn backend info)
+  "Sanitize Magent-managed INFO after gptel parses a stream chunk."
+  (prog1 (funcall orig-fn backend info)
+    (when (magent-llm-gptel--managed-info-p info)
+      (magent-llm-gptel--sanitize-info info))))
+
+(defun magent-llm-gptel--install-boundary-advice ()
+  "Install adapter-local gptel boundary sanitization advice."
+  (unless (advice-member-p #'magent-llm-gptel--reset-reasoning-block-a
+                           'gptel--handle-wait)
+    (advice-add 'gptel--handle-wait
+                :before #'magent-llm-gptel--reset-reasoning-block-a))
+  (unless (advice-member-p #'magent-llm-gptel--sanitize-before-curl-a
+                           'gptel-curl--get-args)
+    (advice-add 'gptel-curl--get-args
+                :around #'magent-llm-gptel--sanitize-before-curl-a))
+  (unless (advice-member-p #'magent-llm-gptel--sanitize-after-parse-response-a
+                           'gptel--parse-response)
+    (advice-add 'gptel--parse-response
+                :around
+                #'magent-llm-gptel--sanitize-after-parse-response-a))
+  (when (fboundp 'gptel-curl--parse-stream)
+    (unless (advice-member-p #'magent-llm-gptel--sanitize-after-parse-stream-a
+                             'gptel-curl--parse-stream)
+      (advice-add 'gptel-curl--parse-stream
+                  :around
+                  #'magent-llm-gptel--sanitize-after-parse-stream-a))))
 
 (defun magent-llm-gptel--make-state ()
   "Create adapter-local streaming state."
@@ -98,6 +224,7 @@ METADATA is merged into the event metadata."
               (tools (plist-get info :tools))
               (tool-use (cl-remove-if (lambda (tc) (plist-get tc :result))
                                       (plist-get info :tool-use))))
+    (magent-llm-gptel--sanitize-info info)
     (let (pending-calls)
       (dolist (tool-call tool-use)
         (let* ((name (plist-get tool-call :name))
@@ -130,12 +257,24 @@ executing tools or continuing the tool loop."
   "Map gptel RESPONSE and INFO to normalized events for REQUEST."
   (cond
    ((stringp response)
-    (push response (gethash :text-chunks state))
-    (magent-llm-gptel--emit
-     request
-     (magent-llm-text-delta-event
-      response
-      (magent-llm-gptel--metadata info))))
+    (if (and (not (plist-get info :stream))
+             (not (plist-get info :tool-use)))
+        (progn
+          (magent-llm-gptel--emit
+           request
+           (magent-llm-completed-event
+            response
+            (plist-get info :tokens)
+            (plist-get info :stop-reason)
+            (magent-llm-gptel--metadata info)))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer)))
+      (push response (gethash :text-chunks state))
+      (magent-llm-gptel--emit
+       request
+       (magent-llm-text-delta-event
+        response
+        (magent-llm-gptel--metadata info)))))
    ((and (consp response) (eq (car response) 'reasoning))
     (magent-llm-gptel--emit
      request
@@ -193,6 +332,7 @@ Return the request buffer as the abort handle.  REQUEST must be a
 `magent-llm-request'."
   (unless (magent-llm-request-p request)
     (error "Expected magent-llm-request, got: %S" request))
+  (magent-llm-gptel--install-boundary-advice)
   (let ((buffer (generate-new-buffer " *magent-llm-gptel-request*"))
         (state (magent-llm-gptel--make-state))
         (metadata (magent-llm-request-metadata request)))

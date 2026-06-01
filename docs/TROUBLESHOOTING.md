@@ -30,6 +30,65 @@ make compile  # Auto-detects dependencies in ~/.emacs.d/elpa/
 #### Live Emacs tests fail or hang
 **Problem:** `make test-live` fails, times out, or reports an async timer error while using the real configured gptel provider.
 
+**Live debugging playbook:**
+
+1. Use an isolated Emacs server for Magent live tests. Do not debug against your main editing Emacs when a hang is possible.
+   ```bash
+   emacs --daemon=magent-live-test
+   ```
+
+2. Always point `emacsclient` or `make` at the isolated server:
+   ```bash
+   emacsclient -s magent-live-test --eval '(emacs-pid)'
+   make EMACSCLIENT="emacsclient -s magent-live-test" test-live-smoke
+   ```
+
+3. Before every live run, force this checkout's source to load and assert that ELPA Magent was not used:
+   ```bash
+   emacsclient -s magent-live-test --eval \
+     '(progn
+        (setq debug-on-error t)
+        (load-file "/path/to/magent/test/magent-live-test.el")
+        (magent-live-test-reload-source)
+        (list :repo-source (magent-live-test--repo-source-summary)))'
+   ```
+   Every path in `:repo-source` must be under the checkout, for example `/path/to/magent/magent.el`, not under `~/.emacs.d/elpa/magent/`.
+
+4. Clear stale bytecode before batch or live verification. A warning like `Source file ... newer than byte-compiled file; using older file` means Emacs tested old code.
+   ```bash
+   make clean
+   ```
+
+5. Prefer async status files for real provider runs. They keep `emacsclient` responsive and preserve a compact state snapshot while the provider request continues:
+   ```bash
+   emacsclient -s magent-live-test --eval \
+     '(progn
+        (setq debug-on-error t)
+        (load-file "/path/to/magent/test/magent-live-test.el")
+        (magent-live-test-reload-source)
+        (magent-live-test-install-trace "/tmp/magent-live-trace.el")
+        (magent-live-test-run-async
+         (quote magent-live-test-real-emacs-eval-tool)
+         "/tmp/magent-live-tool-final.el"))'
+
+   cat /tmp/magent-live-tool-final.el
+   tail -n 80 /tmp/magent-live-trace.el
+   ```
+
+6. Check the diagnostic buffers in the isolated server while the test is running and after it finishes:
+   - `*Messages*`
+   - `*Backtrace*`
+   - `*magent-live-test-log*`
+   - `*gptel-log*`
+
+   Treat `*gptel-log*` as sensitive. Redact API keys, bearer tokens, request headers, and provider-specific secrets before sharing or committing any excerpts.
+
+7. If the isolated Emacs server becomes unresponsive, interrupt or kill only that server. Do not kill the main Emacs process.
+   ```bash
+   emacsclient -s magent-live-test --eval '(kill-emacs 0)'
+   ```
+   If the client cannot connect, identify the `emacs --daemon=magent-live-test` PID and kill that PID only.
+
 **Diagnosis:**
 1. Enable backtraces in the live Emacs session before reproducing:
    ```elisp
@@ -52,6 +111,35 @@ make compile  # Auto-detects dependencies in ~/.emacs.d/elpa/
 **Solution:**
 - Fix the first concrete error in `*Backtrace*` or `*Messages*`, then re-run the single failing live test before running the whole live suite.
 - Treat `*gptel-log*` as sensitive diagnostic material; summarize it or share only redacted snippets.
+
+**Failure signatures from prior live debugging:**
+
+- If a tool continuation hangs after the first tool result, inspect `/tmp/magent-live-trace.el`. A `gptel-curl-get-args :event enter` with no matching `:event leave` usually means gptel hit a serialization error before curl started. Check tool-call names, tool args, and assistant `tool_calls` history for Lisp symbols or non-JSON-safe values.
+- If the first provider request emits a tool call but the second request never starts, check whether Magent recorded the tool result in the session and rebuilt the continuation prompt via `magent-agent-loop-request-for-current-session`.
+- If the second request completes but the UI omits the final assistant text, remember that tool-enabled requests may be non-streaming. A non-streaming string callback can be the final completion, not a text delta; the UI must render the completion text that was not already streamed before calling `magent-ui-finish-streaming-fontify`.
+- If a live smoke test passes in direct `emacsclient` but `make test-live-smoke` fails, confirm `EMACSCLIENT="emacsclient -s magent-live-test"` is set. The Makefile default may target the main Emacs server.
+- If a test unexpectedly loads an older Magent, check `load-history`, `load-path` ordering, and `.elc` files. `test/magent-live-test.el` uses source loading with `nosuffix`; keep that behavior when adding files to the live reload list.
+
+**Known-good verification sequence after fixing live gptel/tool bugs:**
+
+```bash
+make clean
+make test-unit
+make compile
+make clean
+make EMACSCLIENT="emacsclient -s magent-live-test" test-live-smoke
+```
+
+Then run both real async diagnostics in the isolated daemon:
+
+```elisp
+(magent-live-test-run-async 'magent-live-test-real-simple-prompt
+                            "/tmp/magent-live-simple-final.el")
+(magent-live-test-run-async 'magent-live-test-real-emacs-eval-tool
+                            "/tmp/magent-live-tool-final.el")
+```
+
+Expected final status files include `:status passed`, `:repo-source` paths under the checkout, and for the tool test a tool state like `(:name "emacs_eval" :result "42")` plus final assistant text `MAGENT_TOOL_OK=42`.
 
 #### "No response from LLM"
 **Problem:** Request hangs or times out.

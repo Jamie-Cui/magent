@@ -59,6 +59,30 @@
   (or (null request-state)
       (magent-request-context-ui-visible-p request-state)))
 
+(defun magent-agent--completion-ui-text (loop event streaming-started)
+  "Return assistant text that still needs UI rendering for EVENT.
+LOOP has already accumulated EVENT by the time this helper is called.
+When streaming has not started, the full loop result should be rendered.
+When streaming has started, render only the completed event's text that
+was not already emitted as text deltas."
+  (let ((result (magent-agent-loop-result loop))
+        (event-text (magent-llm-event-text event))
+        (streamed (magent-agent-loop-text loop)))
+    (cond
+     ((not streaming-started)
+      result)
+     ((or (null event-text)
+          (string-empty-p event-text))
+      nil)
+     ((or (string= streamed event-text)
+          (string-prefix-p event-text streamed)
+          (string-suffix-p event-text streamed))
+      nil)
+     ((string-prefix-p streamed event-text)
+      (substring event-text (length streamed)))
+     (t
+      event-text))))
+
 (defun magent-agent-process
     (user-prompt &optional callback agent-info skill-names event-context
                  request-context capability-resolution ui-callback request-live-p
@@ -312,6 +336,16 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                       loop))
                                (sample))))))
                        ('completed
+                        (let ((ui-text
+                               (magent-agent--completion-ui-text
+                                loop event streaming-started)))
+                          (when (and (stringp ui-text)
+                                     (not (string-empty-p ui-text)))
+                            (start-streaming)
+                            (when (magent-agent--ui-visible-p request-state)
+                              (funcall (or ui-callback
+                                           #'magent-ui-insert-streaming)
+                                       ui-text))))
                         (finish-turn 'completed
                                      (magent-agent-loop-result loop)))
                        ('error
@@ -325,9 +359,9 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                       :prompt prompt-list
                       :system system-msg
                       :tools gptel-tools
-                       :model model
+                      :model model
                       :backend backend
-                      :stream t
+                      :stream (null gptel-tools)
                       :metadata (list :temperature temperature
                                       :top-p top-p)
                       :callback #'handle-event)

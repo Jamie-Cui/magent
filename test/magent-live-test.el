@@ -22,6 +22,15 @@
 (defvar magent-live-test--latest-results nil
   "Result records from the most recent live ERT run.")
 
+(defvar magent-live-test--async-status-file nil
+  "Status file for the most recent async live test run.")
+
+(defvar magent-live-test--trace-file nil
+  "Trace file for gptel request-stage diagnostics.")
+
+(defvar magent-live-test--trace-installed nil
+  "Non-nil when live-test trace advice has been installed.")
+
 ;; Loading this file into a long-lived Emacs process should not leave renamed
 ;; smoke tests in ERT's symbol-property registry.
 (put 'magent-live-test-fsm-runs-emacs-eval-and-continues 'ert--test nil)
@@ -29,7 +38,9 @@
 (defun magent-live-test--add-load-path (directory)
   "Add DIRECTORY to `load-path' when it exists."
   (when (and directory (file-directory-p directory))
-    (add-to-list 'load-path (file-truename directory))))
+    (setq load-path
+          (cons (file-truename directory)
+                (delete (file-truename directory) load-path)))))
 
 (defun magent-live-test--first-elpa-directory (pattern)
   "Return the first ELPA directory matching PATTERN, or nil."
@@ -39,7 +50,6 @@
 
 (defun magent-live-test--prepare-load-path ()
   "Add the repo and package dependency directories to `load-path'."
-  (magent-live-test--add-load-path magent-live-test--root-directory)
   (dolist (pattern '("\\`gptel-[0-9]"
                      "\\`magit-[0-9]"
                      "\\`magit-section-"
@@ -51,43 +61,74 @@
                      "\\`llama-"
                      "\\`with-editor-"))
     (magent-live-test--add-load-path
-     (magent-live-test--first-elpa-directory pattern))))
+     (magent-live-test--first-elpa-directory pattern)))
+  (magent-live-test--add-load-path magent-live-test--root-directory))
 
 (defun magent-live-test--load-source-file (file)
   "Load FILE from the repository root, bypassing stale .elc files."
-  (load (expand-file-name file magent-live-test--root-directory) nil t))
+  (load (expand-file-name file magent-live-test--root-directory) nil t t))
+
+(defconst magent-live-test--source-files
+  '("magent-config.el"
+    "magent-approval.el"
+    "magent-events.el"
+    "magent-protocol.el"
+    "magent-agent-job.el"
+    "magent-session.el"
+    "magent-audit.el"
+    "magent-file-loader.el"
+    "magent-runtime.el"
+    "magent-permission.el"
+    "magent-agent-registry.el"
+    "magent-agent-info.el"
+    "magent-agent-types.el"
+    "magent-agent-file.el"
+    "magent-llm.el"
+    "magent-llm-gptel.el"
+    "magent-tools.el"
+    "magent-tool-registry.el"
+    "magent-tool-orchestrator.el"
+    "magent-agent-loop.el"
+    "magent-turn.el"
+    "magent-context.el"
+    "magent-md2org.el"
+    "magent-agent.el"
+    "magent-skills.el"
+    "magent-capability.el"
+    "magent-ui.el"
+    "magent.el")
+  "Magent source files that live tests must load from this checkout.")
+
+(defun magent-live-test--feature-source (feature)
+  "Return the loaded source file for FEATURE, or nil."
+  (cl-loop for entry in load-history
+           when (member (cons 'provide feature) (cdr entry))
+           return (file-truename (car entry))))
+
+(defun magent-live-test--assert-repo-source-loaded ()
+  "Fail unless every Magent feature was loaded from the repository root."
+  (let ((root (file-name-as-directory
+               (file-truename magent-live-test--root-directory)))
+        mismatches)
+    (dolist (file magent-live-test--source-files)
+      (let* ((feature (intern (file-name-base file)))
+             (source (magent-live-test--feature-source feature)))
+        (unless (and source
+                     (string-prefix-p root source))
+          (push (format "%s loaded from %S" feature source) mismatches))))
+    (when mismatches
+      (ert-fail
+       (format "Live test did not load Magent from repo %s: %s"
+               root
+               (string-join (nreverse mismatches) "; "))))))
 
 (defun magent-live-test-reload-source ()
   "Reload Magent source files into the live Emacs instance."
   (interactive)
   (magent-live-test--prepare-load-path)
-  (dolist (file '("magent-config.el"
-                  "magent-agent-job.el"
-                  "magent-llm.el"
-                  "magent-llm-gptel.el"
-                  "magent-agent-loop.el"
-                  "magent-events.el"
-                  "magent-audit.el"
-                  "magent-session.el"
-                  "magent-approval.el"
-                  "magent-file-loader.el"
-                  "magent-runtime.el"
-                  "magent-agent-registry.el"
-                  "magent-agent-info.el"
-                  "magent-agent-types.el"
-                  "magent-permission.el"
-                  "magent-tools.el"
-                  "magent-tool-registry.el"
-                  "magent-tool-orchestrator.el"
-                  "magent-turn.el"
-                  "magent-agent-file.el"
-                  "magent-md2org.el"
-                  "magent-agent.el"
-                  "magent-skills.el"
-                  "magent-capability.el"
-                  "magent-ui.el"
-                  "magent.el"))
-    (magent-live-test--load-source-file file)))
+  (dolist (file magent-live-test--source-files)
+    (magent-live-test--load-source-file file))
+  (magent-live-test--assert-repo-source-loaded))
 
 (defun magent-live-test--wait-until (predicate &optional timeout message)
   "Wait until PREDICATE returns non-nil, or fail after TIMEOUT seconds."
@@ -139,6 +180,14 @@
                  (last interesting (min 20 (length interesting)))
                  "\n"))))
 
+(defun magent-live-test--repo-source-summary ()
+  "Return the loaded source files for core Magent features."
+  (list :magent (magent-live-test--feature-source 'magent)
+        :llm-gptel (magent-live-test--feature-source 'magent-llm-gptel)
+        :agent-loop (magent-live-test--feature-source 'magent-agent-loop)
+        :agent (magent-live-test--feature-source 'magent-agent)
+        :ui (magent-live-test--feature-source 'magent-ui)))
+
 (defun magent-live-test--debug-state ()
   "Return compact live Magent state for assertion failures."
   (format (concat "processing=%S current-scope=%S"
@@ -164,6 +213,379 @@
           (magent-live-test--buffer-tail "*Messages*" 2000)
           (magent-live-test--buffer-tail "*Backtrace*" 2000)
           (magent-live-test--gptel-error-summary)))
+
+(defun magent-live-test--async-status-path ()
+  "Return a fresh status path for an async live test run."
+  (expand-file-name
+   (format "magent-live-test-%s-%d.el"
+           (format-time-string "%Y%m%d-%H%M%S")
+           (emacs-pid))
+   temporary-file-directory))
+
+(defun magent-live-test--write-async-status (file status &rest fields)
+  "Write STATUS and FIELDS to FILE as a readable Lisp plist."
+  (let ((payload (append (list :status status
+                               :updated-at (format-time-string "%FT%T%z")
+                               :pid (emacs-pid))
+                         fields)))
+    (with-temp-file file
+      (let ((print-length nil)
+            (print-level nil))
+        (prin1 payload (current-buffer))
+        (insert "\n")))))
+
+(defun magent-live-test--append-trace (phase &rest fields)
+  "Append PHASE and FIELDS to `magent-live-test--trace-file'."
+  (when magent-live-test--trace-file
+    (condition-case nil
+        (with-temp-buffer
+          (insert-file-contents magent-live-test--trace-file)
+          (goto-char (point-max))
+          (let ((print-length 12)
+                (print-level 4))
+            (prin1 (append (list :phase phase
+                                 :time (format-time-string "%FT%T%z")
+                                 :pid (emacs-pid))
+                           fields)
+                   (current-buffer))
+            (insert "\n"))
+          (write-region (point-min) (point-max)
+                        magent-live-test--trace-file nil 'silent))
+      (error nil))))
+
+(defun magent-live-test--trace-summary (info)
+  "Return a compact, non-secret summary for gptel INFO."
+  (let* ((data (and (listp info) (plist-get info :data)))
+         (messages (and (listp data) (plist-get data :messages)))
+         (tools (and (listp data) (plist-get data :tools))))
+    (list :backend (and (plist-get info :backend)
+                        (ignore-errors
+                          (gptel-backend-name (plist-get info :backend))))
+          :model (plist-get info :model)
+          :stream (plist-get info :stream)
+          :data-keys (and (listp data)
+                          (cl-loop for (key _value) on data by #'cddr
+                                   collect key))
+          :messages (and (vectorp messages) (length messages))
+          :tools (and (vectorp tools) (length tools))
+          :json-bytes (and (listp data)
+                           (ignore-errors
+                             (length
+                              (encode-coding-string
+                               (gptel--json-encode data) 'utf-8))))
+          :log-level (and (boundp 'gptel-log-level) gptel-log-level))))
+
+(defun magent-live-test--trace-gptel-request (orig-fn &rest args)
+  "Trace ORIG-FN gptel request call with ARGS."
+  (let ((keys (cl-loop for (key _value) on (cdr args) by #'cddr
+                       when (keywordp key)
+                       collect key)))
+    (magent-live-test--append-trace
+     'gptel-request :event 'enter :keys keys)
+    (prog1 (apply orig-fn args)
+      (magent-live-test--append-trace
+       'gptel-request :event 'leave :keys keys))))
+
+(defun magent-live-test--trace-realize-query (orig-fn fsm)
+  "Trace ORIG-FN `gptel--realize-query' for FSM."
+  (magent-live-test--append-trace 'gptel-realize-query :event 'enter)
+  (prog1 (funcall orig-fn fsm)
+    (magent-live-test--append-trace
+     'gptel-realize-query
+     :event 'leave
+     :info (magent-live-test--trace-summary (gptel-fsm-info fsm)))))
+
+(defun magent-live-test--trace-handle-wait (orig-fn fsm)
+  "Trace ORIG-FN `gptel--handle-wait' for FSM."
+  (let ((use-curl (and (boundp 'gptel-use-curl) gptel-use-curl)))
+    (magent-live-test--append-trace
+     'gptel-handle-wait :event 'enter :use-curl use-curl)
+    (prog1 (funcall orig-fn fsm)
+      (magent-live-test--append-trace
+       'gptel-handle-wait :event 'leave :use-curl use-curl))))
+
+(defun magent-live-test--trace-curl-get-response (orig-fn fsm)
+  "Trace ORIG-FN `gptel-curl-get-response' for FSM."
+  (magent-live-test--append-trace
+   'gptel-curl-get-response
+   :event 'enter
+   :info (magent-live-test--trace-summary (gptel-fsm-info fsm)))
+  (prog1 (funcall orig-fn fsm)
+    (magent-live-test--append-trace
+     'gptel-curl-get-response
+     :event 'leave
+     :info (magent-live-test--trace-summary (gptel-fsm-info fsm)))))
+
+(defun magent-live-test--trace-curl-get-args (orig-fn info &rest args)
+  "Trace ORIG-FN `gptel-curl--get-args' for INFO and ARGS."
+  (magent-live-test--append-trace
+   'gptel-curl-get-args
+   :event 'enter
+   :info (magent-live-test--trace-summary info))
+  (let ((result (apply orig-fn info args)))
+    (magent-live-test--append-trace
+     'gptel-curl-get-args
+     :event 'leave
+     :arg-count (length result)
+     :url (car (last result)))
+    result))
+
+(defun magent-live-test--trace-make-process (orig-fn &rest args)
+  "Trace ORIG-FN `make-process' call with ARGS."
+  (let* ((name (plist-get args :name))
+         (command (plist-get args :command)))
+    (magent-live-test--append-trace
+     'make-process
+     :event 'enter
+     :name name
+     :argv0 (car-safe command)
+     :argc (length command))
+    (let ((process (apply orig-fn args)))
+      (magent-live-test--append-trace
+       'make-process
+       :event 'leave
+       :name name
+       :process (and (processp process) (process-name process)))
+      process)))
+
+(defun magent-live-test-install-trace (&optional file)
+  "Install gptel request tracing and write events to FILE."
+  (interactive)
+  (setq magent-live-test--trace-file
+        (or file
+            (expand-file-name "magent-live-trace.el"
+                              temporary-file-directory)))
+  (with-temp-file magent-live-test--trace-file)
+  (unless magent-live-test--trace-installed
+    (advice-add 'gptel-request
+                :around #'magent-live-test--trace-gptel-request)
+    (advice-add 'gptel--realize-query
+                :around #'magent-live-test--trace-realize-query)
+    (advice-add 'gptel--handle-wait
+                :around #'magent-live-test--trace-handle-wait)
+    (advice-add 'gptel-curl-get-response
+                :around #'magent-live-test--trace-curl-get-response)
+    (advice-add 'gptel-curl--get-args
+                :around #'magent-live-test--trace-curl-get-args)
+    (advice-add 'make-process
+                :around #'magent-live-test--trace-make-process)
+    (setq magent-live-test--trace-installed t))
+  magent-live-test--trace-file)
+
+(defun magent-live-test--short-text (value &optional width)
+  "Return VALUE as one line, truncated to WIDTH columns."
+  (let ((text (cond
+               ((null value) nil)
+               ((stringp value) value)
+               (t (format "%S" value)))))
+    (when text
+      (truncate-string-to-width
+       (string-trim (replace-regexp-in-string "[ \t\n\r]+" " " text))
+       (or width 240) nil nil "..."))))
+
+(defun magent-live-test--latest-assistant-message (messages)
+  "Return the newest assistant message from MESSAGES."
+  (cl-find-if (lambda (msg) (eq (magent-msg-role msg) 'assistant))
+              (reverse messages)))
+
+(defun magent-live-test--latest-tool-message (messages &optional name)
+  "Return the newest tool message from MESSAGES, optionally matching NAME."
+  (cl-find-if
+   (lambda (msg)
+     (and (eq (magent-msg-role msg) 'tool)
+          (or (null name)
+              (equal (plist-get (magent-msg-content msg) :name) name))))
+   (reverse messages)))
+
+(defun magent-live-test--turn-state ()
+  "Return compact state for the currently running live turn."
+  (let* ((session (and (fboundp 'magent-session-get)
+                       (ignore-errors (magent-session-get))))
+         (messages (and session (magent-session-get-messages session)))
+         (last-msg (car (last messages)))
+         (assistant-msg (magent-live-test--latest-assistant-message messages))
+         (tool-msg (magent-live-test--latest-tool-message messages))
+         (loop (or (and (boundp 'magent--current-request-handle)
+                        magent--current-request-handle)
+                   (and (fboundp 'magent-turn-current-request-handle)
+                        (magent-turn-current-request-handle)))))
+    (list :processing (and (fboundp 'magent-ui-processing-p)
+                           (magent-ui-processing-p))
+          :turn-active (and (fboundp 'magent-turn-processing-p)
+                            (magent-turn-processing-p))
+          :turn-pending (and (fboundp 'magent-turn-pending-p)
+                             (magent-turn-pending-p))
+          :loop-status (and (fboundp 'magent-agent-loop-p)
+                            (magent-agent-loop-p loop)
+                            (magent-agent-loop-status loop))
+          :loop-error (and (fboundp 'magent-agent-loop-p)
+                           (magent-agent-loop-p loop)
+                           (magent-agent-loop-error loop))
+          :message-count (length messages)
+          :roles (vconcat (mapcar (lambda (msg)
+                                     (symbol-name (magent-msg-role msg)))
+                                   messages))
+          :last-role (and last-msg (magent-msg-role last-msg))
+          :last-content (magent-live-test--short-text
+                         (and last-msg (magent-msg-content last-msg)))
+          :assistant (magent-live-test--short-text
+                      (and assistant-msg
+                           (magent-msg-content assistant-msg)))
+          :tool (and tool-msg
+                     (let ((content (magent-msg-content tool-msg)))
+                       (list :name (plist-get content :name)
+                             :result (magent-live-test--short-text
+                                      (plist-get content :result))))))))
+
+(defun magent-live-test--reset-async-runtime ()
+  "Reset Magent globals for an async live diagnostic run."
+  (magent-live-test-reload-source)
+  (setq magent-buffer-name "*magent-live-test*"
+        magent-log-buffer-name "*magent-live-test-log*"
+        magent-audit-buffer-name "*magent-live-test-audit*"
+        magent-session-directory (make-temp-file "magent-live-sessions-" t)
+        magent-audit-directory (make-temp-file "magent-live-audit-" t)
+        magent-enable-audit-log nil
+        magent-enable-capabilities nil
+        magent-auto-context nil
+        magent-auto-scroll nil
+        magent-by-pass-permission nil
+        magent-ui-batch-insert-delay 0.01
+        magent-ui--processing nil
+        magent-ui--request-generation 0
+        magent--current-request-handle nil
+        magent--current-session nil
+        magent-turn--active nil
+        magent-turn--queue nil
+        magent-turn--current-request-handle nil
+        magent-session--current-scope 'global
+        magent-session--scoped-sessions (make-hash-table :test #'equal)
+        magent-runtime--active-project-scope nil
+        magent-load-custom-agents nil)
+  (magent-live-test--kill-magent-test-buffers)
+  (magent-session-activate 'global))
+
+(defun magent-live-test--async-real-kind (selector)
+  "Return async real diagnostic kind for SELECTOR, or nil."
+  (pcase selector
+    ('magent-live-test-real-simple-prompt 'simple)
+    ('magent-live-test-real-emacs-eval-tool 'emacs-eval-tool)
+    (_ nil)))
+
+(defun magent-live-test-run-real-async (kind &optional status-file timeout)
+  "Start a non-blocking real live diagnostic of KIND.
+KIND is `simple' or `emacs-eval-tool'.  Write status to STATUS-FILE and
+return that path."
+  (let* ((file (or status-file (magent-live-test--async-status-path)))
+         (timeout (or timeout
+                      (pcase kind
+                        ('emacs-eval-tool 240)
+                        (_ 150))))
+         (deadline (+ (float-time) timeout))
+         timer)
+    (setq magent-live-test--async-status-file file)
+    (condition-case err
+        (progn
+          (magent-live-test--reset-async-runtime)
+          (magent-live-test--require-real-gptel)
+          (pcase kind
+            ('simple
+             (setq magent-enable-tools nil
+                   magent-include-reasoning 'ignore)
+             (magent-ui-dispatch-prompt
+              "Reply with exactly MAGENT_LIVE_OK and no other text."
+              'live-test nil nil t))
+            ('emacs-eval-tool
+             (setq magent-enable-tools '(emacs_eval)
+                   magent-by-pass-permission t
+                   magent-include-reasoning 'ignore)
+             (magent-ui-dispatch-prompt
+              (concat
+               "Use the emacs_eval tool exactly once to evaluate this "
+               "Emacs Lisp form: (+ 20 22). After the tool result, "
+               "reply exactly MAGENT_TOOL_OK=42 and no other text. "
+               "Do not answer from memory; call the tool.")
+              'live-test nil nil t))
+            (_ (error "Unknown async live diagnostic kind: %S" kind)))
+          (magent-live-test--write-async-status
+           file 'running
+           :kind kind
+           :phase 'dispatched
+           :debug-on-error debug-on-error
+           :repo-source (magent-live-test--repo-source-summary)
+           :state (magent-live-test--turn-state))
+          (cl-labels
+              ((finish
+                (status &rest fields)
+                (when timer
+                  (cancel-timer timer)
+                  (setq timer nil))
+                (apply #'magent-live-test--write-async-status
+                       file status
+                       :kind kind
+                       :repo-source (magent-live-test--repo-source-summary)
+                       fields))
+               (poll
+                ()
+                (condition-case poll-err
+                    (let* ((state (magent-live-test--turn-state))
+                           (session (magent-session-get))
+                           (messages (magent-session-get-messages session))
+                           (assistant-msg
+                            (magent-live-test--latest-assistant-message
+                             messages))
+                           (assistant
+                            (and assistant-msg
+                                 (magent-msg-content assistant-msg)))
+                           (tool-msg
+                            (magent-live-test--latest-tool-message
+                             messages "emacs_eval"))
+                           (tool-content
+                            (and tool-msg (magent-msg-content tool-msg)))
+                           (processing (plist-get state :processing)))
+                      (cond
+                       ((and (eq kind 'simple)
+                             (stringp assistant)
+                             (string-match-p "MAGENT_LIVE_OK" assistant))
+                        (finish 'passed :state state))
+                       ((and (eq kind 'emacs-eval-tool)
+                             (stringp assistant)
+                             (string-match-p "MAGENT_TOOL_OK=42" assistant)
+                             tool-msg
+                             (equal (plist-get tool-content :result) "42"))
+                        (finish 'passed :state state))
+                       ((and (not processing) assistant)
+                        (finish 'failed
+                                :error "Live turn finished without expected output"
+                                :state state
+                                :debug-state (magent-live-test--debug-state)))
+                       ((>= (float-time) deadline)
+                        (when (and (fboundp 'magent-interrupt) processing)
+                          (ignore-errors (magent-interrupt)))
+                        (finish 'timeout
+                                :error "Timed out waiting for live turn"
+                                :state state
+                                :debug-state (magent-live-test--debug-state)))
+                       (t
+                        (magent-live-test--write-async-status
+                         file 'running
+                         :kind kind
+                         :phase (plist-get state :loop-status)
+                         :state state))))
+                  (error
+                   (finish 'failed
+                           :error (error-message-string poll-err)
+                           :debug-state (magent-live-test--debug-state))))))
+            (setq timer (run-at-time 1 1 #'poll)))
+          file)
+      (error
+       (magent-live-test--write-async-status
+        file 'failed
+        :kind kind
+        :repo-source (magent-live-test--repo-source-summary)
+        :error (error-message-string err)
+        :debug-state (magent-live-test--debug-state))
+       file))))
 
 (defun magent-live-test--wait-for-assistant (&optional timeout)
   "Wait for a completed assistant message and return its text."
@@ -522,6 +944,39 @@ Smoke tests run inside the live Emacs instance but stub gptel transport, so
 they do not consume tokens."
   (interactive)
   (magent-live-test-run (or selector '(tag :magent-live-smoke))))
+
+(defun magent-live-test-run-async (&optional selector status-file)
+  "Start live tests selected by SELECTOR asynchronously.
+Write progress and redacted diagnostics to STATUS-FILE and return that path.
+This is intended for `emacsclient --eval' so the client can return immediately
+while a live gptel run continues inside the target Emacs."
+  (interactive)
+  (let* ((selector (or selector '(tag :magent-live)))
+         (file (or status-file (magent-live-test--async-status-path))))
+    (if-let ((kind (magent-live-test--async-real-kind selector)))
+        (magent-live-test-run-real-async kind file)
+      (setq magent-live-test--async-status-file file)
+      (magent-live-test--write-async-status
+       file 'running
+       :selector selector
+       :debug-on-error debug-on-error
+       :started-at (format-time-string "%FT%T%z"))
+      (run-at-time
+       0 nil
+       (lambda ()
+         (condition-case err
+             (let ((result (magent-live-test-run selector)))
+               (magent-live-test--write-async-status
+                file 'passed
+                :selector selector
+                :result result))
+           (error
+            (magent-live-test--write-async-status
+             file 'failed
+             :selector selector
+             :error (error-message-string err)
+             :debug-state (magent-live-test--debug-state))))))
+      file)))
 
 (provide 'magent-live-test)
 ;;; magent-live-test.el ends here

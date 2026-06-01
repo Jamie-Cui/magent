@@ -314,69 +314,69 @@ Evaluation runs in the user's context buffer when known
 (defun magent-tools--bash (callback command &optional timeout)
   "Execute shell COMMAND asynchronously with optional TIMEOUT in seconds.
 CALLBACK is called with the command output (stdout + stderr)."
-  (unless (stringp command)
-    (funcall callback "Error: 'command' argument is required but was not provided. Please call bash with a valid shell command string.")
-    (cl-return-from magent-tools--bash))
-  (let* ((timeout (or timeout magent-bash-timeout))
-         (default-directory (magent-tools--request-project-root))
-         (buf (generate-new-buffer " *magent-bash*"))
-         (timer nil)
-         (proc nil)
-         (finished nil)
-         (cleanup
-          (lambda ()
-            (when timer (cancel-timer timer) (setq timer nil))
-            (when (process-live-p proc) (delete-process proc))
-            (when (buffer-live-p buf) (kill-buffer buf)))))
-    (magent-tools--register-cancel-cleanup cleanup)
-    (setq timer
-          (run-at-time
-           timeout nil
-           (lambda ()
-             (unless finished
-               (setq finished t)
-               (when (process-live-p proc)
-                 (delete-process proc))
-               (when (buffer-live-p buf)
-               (with-current-buffer buf
-                 (let ((output (buffer-string)))
-                   (funcall cleanup)
-                   (funcall callback
-                            (if (string-blank-p output)
-                                "Command timed out with no output"
-                              (format "Command timed out. Partial output:\n%s"
-                                      (string-trim-right output)))))))))))
-    (condition-case err
-        (let ((process-environment
-               (append '("PAGER=cat"
-                         "GIT_PAGER=cat"
-                         "MANPAGER=cat"
-                         "SYSTEMD_PAGER=cat"
-                         "GIT_TERMINAL_PROMPT=0"
-                         "DEBIAN_FRONTEND=noninteractive")
-                       process-environment)))
-          (setq proc
-                (make-process
-                 :name "magent-bash"
-                 :buffer buf
-                 :command (list shell-file-name shell-command-switch command)
-               :sentinel
-               (lambda (p _event)
-                 (when (and (memq (process-status p) '(exit signal))
-                            (not finished))
-                   (setq finished t)
-                   (let ((output (if (buffer-live-p buf)
-                                     (with-current-buffer buf (buffer-string))
-                                   "")))
-                     (funcall cleanup)
-                     (funcall callback
-                              (if (string-blank-p output)
-                                  "Command completed with no output"
-                                (string-trim-right output)))))))))
-      (error
-       (funcall cleanup)
-       (funcall callback (format "Error starting process: %s"
-                                 (error-message-string err)))))))
+  (if (not (stringp command))
+      (funcall callback "Error: 'command' argument is required but was not provided. Please call bash with a valid shell command string.")
+    (let* ((timeout (or timeout magent-bash-timeout))
+           (default-directory (magent-tools--request-project-root))
+           (buf (generate-new-buffer " *magent-bash*"))
+           (timer nil)
+           (proc nil)
+           (finished nil)
+           (cleanup
+            (lambda ()
+              (when timer (cancel-timer timer) (setq timer nil))
+              (when (process-live-p proc) (delete-process proc))
+              (when (buffer-live-p buf) (kill-buffer buf)))))
+      (magent-tools--register-cancel-cleanup cleanup)
+      (setq timer
+            (run-at-time
+             timeout nil
+             (lambda ()
+               (unless finished
+                 (setq finished t)
+                 (when (process-live-p proc)
+                   (delete-process proc))
+                 (when (buffer-live-p buf)
+                   (with-current-buffer buf
+                     (let ((output (buffer-string)))
+                       (funcall cleanup)
+                       (funcall callback
+                                (if (string-blank-p output)
+                                    "Command timed out with no output"
+                                  (format "Command timed out. Partial output:\n%s"
+                                          (string-trim-right output)))))))))))
+      (condition-case err
+          (let ((process-environment
+                 (append '("PAGER=cat"
+                           "GIT_PAGER=cat"
+                           "MANPAGER=cat"
+                           "SYSTEMD_PAGER=cat"
+                           "GIT_TERMINAL_PROMPT=0"
+                           "DEBIAN_FRONTEND=noninteractive")
+                         process-environment)))
+            (setq proc
+                  (make-process
+                   :name "magent-bash"
+                   :buffer buf
+                   :command (list shell-file-name shell-command-switch command)
+                   :sentinel
+                   (lambda (p _event)
+                     (when (and (memq (process-status p) '(exit signal))
+                                (not finished))
+                       (setq finished t)
+                       (let ((output (if (buffer-live-p buf)
+                                         (with-current-buffer buf
+                                           (buffer-string))
+                                       "")))
+                         (funcall cleanup)
+                         (funcall callback
+                                  (if (string-blank-p output)
+                                      "Command completed with no output"
+                                    (string-trim-right output)))))))))
+        (error
+         (funcall cleanup)
+         (funcall callback (format "Error starting process: %s"
+                                   (error-message-string err))))))))
 
 (defun magent-tools--parent-session ()
   "Return the parent session for a child-agent tool call."

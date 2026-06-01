@@ -92,6 +92,7 @@ If CONTROLLER is already aborted, run CLEANUP immediately."
   abort-controller
   tool-queue
   request-handle
+  request-timeout-timer
   status
   max-tool-rounds
   tool-round-count
@@ -778,10 +779,55 @@ session, the existing request prompt is reused."
     (when (buffer-live-p handle)
       (kill-buffer handle))))
 
+(defun magent-agent-loop--cancel-request-timeout (loop)
+  "Cancel LOOP's active provider request timeout timer."
+  (when-let ((timer (magent-agent-loop-request-timeout-timer loop)))
+    (cancel-timer timer)
+    (setf (magent-agent-loop-request-timeout-timer loop) nil)))
+
+(defun magent-agent-loop--request-active-p (loop)
+  "Return non-nil when LOOP is still waiting on a provider response."
+  (memq (magent-agent-loop-status loop) '(running streaming reasoning)))
+
+(defun magent-agent-loop--schedule-request-timeout
+    (loop original-callback)
+  "Schedule provider request timeout for LOOP.
+ORIGINAL-CALLBACK receives a normalized timeout error event when the
+provider request exceeds `magent-request-timeout'."
+  (magent-agent-loop--cancel-request-timeout loop)
+  (when (and (numberp magent-request-timeout)
+             (> magent-request-timeout 0)
+             (magent-agent-loop--request-active-p loop))
+    (let ((timer
+           (run-at-time
+            magent-request-timeout nil
+            (lambda ()
+              (when (and (magent-agent-loop-p loop)
+                         (magent-agent-loop--request-active-p loop)
+                         (not (magent-agent-loop--aborted-p loop)))
+                (let ((message
+                       (format "Request timed out after %s seconds"
+                               magent-request-timeout)))
+                  (setf (magent-agent-loop-request-timeout-timer loop)
+                        nil)
+                  (magent-agent-loop-abort-controller-abort
+                   (magent-agent-loop-abort-controller loop))
+                  (magent-agent-loop--abort-request-handle
+                   (magent-agent-loop-request-handle loop))
+                  (let ((event (magent-llm-error-event
+                                message
+                                (list :status 'timeout
+                                      :timeout magent-request-timeout))))
+                    (magent-agent-loop-apply-event loop event)
+                    (when original-callback
+                      (funcall original-callback event)))))))))
+      (setf (magent-agent-loop-request-timeout-timer loop) timer))))
+
 (defun magent-agent-loop-abort (loop)
   "Abort LOOP, its pending tools, and its active provider request."
   (when (magent-agent-loop-p loop)
     (let ((already-aborted (magent-agent-loop--aborted-p loop)))
+      (magent-agent-loop--cancel-request-timeout loop)
       (setf (magent-agent-loop-status loop) 'cancelled)
       (magent-agent-loop-tool-queue-abort
        (magent-agent-loop-tool-queue loop))
@@ -830,11 +876,17 @@ the sampler return value."
             :metadata (magent-llm-request-metadata request)
             :callback (lambda (event)
                         (unless (magent-agent-loop--aborted-p loop)
+                          (when (memq (magent-llm-event-type event)
+                                      '(tool-call completed error))
+                            (magent-agent-loop--cancel-request-timeout
+                             loop))
                           (magent-agent-loop-apply-event loop event)
                           (when original-callback
                             (funcall original-callback event)))))))
       (let ((handle (funcall sampler loop-request)))
         (setf (magent-agent-loop-request-handle loop) handle)
+        (magent-agent-loop--schedule-request-timeout
+         loop original-callback)
         handle))))
 
 (provide 'magent-agent-loop)
