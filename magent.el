@@ -61,6 +61,7 @@
 ;;   M-x magent-ask-at-point   - Ask about the symbol at point
 ;;   M-x magent-clear-session  - Clear the current session
 ;;   M-x magent-resume-session - Resume the last saved session
+;;   M-x magent-show-agent-transcript - Inspect a child-agent transcript
 ;;   M-x magent-select-agent   - Select an agent for this session
 ;;   M-x magent-list-agents    - List all available agents
 ;;   M-x magent-show-current-agent - Show current session's agent
@@ -158,6 +159,7 @@ redefined on reload without needing to update `global-mode-string'.")
     ("C-c m L" . magent-clear-log)
     ("C-c m t" . magent-ui-toggle-section)
     ("C-c m A" . magent-select-agent)
+    ("C-c m j" . magent-show-agent-transcript)
     ("C-c m i" . magent-show-current-agent)
     ("C-c m v" . magent-list-agents))
   "Declarative keybinding table for `magent-mode'.")

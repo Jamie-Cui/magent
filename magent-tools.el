@@ -33,7 +33,12 @@
 (declare-function magent-events-stop-subagent "magent-events")
 (declare-function magent-agent-loop-abort "magent-agent-loop")
 (declare-function magent-agent-loop-p "magent-agent-loop")
+(declare-function magent-ui-insert-agent-job-event "magent-ui")
+(declare-function magent-ui--snapshot-buffer-content "magent-ui")
 (declare-function gptel-backend-name "gptel")
+
+(defvar magent--current-session)
+(defvar magent-session--current-scope)
 
 ;; dom.el functions used for web search result parsing (requires --with-xml2 build)
 (declare-function dom-by-class "dom")
@@ -383,6 +388,42 @@ CALLBACK is called with the command output (stdout + stderr)."
            (magent-request-context-session magent-tools--request-context))
       (magent-session-get)))
 
+(defun magent-tools--parent-scope ()
+  "Return the parent request scope for a child-agent tool call."
+  (or (and magent-tools--request-context
+           (magent-request-context-scope magent-tools--request-context))
+      (magent-session-current-scope)))
+
+(defun magent-tools--render-agent-job-event
+    (event job &optional detail context scope deferred)
+  "Render child-agent EVENT for JOB when the parent request is UI-visible."
+  (when (and (magent-request-context-ui-visible-p
+              (or context magent-tools--request-context))
+             (require 'magent-ui nil t))
+    (let ((render (lambda ()
+                    (magent-ui-insert-agent-job-event
+                     event job detail scope))))
+      (if deferred
+          (run-at-time 0 nil render)
+        (funcall render)))))
+
+(defun magent-tools--persist-parent-session (&optional session scope)
+  "Persist SESSION for SCOPE after child-agent job state changes."
+  (when (and session
+             (magent-session-get-messages session))
+    (let ((previous-scope magent-session--current-scope)
+          (previous-session magent--current-session)
+          (target-scope (or scope (magent-tools--parent-scope))))
+      (unwind-protect
+          (progn
+            (setq magent-session--current-scope target-scope
+                  magent--current-session session)
+            (when (fboundp 'magent-ui--snapshot-buffer-content)
+              (magent-ui--snapshot-buffer-content session target-scope))
+            (magent-session-save))
+        (setq magent-session--current-scope previous-scope
+              magent--current-session previous-session)))))
+
 (defun magent-tools--agent-depth (&optional context)
   "Return child-agent depth recorded in CONTEXT."
   (or (and context
@@ -603,6 +644,9 @@ When IDS is nil, return all jobs in chronological creation order."
   "Start JOB with AGENT and PROMPT using CHILD-SESSION.
 Return the child loop handle when startup succeeds."
   (let* ((agent-name (magent-agent-info-name agent))
+         (parent-scope (or (and parent-context
+                                (magent-request-context-scope parent-context))
+                           (magent-session-current-scope)))
          (title (if-let ((task-name (magent-agent-job-task-name job)))
                     (format "Agent %s: %s" agent-name task-name)
                   (format "Agent %s" agent-name)))
@@ -655,6 +699,9 @@ Return the child loop handle when startup succeeds."
            :event-context subagent-context))
          child-loop)
     (magent-agent-job-set-status job 'running)
+    (magent-tools--render-agent-job-event
+     'started job prompt parent-context parent-scope t)
+    (magent-tools--persist-parent-session parent-session parent-scope)
     (magent-tools--agent-job-put-runtime
      (magent-agent-job-id job)
      (list :session child-session
@@ -679,7 +726,12 @@ Return the child loop handle when startup succeeds."
                       job child-session
                       (if failed 'failed 'completed)
                       (unless failed text)
-                      (when failed text))))
+                      (when failed text))
+                     (magent-tools--render-agent-job-event
+                      (if failed 'failed 'completed)
+                      job text parent-context parent-scope nil)
+                     (magent-tools--persist-parent-session
+                      parent-session parent-scope)))
                  agent
                  nil
                  subagent-context
@@ -703,6 +755,10 @@ Return the child loop handle when startup succeeds."
                      (magent-tools--agent-job-transcript child-session))
                (magent-agent-job-set-status
                 job 'cancelled nil "Parent request was aborted")
+               (magent-tools--render-agent-job-event
+                'cancelled job "Parent request was aborted"
+                parent-context parent-scope nil)
+               (magent-tools--persist-parent-session parent-session parent-scope)
                (when (and child-loop
                           (fboundp 'magent-agent-loop-p)
                           (magent-agent-loop-p child-loop))
@@ -716,6 +772,10 @@ Return the child loop handle when startup succeeds."
         job child-session 'failed nil
         (format "Error: child-agent request failed: %s"
                 (error-message-string err)))
+       (magent-tools--render-agent-job-event
+        'failed job (magent-agent-job-error job)
+        parent-context parent-scope nil)
+       (magent-tools--persist-parent-session parent-session parent-scope)
        (magent-tools--agent-job-clear-runtime (magent-agent-job-id job))
        nil))))
 
@@ -732,6 +792,7 @@ Return the child loop handle when startup succeeds."
      (t
       (let* ((parent-context magent-tools--request-context)
              (parent-session (magent-tools--parent-session))
+             (parent-scope (magent-tools--parent-scope))
              (child-session (magent-session-create :agent agent))
              (parent-session-id (magent-session-get-id parent-session))
              (depth-error (magent-tools--child-agent-depth-error
@@ -762,7 +823,10 @@ Return the child loop handle when startup succeeds."
                        . ,(magent-session-get-id child-session))
                       (ui-visibility . "summary-only")
                       (max-depth . ,magent-child-agent-max-depth)))
-              (magent-agent-job-set-status job 'failed nil depth-error))
+              (magent-agent-job-set-status job 'failed nil depth-error)
+              (magent-tools--render-agent-job-event
+               'failed job depth-error parent-context parent-scope t)
+              (magent-tools--persist-parent-session parent-session parent-scope))
           (let ((child-loop
                  (magent-tools--agent-job-start
                   job agent prompt child-session parent-context parent-session)))
@@ -773,7 +837,9 @@ Return the child loop handle when startup succeeds."
                      parent-context
                      (plist-get runtime :request-context)
                      agent
-                     child-session)))
+                     child-session))
+              (magent-tools--persist-parent-session
+               parent-session parent-scope))
             child-loop))
         (funcall
          callback
@@ -786,6 +852,8 @@ Return the child loop handle when startup succeeds."
 (defun magent-tools--send-agent-message (callback job-id message)
   "Send follow-up MESSAGE to child-agent JOB-ID."
   (let* ((parent-session (magent-tools--parent-session))
+         (parent-context magent-tools--request-context)
+         (parent-scope (magent-tools--parent-scope))
          (job (and parent-session
                    (magent-session-agent-job parent-session job-id)))
          (runtime (and job
@@ -812,14 +880,15 @@ Return the child loop handle when startup succeeds."
             (child-session (plist-get runtime :session)))
         (magent-tools--agent-job-start
          job agent message child-session
-         magent-tools--request-context parent-session)
+         parent-context parent-session)
         (when-let ((runtime (magent-tools--agent-job-runtime job-id)))
           (setf (magent-agent-job-metadata job)
                 (magent-tools--agent-inheritance-metadata
-                 magent-tools--request-context
+                 parent-context
                  (plist-get runtime :request-context)
                  agent
-                 child-session)))
+                 child-session))
+          (magent-tools--persist-parent-session parent-session parent-scope))
         (funcall
          callback
          (magent-tools--agent-job-result-json
@@ -850,6 +919,8 @@ When INCLUDE-CLOSED is non-nil, include terminal closed/cancelled jobs."
 (defun magent-tools--wait-agent (callback &optional job-id job-ids timeout)
   "Wait for one or more child-agent jobs to reach a terminal state."
   (let* ((session (magent-tools--parent-session))
+         (parent-context magent-tools--request-context)
+         (parent-scope (magent-tools--parent-scope))
          (ids (magent-tools--agent-job-ids job-id job-ids))
          (timeout (or timeout 30)))
     (condition-case err
@@ -864,6 +935,13 @@ When INCLUDE-CLOSED is non-nil, include terminal closed/cancelled jobs."
                   (setq done t)
                   (when timer
                     (cancel-timer timer))
+                  (dolist (job jobs)
+                    (magent-tools--render-agent-job-event
+                     (if (magent-tools--agent-job-terminal-p job)
+                         'observed
+                       'waiting)
+                     job status parent-context parent-scope t))
+                  (magent-tools--persist-parent-session session parent-scope)
                   (funcall
                    callback
                    (magent-tools--agent-job-result-json
@@ -895,6 +973,8 @@ When INCLUDE-CLOSED is non-nil, include terminal closed/cancelled jobs."
 (defun magent-tools--close-agent (callback job-id &optional close-reason)
   "Close child-agent JOB-ID and abort its live loop when present."
   (let* ((session (magent-tools--parent-session))
+         (parent-context magent-tools--request-context)
+         (parent-scope (magent-tools--parent-scope))
          (job (and session
                    (magent-session-agent-job session job-id)))
          (runtime (and job
@@ -919,6 +999,9 @@ When INCLUDE-CLOSED is non-nil, include terminal closed/cancelled jobs."
        job 'closed (magent-agent-job-result job)
        (or close-reason (magent-agent-job-error job)))
       (magent-tools--agent-job-clear-runtime job-id)
+      (magent-tools--render-agent-job-event
+       'closed job (or close-reason "closed") parent-context parent-scope t)
+      (magent-tools--persist-parent-session session parent-scope)
       (funcall
        callback
        (magent-tools--agent-job-result-json

@@ -3579,6 +3579,72 @@
                            '(((role . "assistant") (content . "found it")))))))
       (delete-directory magent-session-directory t))))
 
+(ert-deftest magent-test-tools-child-agent-completion-persists-parent-session ()
+  "Test child-agent completion updates and saves the parent session."
+  (require 'magent-tools)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (parent-session (magent-session-create :id "parent-session"))
+         (parent-context (magent-request-context-create
+                          :id "parent-request"
+                          :scope 'global
+                          :session parent-session
+                          :approval-session parent-session
+                          :ui-visibility 'full))
+         (agent (magent-agent-info-create
+                 :name "explore"
+                 :mode 'subagent))
+         child-callback
+         ui-events)
+    (unwind-protect
+        (let ((magent-tools--request-context parent-context)
+              (magent-tools--agent-job-runtimes (make-hash-table :test #'equal)))
+          (magent-session-install 'global parent-session)
+          (magent-session-add-message parent-session 'user "spawn child")
+          (cl-letf (((symbol-function 'magent-agent-registry-get)
+                     (lambda (_name) agent))
+                    ((symbol-function 'magent-events-create-subagent-context)
+                     (lambda (_title _parent) 'child-context))
+                    ((symbol-function 'magent-events-stop-subagent) #'ignore)
+                    ((symbol-function 'magent-agent-process)
+                     (lambda (prompt callback _agent-info _skill-names
+                                     _event-context _request-context
+                                     _capability-resolution _ui-callback
+                                     _request-live-p request-state)
+                       (magent-session-add-message
+                        (magent-request-context-session request-state)
+                        'assistant
+                        (concat "child saw " prompt))
+                       (setq child-callback callback)
+                       nil))
+                    ((symbol-function 'magent-ui-insert-agent-job-event)
+                     (lambda (event job detail &optional _scope)
+                       (push (list event
+                                   (magent-agent-job-id job)
+                                   (magent-agent-job-status job)
+                                   detail)
+                             ui-events)))
+                    ((symbol-function 'magent-ui--snapshot-buffer-content)
+                     #'ignore))
+            (magent-tools--spawn-agent #'ignore "explore" "inspect" "scan")
+            (should child-callback)
+            (funcall child-callback "child answer"))
+          (let* ((files (directory-files magent-session-directory t "\\.json$"))
+                 (loaded (magent-session-read-file (car files)))
+                 (loaded-session (plist-get loaded :session))
+                 (job (car (magent-session-agent-jobs loaded-session))))
+            (should (= (length files) 1))
+            (should job)
+            (should (eq (magent-agent-job-status job) 'completed))
+            (should (equal (magent-agent-job-result job) "child answer"))
+            (should (equal (magent-agent-job-transcript job)
+                           '(((role . "assistant")
+                              (content . "child saw inspect")))))
+            (should (assoc 'completed ui-events))))
+      (delete-directory magent-session-directory t))))
+
 (ert-deftest magent-test-llm-event-constructors ()
   "Test normalized LLM event constructors."
   (require 'magent-llm)
@@ -5069,6 +5135,61 @@
       (delete-directory project-a t)
       (delete-directory project-b t))))
 
+(ert-deftest magent-test-resume-session-restores-agent-jobs-for-inspection ()
+  "Test resuming a session restores child-agent jobs for transcript inspect."
+  (require 'magent-ui)
+  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (loaded-session (magent-session-create
+                          :id "loaded"
+                          :buffer-content "* [ASSISTANT]\nLoaded\n"))
+         displayed)
+    (magent-session-add-agent-job
+     loaded-session
+     (magent-agent-job-create
+      :id "agent-1"
+      :agent-name "explore"
+      :task-name "scan"
+      :status 'completed
+      :transcript '(((role . "assistant") (content . "found it")))
+      :result "found it"))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'magent-session-list-files)
+                     (lambda () '("/tmp/session.json")))
+                    ((symbol-function 'completing-read)
+                     (lambda (_prompt collection &rest _args)
+                       (car collection)))
+                    ((symbol-function 'magent-session--format-file)
+                     (lambda (_filepath) "loaded session"))
+                    ((symbol-function 'magent-session-read-file)
+                     (lambda (_filepath)
+                       (list :scope 'global :session loaded-session :id "loaded")))
+                    ((symbol-function 'display-buffer)
+                     (lambda (buffer &rest _args)
+                       buffer))
+                    ((symbol-function 'message) #'ignore))
+            (magent-resume-session))
+          (should (eq (magent-session-agent-job
+                       (magent-session-get)
+                       "agent-1")
+                      (car (magent-session-agent-jobs loaded-session))))
+          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
+                    ((symbol-function 'magent-ui--activate-context-session)
+                     (lambda () (magent-session-get)))
+                    ((symbol-function 'completing-read)
+                     (lambda (_prompt collection &rest _args)
+                       (car collection)))
+                    ((symbol-function 'display-buffer)
+                     (lambda (buffer &rest _args)
+                       (setq displayed buffer)
+                       buffer)))
+            (magent-show-agent-transcript))
+          (with-current-buffer displayed
+            (should (string-match-p "found it" (buffer-string)))))
+      (when (get-buffer "*Magent Agent: agent-1*")
+        (kill-buffer "*Magent Agent: agent-1*")))))
+
 (ert-deftest magent-test-ui-revert-buffer-keeps-buffer-local-scope ()
   "Test reverting an inactive Magent buffer uses that buffer's scope."
   (require 'magent-ui)
@@ -5429,6 +5550,79 @@
       (should (string-match-p "\"tool\":\"emacs_eval\"" text))
       (should (string-match-p "\"values\":\\[\"emacs_eval\",null\\]" text)))))
 
+(ert-deftest magent-test-ui-agent-job-event-renders-compact-block ()
+  "Test child-agent lifecycle UI renders compact metadata only."
+  (require 'magent-ui)
+  (let* ((buffer (magent-ui-get-buffer))
+         (job (magent-agent-job-create
+               :id "agent-1"
+               :agent-name "explore"
+               :task-name "scan"
+               :status 'completed
+               :transcript '(((role . "assistant")
+                              (content . "large transcript body")))
+               :result "answer"))
+         fold-call)
+    (magent-ui-clear-buffer)
+    (cl-letf (((symbol-function 'magent-ui--fold-block-at)
+               (lambda (pos block-re)
+                 (setq fold-call (list pos block-re)))))
+      (magent-ui-insert-agent-job-event 'completed job "answer"))
+    (with-current-buffer buffer
+      (let ((text (buffer-string)))
+        (should (string-match-p "#\\+begin_agent completed agent-1" text))
+        (should (string-match-p "agent: explore" text))
+        (should (string-match-p "task: scan" text))
+        (should (string-match-p "status: completed" text))
+        (should (string-match-p "detail: answer" text))
+        (should-not (string-match-p "large transcript body" text))))
+    (should (equal (cadr fold-call) "#\\+begin_agent"))))
+
+(ert-deftest magent-test-show-agent-transcript-displays-session-job ()
+  "Test child-agent transcript inspection displays persisted job details."
+  (require 'magent-ui)
+  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session (magent-session-create :id "parent"))
+         (job (magent-agent-job-create
+               :id "agent-1"
+               :agent-name "explore"
+               :task-name "scan"
+               :status 'completed
+               :prompt "inspect files"
+               :metadata '((project-root . "/tmp/project")
+                           (skill-names . ["search"]))
+               :transcript '(((role . "user") (content . "inspect"))
+                             ((role . "assistant") (content . "found it")))
+               :result "found it"))
+         displayed)
+    (magent-session-add-agent-job magent--current-session job)
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
+                  ((symbol-function 'magent-ui--activate-context-session)
+                   (lambda () magent--current-session))
+                  ((symbol-function 'completing-read)
+                   (lambda (_prompt collection &rest _args)
+                     (car collection)))
+                  ((symbol-function 'display-buffer)
+                   (lambda (buffer &rest _args)
+                     (setq displayed buffer)
+                     buffer)))
+          (magent-show-agent-transcript)
+          (should displayed)
+          (with-current-buffer displayed
+            (let ((text (buffer-string)))
+              (should (string-match-p "Child Agent agent-1" text))
+              (should (string-match-p "Agent: explore" text))
+              (should (string-match-p "Task: scan" text))
+              (should (string-match-p "Status: completed" text))
+              (should (string-match-p "Prompt" text))
+              (should (string-match-p "inspect files" text))
+              (should (string-match-p "found it" text))
+              (should (string-match-p "skill-names: search" text)))))
+      (when (get-buffer "*Magent Agent: agent-1*")
+        (kill-buffer "*Magent Agent: agent-1*")))))
+
 (ert-deftest magent-test-mode-map-binds-diagnose-emacs ()
   "Test `magent-mode-map' binds the Emacs diagnosis command."
   (require 'magent)
@@ -5446,6 +5640,12 @@
   (require 'magent)
   (should (eq (lookup-key magent-mode-map (kbd "C-c m x"))
               'magent-list-capabilities-for-current-context)))
+
+(ert-deftest magent-test-mode-map-binds-agent-transcript-inspection ()
+  "Test `magent-mode-map' binds child-agent transcript inspection."
+  (require 'magent)
+  (should (eq (lookup-key magent-mode-map (kbd "C-c m j"))
+              'magent-show-agent-transcript)))
 
 (ert-deftest magent-test-list-agents-loads-project-scope-before-first-prompt ()
   "Test listing agents loads project-local agents without a prior prompt."
