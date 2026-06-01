@@ -169,6 +169,18 @@ Next recommended step: define and test deeper child config inheritance rules: pr
 
 Next recommended step: render child-agent lifecycle activity in the main Magent buffer as compact event blocks and add an inspection command for child transcripts.
 
+2026-06-01 implementation checkpoint 14:
+
+- Added compact child-agent lifecycle UI blocks rendered as `#+begin_agent` / `#+end_agent` entries in the parent Magent buffer.
+- Child job lifecycle rendering is scoped to the parent session buffer and deferred for parent tool calls so it does not nest inside the visible `#+begin_tool` block.
+- Added `magent-show-agent-transcript` for inspecting persisted child-agent prompt, metadata, result/error, and transcript state.
+- Added `C-c m j` and transient menu access for child-agent transcript inspection.
+- Child-agent job status changes now snapshot and save the parent session when there is parent conversation history, preserving active/completed job state for resume.
+- Added focused ERT coverage for compact lifecycle UI rendering, transcript inspection, child-agent completion persistence, resume restoration of `agent-jobs`, and the new keybinding.
+- Verification performed: focused Task 6 ERT passed 14/14; byte-compilation of `magent-ui.el`, `magent-tools.el`, `magent.el`, and `test/magent-test.el` passed; `git diff --check` passed. Emacs 31 emitted existing obsolete `when-let`/`if-let` warnings, existing test warning noise, and the existing `magent-tools--bash` free-variable warning.
+
+Next recommended step: complete Task 7 documentation and migration notes for the final child-agent architecture and `delegate` replacement.
+
 ## Scope
 
 This plan is about agent workflow, not provider setup or UI polish in isolation.
@@ -429,10 +441,10 @@ Decision: store compact child-agent job metadata and transcript/result state in 
 
 ### Task 6: UI And Resume
 
-- [ ] Render child-agent lifecycle events in the main `*magent*` buffer as compact tool/event blocks.
-- [ ] Add an inspection command for child transcripts.
-- [ ] Persist active/completed child jobs with the parent session.
-- [ ] Verify `magent-resume-session` restores enough job state to continue or inspect interrupted work.
+- [x] Render child-agent lifecycle events in the main `*magent*` buffer as compact tool/event blocks.
+- [x] Add an inspection command for child transcripts.
+- [x] Persist active/completed child jobs with the parent session.
+- [x] Verify `magent-resume-session` restores enough job state to continue or inspect interrupted work.
 
 ### Task 7: Documentation And Migration
 

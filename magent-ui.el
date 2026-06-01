@@ -24,6 +24,7 @@
 (require 'magent-events)
 (require 'magent-runtime)
 (require 'magent-session)
+(require 'magent-agent-job)
 (require 'magent-agent)
 (require 'magent-agent-registry)
 (require 'magent-agent-loop)
@@ -606,7 +607,8 @@ Skips keys already reserved by the static parts of `magent-transient-menu'."
    [("c" "Clear session" magent-clear-session)
     ("d" "Diagnose Emacs" magent-diagnose-emacs)
     ("D" "Magent doctor" magent-doctor)
-    ("R" "Resume session" magent-resume-session)]]
+    ("R" "Resume session" magent-resume-session)
+    ("j" "Inspect child agent" magent-show-agent-transcript)]]
   ["Agent"
    [:class transient-column
            :setup-children magent-transient-menu--agent-suffixes]]
@@ -655,9 +657,9 @@ Press \\[magent-transient-menu] for the command menu."
   (setq-local display-fill-column-indicator-column nil)
   (setq-local revert-buffer-function #'magent-ui--revert-buffer)
   (setq-local evil-move-beyond-eol t)
-  ;; Prevent org-mode from fontifying content inside tool/think blocks
+  ;; Prevent org-mode from fontifying content inside tool/think/agent blocks
   (setq-local org-protecting-blocks
-              (append '("tool" "think") org-protecting-blocks))
+              (append '("tool" "think" "agent") org-protecting-blocks))
   (add-hook 'completion-at-point-functions #'magent-ui--slash-capf nil t)
   (add-hook 'post-self-insert-hook #'magent-ui--maybe-slash-complete nil t)
   (add-hook 'kill-buffer-hook #'magent-ui--cancel-timers nil t))
@@ -983,6 +985,61 @@ Closes the #+begin_tool block and auto-folds it."
     (when magent-ui--tool-call-start
       (magent-ui--fold-block-at magent-ui--tool-call-start "#\\+begin_tool")
       (setq magent-ui--tool-call-start nil))))
+
+(defun magent-ui--agent-job-line (label value)
+  "Return a display line for child-agent LABEL and VALUE."
+  (when (and value
+             (not (and (stringp value)
+                       (string-empty-p value))))
+    (format "%s: %s"
+            label
+            (magent-ui--sanitize-tool-text
+             (truncate-string-to-width
+              (format "%s" value)
+              magent-ui-result-max-length nil nil "...")))))
+
+(defun magent-ui--agent-job-status-face (status)
+  "Return a face for child-agent STATUS."
+  (if (memq status '(failed cancelled closed))
+      'magent-error-body
+    'magent-tool-result))
+
+(defun magent-ui-insert-agent-job-event (event job &optional detail scope)
+  "Insert a compact child-agent lifecycle EVENT for JOB.
+DETAIL is an optional short display string.  Full transcript content is
+kept in session state and shown by `magent-show-agent-transcript'.
+When SCOPE is non-nil, insert into that scoped Magent buffer."
+  (when (magent-agent-job-p job)
+    (magent-ui--with-insert (magent-ui-get-buffer scope)
+      (let* ((status (magent-agent-job-status job))
+             (status-name (symbol-name status))
+             (event-name (symbol-name event))
+             (start (point)))
+        (insert (propertize
+                 (format "#+begin_agent %s %s"
+                         event-name
+                         (magent-agent-job-id job))
+                 'face 'magent-tool-header)
+                "\n")
+        (dolist (line (delq nil
+                            (list
+                             (magent-ui--agent-job-line
+                              "agent"
+                              (magent-agent-job-agent-name job))
+                             (magent-ui--agent-job-line
+                              "task"
+                              (magent-agent-job-task-name job))
+                             (magent-ui--agent-job-line
+                              "status"
+                              status-name)
+                             (magent-ui--agent-job-line "detail" detail))))
+          (insert (propertize line
+                              'face (if (string-prefix-p "status:" line)
+                                        (magent-ui--agent-job-status-face status)
+                                      'magent-tool-args))
+                  "\n"))
+        (insert (propertize "#+end_agent" 'face 'magent-tool-header) "\n")
+        (magent-ui--fold-block-at start "#\\+begin_agent")))))
 
 (defun magent-ui-insert-error (error-text)
   "Insert ERROR-TEXT into output buffer with level-1 heading."
@@ -1541,6 +1598,93 @@ the buffer flag is cleared."
         (message "Magent buffer is now read-only")))))
 
 ;;; Agent selection commands
+
+(defun magent-ui--agent-jobs-for-display (session)
+  "Return SESSION child-agent jobs in chronological display order."
+  (reverse (magent-session-agent-jobs session)))
+
+(defun magent-ui--agent-job-choice-label (job)
+  "Return completion label for child-agent JOB."
+  (format "%s  [%s]  %s%s"
+          (magent-agent-job-id job)
+          (symbol-name (magent-agent-job-status job))
+          (or (magent-agent-job-agent-name job) "?")
+          (if-let ((task (magent-agent-job-task-name job)))
+              (format ": %s" task)
+            "")))
+
+(defun magent-ui--metadata-value-string (value)
+  "Return VALUE as display text for child-agent metadata."
+  (cond
+   ((null value) "")
+   ((vectorp value)
+    (mapconcat #'magent-ui--metadata-value-string (append value nil) ", "))
+   ((listp value)
+    (format "%S" value))
+   (t
+    (format "%s" value))))
+
+(defun magent-ui--insert-agent-transcript-entry (entry)
+  "Insert one child-agent transcript ENTRY into the current buffer."
+  (let ((role (or (cdr (assq 'role entry)) "?"))
+        (content (or (cdr (assq 'content entry)) "")))
+    (insert (format "** %s\n" (upcase (format "%s" role))))
+    (insert (format "%s\n\n" content))))
+
+(defun magent-ui--render-agent-transcript (job)
+  "Render child-agent JOB into the current transcript buffer."
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (insert (format "* Child Agent %s\n\n" (magent-agent-job-id job)))
+    (insert (format "- Agent: %s\n" (or (magent-agent-job-agent-name job) "?")))
+    (insert (format "- Task: %s\n" (or (magent-agent-job-task-name job) "")))
+    (insert (format "- Status: %s\n" (symbol-name (magent-agent-job-status job))))
+    (when-let ((result (magent-agent-job-result job)))
+      (insert (format "- Result: %s\n" result)))
+    (when-let ((error (magent-agent-job-error job)))
+      (insert (format "- Error: %s\n" error)))
+    (when-let ((prompt (magent-agent-job-prompt job)))
+      (insert "\n** Prompt\n")
+      (insert prompt "\n"))
+    (when-let ((metadata (magent-agent-job-metadata job)))
+      (insert "\n** Metadata\n")
+      (dolist (entry metadata)
+        (insert (format "- %s: %s\n"
+                        (car entry)
+                        (magent-ui--metadata-value-string (cdr entry))))))
+    (insert "\n** Transcript\n\n")
+    (let ((transcript (magent-agent-job-transcript job)))
+      (if transcript
+          (dolist (entry transcript)
+            (magent-ui--insert-agent-transcript-entry entry))
+        (insert "No transcript captured yet.\n")))
+    (goto-char (point-min))
+    (setq buffer-read-only t)))
+
+;;;###autoload
+(defun magent-show-agent-transcript ()
+  "Inspect a child-agent transcript from the current session."
+  (interactive)
+  (magent--ensure-initialized)
+  (magent-ui--activate-context-session)
+  (let* ((session (magent-session-get))
+         (jobs (magent-ui--agent-jobs-for-display session)))
+    (unless jobs
+      (user-error "Magent: no child-agent jobs in this session"))
+    (let* ((choices (mapcar
+                     (lambda (job)
+                       (cons (magent-ui--agent-job-choice-label job) job))
+                     jobs))
+           (selected (completing-read "Child agent: "
+                                      (mapcar #'car choices) nil t))
+           (job (cdr (assoc selected choices)))
+           (buffer (get-buffer-create
+                    (format "*Magent Agent: %s*"
+                            (magent-agent-job-id job)))))
+      (with-current-buffer buffer
+        (org-mode)
+        (magent-ui--render-agent-transcript job))
+      (display-buffer buffer))))
 
 ;;;###autoload
 (defun magent-select-agent ()
