@@ -143,6 +143,18 @@ Superseded next step: the old `magent-fsm*` files have been deleted. Continue by
 
 Next recommended step: implement the child-agent tool surface on top of `magent-agent-job.el`: `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, and `close_agent`. Replace `delegate` directly after the new tools have focused tests.
 
+2026-06-01 implementation checkpoint 12:
+
+- Replaced the public `delegate` tool surface with durable child-agent lifecycle tools: `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, and `close_agent`.
+- Added runtime child-job coordination state in `magent-tools.el` while keeping durable job metadata in the parent session's `agent-jobs` slot.
+- `spawn_agent` now creates a persistent `magent-agent-job`, starts the child through the Magent-owned loop with `summary-only` UI, records result/error/transcript state, and returns model-visible JSON with the stable job id.
+- `send_agent_message`, `wait_agent`, `list_agents`, and `close_agent` operate on existing job ids and return structured model-visible JSON.
+- Moved the lifecycle tools under the shared `agent` permission key and updated defaults, built-in general-agent recursion denial, audit redaction, tool-call summaries, tests, and docs.
+- Fixed a pre-existing missing close paren in `magent-agent.el` that blocked `load`, byte compilation, and batch ERT.
+- Verification performed: focused ERT for the child-agent tool surface passed 4/4; byte-compilation of `magent-agent.el`, `magent-tools.el`, `magent-agent-loop.el`, `magent-permission.el`, `magent-agent-registry.el`, `magent-audit.el`, and `magent-config.el` passed; `git diff --check HEAD` passed. Emacs 31 emitted existing obsolete `when-let`/`if-let` warnings and the existing `magent-tools--bash` free-variable warning.
+
+Next recommended step: define and test deeper child config inheritance rules: project root, model/temperature/top-p, capability context, permission profile, max-depth/recursive spawn guards, and separation from the parent visible buffer.
+
 ## Scope
 
 This plan is about agent workflow, not provider setup or UI polish in isolation.
@@ -371,12 +383,12 @@ Decision: store compact child-agent job metadata and transcript/result state in 
 
 ### Task 3: Tool Surface
 
-- [ ] Add `spawn_agent` for starting a durable child job.
-- [ ] Add `send_agent_message` for follow-up input.
-- [ ] Add `wait_agent` for polling one or more child jobs with timeout.
-- [ ] Add `list_agents` for model-visible coordination state.
-- [ ] Add `close_agent` for explicit cleanup.
-- [ ] Replace `delegate` with the new tool surface once direct tools pass tests; no long-term compatibility wrapper is required.
+- [x] Add `spawn_agent` for starting a durable child job.
+- [x] Add `send_agent_message` for follow-up input.
+- [x] Add `wait_agent` for polling one or more child jobs with timeout.
+- [x] Add `list_agents` for model-visible coordination state.
+- [x] Add `close_agent` for explicit cleanup.
+- [x] Replace `delegate` with the new tool surface once direct tools pass tests; no long-term compatibility wrapper is required.
 
 ### Task 4: Keep gptel-request, Replace gptel FSM Loop Semantics
 
@@ -438,9 +450,21 @@ emacsclient --eval '(magent-clear-session)'
 
 Current verification status:
 
-- Static checks passed in the current shell: deleted FSM module names and old performance-measurement references are absent from runtime code, tests, Makefile, README, AGENTS, and stable docs; `git diff --check` passed.
-- Not run in the current shell: ERT and byte-compile, because `emacs` and `emacsclient` are not available.
-- Intended focused test regexp once Emacs is available:
+- Static checks passed in the current shell: `git diff --check HEAD`.
+- Focused ERT passed for the child-agent tool surface:
+
+```bash
+emacs -Q --batch -L . -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'gptel-[0-9]*' -type d | head -1) -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'spinner-*' -type d | head -1) -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'transient-*' -type d | head -1) -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'cond-let-*' -type d | head -1) -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'evil-*' -type d | head -1) -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'yaml-[0-9]*' -type d | head -1) -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'llama-*' -type d | head -1) -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'with-editor-*' -type d | head -1) -l ert -l test/magent-test.el --eval '(ert-run-tests-batch "magent-test-tools-\\(permission-key\\|spawn-agent\\|list-wait\\|all-registered\\)")'
+```
+
+- Focused byte-compilation passed for the changed runtime files:
+
+```bash
+emacs -Q --batch -L . -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'gptel-[0-9]*' -type d | head -1) -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'spinner-*' -type d | head -1) -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'transient-*' -type d | head -1) -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'cond-let-*' -type d | head -1) -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'evil-*' -type d | head -1) -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'yaml-[0-9]*' -type d | head -1) -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'llama-*' -type d | head -1) -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'with-editor-*' -type d | head -1) --eval '(setq byte-compile-error-on-warn nil)' --eval '(setq byte-compile-warnings '\''(not cl-functions obsolete))' -f batch-byte-compile magent-agent.el magent-tools.el magent-agent-loop.el magent-permission.el magent-agent-registry.el magent-audit.el magent-config.el
+```
+
+- Existing warnings remain on Emacs 31: obsolete `when-let`/`if-let` warnings and `magent-tools--bash`'s `--cl-block-magent-tools--bash--` free-variable warning.
+- Broader regression commands still useful before closing the plan:
 
 ```bash
 emacs -Q --batch -L . -l ert -l test/magent-test.el --eval '(ert-run-tests-batch "magent-test-\\(agent-job\\|session-agent-job\\|session-save-load-preserves-agent-jobs\\)")'

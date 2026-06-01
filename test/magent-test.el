@@ -484,8 +484,8 @@
     ;; bash and emacs_eval should be ask
     (should (eq (magent-permission-resolve defaults 'bash) 'ask))
     (should (eq (magent-permission-resolve defaults 'emacs_eval) 'ask))
-    ;; delegate should be allow
-    (should (eq (magent-permission-resolve defaults 'delegate) 'allow))
+    ;; child-agent coordination should be allow
+    (should (eq (magent-permission-resolve defaults 'agent) 'allow))
     ;; read without file should be allow
     (should (eq (magent-permission-resolve defaults 'read) 'allow))
     ;; read .env should be deny
@@ -2025,13 +2025,17 @@
   (should (eq (magent-tools-permission-key "glob") 'glob))
   (should (eq (magent-tools-permission-key "bash") 'bash))
   (should (eq (magent-tools-permission-key "emacs_eval") 'emacs_eval))
-  (should (eq (magent-tools-permission-key "delegate") 'delegate))
+  (should (eq (magent-tools-permission-key "spawn_agent") 'agent))
+  (should (eq (magent-tools-permission-key "send_agent_message") 'agent))
+  (should (eq (magent-tools-permission-key "wait_agent") 'agent))
+  (should (eq (magent-tools-permission-key "list_agents") 'agent))
+  (should (eq (magent-tools-permission-key "close_agent") 'agent))
   (should (eq (magent-tools-permission-key "skill_invoke") 'skill))
   (should (eq (magent-tools-permission-key "web_search") 'web_search))
   (should (null (magent-tools-permission-key "nonexistent"))))
 
-(ert-deftest magent-test-tools-delegate-uses-child-request-context ()
-  "Test delegate runs through `magent-agent-process' with summary-only UI."
+(ert-deftest magent-test-tools-spawn-agent-creates-durable-job ()
+  "Test spawn_agent records a child job and uses summary-only UI."
   (require 'magent-tools)
   (let* ((parent-session (magent-session-create :id "parent"))
          (parent-context (magent-request-context-create
@@ -2053,7 +2057,8 @@
          (aborted nil)
          (result nil))
     (let ((magent-tools--request-context parent-context)
-          (magent-tools--register-cancel (lambda (fn) (setq cleanup fn))))
+          (magent-tools--register-cancel (lambda (fn) (setq cleanup fn)))
+          (magent-tools--agent-job-runtimes (make-hash-table :test #'equal)))
       (cl-letf (((symbol-function 'magent-agent-registry-get)
                  (lambda (_name) agent))
                 ((symbol-function 'magent-events-create-subagent-context)
@@ -2081,18 +2086,31 @@
                 ((symbol-function 'magent-agent-loop-abort)
                  (lambda (loop)
                    (setq aborted loop))))
-        (magent-tools--delegate
+        (magent-tools--spawn-agent
          (lambda (value) (setq result value))
          "explore"
-         "inspect")
+         "inspect"
+         "scan")
         (when cleanup
           (funcall cleanup))))
-    (let ((child-state (plist-get captured :request-state)))
-      (should (equal result "child answer"))
+    (let* ((decoded (let ((json-object-type 'alist)
+                          (json-array-type 'list))
+                      (json-read-from-string result)))
+           (job-payload (cdr (assq 'job decoded)))
+           (job-id (cdr (assq 'id job-payload)))
+           (job (magent-session-agent-job parent-session job-id))
+           (child-state (plist-get captured :request-state)))
+      (should (equal (cdr (assq 'status decoded)) "spawned"))
+      (should (magent-agent-job-p job))
+      (should (equal (magent-agent-job-agent-name job) "explore"))
+      (should (equal (magent-agent-job-task-name job) "scan"))
+      (should (eq (magent-agent-job-status job) 'completed))
+      (should (equal (magent-agent-job-result job) "child answer"))
+      (should (equal (cdr (assq 'status job-payload)) "completed"))
       (should (equal (plist-get captured :prompt) "inspect"))
       (should (eq (plist-get captured :agent) agent))
       (should (equal (plist-get captured :event-context)
-                     '(:title "Agent explore" :parent parent-event)))
+                     '(:title "Agent explore: scan" :parent parent-event)))
       (should (eq (plist-get captured :request-context) 'origin))
       (should (null (plist-get captured :capability-resolution)))
       (should (null (plist-get captured :ui-callback)))
@@ -2105,14 +2123,98 @@
       (should-not (eq (magent-request-context-session child-state) parent-session))
       (should (eq (magent-session-agent (magent-request-context-session child-state))
                   agent))
-      (should (equal stopped '(:title "Agent explore" :parent parent-event)))
+      (should (equal stopped '(:title "Agent explore: scan" :parent parent-event)))
       (should cleanup)
-      (should (eq aborted child-loop)))))
+      (should-not aborted))))
+
+(ert-deftest magent-test-tools-list-wait-send-close-agent-jobs ()
+  "Test child-agent lifecycle tools over durable job state."
+  (require 'magent-tools)
+  (let* ((parent-session (magent-session-create :id "parent"))
+         (agent (magent-agent-info-create :name "explore" :mode 'subagent))
+         (child-session (magent-session-create :agent agent))
+         (job (magent-agent-job-create
+               :id "agent-1"
+               :parent-session-id "parent"
+               :agent-name "explore"
+               :task-name "scan"
+               :status 'completed
+               :prompt "inspect"
+               :result "first result"))
+         list-result
+         wait-result
+         send-result
+         close-result
+         (captured-prompts nil)
+         (aborted nil))
+    (magent-session-add-agent-job parent-session job)
+    (let ((runtime-table (make-hash-table :test #'equal)))
+      (puthash "agent-1"
+               (list :session child-session
+                     :agent agent
+                     :request-context nil
+                     :subagent-context nil
+                     :loop nil)
+               runtime-table)
+      (let ((magent-tools--request-context
+             (magent-request-context-create
+              :id "parent-req"
+              :session parent-session
+              :approval-session parent-session))
+            (magent-tools--agent-job-runtimes runtime-table))
+        (cl-letf (((symbol-function 'magent-events-create-subagent-context)
+                   (lambda (title parent)
+                     (list :title title :parent parent)))
+                  ((symbol-function 'magent-events-stop-subagent) #'ignore)
+                  ((symbol-function 'magent-agent-process)
+                   (lambda (prompt callback _agent-info _skill-names
+                                   _event-context _request-context
+                                   _capability-resolution _ui-callback
+                                   _request-live-p _request-state)
+                     (push prompt captured-prompts)
+                     (funcall callback (concat "reply: " prompt))
+                     nil))
+                  ((symbol-function 'magent-agent-loop-abort)
+                   (lambda (loop) (setq aborted loop))))
+          (magent-tools--list-agents
+           (lambda (value) (setq list-result value)))
+          (magent-tools--wait-agent
+           (lambda (value) (setq wait-result value))
+           "agent-1" nil 0)
+          (magent-tools--send-agent-message
+           (lambda (value) (setq send-result value))
+           "agent-1"
+           "follow up")
+          (magent-tools--close-agent
+           (lambda (value) (setq close-result value))
+           "agent-1"
+           "done"))))
+    (let* ((list-json (let ((json-object-type 'alist)
+                            (json-array-type 'list))
+                        (json-read-from-string list-result)))
+           (wait-json (let ((json-object-type 'alist)
+                            (json-array-type 'list))
+                        (json-read-from-string wait-result)))
+           (send-json (let ((json-object-type 'alist)
+                            (json-array-type 'list))
+                        (json-read-from-string send-result)))
+           (close-json (let ((json-object-type 'alist)
+                             (json-array-type 'list))
+                         (json-read-from-string close-result))))
+      (should (equal (cdr (assq 'status list-json)) "ok"))
+      (should (= (length (cdr (assq 'jobs list-json))) 1))
+      (should (equal (cdr (assq 'status wait-json)) "completed"))
+      (should (equal (cdr (assq 'status send-json)) "sent"))
+      (should (equal captured-prompts '("follow up")))
+      (should (eq (magent-agent-job-status job) 'closed))
+      (should (equal (magent-agent-job-result job) "reply: follow up"))
+      (should (equal (cdr (assq 'status close-json)) "closed"))
+      (should-not aborted))))
 
 (ert-deftest magent-test-tools-all-registered ()
-  "Test that all 10 tools are registered."
+  "Test that all core tools are registered."
   (require 'magent-tools)
-  (should (= (length magent-tools--all-gptel-tools) 10)))
+  (should (= (length magent-tools--all-gptel-tools) 14)))
 
 (ert-deftest magent-test-tools-filtering ()
   "Test tool filtering by permissions."
@@ -2395,7 +2497,7 @@
           (funcall cb "ok"))
         :args-to-plist-function (lambda (_args-spec arg-values) arg-values)
         :summarize-function (lambda (arg-values _args-spec) (car arg-values)))
-       (list (list tool (list "echo hi") (lambda (r) (setq result r)))))))
+       (list (list tool (list "echo hi") (lambda (r) (setq result r))))))
     (should (equal tool-ran "echo hi"))
     (should (equal result "ok"))
     (should (null (magent-permission-session-override 'bash)))))
@@ -2429,7 +2531,7 @@
           (funcall cb (apply (gptel-tool-function tool-spec) arg-values)))
         :args-to-plist-function (lambda (_args-spec arg-values) arg-values)
         :summarize-function (lambda (arg-values _args-spec) (car arg-values)))
-       (list (list tool (list "echo hi") (lambda (r) (setq result r)))))))
+       (list (list tool (list "echo hi") (lambda (r) (setq result r))))))
     (should-not tool-ran)
     (should (string-match-p "denied by user" result))
     (should (null (magent-permission-session-override 'bash)))))
@@ -2461,7 +2563,7 @@
           (funcall cb "ok"))
         :args-to-plist-function (lambda (_args-spec arg-values) arg-values)
         :summarize-function (lambda (arg-values _args-spec) (car arg-values)))
-       (list (list tool (list "echo hi") (lambda (r) (setq result r)))))))
+       (list (list tool (list "echo hi") (lambda (r) (setq result r))))))
     (should (equal tool-ran "echo hi"))
     (should (equal result "ok"))
     (should (eq (magent-permission-session-override 'bash) 'allow))
@@ -2496,7 +2598,7 @@
           (funcall cb (apply (gptel-tool-function tool-spec) arg-values)))
         :args-to-plist-function (lambda (_args-spec arg-values) arg-values)
         :summarize-function (lambda (arg-values _args-spec) (car arg-values)))
-       (list (list tool (list "echo hi") (lambda (r) (setq result r)))))))
+       (list (list tool (list "echo hi") (lambda (r) (setq result r))))))
     (should-not tool-ran)
     (should (string-match-p "denied by user" result))
     (should (eq (magent-permission-session-override 'bash) 'deny))
@@ -3107,7 +3209,7 @@
           (magent-session-add-message (magent-session-get) 'user "hello")
           (magent-session-save)
           (should (= (length (directory-files magent-session-directory nil "\\.json$")) 1)))
-      (delete-directory magent-session-directory t))))
+      (delete-directory magent-session-directory t)))
 
 (ert-deftest magent-test-session-save-load-preserves-approval-overrides ()
   "Test session approval overrides persist through save/load."

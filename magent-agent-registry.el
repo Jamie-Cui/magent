@@ -270,7 +270,7 @@ Your output must be:
    :permission (magent-permission-merge
                 (magent-permission-defaults)
                 (magent-permission-from-config
-                 '((delegate . deny))))))
+                 '((agent . deny))))))
 
 (defun magent-agent-types--explore ()
   "Create the explore agent (codebase exploration specialist)."

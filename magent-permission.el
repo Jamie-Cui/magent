@@ -74,7 +74,7 @@ permission rules."
    ;; Sensitive tools require user confirmation
    (cons 'bash magent-permission-ask)
    (cons 'emacs_eval magent-permission-ask)
-   (cons 'delegate magent-permission-allow)
+   (cons 'agent magent-permission-allow)
    (cons 'web_search magent-permission-allow)
    ;; File read restrictions (mirror .gitignore for .env)
    ;; More specific patterns must come before less specific ones.
@@ -236,7 +236,7 @@ defaults to \\='deny but specific paths are \\='allow)."
             (cl-some (lambda (sub-rule)
                        (memq (cdr sub-rule) '(allow ask)))
                      tool-value)
-          ;; Simple case: delegate to existing resolver
+          ;; Simple case: reuse normal permission resolution.
           (memq (magent-permission-resolve rules tool) '(allow ask))))))
 
 ;;; Permission merging
