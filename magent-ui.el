@@ -35,8 +35,8 @@
 (defvar magent-enable-logging)
 (defvar magent-log-level)
 
-(defvar magent--current-fsm nil
-  "Current active agent loop instance, if any.")
+(defvar magent--current-request-handle nil
+  "Current active request handle, if any.")
 
 ;; Forward declarations for buffer-local input state (defined in
 ;; "In-buffer input" section below).
@@ -539,12 +539,12 @@ newly loaded session snapshot."
 Bumps the generation counter so stale callbacks from the aborted
 request are discarded."
   (interactive)
-  (let ((turn-fsm (magent-turn-current-fsm)))
+  (let ((turn-request-handle (magent-turn-current-request-handle)))
     (magent-turn-interrupt #'magent-ui--abort-active-request)
-    (when magent--current-fsm
-      (unless (eq magent--current-fsm turn-fsm)
-        (magent-ui--abort-active-request magent--current-fsm))
-      (setq magent--current-fsm nil)))
+    (when magent--current-request-handle
+      (unless (eq magent--current-request-handle turn-request-handle)
+        (magent-ui--abort-active-request magent--current-request-handle))
+      (setq magent--current-request-handle nil)))
   (magent-approval-drop-requests)
   (cl-incf magent-ui--request-generation)
   (when (and (boundp 'magent--spinner) magent--spinner)
@@ -1451,7 +1451,7 @@ stale callbacks are discarded."
                  :origin-context (magent-ui--request-request-context item)
                  :ui-visibility 'full
                  :live-p request-live-p))
-          (setq magent--current-fsm
+          (setq magent--current-request-handle
                 (magent-agent-process
                  input
                  (lambda (response)
@@ -1470,11 +1470,12 @@ stale callbacks are discarded."
                  request-live-p
                  request-state))
           (when submission-id
-            (magent-turn-set-current-fsm magent--current-fsm)))
+            (magent-turn-set-current-request-handle
+             magent--current-request-handle)))
       (error
        (magent-log "ERROR in run-item: %s" (error-message-string err))
        (magent-ui-insert-error (error-message-string err))
-       (setq magent--current-fsm nil)
+       (setq magent--current-request-handle nil)
        (when submission-id
          (magent-turn-finish 'failed (error-message-string err)))
        (when (and (boundp 'magent--spinner) magent--spinner)
@@ -1485,7 +1486,7 @@ stale callbacks are discarded."
 (defun magent-ui--finish-processing (response &optional submission-id)
   "Finish processing with RESPONSE and advance the queue.
 Handles both streaming and non-streaming completion."
-  (setq magent--current-fsm nil)
+  (setq magent--current-request-handle nil)
   (when (and (boundp 'magent--spinner) magent--spinner)
     (spinner-stop magent--spinner))
   (cond

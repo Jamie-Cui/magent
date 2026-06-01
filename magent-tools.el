@@ -465,6 +465,11 @@ CALLBACK is called with the command output (stdout + stderr)."
     (allow . 2))
   "Permission ordering used for inherited child-agent intersections.")
 
+(defconst magent-tools--permission-keys
+  '(read write edit grep glob bash emacs_eval agent skill web_search)
+  "Canonical list of magent tool permission key symbols.
+This is the single source of truth for all tool names in the permission system.")
+
 (defun magent-tools--permission-more-restrictive (left right)
   "Return the more restrictive permission of LEFT and RIGHT."
   (let ((left-rank (cdr (assq left magent-tools--permission-rank)))
@@ -1354,11 +1359,6 @@ automatically included in the system prompt."
   "gptel-tool struct for web_search.")
 
 ;;; Tool filtering by agent permissions
-
-(defconst magent-tools--permission-keys
-  '(read write edit grep glob bash emacs_eval agent skill web_search)
-  "Canonical list of magent tool permission key symbols.
-This is the single source of truth for all tool names in the permission system.")
 
 (defvar magent-tools--name-to-permission-key
   '(("read_file"    . read)

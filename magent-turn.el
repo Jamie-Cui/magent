@@ -32,8 +32,8 @@
 (defvar magent-turn--queue nil
   "Queued `magent-turn-submission' objects.")
 
-(defvar magent-turn--current-fsm nil
-  "FSM associated with the active submission, if known.")
+(defvar magent-turn--current-request-handle nil
+  "Request handle associated with the active submission, if known.")
 
 (defun magent-turn-active-submission ()
   "Return the active submission, or nil."
@@ -47,13 +47,13 @@
   "Return non-nil when submissions are queued."
   (and magent-turn--queue t))
 
-(defun magent-turn-current-fsm ()
-  "Return the FSM associated with the active turn."
-  magent-turn--current-fsm)
+(defun magent-turn-current-request-handle ()
+  "Return the request handle associated with the active turn."
+  magent-turn--current-request-handle)
 
-(defun magent-turn-set-current-fsm (fsm)
-  "Record FSM for the active turn."
-  (setq magent-turn--current-fsm fsm))
+(defun magent-turn-set-current-request-handle (request-handle)
+  "Record REQUEST-HANDLE for the active turn."
+  (setq magent-turn--current-request-handle request-handle))
 
 (defun magent-turn-active-id-p (submission-id)
   "Return non-nil when SUBMISSION-ID is the active submission."
@@ -73,7 +73,7 @@
 (defun magent-turn--start (submission)
   "Start SUBMISSION asynchronously."
   (setq magent-turn--active submission
-        magent-turn--current-fsm nil)
+        magent-turn--current-request-handle nil)
   (setf (magent-turn-submission-status submission) 'running
         (magent-turn-submission-started-at submission) (float-time))
   (magent-turn--emit 'submission-start submission)
@@ -124,7 +124,7 @@ Return the next queued submission id when one is started."
                          :status (magent-turn-submission-status finished)
                          :detail detail)))
   (setq magent-turn--active nil
-        magent-turn--current-fsm nil)
+        magent-turn--current-request-handle nil)
   (when-let ((next (pop magent-turn--queue)))
     (magent-turn--start next)
     (magent-turn-submission-id next)))
@@ -141,18 +141,18 @@ Return the next queued submission id when one is started."
 
 (defun magent-turn-interrupt (&optional abort-function)
   "Interrupt the active turn and clear queued submissions.
-ABORT-FUNCTION, when non-nil, is called with the active FSM."
-  (let ((fsm magent-turn--current-fsm)
+ABORT-FUNCTION, when non-nil, is called with the active request handle."
+  (let ((request-handle magent-turn--current-request-handle)
         (active magent-turn--active))
-    (when (and fsm abort-function)
-      (funcall abort-function fsm))
+    (when (and request-handle abort-function)
+      (funcall abort-function request-handle))
     (magent-turn-clear-queue)
     (when active
       (setf (magent-turn-submission-status active) 'interrupted
             (magent-turn-submission-finished-at active) (float-time))
       (magent-turn--emit 'submission-interrupted active))
     (setq magent-turn--active nil
-          magent-turn--current-fsm nil)))
+          magent-turn--current-request-handle nil)))
 
 (provide 'magent-turn)
 ;;; magent-turn.el ends here

@@ -2885,7 +2885,7 @@
   "Test interrupt renders plain text instead of an error heading."
   (require 'magent-agent-loop)
   (let ((buffer (magent-ui-get-buffer))
-        (magent--current-fsm (magent-agent-loop-create))
+        (magent--current-request-handle (magent-agent-loop-create))
         (magent-ui--request-generation 0))
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
@@ -2909,8 +2909,8 @@
   (require 'magent-turn)
   (let* ((buffer (magent-ui-get-buffer))
          (loop (magent-agent-loop-create))
-         (magent--current-fsm loop)
-         (magent-turn--current-fsm loop)
+         (magent--current-request-handle loop)
+         (magent-turn--current-request-handle loop)
          (magent-turn--active
           (magent-turn-submission-create
            :id "sub-interrupt"
@@ -3852,6 +3852,17 @@
     (should (eq (magent-agent-loop-status failed-loop) 'failed))
     (should (equal (magent-agent-loop-error failed-loop) "boom"))))
 
+(ert-deftest magent-test-agent-loop-completion-keeps-streamed-prefix ()
+  "Test completion keeps text streamed before a tool continuation."
+  (require 'magent-agent-loop)
+  (let ((loop (magent-agent-loop-create)))
+    (magent-agent-loop-apply-event
+     loop (magent-llm-text-delta-event "Checking buffers. "))
+    (magent-agent-loop-apply-event
+     loop (magent-llm-completed-event "Done."))
+    (should (equal (magent-agent-loop-result loop)
+                   "Checking buffers. Done."))))
+
 (ert-deftest magent-test-agent-loop-start-wraps-request-callback ()
   "Test loop start wraps request callback and invokes the sampler."
   (require 'magent-agent-loop)
@@ -4169,12 +4180,12 @@
   (require 'magent-turn)
   (let ((buffer (magent-ui-get-buffer))
         (loop (magent-agent-loop-create))
-        (magent-turn--current-fsm nil)
+        (magent-turn--current-request-handle nil)
         (magent-turn--active nil)
         (magent-turn--queue nil)
         (magent-ui--request-generation 0)
         aborted)
-    (setq magent--current-fsm loop)
+    (setq magent--current-request-handle loop)
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
         (erase-buffer)))
@@ -4184,9 +4195,9 @@
               ((symbol-function 'spinner-stop) #'ignore)
               ((symbol-function 'magent-ui--clear-processing) #'ignore)
               ((symbol-function 'magent-ui--maybe-show-input-prompt) #'ignore))
-      (magent-interrupt))
+    (magent-interrupt))
     (should (eq aborted loop))
-    (should-not magent--current-fsm)))
+    (should-not magent--current-request-handle)))
 
 (ert-deftest magent-test-agent-loop-run-tool-hides-summary-only-ui ()
   "Test summary-only request contexts suppress direct tool UI rendering."
@@ -5840,7 +5851,7 @@
   (require 'magent-turn)
   (let ((magent-turn--active nil)
         (magent-turn--queue nil)
-        (magent-turn--current-fsm nil)
+        (magent-turn--current-request-handle nil)
         started)
     (cl-letf (((symbol-function 'run-at-time)
                (lambda (_secs _repeat fn &rest args)
@@ -5875,6 +5886,20 @@
       (should (eq (magent-response-item-type (car items)) 'message))
       (should (eq (magent-response-item-role (car items)) 'user))
       (should (equal (magent-response-item-content (cadr items)) "world")))))
+
+(ert-deftest magent-test-session-records-tool-results-in-structured-context ()
+  "Test tool result messages also populate Codex-like context items."
+  (require 'magent-session)
+  (let ((session (magent-session-create)))
+    (magent-session-add-tool-message
+     session "call-1" "grep" '(:pattern "foo") "match")
+    (let ((items (magent-session-context-items session)))
+      (should (= (length items) 1))
+      (should (eq (magent-response-item-type (car items)) 'tool-output))
+      (should (equal (magent-response-item-call-id (car items)) "call-1"))
+      (should (equal (magent-response-item-name (car items)) "grep"))
+      (should (equal (magent-response-item-output (car items)) "match"))
+      (should (eq (magent-response-item-status (car items)) 'completed)))))
 
 (ert-deftest magent-test-tool-orchestrator-denies-file-rule ()
   "Test tool orchestrator preserves Magent file-rule denial behavior."

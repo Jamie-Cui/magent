@@ -313,7 +313,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                (sample))))))
                        ('completed
                         (finish-turn 'completed
-                                     (magent-llm-event-text event)))
+                                     (magent-agent-loop-result loop)))
                        ('error
                         (finish-turn 'failed
                                      (magent-llm-event-message event)))))))
