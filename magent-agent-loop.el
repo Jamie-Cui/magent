@@ -627,13 +627,21 @@ available in LOOP's request tools."
      loop nil (magent-agent-loop--tool-args event) raw-call message)
     message))
 
+(defun magent-agent-loop--tool-dispatch-outcome
+    (reason status &optional result)
+  "Return a plist describing a tool dispatch continuation outcome."
+  (list :needs-follow-up t
+        :reason reason
+        :status status
+        :result result))
+
 (defun magent-agent-loop-dispatch-tool-calls
     (loop orchestrator &optional done-callback)
   "Dispatch LOOP's pending tool calls through ORCHESTRATOR.
 Unknown tools are recorded as tool-result errors.  Known tool calls are
-passed to `magent-tool-orchestrator-handle-tool-calls'.  DONE-CALLBACK is
-called after all known tool calls complete, or immediately when there are
-no known calls."
+passed to `magent-tool-orchestrator-handle-tool-calls'.  DONE-CALLBACK
+receives a plist describing why the turn needs a follow-up sampling
+request after model-visible tool output has been recorded."
   (unless (magent-agent-loop-p loop)
     (error "Expected magent-agent-loop, got: %S" loop))
   (unless (magent-tool-orchestrator-p orchestrator)
@@ -646,7 +654,8 @@ no known calls."
                 (mapcar (lambda (tool)
                           (magent-agent-loop--tool-name tool nil))
                         tools)))
-         known-calls)
+         known-calls
+         unknown-results)
     (setf (magent-agent-loop-tool-calls loop) nil)
     (dolist (event events)
       (if-let ((call (magent-agent-loop-tool-event-to-call loop event)))
@@ -659,7 +668,9 @@ no known calls."
              (magent-agent-loop--tool-args-plist
               (car call) (cadr call) (nth 3 call)))
             (push call known-calls))
-        (magent-agent-loop--unknown-tool-result loop event known-tool-names)))
+        (push (magent-agent-loop--unknown-tool-result
+               loop event known-tool-names)
+              unknown-results)))
     (setq known-calls (nreverse known-calls))
     (if known-calls
         (let ((base-result-callback
@@ -678,11 +689,19 @@ no known calls."
                   (when base-done-callback
                     (funcall base-done-callback))
                   (when done-callback
-                    (funcall done-callback))))
+                    (funcall
+                     done-callback
+                     (magent-agent-loop--tool-dispatch-outcome
+                      'tool-output 'completed)))))
           (magent-tool-orchestrator-handle-tool-calls
            orchestrator known-calls))
       (when done-callback
-        (funcall done-callback))))
+        (funcall
+         done-callback
+         (magent-agent-loop--tool-dispatch-outcome
+          'tool-output
+          (if unknown-results 'failed 'completed)
+          (car unknown-results))))))
   loop)
 
 (defun magent-agent-loop-request-for-current-session (loop)

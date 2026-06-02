@@ -138,6 +138,13 @@ transitions to an error state.  Set to 0 to disable."
   :type 'integer
   :group 'magent)
 
+(defcustom magent-max-sampling-requests 25
+  "Maximum model sampling requests allowed in one user turn.
+The initial request counts as one.  Tool output continuations count as
+additional requests.  Set to 0 to disable this lifecycle guard."
+  :type 'integer
+  :group 'magent)
+
 (defvaralias 'magent-always-bypass-permission 'magent-by-pass-permission)
 (make-obsolete-variable 'magent-always-bypass-permission
                         'magent-by-pass-permission "0.1.0")

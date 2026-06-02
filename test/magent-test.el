@@ -224,6 +224,127 @@
       (magent-agent-process "Hello" nil agent))
     (should (magent-agent-loop-p captured))))
 
+(ert-deftest magent-test-agent-process-continues-after-tool-output ()
+  "Test tool output is recorded before the next sampling request."
+  (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+         (gptel-model 'gpt-4o-mini)
+         (magent-max-sampling-requests 25)
+         (call-count 0)
+         (sampled-prompts nil)
+         (response nil)
+         (session (magent-session-create :id "session-1"))
+         (request-state (magent-request-context-create
+                         :session session
+                         :ui-visibility 'summary-only))
+         (agent (magent-agent-info-create
+                 :name "build"
+                 :mode 'primary
+                 :permission '((emacs_eval . allow)
+                               (* . allow))))
+         (tool-runtime
+          (magent-tool-runtime-create
+           :name "emacs_eval"
+           :description "Eval"
+           :args (list '(:name "sexp" :type string))
+           :function (lambda (sexp) (format "eval:%s" sexp))
+           :async nil)))
+    (cl-letf (((symbol-function 'magent-session-get)
+               (lambda () session))
+              ((symbol-function 'magent-tool-registry-for-agent)
+               (lambda (_agent) (list tool-runtime)))
+              ((symbol-function 'gptel-request)
+               (lambda (prompt &rest kwargs)
+                 (cl-incf call-count)
+                 (push prompt sampled-prompts)
+                 (let ((callback (plist-get kwargs :callback)))
+                   (pcase call-count
+                     (1
+                      (funcall
+                       callback
+                       '(tool-call . ((nil ("(+ 1 2)") nil
+                                           (:id "call-1"
+                                            :name "emacs_eval"
+                                            :args (:sexp "(+ 1 2)")))))
+                       '(:tool-use t)))
+                     (2
+                      (funcall callback "The result is 3" nil))
+                     (_
+                      (error "unexpected sampling request %d" call-count))))))
+              ((symbol-function 'magent-log) #'ignore)
+              ((symbol-function 'magent-events-emit) #'ignore)
+              ((symbol-function 'magent-events-begin-turn)
+               (lambda (_title) 'turn))
+              ((symbol-function 'magent-events-end-turn) #'ignore)
+              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+      (magent-agent-process
+       "Run eval"
+       (lambda (result) (setq response result))
+       agent nil nil nil nil nil nil request-state))
+    (should (= call-count 2))
+    (should (equal response "The result is 3"))
+    (let ((second-prompt (car sampled-prompts)))
+      (should (equal second-prompt
+                     '((prompt . "Run eval")
+                       (tool :id "call-1"
+                             :name "emacs_eval"
+                             :args (:sexp "(+ 1 2)")
+                             :result "eval:(+ 1 2)")))))))
+
+(ert-deftest magent-test-agent-process-stops-at-sampling-budget ()
+  "Test per-turn sampling budget stops tool-output continuations."
+  (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+         (gptel-model 'gpt-4o-mini)
+         (magent-max-sampling-requests 1)
+         (call-count 0)
+         (response nil)
+         (session (magent-session-create :id "session-1"))
+         (request-state (magent-request-context-create
+                         :session session
+                         :ui-visibility 'summary-only))
+         (agent (magent-agent-info-create
+                 :name "build"
+                 :mode 'primary
+                 :permission '((emacs_eval . allow)
+                               (* . allow))))
+         (tool-runtime
+          (magent-tool-runtime-create
+           :name "emacs_eval"
+           :description "Eval"
+           :args (list '(:name "sexp" :type string))
+           :function (lambda (_sexp) "ok")
+           :async nil)))
+    (cl-letf (((symbol-function 'magent-session-get)
+               (lambda () session))
+              ((symbol-function 'magent-tool-registry-for-agent)
+               (lambda (_agent) (list tool-runtime)))
+              ((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (cl-incf call-count)
+                 (let ((callback (plist-get kwargs :callback)))
+                   (funcall
+                    callback
+                    '(tool-call . ((nil ("(+ 1 2)") nil
+                                        (:id "call-1"
+                                         :name "emacs_eval"
+                                         :args (:sexp "(+ 1 2)")))))
+                    '(:tool-use t)))))
+              ((symbol-function 'magent-log) #'ignore)
+              ((symbol-function 'magent-events-emit) #'ignore)
+              ((symbol-function 'magent-events-begin-turn)
+               (lambda (_title) 'turn))
+              ((symbol-function 'magent-events-end-turn) #'ignore)
+              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+      (magent-agent-process
+       "Run eval"
+       (lambda (result) (setq response result))
+       agent nil nil nil nil nil nil request-state))
+    (should (= call-count 1))
+    (should (magent-agent-result-p response))
+    (should-not (magent-agent-result-success-p response))
+    (should (string-match-p
+             "Maximum sampling requests reached"
+             (magent-agent-result-content-string response)))))
+
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Frontmatter parsing tests
 ;; ──────────────────────────────────────────────────────────────────────
