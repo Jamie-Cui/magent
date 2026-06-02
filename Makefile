@@ -30,6 +30,7 @@ SRCS = magent-config.el \
        magent-audit.el \
        magent-protocol.el \
        magent-agent-job.el \
+       magent-thread.el \
        magent-llm.el \
        magent-llm-gptel.el \
        magent-agent-loop.el \
@@ -51,6 +52,7 @@ SRCS = magent-config.el \
        magent-permission.el \
        magent-md2org.el \
        magent-ui.el \
+       magent-evil.el \
        magent-skills.el \
        magent-capability.el \
        magent.el

@@ -13,6 +13,10 @@
 (require 'cl-lib)
 (require 'magent-events)
 (require 'magent-protocol)
+(require 'magent-session)
+(require 'magent-thread)
+
+(declare-function magent-ui--request-prompt "magent-ui")
 
 (cl-defstruct (magent-turn-submission
                (:constructor magent-turn-submission-create)
@@ -24,7 +28,8 @@
   status
   submitted-at
   started-at
-  finished-at)
+  finished-at
+  turn-id)
 
 (defvar magent-turn--active nil
   "Currently running `magent-turn-submission', if any.")
@@ -70,12 +75,41 @@
                        (magent-op-type (magent-turn-submission-op submission)))
          props))
 
+(defun magent-turn--session-thread ()
+  "Return the current session thread ledger, or nil."
+  (when-let* ((session (magent-session-get))
+              (thread (magent-session-thread-ledger session)))
+    thread))
+
+(defun magent-turn--submission-turn (submission)
+  "Return SUBMISSION's ledger turn, or nil."
+  (when-let* ((thread (magent-turn--session-thread))
+              (turn-id (magent-turn-submission-turn-id submission)))
+    (cl-find turn-id (magent-thread-turns thread)
+             :key #'magent-thread-turn-id
+             :test #'equal)))
+
+(defun magent-turn--payload-prompt (payload)
+  "Return a best-effort prompt string from SUBMISSION PAYLOAD."
+  (cond
+   ((stringp payload) payload)
+   ((and (recordp payload)
+         (fboundp 'magent-ui--request-prompt))
+    (ignore-errors (magent-ui--request-prompt payload)))
+   ((and (listp payload) (plist-member payload :prompt))
+    (plist-get payload :prompt))
+   (t nil)))
+
 (defun magent-turn--start (submission)
   "Start SUBMISSION asynchronously."
   (setq magent-turn--active submission
         magent-turn--current-request-handle nil)
   (setf (magent-turn-submission-status submission) 'running
         (magent-turn-submission-started-at submission) (float-time))
+  (when-let ((turn (magent-turn--submission-turn submission)))
+    (setf (magent-thread-turn-status turn) 'in-progress
+          (magent-thread-turn-started-at turn)
+          (or (magent-thread-turn-started-at turn) (float-time))))
   (magent-turn--emit 'submission-start submission)
   (run-at-time 0 nil
                (lambda (submission)
@@ -93,14 +127,23 @@
   "Submit OP with PAYLOAD to DISPATCHER.
 When a turn is already active, the submission is queued and will run
 after the active turn finishes.  Return the submission id."
-  (let* ((submission (magent-turn-submission-create
-                      :id (or (and op (magent-op-id op))
+  (let* ((thread (magent-turn--session-thread))
+         (turn (when thread
+                 (magent-thread-create-turn
+                  thread
+                  (magent-turn--payload-prompt payload)
+                  (and op (magent-op-id op))
+                  (list :source 'submission-queue))))
+         (submission (magent-turn-submission-create
+                      :id (or (and turn (magent-thread-turn-id turn))
+                              (and op (magent-op-id op))
                               (magent-protocol-generate-id "sub"))
                       :op op
                       :payload payload
                       :dispatcher dispatcher
                       :status 'queued
-                      :submitted-at (float-time))))
+                      :submitted-at (float-time)
+                      :turn-id (and turn (magent-thread-turn-id turn)))))
     (magent-turn--emit 'submission-received submission)
     (if magent-turn--active
         (progn
@@ -120,6 +163,19 @@ Return the next queued submission id when one is started."
             (or status 'completed)
             (magent-turn-submission-finished-at finished)
             (float-time))
+      (when-let* ((thread (magent-turn--session-thread))
+                  (turn-id (magent-turn-submission-turn-id finished)))
+        (let ((turn (cl-find turn-id (magent-thread-turns thread)
+                             :key #'magent-thread-turn-id
+                             :test #'equal)))
+          (unless (and turn (magent-thread-terminal-turn-p turn))
+            (pcase (or status 'completed)
+              ('completed (magent-thread-complete-turn thread turn-id))
+              ('failed (magent-thread-fail-turn thread turn-id detail))
+              ('interrupted (magent-thread-interrupt-turn thread turn-id detail))
+              ('dropped (magent-thread-drop-turn thread turn-id detail))
+              (_ nil))))
+        (magent-session-refresh-projections (magent-session-get)))
       (magent-turn--emit 'submission-finished finished
                          :status (magent-turn-submission-status finished)
                          :detail detail)))
@@ -135,6 +191,10 @@ Return the next queued submission id when one is started."
     (dolist (submission magent-turn--queue)
       (setf (magent-turn-submission-status submission) 'dropped
             (magent-turn-submission-finished-at submission) (float-time))
+      (when-let* ((thread (magent-turn--session-thread))
+                  (turn-id (magent-turn-submission-turn-id submission)))
+        (magent-thread-drop-turn thread turn-id "Queued submission dropped")
+        (magent-session-refresh-projections (magent-session-get)))
       (magent-turn--emit 'submission-dropped submission))
     (setq magent-turn--queue nil)
     count))
@@ -150,6 +210,10 @@ ABORT-FUNCTION, when non-nil, is called with the active request handle."
     (when active
       (setf (magent-turn-submission-status active) 'interrupted
             (magent-turn-submission-finished-at active) (float-time))
+      (when-let* ((thread (magent-turn--session-thread))
+                  (turn-id (magent-turn-submission-turn-id active)))
+        (magent-thread-interrupt-turn thread turn-id "User interrupted")
+        (magent-session-refresh-projections (magent-session-get)))
       (magent-turn--emit 'submission-interrupted active))
     (setq magent-turn--active nil
           magent-turn--current-request-handle nil)))

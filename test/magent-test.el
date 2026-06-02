@@ -139,8 +139,45 @@
     (should (equal (nreverse ui-chunks)
                    '("Checking buffers. " "Done.")))))
 
-(ert-deftest magent-test-agent-process-passes-max-tool-rounds-to-loop ()
-  "Test that agent step limits are forwarded to the Magent loop."
+(ert-deftest magent-test-agent-process-closes-reasoning-before-completed-text ()
+  "Test completed text after reasoning is rendered outside the think block."
+  (require 'magent-ui)
+  (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+        (gptel-model 'gpt-4o-mini)
+        (gptel-tools nil)
+        (gptel-use-tools nil)
+        (magent-include-reasoning t)
+        (magent-ui-wrap-reasoning-in-think-block t)
+        (response nil))
+    (magent-session-reset)
+    (magent-ui-clear-buffer)
+    (cl-letf (((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (let ((callback (plist-get kwargs :callback)))
+                   (funcall callback '(reasoning . "thinking") '(:stream t))
+                   (funcall callback t '(:content "Hello from AI")))))
+              ((symbol-function 'magent-tool-registry-for-agent)
+               (lambda (_agent) nil)))
+      (magent-agent-process
+       "Hello"
+       (lambda (result)
+         (setq response result))))
+    (should (equal response "Hello from AI"))
+    (with-current-buffer (magent-ui-get-buffer)
+      (let* ((text (buffer-string))
+             (begin (string-match-p (regexp-quote "#+begin_think") text))
+             (end (string-match-p (regexp-quote "#+end_think") text))
+             (assistant (string-match-p "^\\* ASSISTANT +$" text)))
+        (should begin)
+        (should end)
+        (should assistant)
+        (should (< begin end))
+        (should (< end assistant))
+        (should (string-match-p "#\\+begin_think\nthinking\n#\\+end_think"
+                                text))))))
+
+(ert-deftest magent-test-agent-process-does-not-limit-tool-rounds-from-agent-steps ()
+  "Test agent step metadata does not impose a tool-loop limit."
   (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
         (gptel-model 'gpt-4o-mini)
         (captured nil)
@@ -157,7 +194,7 @@
                (lambda (_agent) nil)))
       (magent-session-reset)
       (magent-agent-process "Hello" nil agent))
-    (should (= (magent-agent-loop-max-tool-rounds captured) 7))))
+    (should (magent-agent-loop-p captured))))
 
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Frontmatter parsing tests
@@ -680,7 +717,7 @@
     (magent-session-add-message session 'user "magent 有几个 skills")
     (magent-session-add-message
      session 'assistant
-     "Error: tool_use_limit_reached. emacs_eval exceeded 3 calls in this turn.")
+     "Error: provider request failed.")
     (magent-session-add-message session 'user "emacs 有几个 实例")
     (should (equal (magent-session-to-gptel-prompt-list session)
                    '((prompt . "emacs 有几个 实例"))))))
@@ -694,7 +731,7 @@
     (magent-session-add-message session 'user "magent 有几个 skills")
     (magent-session-add-message
      session 'assistant
-     "Error: tool_use_limit_reached. emacs_eval exceeded 3 calls in this turn.")
+     "Error: provider request failed.")
     (magent-session-add-message session 'user "Tell me more.")
     (should (equal (magent-session-to-gptel-prompt-list session)
                    '((prompt . "What is Emacs?")
@@ -4035,20 +4072,6 @@
     (should (eq (magent-agent-loop-status loop) 'completed))
     (should (= (length forwarded) 2))))
 
-(ert-deftest magent-test-agent-loop-tool-round-limit ()
-  "Test agent loop owns tool round counting and limit messages."
-  (require 'magent-agent-loop)
-  (let ((loop (magent-agent-loop-create :max-tool-rounds 2)))
-    (should-not (magent-agent-loop-tool-round-limit-exceeded-p loop))
-    (should (= (magent-agent-loop-tool-round-count loop) 1))
-    (should-not (magent-agent-loop-tool-round-limit-exceeded-p loop))
-    (should (= (magent-agent-loop-tool-round-count loop) 2))
-    (should (magent-agent-loop-tool-round-limit-exceeded-p loop))
-    (should (= (magent-agent-loop-tool-round-count loop) 3))
-    (should (string-match-p
-             "tool loop exceeded 2 rounds"
-             (magent-agent-loop-tool-round-limit-message loop)))))
-
 (ert-deftest magent-test-agent-loop-records-tool-result-in-session ()
   "Test agent loop records model-visible tool results in session."
   (require 'magent-agent-loop)
@@ -4079,8 +4102,7 @@
          (request (magent-llm-request-create :tools (list tool)))
          (loop (magent-agent-loop-create
                 :session session
-                :request request
-                :max-tool-rounds 3))
+                :request request))
          done)
     (magent-agent-loop-apply-event
      loop
@@ -4098,7 +4120,6 @@
       :summarize-function (lambda (arg-values _args-spec) (car arg-values)))
      (lambda (&optional _result) (setq done t)))
     (should done)
-    (should (= (magent-agent-loop-tool-round-count loop) 1))
     (let* ((message (car (magent-session-get-messages session)))
            (content (magent-msg-content message)))
       (should (eq (magent-msg-role message) 'tool))
@@ -4120,8 +4141,7 @@
                  :async nil))
          (loop (magent-agent-loop-create
                 :session session
-                :request (magent-llm-request-create :tools (list known))
-                :max-tool-rounds 3))
+                :request (magent-llm-request-create :tools (list known))))
          done)
     (magent-agent-loop-apply-event
      loop
@@ -4141,27 +4161,6 @@
       (should (string-match-p
                "tool 'missing_tool' not found"
                (plist-get content :result))))))
-
-(ert-deftest magent-test-agent-loop-tool-round-limit-blocks-dispatch ()
-  "Test agent loop does not dispatch when the tool round limit is exceeded."
-  (require 'magent-agent-loop)
-  (let* ((loop (magent-agent-loop-create
-                :request (magent-llm-request-create)
-                :max-tool-rounds 0))
-         ran done-result)
-    (magent-agent-loop-apply-event
-     loop
-     (magent-llm-tool-call-event "call-1" "read_file" nil))
-    (magent-agent-loop-dispatch-tool-calls
-     loop
-     (magent-tool-orchestrator-create
-      :run-tool-function (lambda (&rest _args) (setq ran t)))
-     (lambda (&optional result) (setq done-result result)))
-    (should-not ran)
-    (should (eq (magent-agent-loop-status loop) 'failed))
-    (should (string-match-p "tool loop exceeded 0 rounds"
-                            (magent-agent-loop-error loop)))
-    (should (equal done-result (magent-agent-loop-error loop)))))
 
 (ert-deftest magent-test-agent-loop-continue-rebuilds-prompt-from-session ()
   "Test loop continuation samples from the latest session transcript."
@@ -4190,19 +4189,19 @@
                            :args (:path "README.org")
                            :result "content"))))))
 
-(ert-deftest magent-test-agent-loop-tool-guard-intercepts-duplicate-emacs-eval ()
-  "Test duplicate emacs_eval calls are short-circuited by the new loop."
+(ert-deftest magent-test-agent-loop-runs-duplicate-emacs-eval-calls ()
+  "Test duplicate emacs_eval calls flow through normal tool execution."
   (require 'magent-agent-loop)
   (require 'gptel)
-  (let* ((tool-ran nil)
+  (let* ((tool-runs nil)
          (results nil)
          (tool (gptel-make-tool
                 :name "emacs_eval"
                 :description "eval"
                 :args (list '(:name "sexp" :type string))
                 :function (lambda (sexp)
-                            (setq tool-ran sexp)
-                            "first result")
+                            (push sexp tool-runs)
+                            (format "result %d" (length tool-runs)))
                 :async nil))
          (loop (magent-agent-loop-create))
          (context (magent-request-context-create
@@ -4213,42 +4212,11 @@
     (magent-agent-loop-run-tool
      loop context tool (lambda (result) (push result results))
      (list "(length (buffer-list))"))
-    (should (equal tool-ran "(length (buffer-list))"))
+    (should (equal (nreverse tool-runs)
+                   '("(length (buffer-list))"
+                     "(length (buffer-list))")))
     (should (= (length results) 2))
-    (should (string-match-p
-             "already executed this exact emacs_eval query"
-             (car results)))))
-
-(ert-deftest magent-test-agent-loop-tool-guard-respects-emacs-eval-limit ()
-  "Test new loop guard uses `magent-emacs-eval-max-calls-per-turn'."
-  (require 'magent-agent-loop)
-  (let ((guard-state (magent-agent-loop-tool-guard-state-create))
-        (magent-emacs-eval-max-calls-per-turn 1))
-    (should-not
-     (magent-agent-loop-maybe-intercept-tool-call
-      "emacs_eval" '(:sexp "(length (buffer-list))") guard-state))
-    (let ((message
-           (magent-agent-loop-maybe-intercept-tool-call
-            "emacs_eval" '(:sexp "(buffer-list)") guard-state)))
-      (should (string-match-p "tool_use_limit_reached" message))
-      (should (string-match-p "emacs_eval exceeded 1 call" message)))
-    (should (= (gethash :emacs-eval-count guard-state) 1))))
-
-(ert-deftest magent-test-agent-loop-tool-guard-tracks-large-raw-results ()
-  "Test new loop guard remembers large raw tool results."
-  (require 'magent-agent-loop)
-  (let ((guard-state (magent-agent-loop-tool-guard-state-create))
-        (large-result (make-string 70000 ?x)))
-    (magent-agent-loop-tool-guard-track-result
-     "read_file" large-result guard-state)
-    (should (equal (gethash :last-raw-content-tool guard-state)
-                   "read_file"))
-    (should (= (gethash :last-raw-content-bytes guard-state)
-               (string-bytes large-result)))
-    (should (string-match-p
-             "70000 bytes of raw content"
-             (magent-agent-loop-emacs-eval-limit-message
-              1 guard-state)))))
+    (should (equal (nreverse results) '("result 1" "result 2")))))
 
 (ert-deftest magent-test-agent-loop-run-tool-emits-events-and-renders-visible-ui ()
   "Test loop tool runner emits tool events and renders visible tool UI."
@@ -4890,23 +4858,61 @@
       (delete-directory project-a t)
       (delete-directory project-b t))))
 
-(ert-deftest magent-test-input-submit-restores-evil-normal-state ()
-  "Test successful input submission returns Evil to normal state."
+(ert-deftest magent-test-input-submit-runs-submit-hook ()
+  "Test successful input submission runs `magent-ui-after-input-submit-hook'."
   (require 'magent-ui)
-  (let* ((magent-buffer-name "*magent-evil-submit*")
+  (let* ((magent-buffer-name "*magent-submit-hook*")
          (magent-session--scoped-sessions (make-hash-table :test #'equal))
          (magent-session--current-scope 'global)
          (magent--current-session nil)
          (buffer nil)
          (captured nil)
-         (normal-state-called nil))
+         (hook-called nil))
     (unwind-protect
         (progn
           (magent-session-activate 'global)
           (setq buffer (magent-ui-get-buffer 'global))
           (with-current-buffer buffer
             (magent-ui--insert-input-prompt 'global)
-            (setq-local evil-local-mode t)
+            (let ((inhibit-read-only t))
+              (goto-char (point-max))
+              (insert "run submit hook")))
+          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
+                    ((symbol-function 'magent-ui-process)
+                     (lambda (text &optional source display skills agent)
+                       (setq captured (list text source display skills agent)))))
+            (with-current-buffer buffer
+              (add-hook 'magent-ui-after-input-submit-hook
+                        (lambda () (setq hook-called t))
+                        nil t)
+              (magent-input-submit)))
+          (should hook-called)
+          (should (equal (car captured) "run submit hook"))
+          (should (eq (nth 1 captured) 'buffer-input)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-evil-mode-input-submit-restores-normal-state ()
+  "Test optional Evil integration returns to normal state after submission."
+  (skip-unless (require 'evil nil t))
+  (require 'magent-evil)
+  (let* ((magent-buffer-name "*magent-evil-submit*")
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (buffer nil)
+         (captured nil)
+         (normal-state-called nil)
+         (magent-evil-mode nil)
+         (magent-evil--enabled nil))
+    (magent-evil-mode 1)
+    (unwind-protect
+        (progn
+          (magent-session-activate 'global)
+          (setq buffer (magent-ui-get-buffer 'global))
+          (with-current-buffer buffer
+            (magent-ui--insert-input-prompt 'global)
+            (evil-local-mode 1)
             (let ((inhibit-read-only t))
               (goto-char (point-max))
               (insert "return to normal")))
@@ -4922,34 +4928,41 @@
           (should normal-state-called)
           (should (equal (car captured) "return to normal"))
           (should (eq (nth 1 captured) 'buffer-input)))
+      (magent-evil-mode -1)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest magent-test-evil-c-g-interrupts-only-in-normal-state ()
-  "Test Evil C-g only interrupts in normal state."
+(ert-deftest magent-test-evil-mode-c-g-interrupts-only-in-normal-state ()
+  "Test optional Evil integration makes C-g interrupt only in normal state."
   (skip-unless (require 'evil nil t))
+  (require 'magent-evil)
   (dolist (case '((normal . magent-interrupt)
-                  (insert . evil-normal-state)
-                  (replace . evil-normal-state)
-                  (visual . keyboard-quit)
-                  (emacs . keyboard-quit)))
-    (with-temp-buffer
-      (insert "x")
-      (magent-output-mode)
-      (evil-local-mode 1)
-      (pcase (car case)
-        ('normal (evil-normal-state))
-        ('insert (evil-insert-state))
-        ('replace (evil-replace-state))
-        ('visual
-         (set-mark (point-min))
-         (goto-char (point-max))
-         (evil-visual-state))
-        ('emacs (evil-emacs-state)))
-      (should (eq evil-state (car case)))
-      (should (eq (key-binding (kbd "C-g")) (cdr case)))
-      (unless (eq (car case) 'normal)
-        (should-not (eq (key-binding (kbd "C-g")) 'magent-interrupt))))))
+                  (insert . magent-evil--insert-c-g)
+                  (replace . magent-evil--insert-c-g)
+                  (visual . magent-evil--quit-c-g)
+                  (emacs . magent-evil--quit-c-g)))
+    (let ((magent-evil-mode nil)
+          (magent-evil--enabled nil))
+      (magent-evil-mode 1)
+      (unwind-protect
+          (with-temp-buffer
+            (insert "x")
+            (magent-output-mode)
+            (evil-local-mode 1)
+            (pcase (car case)
+              ('normal (evil-normal-state))
+              ('insert (evil-insert-state))
+              ('replace (evil-replace-state))
+              ('visual
+               (set-mark (point-min))
+               (goto-char (point-max))
+               (evil-visual-state))
+              ('emacs (evil-emacs-state)))
+            (should (eq evil-state (car case)))
+            (should (eq (key-binding (kbd "C-g")) (cdr case)))
+            (unless (eq (car case) 'normal)
+              (should-not (eq (key-binding (kbd "C-g")) 'magent-interrupt))))
+        (magent-evil-mode -1)))))
 
 (ert-deftest magent-test-config-reload-preserves-ui-logger ()
   "Test reloading config does not clobber the UI log implementation."
@@ -6104,11 +6117,94 @@
      session "call-1" "grep" '(:pattern "foo") "match")
     (let ((items (magent-session-context-items session)))
       (should (= (length items) 1))
-      (should (eq (magent-response-item-type (car items)) 'tool-output))
+      (should (eq (magent-response-item-type (car items)) 'tool))
       (should (equal (magent-response-item-call-id (car items)) "call-1"))
       (should (equal (magent-response-item-name (car items)) "grep"))
       (should (equal (magent-response-item-output (car items)) "match"))
       (should (eq (magent-response-item-status (car items)) 'completed)))))
+
+(ert-deftest magent-test-thread-ledger-turn-and-item-state-machine ()
+  "Test explicit thread/turn/item state transitions."
+  (require 'magent-thread)
+  (let* ((thread (magent-thread-create :id "thread-1"))
+         (turn (magent-thread-create-turn thread "hello"))
+         (item (magent-thread-start-item
+                thread (magent-thread-turn-id turn) 'tool
+                :id "call-1"
+                :call-id "call-1"
+                :name "grep"
+                :input '(:pattern "hello"))))
+    (should (eq (magent-thread-status thread) 'active))
+    (should (eq (magent-thread-turn-status turn) 'in-progress))
+    (should (eq (magent-thread-item-status item) 'in-progress))
+    (magent-thread-complete-item thread item :output "match")
+    (should (eq (magent-thread-item-status item) 'completed))
+    (should (equal (magent-thread-item-output item) "match"))
+    (magent-thread-complete-turn thread (magent-thread-turn-id turn))
+    (should (eq (magent-thread-turn-status turn) 'completed))
+    (should (eq (magent-thread-status thread) 'idle))))
+
+(ert-deftest magent-test-thread-ledger-replays-journal-from-snapshot ()
+  "Test snapshot plus journal replay materializes latest state."
+  (require 'magent-thread)
+  (let* ((thread (magent-thread-create :id "thread-replay"))
+         (turn (magent-thread-create-turn thread "hello"))
+         (item (magent-thread-start-item
+                thread (magent-thread-turn-id turn) 'message
+                :role 'assistant
+                :content "working"))
+         (snapshot (magent-thread-snapshot-to-alist thread)))
+    (magent-thread-complete-item thread item :content "done")
+    (magent-thread-complete-turn thread (magent-thread-turn-id turn))
+    (let* ((events (mapcar #'magent-thread-event-to-alist
+                           (cl-remove-if
+                            (lambda (event)
+                              (<= (magent-thread-event-seq event)
+                                  (cdr (assq 'last-event-seq snapshot))))
+                            (magent-thread-journal thread))))
+           (loaded (magent-thread-replay
+                    snapshot
+                    (mapcar #'magent-thread-event-from-alist events)))
+           (loaded-turn (car (magent-thread-turns loaded)))
+           (loaded-item (car (magent-thread-turn-items loaded-turn))))
+      (should (eq (magent-thread-status loaded) 'idle))
+      (should (eq (magent-thread-turn-status loaded-turn) 'completed))
+      (should (eq (magent-thread-item-status loaded-item) 'completed))
+      (should (equal (magent-thread-item-content loaded-item) "done")))))
+
+(ert-deftest magent-test-session-save-load-preserves-thread-snapshot-and-journal ()
+  "Test session persistence stores and restores ledger snapshot plus journal."
+  (require 'magent-session)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil))
+    (unwind-protect
+        (progn
+          (magent-session-activate 'global)
+          (let ((session (magent-session-get)))
+            (magent-session-add-message session 'user "hello")
+            (magent-session-add-tool-message
+             session "call-1" "grep" '(:pattern "hello") "match")
+            (magent-session-add-message session 'assistant "done")
+            (magent-session-save))
+          (let* ((files (directory-files magent-session-directory t "\\.json$"))
+                 (loaded (magent-session-read-file (car files)))
+                 (loaded-session (plist-get loaded :session))
+                 (thread (magent-session-thread loaded-session))
+                 (turn (car (magent-thread-turns thread)))
+                 (tool (cl-find 'tool (magent-thread-turn-items turn)
+                                :key #'magent-thread-item-type)))
+            (should thread)
+            (should (magent-thread-journal thread))
+            (should (eq (magent-thread-turn-status turn) 'completed))
+            (should (equal (magent-thread-item-call-id tool) "call-1"))
+            (should (eq (magent-thread-item-status tool) 'completed))
+            (should (equal (magent-thread-item-output tool) "match"))
+            (should (equal (mapcar #'magent-msg-role
+                                   (magent-session-get-messages loaded-session))
+                           '(user tool assistant)))))
+      (delete-directory magent-session-directory t))))
 
 (ert-deftest magent-test-tool-orchestrator-denies-file-rule ()
   "Test tool orchestrator preserves Magent file-rule denial behavior."
@@ -6141,6 +6237,7 @@
 (ert-deftest magent-test-session-save-load-sanitizes-structured-context ()
   "Test structured context items persist with JSON-safe metadata."
   (require 'magent-protocol)
+  (require 'magent-thread)
   (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
          (magent-session--scoped-sessions (make-hash-table :test #'equal))
          (magent-session--current-scope 'global)
@@ -6150,23 +6247,24 @@
           (magent-session-activate 'global)
           (let ((session (magent-session-get)))
             (magent-session-add-message session 'user "Run tool")
-            (setf (magent-session-context-items session)
-                  (list (magent-response-item-create
-                         :id "item-1"
-                         :type 'tool-call
-                         :role 'assistant
-                         :content '(:tool emacs_eval :values [emacs_eval nil])
-                         :name 'emacs_eval
-                         :call-id "call-1"
-                         :output '(:result ok)
-                         :status 'completed
-                         :phase 'tool
-                         :metadata '(:provider gptel :tool emacs_eval))))
+            (let ((thread (magent-session-thread-ledger session))
+                  (turn-id (magent-thread-turn-id
+                            (magent-thread-active-turn
+                             (magent-session-thread-ledger session)))))
+              (magent-thread-record-tool-result
+               thread
+               turn-id
+               "call-1"
+               'emacs_eval
+               '(:tool emacs_eval :values [emacs_eval nil])
+               '(:result ok)
+               '(:provider gptel :tool emacs_eval))
+              (magent-session-refresh-projections session))
             (magent-session-save))
           (let* ((files (directory-files magent-session-directory t "\\.json$"))
                  (loaded (magent-session-read-file (car files)))
                  (loaded-session (plist-get loaded :session))
-                 (item (car (magent-session-context-items loaded-session))))
+                 (item (cadr (magent-session-context-items loaded-session))))
             (should (equal (cdr (assq 'tool (magent-response-item-content item)))
                            "emacs_eval"))
             (should (equal (cdr (assq 'values (magent-response-item-content item)))

@@ -281,17 +281,6 @@ If rg is not found, grep tool calls will fail with an informative error."
   :type 'integer
   :group 'magent)
 
-(defcustom magent-emacs-eval-max-calls-per-turn 10
-  "Maximum number of emacs_eval calls allowed in a single turn.
-When non-nil, Magent stops further emacs_eval exploration after
-this many calls in the same turn and forces the model to answer.
-Exact duplicate emacs_eval forms are still intercepted even when
-this count-based cap is disabled.  Set to nil to disable the
-count-based cap."
-  :type '(choice (const :tag "Disable count-based cap" nil)
-                 (natnum :tag "Max calls per turn"))
-  :group 'magent)
-
 (defcustom magent-child-agent-max-depth 1
   "Maximum depth for recursive child-agent spawning.
 A value of 1 allows the visible root agent to spawn direct child agents,

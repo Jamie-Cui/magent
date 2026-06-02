@@ -50,7 +50,8 @@ Fields:
 - MODEL: Optional model specification (providerID . modelID)
 - PROMPT: Optional custom system prompt
 - OPTIONS: Additional options as an alist
-- STEPS: Optional maximum iteration steps
+- STEPS: Compatibility metadata from older agent definitions; it no longer
+  imposes a tool-call loop limit
 - PERMISSION: Permission ruleset for tool access control
 - FILE-PATH: Backing file path for file-defined agents
 - SOURCE-LAYER: One of \\='builtin or \\='project
@@ -239,7 +240,6 @@ Your output must be:
    :description "Default agent for building and general coding tasks"
    :mode 'primary
    :native t
-   :steps 12
    :source-layer 'builtin
    :permission (magent-permission-defaults)))
 

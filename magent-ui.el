@@ -44,6 +44,19 @@
 (defvar magent-ui--input-marker)
 (defvar magent-ui--input-section-start)
 
+(defvar magent-ui-after-input-submit-hook nil
+  "Hook run in the Magent buffer after successful in-buffer input submission.
+Functions are called with no arguments before the prompt is dispatched.")
+
+(defvar magent-dwim-hook nil
+  "Hook run after `magent-dwim' displays the Magent buffer and positions point.")
+
+(defvar magent-ui-region-active-functions nil
+  "Special hook for extra region-active predicates.
+Functions are called with no arguments by `magent-ui--capture-buffer-context'.
+They should return non-nil only when `region-beginning' and `region-end'
+are valid for the current buffer.")
+
 ;; Forward declarations for magent-skills (loaded lazily via require)
 (declare-function magent-capability-capture-context "magent-capability")
 (declare-function magent-explain-last-capability-resolution "magent-capability")
@@ -58,12 +71,6 @@
 (declare-function magent-skill-description "magent-skills")
 (declare-function magent-show-audit "magent-audit")
 (declare-function magent-session--session-for-scope "magent-session")
-
-;; Forward declarations for evil (loaded via with-eval-after-load)
-(declare-function evil-define-key* "evil-core")
-(declare-function evil-visual-state-p "evil-states")
-(declare-function evil-insert-state "evil-states")
-(declare-function evil-normal-state "evil-states")
 
 ;; Forward declaration for magent entry point (magent.el loaded first)
 (declare-function magent--ensure-initialized "magent")
@@ -246,8 +253,8 @@ When SCOPE is nil, use the current session scope."
 After BODY, marks the newly inserted region as read-only and
 auto-scrolls if `magent-auto-scroll' is non-nil.
 Buffer-boundary signals are suppressed because callbacks from
-gptel process filters can trigger evil-mode cursor adjustments
-that hit buffer edges."
+gptel process filters can trigger cursor adjustments from active
+minor modes that hit buffer edges."
   (declare (indent 1))
   (let ((ro-start (make-symbol "ro-start")))
     `(with-current-buffer ,buffer
@@ -625,23 +632,22 @@ Skips keys already reserved by the static parts of `magent-transient-menu'."
 
 ;;; Output mode
 
+(defun magent-ui-menu-or-insert-question-mark ()
+  "Open the Magent menu, or insert ? when point is in the input area."
+  (interactive)
+  (if (and magent-ui--input-marker
+           (>= (point) (marker-position magent-ui--input-marker)))
+      (insert "?")
+    (call-interactively #'magent-transient-menu)))
+
 (defvar magent-output-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map org-mode-map)
+    (define-key map (kbd "?") #'magent-ui-menu-or-insert-question-mark)
     (define-key map (kbd "C-g") #'magent-interrupt)
     (define-key map (kbd "C-c C-c") #'magent-input-submit)
     map)
   "Keymap for `magent-output-mode'.")
-
-(with-eval-after-load 'evil
-  (evil-define-key* 'normal magent-output-mode-map
-    (kbd "?") #'magent-transient-menu)
-  (evil-define-key* 'normal magent-output-mode-map
-    (kbd "C-g") #'magent-interrupt)
-  (evil-define-key* '(insert replace) magent-output-mode-map
-    (kbd "C-g") #'evil-normal-state)
-  (evil-define-key* '(visual motion operator emacs) magent-output-mode-map
-    (kbd "C-g") #'keyboard-quit))
 
 (define-derived-mode magent-output-mode org-mode "M"
   "Major mode for Magent output.
@@ -649,24 +655,19 @@ Derives from org-mode for native folding.  Each message section
 is a level-1 heading (*), and LLM content uses level-2+ headings (**).
 \\<magent-output-mode-map>
 Press \\[magent-interrupt] to interrupt the current request.
-Press \\[magent-transient-menu] for the command menu."
+Press \\[magent-ui-menu-or-insert-question-mark] outside the input area for the command menu."
   (visual-line-mode 1)
   (setq-local magent-ui--buffer-scope
               (or magent-ui--buffer-scope
                   (magent-session-current-scope)))
   (setq-local display-fill-column-indicator-column nil)
   (setq-local revert-buffer-function #'magent-ui--revert-buffer)
-  (setq-local evil-move-beyond-eol t)
   ;; Prevent org-mode from fontifying content inside tool/think/agent blocks
   (setq-local org-protecting-blocks
               (append '("tool" "think" "agent") org-protecting-blocks))
   (add-hook 'completion-at-point-functions #'magent-ui--slash-capf nil t)
   (add-hook 'post-self-insert-hook #'magent-ui--maybe-slash-complete nil t)
   (add-hook 'kill-buffer-hook #'magent-ui--cancel-timers nil t))
-
-(with-eval-after-load 'evil
-  (evil-define-key* 'normal magent-output-mode-map
-    (kbd "C-c C-c") #'magent-input-submit))
 
 (defun magent-ui--revert-buffer (_ignore-auto _noconfirm)
   "Revert the Magent buffer by re-rendering from saved content.
@@ -806,12 +807,6 @@ with optional partial skill name."
              (eq (char-before) ?@))
     (completion-at-point)))
 
-(defun magent-ui--exit-input-state ()
-  "Return Evil to normal state after a successful input submission."
-  (when (and (bound-and-true-p evil-local-mode)
-             (fboundp 'evil-normal-state))
-    (evil-normal-state)))
-
 (defun magent-input-submit ()
   "Submit the text in the input area and send it to the agent.
 Makes the input text read-only, clears the input marker, and
@@ -849,7 +844,7 @@ buffer is reused (the queue skips inserting a duplicate)."
       (add-text-properties input-start (point-max) '(read-only t)))
     (setq magent-ui--input-marker nil)
     (setq magent-ui--input-section-start nil)
-    (magent-ui--exit-input-state)
+    (run-hooks 'magent-ui-after-input-submit-hook)
     (magent-ui-process text 'buffer-input nil skill-names)))
 
 ;;; Section folding
@@ -1239,8 +1234,8 @@ Returns a context string or nil if context should not be captured."
            (mode (symbol-name major-mode))
            (line (line-number-at-pos nil t))
            (region-active (or (use-region-p)
-                              (and (bound-and-true-p evil-local-mode)
-                                   (funcall 'evil-visual-state-p))))
+                              (run-hook-with-args-until-success
+                               'magent-ui-region-active-functions)))
            (parts `(,(format "buffer=\"%s\"" buf-name)
                     ,@(when file
                         (list (format "file=\"%s\"" file)))
@@ -1312,8 +1307,7 @@ Returns a context string or nil if context should not be captured."
 If no input prompt exists (e.g. first use or after processing),
 one is inserted at the end of the buffer.  When `magent-auto-context'
 is non-nil, the calling buffer's metadata is pre-filled as editable
-text that the user can keep or delete.  In evil-mode the cursor
-enters insert state for immediate typing."
+text that the user can keep or delete."
   (interactive)
   (let (ctx buf)
     (magent-ui--activate-context-session)
@@ -1329,9 +1323,7 @@ enters insert state for immediate typing."
       (goto-char magent-ui--input-marker)
       (insert ctx "\n"))
     (goto-char (point-max))
-    (when (and (bound-and-true-p evil-mode)
-               (fboundp 'evil-insert-state))
-      (evil-insert-state))))
+    (run-hooks 'magent-dwim-hook)))
 
 (defun magent-send-prompt (prompt)
   "Send PROMPT to Magent agent programmatically."
@@ -1417,6 +1409,9 @@ stale callbacks are discarded."
          (gen (cl-incf magent-ui--request-generation))
          (scope (magent-session-current-scope))
          (session (magent-session-get))
+         (submission
+          (and submission-id
+               (magent-turn-active-submission)))
          request-state)
     (magent-ui-display-buffer)
     (magent-ui--remove-input-prompt scope)
@@ -1443,6 +1438,8 @@ stale callbacks are discarded."
                  :id (magent-events-generate-id)
                  :scope scope
                  :session session
+                 :turn-id (and submission
+                               (magent-turn-submission-turn-id submission))
                  :approval-session session
                  :origin-buffer-name
                  (or (plist-get (magent-ui--request-request-context item) :buffer-name)

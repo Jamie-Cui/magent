@@ -48,8 +48,9 @@
                (:constructor magent-response-item-create)
                (:copier nil))
   "Structured model-visible transcript item.
-TYPE is a symbol such as `message', `tool-call', `tool-output',
-`reasoning', or `compaction'."
+TYPE is a symbol such as `message', `tool', `reasoning', or
+`compaction'.  Tool calls and tool results are represented as one item
+whose status moves from `in-progress' to `completed' or `failed'."
   id
   type
   role
@@ -110,18 +111,20 @@ TYPE is a symbol such as `message', `tool-call', `tool-output',
   (magent-response-item-create
    :id (or (magent-tool-call-id call)
            (magent-protocol-generate-id "item"))
-   :type 'tool-call
+   :type 'tool
    :name (magent-tool-call-name call)
    :call-id (magent-tool-call-id call)
    :content (magent-tool-call-arguments call)
+   :status 'in-progress
    :metadata (list :perm-key (magent-tool-call-perm-key call)
                    :reason (magent-tool-call-reason call))))
 
 (defun magent-protocol-tool-result-item (result)
-  "Create a response item from tool RESULT."
+  "Create a completed tool response item from RESULT."
   (magent-response-item-create
-   :id (magent-protocol-generate-id "item")
-   :type 'tool-output
+   :id (or (magent-tool-result-call-id result)
+           (magent-protocol-generate-id "item"))
+   :type 'tool
    :name (magent-tool-result-name result)
    :call-id (magent-tool-result-call-id result)
    :output (magent-tool-result-output result)

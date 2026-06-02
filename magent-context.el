@@ -14,6 +14,7 @@
 (require 'cl-lib)
 (require 'magent-protocol)
 (require 'magent-session)
+(require 'magent-thread)
 
 (defun magent-context-items (session)
   "Return SESSION's structured response items."
@@ -22,26 +23,55 @@
 (defun magent-context-record-message (session role content &optional phase)
   "Append a structured message item to SESSION."
   (when session
-    (let ((item (magent-protocol-message-item role content phase)))
-      (setf (magent-session-context-items session)
-            (nconc (magent-session-context-items session) (list item)))
-      item)))
+    (let* ((thread (magent-session-thread-ledger session))
+           (turn (or (magent-thread-active-turn thread)
+                     (magent-thread-create-turn
+                      thread
+                      (and (eq role 'user) content))))
+           (item (magent-thread-record-message
+                  thread
+                  (magent-thread-turn-id turn)
+                  role content phase)))
+      (magent-session-refresh-projections session)
+      (magent-thread-item-to-response-item item))))
 
 (defun magent-context-record-tool-call (session call)
   "Append structured tool CALL to SESSION."
   (when session
-    (let ((item (magent-protocol-tool-call-item call)))
-      (setf (magent-session-context-items session)
-            (nconc (magent-session-context-items session) (list item)))
-      item)))
+    (let* ((thread (magent-session-thread-ledger session))
+           (turn (or (magent-thread-active-turn thread)
+                     (magent-thread-create-turn
+                      thread nil nil (list :synthetic t))))
+           (item (magent-thread-start-item
+                  thread
+                  (magent-thread-turn-id turn)
+                  'tool
+                  :id (magent-tool-call-id call)
+                  :call-id (magent-tool-call-id call)
+                  :name (magent-tool-call-name call)
+                  :input (magent-tool-call-arguments call)
+                  :metadata (list :perm-key (magent-tool-call-perm-key call)
+                                  :reason (magent-tool-call-reason call)))))
+      (magent-session-refresh-projections session)
+      (magent-thread-item-to-response-item item))))
 
 (defun magent-context-record-tool-result (session result)
   "Append structured tool RESULT to SESSION."
   (when session
-    (let ((item (magent-protocol-tool-result-item result)))
-      (setf (magent-session-context-items session)
-            (nconc (magent-session-context-items session) (list item)))
-      item)))
+    (let* ((thread (magent-session-thread-ledger session))
+           (turn (or (magent-thread-active-turn thread)
+                     (magent-thread-create-turn
+                      thread nil nil (list :synthetic t))))
+           (item (magent-thread-record-tool-result
+                  thread
+                  (magent-thread-turn-id turn)
+                  (magent-tool-result-call-id result)
+                  (magent-tool-result-name result)
+                  nil
+                  (magent-tool-result-output result)
+                  (magent-tool-result-metadata result))))
+      (magent-session-refresh-projections session)
+      (magent-thread-item-to-response-item item))))
 
 (defun magent-context-message-items (session)
   "Return only message items from SESSION's structured context."

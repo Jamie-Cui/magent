@@ -23,6 +23,7 @@
 (require 'magent-tools)
 (require 'magent-tool-registry)
 (require 'magent-session)
+(require 'magent-thread)
 (require 'magent-agent-registry)
 (require 'magent-permission)
 
@@ -129,6 +130,11 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
             (magent-request-context-event-context request-state) context))
     (magent-session-set-agent session agent)
     (magent-session-add-message session 'user user-prompt)
+    (when request-state
+      (when-let* ((turn (magent-thread-active-turn
+                         (magent-session-thread-ledger session))))
+        (setf (magent-request-context-turn-id request-state)
+              (magent-thread-turn-id turn))))
     (let* ((prompt-list (magent-session-to-gptel-prompt-list session))
            (base-system-msg (or (magent-agent-info-prompt agent)
                                 magent-system-prompt))
@@ -246,16 +252,19 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                       (magent-agent-loop-request loop)))
                     :tool-count (length gptel-tools)
                     :system-prompt-length (length (or system-msg ""))))
+                  (close-reasoning
+                   ()
+                   (when reasoning-open
+                     (setq reasoning-open nil)
+                     (when (magent-agent--ui-visible-p request-state)
+                       (magent-ui-insert-reasoning-end))))
                   (sample
                    ()
                    (emit-request-start)
                    (magent-agent-loop-start loop))
                   (finish-streaming
                    ()
-                   (when (and reasoning-open
-                              (magent-agent--ui-visible-p request-state))
-                     (setq reasoning-open nil)
-                     (magent-ui-insert-reasoning-end))
+                   (close-reasoning)
                    (when (and streaming-started
                               (magent-agent--ui-visible-p request-state))
                      (magent-ui-finish-streaming-fontify)))
@@ -273,10 +282,19 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                    (when (and (eq status 'completed)
                               (stringp response))
                      (magent-session-add-message session 'assistant response))
+                   (when (and request-state
+                              (magent-request-context-turn-id request-state)
+                              (not (eq status 'completed)))
+                     (magent-thread-fail-turn
+                      (magent-session-thread-ledger session)
+                      (magent-request-context-turn-id request-state)
+                      (if (stringp response) response (format "%S" response)))
+                     (magent-session-refresh-projections session))
                    (when callback
                      (funcall callback response)))
                   (start-streaming
                    ()
+                   (close-reasoning)
                    (when (and (not streaming-started)
                               (magent-agent--ui-visible-p request-state))
                      (setq streaming-started t)
@@ -304,11 +322,9 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                           (magent-ui-insert-reasoning-text
                            (magent-llm-event-text event))))
                        ('reasoning-end
-                        (when (and reasoning-open
-                                   (magent-agent--ui-visible-p request-state))
-                          (setq reasoning-open nil)
-                          (magent-ui-insert-reasoning-end)))
+                        (close-reasoning))
                        ('tool-call
+                        (close-reasoning)
                         (when (and streaming-started
                                    (magent-agent--ui-visible-p request-state))
                           (magent-ui-continue-streaming))
@@ -366,8 +382,10 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                       :top-p top-p)
                       :callback #'handle-event)
                       :request-context request-state
-                      :sampler #'magent-llm-gptel-sample
-                      :max-tool-rounds (magent-agent-info-steps agent)))
+                      :turn-id (and request-state
+                                    (magent-request-context-turn-id
+                                     request-state))
+                      :sampler #'magent-llm-gptel-sample))
                (sample)
                loop))))))))
 

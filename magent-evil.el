@@ -1,0 +1,149 @@
+;;; magent-evil.el --- Evil integration for Magent  -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 Jamie Cui
+
+;; Author: Jamie Cui <jamie.cui@outlook.com>
+;; Keywords: tools, ai
+;; Package-Requires: ((emacs "27.1") (evil "1.15.0"))
+
+;;; Commentary:
+
+;; Optional Evil integration for Magent.  This file is intentionally not
+;; loaded by `magent' so non-Evil users keep the default Emacs bindings.
+
+;;; Code:
+
+(require 'magent-ui)
+
+(declare-function evil-define-key* "evil-core")
+(declare-function evil-insert-state "evil-states")
+(declare-function evil-local-mode "evil-core")
+(declare-function evil-normal-state "evil-states")
+(declare-function evil-visual-state-p "evil-states")
+
+(defvar evil-mode)
+(defvar evil-local-mode)
+(defvar evil-move-beyond-eol)
+
+(defvar magent-evil--enabled nil
+  "Non-nil when `magent-evil-mode' is enabled.")
+
+(defun magent-evil--setup-keys ()
+  "Install Evil bindings for `magent-output-mode'."
+  (when (and magent-evil--enabled
+             (fboundp 'evil-define-key*))
+    (evil-define-key* 'normal magent-output-mode-map
+      (kbd "?") #'magent-evil--menu)
+    (evil-define-key* 'normal magent-output-mode-map
+      (kbd "C-g") #'magent-interrupt)
+    (evil-define-key* '(insert replace) magent-output-mode-map
+      (kbd "C-g") #'magent-evil--insert-c-g)
+    (evil-define-key* '(visual motion operator emacs) magent-output-mode-map
+      (kbd "C-g") #'magent-evil--quit-c-g)
+    (evil-define-key* 'normal magent-output-mode-map
+      (kbd "C-c C-c") #'magent-input-submit)))
+
+(defun magent-evil--unset-keys ()
+  "Remove Evil-specific Magent bindings when possible."
+  (when (fboundp 'evil-define-key*)
+    (evil-define-key* 'normal magent-output-mode-map
+      (kbd "?") nil)
+    (evil-define-key* 'normal magent-output-mode-map
+      (kbd "C-g") nil)
+    (evil-define-key* '(insert replace) magent-output-mode-map
+      (kbd "C-g") nil)
+    (evil-define-key* '(visual motion operator emacs) magent-output-mode-map
+      (kbd "C-g") nil)
+    (evil-define-key* 'normal magent-output-mode-map
+      (kbd "C-c C-c") nil)))
+
+(defun magent-evil--menu ()
+  "Open the Magent menu in Evil normal state."
+  (interactive)
+  (if magent-evil--enabled
+      (call-interactively #'magent-transient-menu)
+    (magent-ui-menu-or-insert-question-mark)))
+
+(defun magent-evil--insert-c-g ()
+  "Handle `C-g' in Evil insert-like states for Magent buffers."
+  (interactive)
+  (if (and magent-evil--enabled
+           (fboundp 'evil-normal-state))
+      (evil-normal-state)
+    (magent-interrupt)))
+
+(defun magent-evil--quit-c-g ()
+  "Handle `C-g' in Evil non-normal states for Magent buffers."
+  (interactive)
+  (if magent-evil--enabled
+      (keyboard-quit)
+    (magent-interrupt)))
+
+(defun magent-evil--output-mode-setup ()
+  "Configure buffer-local Evil behavior for Magent output buffers."
+  (when magent-evil--enabled
+    (setq-local evil-move-beyond-eol t)))
+
+(defun magent-evil--input-submit ()
+  "Return to Evil normal state after Magent input submission."
+  (when (and magent-evil--enabled
+             (bound-and-true-p evil-local-mode)
+             (fboundp 'evil-normal-state))
+    (evil-normal-state)))
+
+(defun magent-evil--dwim ()
+  "Enter Evil insert state after `magent-dwim' opens the input area."
+  (when (and magent-evil--enabled
+             (bound-and-true-p evil-mode)
+             (fboundp 'evil-insert-state))
+    (evil-insert-state)))
+
+(defun magent-evil--region-active-p ()
+  "Return non-nil when Evil visual state marks an active region."
+  (and magent-evil--enabled
+       (bound-and-true-p evil-local-mode)
+       (fboundp 'evil-visual-state-p)
+       (evil-visual-state-p)))
+
+;;;###autoload
+(define-minor-mode magent-evil-mode
+  "Toggle optional Evil integration for Magent.
+When enabled, Magent adds Evil-specific state handling and output-buffer
+bindings.  Loading `magent' alone does not enable this mode."
+  :global t
+  :group 'magent
+  (setq magent-evil--enabled magent-evil-mode)
+  (if magent-evil-mode
+      (progn
+        (if (featurep 'evil)
+            (magent-evil--setup-keys)
+          (with-eval-after-load 'evil
+            (magent-evil--setup-keys)))
+        (add-hook 'magent-output-mode-hook #'magent-evil--output-mode-setup)
+        (add-hook 'magent-ui-after-input-submit-hook #'magent-evil--input-submit)
+        (add-hook 'magent-dwim-hook #'magent-evil--dwim)
+        (add-hook 'magent-ui-region-active-functions
+                  #'magent-evil--region-active-p))
+    (remove-hook 'magent-output-mode-hook #'magent-evil--output-mode-setup)
+    (remove-hook 'magent-ui-after-input-submit-hook #'magent-evil--input-submit)
+    (remove-hook 'magent-dwim-hook #'magent-evil--dwim)
+    (remove-hook 'magent-ui-region-active-functions
+                 #'magent-evil--region-active-p)
+    (when (featurep 'evil)
+      (magent-evil--unset-keys))))
+
+;;;###autoload
+(defun magent-evil-setup ()
+  "Enable optional Evil integration for Magent."
+  (interactive)
+  (magent-evil-mode 1))
+
+(provide 'magent-evil)
+
+;; Local Variables:
+;; byte-compile-warnings: (not cl-functions obsolete)
+;; no-byte-compile: nil
+;; no-native-compile: nil
+;; End:
+
+;;; magent-evil.el ends here

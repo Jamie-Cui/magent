@@ -55,6 +55,7 @@
   id
   scope
   session
+  turn-id
   approval-session
   origin-buffer-name
   origin-context
