@@ -53,6 +53,7 @@ name: skill-name
 description: When to trigger and what this skill does
 type: instruction        # 'instruction' or 'tool'
 tools: bash, read        # optional: tools this skill needs
+default-prompt: Optional prompt used when user submits only @skill-name
 ---
 
 Markdown body: instructions for the AI...
@@ -63,6 +64,8 @@ Markdown body: instructions for the AI...
 **instruction**: Markdown body is injected into the system prompt every request.
 Use for workflow guidance, coding standards, domain knowledge.
 Keep under 200 lines to avoid bloating the system prompt.
+Add `default-prompt` when the skill should behave like a command if the user
+submits only `@skill-name`.
 
 **tool**: Invoked explicitly via `skill_invoke` with named operations.
 Requires a companion `.el` file defining `magent-skill-<name>-invoke`.
@@ -173,6 +176,7 @@ use a skill - make it count."
   (type 'instruction)
   (tools nil)
   (prompt nil)
+  (default-prompt nil)
   (invoke-function nil)
   (file-path nil)
   (source-layer 'builtin)
@@ -267,6 +271,14 @@ If SKILL-NAMES is a list, only include those skills."
                               prompt)))
                   skills))))
 
+(defun magent-skills-default-prompt (skill-name)
+  "Return the default prompt for instruction skill SKILL-NAME, if any."
+  (when-let* ((skill (magent-skills-get skill-name))
+              ((eq (magent-skill-type skill) 'instruction))
+              (prompt (magent-skill-default-prompt skill))
+              ((not (string-blank-p prompt))))
+    prompt))
+
 ;;; Built-in skill registration
 
 (defun magent-skills--register-builtin ()
@@ -345,6 +357,18 @@ TOOLS-SPEC can be a string, symbol, or list."
             tools-spec))
    (t nil)))
 
+(defun magent-skills--parse-text (text-spec)
+  "Parse TEXT-SPEC frontmatter into a string.
+The shared frontmatter loader splits comma-containing scalars for
+list fields.  Text fields such as `default-prompt' need those
+pieces joined back together."
+  (cond
+   ((null text-spec) nil)
+   ((stringp text-spec) text-spec)
+   ((listp text-spec)
+    (mapconcat (lambda (item) (format "%s" item)) text-spec ", "))
+   (t (format "%s" text-spec))))
+
 (defun magent-skills--find-companion-file (skill-file)
   "Find companion implementation file for SKILL-FILE."
   (let* ((dir (file-name-directory skill-file))
@@ -395,6 +419,9 @@ Returns the skill if successful, nil otherwise."
                          :type type
                          :tools tools
                          :prompt (when (> (length body) 0) body)
+                         :default-prompt
+                         (magent-skills--parse-text
+                          (plist-get frontmatter :default-prompt))
                          :invoke-function invoke-fn
                          :file-path filepath
                          :source-layer (plist-get source :layer)

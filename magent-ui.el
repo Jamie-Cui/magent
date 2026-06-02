@@ -16,6 +16,7 @@
 ;;; Code:
 
 (require 'org)
+(require 'cl-lib)
 (require 'spinner)
 (require 'subr-x)
 (require 'transient)
@@ -65,6 +66,7 @@ are valid for the current buffer.")
 (declare-function magent-capability-resolve-for-turn "magent-capability")
 (declare-function magent-toggle-capability-locally "magent-capability")
 (declare-function magent-skills-get "magent-skills")
+(declare-function magent-skills-default-prompt "magent-skills")
 (declare-function magent-skills-list "magent-skills")
 (declare-function magent-skills-list-by-type "magent-skills")
 (declare-function magent-skill-type "magent-skills")
@@ -99,6 +101,18 @@ are valid for the current buffer.")
   "Legacy UI processing flag.
 Kept for compatibility with older tests and external callers.  The
 active runtime state is owned by `magent-turn'.")
+
+(cl-defstruct (magent-ui--parsed-input
+               (:constructor magent-ui--parsed-input-create)
+               (:copier nil))
+  "Parsed user input with explicit instruction skills removed."
+  (skills nil :type list)
+  (message "" :type string)
+  (default-prompt nil :type (or string null)))
+
+(defconst magent-ui--input-command-descriptions
+  '(("clear" . "Clear current session context"))
+  "Whole-input @command names and completion annotations.")
 
 (defun magent-ui-processing-p ()
   "Return non-nil if a request is currently being processed."
@@ -757,10 +771,11 @@ No-op if no input prompt is active."
 
 (defun magent-ui--slash-parse (text)
   "Parse @skill-name tokens from TEXT.
-Returns a cons (SKILL-NAMES . MESSAGE) where SKILL-NAMES is a list
-of recognized skill name strings and MESSAGE is TEXT with those
-tokens removed and whitespace normalized.  Unrecognized @tokens
-are left in the message text unchanged."
+Returns a `magent-ui--parsed-input' where recognized instruction
+skill tokens are removed from the message.  If the remaining
+message is blank, the first recognized skill with a default prompt
+supplies `default-prompt'.  Unrecognized @tokens are left in the
+message text unchanged."
   (require 'magent-skills)
   (let ((names nil)
         (pos 0)
@@ -776,7 +791,44 @@ are left in the message text unchanged."
             (push (match-string 0 text) parts)))
         (setq pos match-end)))
     (push (substring text pos) parts)
-    (cons (nreverse names) (string-trim (apply #'concat (nreverse parts))))))
+    (let* ((skill-names (nreverse names))
+           (message (string-trim (apply #'concat (nreverse parts))))
+           (default-prompt
+            (and (string-blank-p message)
+                 (cl-some #'magent-skills-default-prompt skill-names))))
+      (magent-ui--parsed-input-create
+       :skills skill-names
+       :message message
+       :default-prompt default-prompt))))
+
+(defun magent-ui--input-command (text)
+  "Return a whole-input command symbol for TEXT, or nil.
+Commands are recognized only when the trimmed input is exactly
+@command.  Embedded command-like text remains normal prompt text."
+  (let ((trimmed (string-trim text)))
+    (when (string-match "\\`@\\([a-zA-Z][a-zA-Z0-9_-]*\\)\\'" trimmed)
+      (let ((name (match-string 1 trimmed)))
+        (when (assoc name magent-ui--input-command-descriptions)
+          (intern name))))))
+
+(defun magent-ui--input-completion-candidates ()
+  "Return completion candidates for @skill-name and @command input."
+  (cl-remove-duplicates
+   (append (magent-skills-list-by-type 'instruction)
+           (mapcar #'car magent-ui--input-command-descriptions))
+   :test #'string=))
+
+(defun magent-ui--execute-input-command (command)
+  "Execute whole-input COMMAND and return non-nil when handled."
+  (pcase command
+    ('clear
+     (setq magent-ui--input-marker nil)
+     (setq magent-ui--input-section-start nil)
+     (run-hooks 'magent-ui-after-input-submit-hook)
+     (magent-clear-session)
+     (message "Magent: session context cleared")
+     t)
+    (_ nil)))
 
 (defun magent-ui--slash-capf ()
   "Completion-at-point function for @skill-name in the input area.
@@ -790,14 +842,18 @@ with optional partial skill name."
               (word-end   (match-end 1)))
           (magent--ensure-initialized)
           (list word-start word-end
-                (magent-skills-list-by-type 'instruction)
+                (magent-ui--input-completion-candidates)
                 :annotation-function
                 (lambda (name)
-                  (when-let* ((skill (magent-skills-get name))
-                              (desc  (magent-skill-description skill)))
-                    (concat "  " (if (listp desc)
-                                     (mapconcat #'identity desc ", ")
-                                   desc))))
+                  (or
+                   (when-let* ((skill (magent-skills-get name))
+                               (desc  (magent-skill-description skill)))
+                     (concat "  " (if (listp desc)
+                                      (mapconcat #'identity desc ", ")
+                                    desc)))
+                   (when-let* ((desc (cdr (assoc name
+                                                 magent-ui--input-command-descriptions))))
+                     (concat "  " desc))))
                 :exclusive 'no))))))
 
 (defun magent-ui--maybe-slash-complete ()
@@ -810,8 +866,10 @@ with optional partial skill name."
 (defun magent-input-submit ()
   "Submit the text in the input area and send it to the agent.
 Makes the input text read-only, clears the input marker, and
-dispatches to the queue.  The `* [USER]' heading already in the
-buffer is reused (the queue skips inserting a duplicate)."
+dispatches to the queue.  Whole-input commands such as @clear are
+executed locally instead of sent to the agent.  The `* [USER]'
+heading already in the buffer is reused (the queue skips inserting
+a duplicate)."
   (interactive)
   (unless magent-ui--input-marker
     (user-error "No input area active"))
@@ -829,23 +887,28 @@ buffer is reused (the queue skips inserting a duplicate)."
                              (point-max)))
                           (marker-position magent-ui--input-marker)))
          (raw (string-trim
-               (buffer-substring-no-properties input-start (point-max))))
-         (parsed      (magent-ui--slash-parse raw))
-         (skill-names (car parsed))
-         (text        (cdr parsed)))
-    (when (string-blank-p text)
-      (user-error "Empty input"))
-    (let ((inhibit-read-only t))
-      ;; Ensure trailing newline
-      (goto-char (point-max))
-      (unless (eq (char-before) ?\n)
-        (insert "\n"))
-      ;; Make the user text read-only
-      (add-text-properties input-start (point-max) '(read-only t)))
-    (setq magent-ui--input-marker nil)
-    (setq magent-ui--input-section-start nil)
-    (run-hooks 'magent-ui-after-input-submit-hook)
-    (magent-ui-process text 'buffer-input nil skill-names)))
+               (buffer-substring-no-properties input-start (point-max)))))
+    (if-let* ((command (magent-ui--input-command raw)))
+        (magent-ui--execute-input-command command)
+      (let* ((parsed      (magent-ui--slash-parse raw))
+             (skill-names (magent-ui--parsed-input-skills parsed))
+             (text        (or (and (string-blank-p
+                                    (magent-ui--parsed-input-message parsed))
+                                   (magent-ui--parsed-input-default-prompt parsed))
+                              (magent-ui--parsed-input-message parsed))))
+        (when (string-blank-p text)
+          (user-error "Empty input"))
+        (let ((inhibit-read-only t))
+          ;; Ensure trailing newline
+          (goto-char (point-max))
+          (unless (eq (char-before) ?\n)
+            (insert "\n"))
+          ;; Make the user text read-only
+          (add-text-properties input-start (point-max) '(read-only t)))
+        (setq magent-ui--input-marker nil)
+        (setq magent-ui--input-section-start nil)
+        (run-hooks 'magent-ui-after-input-submit-hook)
+        (magent-ui-process text 'buffer-input nil skill-names)))))
 
 ;;; Section folding
 
@@ -1483,21 +1546,30 @@ stale callbacks are discarded."
 (defun magent-ui--finish-processing (response &optional submission-id)
   "Finish processing with RESPONSE and advance the queue.
 Handles both streaming and non-streaming completion."
-  (setq magent--current-request-handle nil)
-  (when (and (boundp 'magent--spinner) magent--spinner)
-    (spinner-stop magent--spinner))
-  (cond
-   ((stringp response)
-    (magent-log "INFO done")
-    (magent-ui--snapshot-buffer-content magent--current-session)
-    (magent-session-save))
-   (t
-    (magent-log "ERROR request failed or aborted")
-    (magent-ui-insert-error "Request failed or was aborted")))
-  (magent-ui--clear-processing)
-  (when submission-id
-    (magent-turn-finish (if (stringp response) 'completed 'failed) response))
-  (magent-ui--maybe-show-input-prompt (magent-session-current-scope)))
+  (let ((success (magent-agent-result-success-p response))
+        (content (magent-agent-result-content-string response))
+        (scope (magent-session-current-scope)))
+    (setq magent--current-request-handle nil)
+    (when (and (boundp 'magent--spinner) magent--spinner)
+      (spinner-stop magent--spinner))
+    (if success
+        (magent-log "INFO done")
+      (magent-log "ERROR request failed or aborted: %s" content)
+      (magent-ui-insert-error
+       (if (string-empty-p content)
+           "Request failed or was aborted"
+         content)))
+    (magent-ui--clear-processing)
+    (when submission-id
+      (magent-turn-finish (if success 'completed 'failed) content))
+    (magent-ui--maybe-show-input-prompt scope)
+    (condition-case err
+        (progn
+          (magent-ui--snapshot-buffer-content magent--current-session scope)
+          (magent-session-save))
+      (error
+       (magent-log "ERROR session save failed: %s"
+                   (error-message-string err))))))
 
 ;;; Session management commands
 
