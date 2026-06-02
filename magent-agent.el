@@ -19,6 +19,7 @@
 (require 'magent-events)
 (require 'magent-llm)
 (require 'magent-llm-gptel)
+(require 'magent-protocol)
 (require 'magent-runtime)
 (require 'magent-tools)
 (require 'magent-tool-registry)
@@ -269,7 +270,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                               (magent-agent--ui-visible-p request-state))
                      (magent-ui-finish-streaming-fontify)))
                   (finish-turn
-                   (status response)
+                   (status response &optional metadata)
                    (finish-streaming)
                    (magent-events-emit
                     'llm-request-end
@@ -282,16 +283,32 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                    (when (and (eq status 'completed)
                               (stringp response))
                      (magent-session-add-message session 'assistant response))
-                   (when (and request-state
-                              (magent-request-context-turn-id request-state)
-                              (not (eq status 'completed)))
-                     (magent-thread-fail-turn
-                      (magent-session-thread-ledger session)
-                      (magent-request-context-turn-id request-state)
-                      (if (stringp response) response (format "%S" response)))
-                     (magent-session-refresh-projections session))
+                   (when (not (eq status 'completed))
+                     (let* ((thread (magent-session-thread-ledger session))
+                            (active-turn (magent-thread-active-turn thread))
+                            (turn-id (or (and request-state
+                                              (magent-request-context-turn-id
+                                               request-state))
+                                         (and active-turn
+                                              (magent-thread-turn-id
+                                               active-turn))))
+                            (raw-message (if (stringp response)
+                                             response
+                                           (format "%S" response)))
+                            (message (if (string-prefix-p "Error:" raw-message)
+                                         raw-message
+                                       (concat "Error: " raw-message))))
+                       (when turn-id
+                         (magent-thread-record-message
+                          thread turn-id 'assistant message)
+                         (magent-thread-fail-turn thread turn-id message)
+                         (magent-session-refresh-projections session))))
                    (when callback
-                     (funcall callback response)))
+                     (funcall callback
+                              (if (eq status 'completed)
+                                  response
+                                (magent-agent-result-failed
+                                 response metadata)))))
                   (start-streaming
                    ()
                    (close-reasoning)
@@ -350,6 +367,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                (setf (magent-agent-loop-request loop)
                                      (magent-agent-loop-request-for-current-session
                                       loop))
+                               (magent-log
+                                "INFO tools completed; continuing model response")
                                (sample))))))
                        ('completed
                         (let ((ui-text
@@ -364,9 +383,10 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                        ui-text))))
                         (finish-turn 'completed
                                      (magent-agent-loop-result loop)))
-                       ('error
+                      ('error
                         (finish-turn 'failed
-                                     (magent-llm-event-message event)))))))
+                                     (magent-llm-event-message event)
+                                     (magent-llm-event-metadata event)))))))
                (setq loop
                      (magent-agent-loop-create
                       :session session

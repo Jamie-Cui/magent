@@ -82,6 +82,42 @@ whose status moves from `in-progress' to `completed' or `failed'."
   (success t)
   metadata)
 
+(cl-defstruct (magent-agent-result
+               (:constructor magent-agent-result-create)
+               (:copier nil))
+  "Final status returned from an agent request.
+Successful requests may still use plain strings for compatibility.  This
+structure is used when callers need to distinguish failed requests from a
+normal assistant string."
+  status
+  content
+  error
+  metadata)
+
+(defun magent-agent-result-success-p (result)
+  "Return non-nil when RESULT represents a successful agent response."
+  (or (stringp result)
+      (and (magent-agent-result-p result)
+           (eq (magent-agent-result-status result) 'completed))))
+
+(defun magent-agent-result-content-string (result)
+  "Return user-visible content for RESULT."
+  (cond
+   ((stringp result) result)
+   ((magent-agent-result-p result)
+    (or (magent-agent-result-content result)
+        (magent-agent-result-error result)
+        ""))
+   ((null result) "")
+   (t (format "%s" result))))
+
+(defun magent-agent-result-failed (error &optional metadata)
+  "Return a failed `magent-agent-result' with ERROR and METADATA."
+  (magent-agent-result-create
+   :status 'failed
+   :error (if (stringp error) error (format "%s" error))
+   :metadata metadata))
+
 (defun magent-protocol-user-input-op (payload)
   "Create a user-input operation carrying PAYLOAD."
   (magent-op-create

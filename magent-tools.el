@@ -22,6 +22,7 @@
 (require 'magent-agent-registry)
 (require 'magent-events)
 (require 'magent-permission)
+(require 'magent-protocol)
 (require 'magent-runtime)
 (require 'magent-session)
 
@@ -720,12 +721,11 @@ Return the child loop handle when startup succeeds."
                  prompt
                  (lambda (response)
                    (magent-events-stop-subagent subagent-context)
-                   (let* ((text (cond
-                                 ((stringp response) response)
-                                 ((null response)
-                                  "Error: child-agent request failed")
-                                 (t (format "%s" response))))
-                          (failed (string-prefix-p "Error:" text)))
+                   (let* ((success (magent-agent-result-success-p response))
+                          (text (magent-agent-result-content-string response))
+                          (failed (not success)))
+                     (when (string-empty-p text)
+                       (setq text "Error: child-agent request failed"))
                      (magent-tools--agent-job-update-from-child
                       job child-session
                       (if failed 'failed 'completed)

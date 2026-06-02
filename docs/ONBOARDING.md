@@ -132,6 +132,12 @@ Two skill types:
 - **instruction** — Markdown injected into system prompt
 - **tool** — Invoked via `skill_invoke` tool
 
+Instruction skills can be explicitly enabled in the input area with `@skill-name`.
+Skills that define `default-prompt` can be submitted alone; built-in `@init`
+initializes or refreshes the project root `AGENTS.md`, similar to Codex `/init`.
+Submit `@clear` as the whole input to clear the current session context,
+similar to Codex `/clear`, without sending a request to the model.
+
 Skills load from: (1) built-in `skills/`, (2) user `~/.emacs.d/magent-skills/`, (3) project `.magent/skills/`.
 
 ### Session Scoping

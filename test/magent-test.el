@@ -176,6 +176,34 @@
         (should (string-match-p "#\\+begin_think\nthinking\n#\\+end_think"
                                 text))))))
 
+(ert-deftest magent-test-agent-process-error-returns-failed-result ()
+  "Test provider errors are returned as failed agent results."
+  (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+        (gptel-model 'gpt-4o-mini)
+        (gptel-tools nil)
+        (gptel-use-tools nil)
+        (response nil))
+    (cl-letf (((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (funcall (plist-get kwargs :callback)
+                          nil
+                          '(:status "Request timed out after 5 seconds"))))
+              ((symbol-function 'magent-tool-registry-for-agent)
+               (lambda (_agent) nil))
+              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+      (magent-session-reset)
+      (magent-agent-process
+       "Hello"
+       (lambda (result)
+         (setq response result))))
+    (should (magent-agent-result-p response))
+    (should-not (magent-agent-result-success-p response))
+    (should (equal (magent-agent-result-content-string response)
+                   "Request timed out after 5 seconds"))
+    (should (equal (magent-session-to-gptel-prompt-list
+                    (magent-session-get))
+                   nil))))
+
 (ert-deftest magent-test-agent-process-does-not-limit-tool-rounds-from-agent-steps ()
   "Test agent step metadata does not impose a tool-loop limit."
   (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
@@ -1297,7 +1325,7 @@
     (should (null magent-skills--registry))))
 
 (ert-deftest magent-test-skills-register-builtin ()
-  "Test builtin skill registration excludes the removed emacs tool skill."
+  "Test code-defined builtin skill registration."
   (require 'magent-skills)
   (let ((magent-skills--registry nil))
     (cl-letf (((symbol-function 'magent-log) #'ignore))
@@ -1306,6 +1334,22 @@
     (let ((skill (magent-skills-get "skill-creator")))
       (should skill)
       (should (eq (magent-skill-type skill) 'instruction)))))
+
+(ert-deftest magent-test-skills-load-all-includes-init-skill ()
+  "Test bundled skill loading includes the @init workflow skill."
+  (require 'magent-skills)
+  (let ((magent-skills--registry nil))
+    (cl-letf (((symbol-function 'magent-log) #'ignore))
+      (magent-skills-load-all (list magent-skills--builtin-dir)))
+    (let ((skill (magent-skills-get "init")))
+      (should skill)
+      (should (eq (magent-skill-type skill) 'instruction))
+      (should (string-match-p "Codex /init"
+                              (format "%s"
+                                      (or (magent-skill-description skill)
+                                          ""))))
+      (should (string-match-p "AGENTS.md"
+                              (or (magent-skill-default-prompt skill) ""))))))
 
 (ert-deftest magent-test-skill-reload-restores-builtin-skill ()
   "Test skill reload restores code-defined built-ins even from an empty registry."
@@ -1779,13 +1823,15 @@
     (unwind-protect
         (progn
           (with-temp-file skillfile
-            (insert "---\nname: test-skill\ndescription: A test\ntype: instruction\ntools: bash, read\n---\nDo the thing."))
+            (insert "---\nname: test-skill\ndescription: A test\ntype: instruction\ntools: bash, read\ndefault-prompt: Do the default thing.\n---\nDo the thing."))
           (let ((skill (magent-skills-load-file skillfile)))
             (should skill)
             (should (equal (magent-skill-name skill) "test-skill"))
             (should (equal (magent-skill-description skill) "A test"))
             (should (eq (magent-skill-type skill) 'instruction))
             (should (equal (magent-skill-tools skill) '(bash read)))
+            (should (equal (magent-skill-default-prompt skill)
+                           "Do the default thing."))
             (should (string-match-p "Do the thing" (magent-skill-prompt skill)))))
       (delete-directory tmpdir t))))
 
@@ -2414,6 +2460,53 @@
       (should (= (cdr (assq 'agent-depth metadata)) 2))
       (should (= (cdr (assq 'max-depth metadata)) 1))
       (should-not started))))
+
+(ert-deftest magent-test-tools-spawn-agent-marks-failed-result-failed ()
+  "Test child-agent failed results update the durable job as failed."
+  (require 'magent-tools)
+  (let* ((parent-session (magent-session-create :id "parent"))
+         (parent-context (magent-request-context-create
+                          :id "parent-req"
+                          :session parent-session
+                          :approval-session parent-session))
+         (agent (magent-agent-info-create
+                 :name "explore"
+                 :mode 'subagent))
+         result)
+    (let ((magent-tools--request-context parent-context)
+          (magent-tools--agent-job-runtimes (make-hash-table :test #'equal)))
+      (cl-letf (((symbol-function 'magent-agent-registry-get)
+                 (lambda (_name) agent))
+                ((symbol-function 'magent-events-create-subagent-context)
+                 (lambda (title parent)
+                   (list :title title :parent parent)))
+                ((symbol-function 'magent-events-stop-subagent) #'ignore)
+                ((symbol-function 'magent-agent-process)
+                 (lambda (_prompt callback _agent-info _skill-names
+                                  _event-context _request-context
+                                  _capability-resolution _ui-callback
+                                  _request-live-p _request-state)
+                   (funcall callback
+                            (magent-agent-result-failed
+                             "Request timed out after 5 seconds"))
+                   nil))
+                ((symbol-function 'magent-ui--snapshot-buffer-content)
+                 #'ignore))
+        (magent-tools--spawn-agent
+         (lambda (value) (setq result value))
+         "explore"
+         "inspect"
+         "scan")))
+    (let* ((decoded (let ((json-object-type 'alist)
+                          (json-array-type 'list))
+                      (json-read-from-string result)))
+           (job-payload (cdr (assq 'job decoded)))
+           (job-id (cdr (assq 'id job-payload)))
+           (job (magent-session-agent-job parent-session job-id)))
+      (should (equal (cdr (assq 'status decoded)) "failed"))
+      (should (eq (magent-agent-job-status job) 'failed))
+      (should (equal (magent-agent-job-error job)
+                     "Request timed out after 5 seconds")))))
 
 (ert-deftest magent-test-tools-resolve-path-uses-request-project-root ()
   "Test relative file paths resolve against inherited request project root."
@@ -4892,6 +4985,146 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest magent-test-input-submit-clear-command-clears-context ()
+  "Test submitting @clear clears context without dispatching to the agent."
+  (require 'magent-ui)
+  (let* ((magent-buffer-name "*magent-submit-clear*")
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (buffer nil)
+         (processed nil)
+         (hook-called nil))
+    (unwind-protect
+        (progn
+          (magent-session-activate 'global)
+          (magent-session-add-message (magent-session-get) 'user "old context")
+          (setq buffer (magent-ui-get-buffer 'global))
+          (with-current-buffer buffer
+            (let ((inhibit-read-only t))
+              (insert "old context\n"))
+            (magent-ui--insert-input-prompt 'global)
+            (let ((inhibit-read-only t))
+              (goto-char (point-max))
+              (insert "@clear")))
+          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
+                    ((symbol-function 'magent-ui-process)
+                     (lambda (&rest _args)
+                       (setq processed t))))
+            (with-current-buffer buffer
+              (add-hook 'magent-ui-after-input-submit-hook
+                        (lambda () (setq hook-called t))
+                        nil t)
+              (magent-input-submit)))
+          (should-not processed)
+          (should hook-called)
+          (should (null (magent-session-messages (magent-session-get))))
+          (with-current-buffer buffer
+            (let ((text (buffer-string)))
+              (should-not (string-match-p "old context" text))
+              (should-not (string-match-p "@clear" text))
+              (should magent-ui--input-marker)
+              (should (string-match-p "^\\* USER" text)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-input-submit-embedded-clear-stays-prompt-text ()
+  "Test @clear embedded in normal input is sent as prompt text."
+  (require 'magent-ui)
+  (let* ((magent-buffer-name "*magent-submit-clear-text*")
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (buffer nil)
+         (captured nil))
+    (unwind-protect
+        (progn
+          (magent-session-activate 'global)
+          (magent-session-add-message (magent-session-get) 'user "old context")
+          (setq buffer (magent-ui-get-buffer 'global))
+          (with-current-buffer buffer
+            (magent-ui--insert-input-prompt 'global)
+            (let ((inhibit-read-only t))
+              (goto-char (point-max))
+              (insert "keep @clear as prompt text")))
+          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
+                    ((symbol-function 'magent-ui-process)
+                     (lambda (text &optional source display skills agent)
+                       (setq captured (list text source display skills agent)))))
+            (with-current-buffer buffer
+              (magent-input-submit)))
+          (should (equal (nth 0 captured) "keep @clear as prompt text"))
+          (should (eq (nth 1 captured) 'buffer-input))
+          (should (null (nth 3 captured)))
+          (should (= (length (magent-session-messages (magent-session-get))) 1)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-slash-parse-uses-skill-default-prompt ()
+  "Test @skill-only input can supply a default prompt."
+  (require 'magent-ui)
+  (let ((magent-skills--registry nil))
+    (magent-skills-register
+     (magent-skill-create
+      :name "init"
+      :type 'instruction
+      :default-prompt "Initialize AGENTS.md."))
+    (let ((parsed (magent-ui--slash-parse "@init")))
+      (should (equal (magent-ui--parsed-input-skills parsed) '("init")))
+      (should (equal (magent-ui--parsed-input-message parsed) ""))
+      (should (equal (magent-ui--parsed-input-default-prompt parsed)
+                     "Initialize AGENTS.md.")))))
+
+(ert-deftest magent-test-slash-parse-keeps-message-when-present ()
+  "Test @skill input with message does not replace it with default prompt."
+  (require 'magent-ui)
+  (let ((magent-skills--registry nil))
+    (magent-skills-register
+     (magent-skill-create
+      :name "init"
+      :type 'instruction
+      :default-prompt "Initialize AGENTS.md."))
+    (let ((parsed (magent-ui--slash-parse "@init focus on tests")))
+      (should (equal (magent-ui--parsed-input-skills parsed) '("init")))
+      (should (equal (magent-ui--parsed-input-message parsed) "focus on tests"))
+      (should-not (magent-ui--parsed-input-default-prompt parsed)))))
+
+(ert-deftest magent-test-input-submit-allows-skill-only-default-prompt ()
+  "Test submitting only @init dispatches the skill default prompt."
+  (require 'magent-ui)
+  (let* ((magent-buffer-name "*magent-submit-init*")
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (magent-skills--registry nil)
+         (buffer nil)
+         (captured nil))
+    (magent-skills-register
+     (magent-skill-create
+      :name "init"
+      :type 'instruction
+      :default-prompt "Initialize AGENTS.md."))
+    (unwind-protect
+        (progn
+          (magent-session-activate 'global)
+          (setq buffer (magent-ui-get-buffer 'global))
+          (with-current-buffer buffer
+            (magent-ui--insert-input-prompt 'global)
+            (let ((inhibit-read-only t))
+              (goto-char (point-max))
+              (insert "@init")))
+          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
+                    ((symbol-function 'magent-ui-process)
+                     (lambda (text &optional source display skills agent)
+                       (setq captured (list text source display skills agent)))))
+            (with-current-buffer buffer
+              (magent-input-submit)))
+          (should (equal (nth 0 captured) "Initialize AGENTS.md."))
+          (should (eq (nth 1 captured) 'buffer-input))
+          (should (equal (nth 3 captured) '("init"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest magent-test-evil-mode-input-submit-restores-normal-state ()
   "Test optional Evil integration returns to normal state after submission."
   (skip-unless (require 'evil nil t))
@@ -5721,6 +5954,67 @@
     (with-current-buffer buffer
       (should (string-match-p "Capability resolver: Auto capabilities: org-structure | Suggested: git-workflow"
                               (buffer-string))))))
+
+(ert-deftest magent-test-ui-finish-processing-restores-prompt-before-save ()
+  "Test request completion restores the input prompt before session save."
+  (require 'magent-ui)
+  (let* ((magent-buffer-name "*magent-finish-order*")
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (magent-ui--processing t)
+         (magent-turn--active nil)
+         (magent-turn--queue nil)
+         (buffer nil)
+         (prompt-visible-at-save nil))
+    (unwind-protect
+        (progn
+          (magent-session-activate 'global)
+          (setq buffer (magent-ui-get-buffer 'global))
+          (with-current-buffer buffer
+            (setq magent-ui--input-marker nil))
+          (cl-letf (((symbol-function 'spinner-stop) #'ignore)
+                    ((symbol-function 'magent-session-save)
+                     (lambda ()
+                       (setq prompt-visible-at-save
+                             (with-current-buffer buffer
+                               (and magent-ui--input-marker t))))))
+            (magent-ui--finish-processing "done"))
+          (should-not magent-ui--processing)
+          (with-current-buffer buffer
+            (should magent-ui--input-marker))
+          (should prompt-visible-at-save))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-ui-finish-processing-failed-result-releases-input ()
+  "Test failed agent results release processing and show an input prompt."
+  (require 'magent-ui)
+  (let* ((magent-buffer-name "*magent-finish-failed*")
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (magent-ui--processing t)
+         (magent-turn--active nil)
+         (magent-turn--queue nil)
+         (buffer nil))
+    (unwind-protect
+        (progn
+          (magent-session-activate 'global)
+          (setq buffer (magent-ui-get-buffer 'global))
+          (with-current-buffer buffer
+            (setq magent-ui--input-marker nil))
+          (cl-letf (((symbol-function 'spinner-stop) #'ignore)
+                    ((symbol-function 'magent-session-save) #'ignore))
+            (magent-ui--finish-processing
+             (magent-agent-result-failed "Request timed out after 5 seconds")))
+          (should-not magent-ui--processing)
+          (with-current-buffer buffer
+            (should magent-ui--input-marker)
+            (should (string-match-p "Request timed out after 5 seconds"
+                                    (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest magent-test-ui-capability-summary-folds-quote-block ()
   "Test capability summaries default-fold their quote block in the UI."

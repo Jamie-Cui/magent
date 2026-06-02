@@ -135,7 +135,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-list-agents~               | ~C-c m v~    | List all available agents                                                |
 | ~magent-toggle-by-pass-permission~ | ~M-x~        | Toggle permission bypass for tool filtering and approval prompts         |
 
-In the ~*magent*~ output buffer: ~TAB~ and ~S-TAB~ fold sections, ~?~ opens the transient menu outside the editable input area, ~C-c C-c~ submits input, and ~C-g~ interrupts.
+In the ~*magent*~ output buffer: ~TAB~ and ~S-TAB~ fold sections, ~?~ opens the transient menu outside the editable input area, ~C-c C-c~ submits input, and ~C-g~ interrupts.  Submit ~@clear~ as the whole input to clear the current session context, similar to Codex ~/clear~.
 
 The same bypass state is also exposed as the customize option
 ~magent-by-pass-permission~ under ~M-x customize-group RET magent RET~.
@@ -165,6 +165,18 @@ M-x magent-dwim
 ;; Or use keybinding
 C-c m p
 #+end_src
+
+** Skill Commands
+
+In the Magent input area, type ~@skill-name~ to explicitly activate an
+instruction skill for that request.  Skills with a ~default-prompt~ can also be
+used as command-like inputs; for example, submitting ~@init~ initializes or
+refreshes the project's root ~AGENTS.md~, similar to Codex ~/init~.  Extra text
+after the skill token is treated as the request body, so ~@init focus on tests~
+runs the same skill with that additional constraint.
+
+Submit ~@clear~ as the whole input to clear the current session context without
+sending a request to the model, similar to Codex ~/clear~.
 
 * Agent System
 
@@ -304,7 +316,7 @@ Tool availability is controlled by:
 
 8. *Tools* (~magent-tools.el~): 14 tool implementations registered as ~gptel-tool~ structs, filtered per agent based on permission rules. The durable child-agent lifecycle tools are ~spawn_agent~, ~send_agent_message~, ~wait_agent~, ~list_agents~, and ~close_agent~.
 
-9. *Skills* (~magent-skills.el~): Two skill types -- ~instruction~ (markdown injected into the system prompt) and ~tool~ (invoked via ~skill_invoke~). The module contains the registry, built-in ~skill-creator~ definition, file-based skill loading, and interactive inspection commands. Skills load in priority order from: (1) built-in ~skills/~ directory bundled with magent, (2) user directory =~/.emacs.d/magent-skills/<name>/SKILL.md=, (3) project-local ~.magent/skills/<name>/SKILL.md~.
+9. *Skills* (~magent-skills.el~): Two skill types -- ~instruction~ (markdown injected into the system prompt) and ~tool~ (invoked via ~skill_invoke~). Instruction skills can be explicitly selected with ~@skill-name~ in the input area; skills that declare ~default-prompt~ can be submitted alone, such as ~@init~ for project instruction initialization. The module contains the registry, built-in ~skill-creator~ definition, file-based skill loading, and interactive inspection commands. Skills load in priority order from: (1) built-in ~skills/~ directory bundled with magent, (2) user directory =~/.emacs.d/magent-skills/<name>/SKILL.md=, (3) project-local ~.magent/skills/<name>/SKILL.md~.
 
 10. *Session* (~magent-session.el~): Conversation history management with per-project active sessions, global fallback outside projects, and JSON persistence. The ~buffer-content~ slot stores raw buffer text for lossless restore.
 
