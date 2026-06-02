@@ -73,6 +73,7 @@
     "magent-approval.el"
     "magent-events.el"
     "magent-protocol.el"
+    "magent-thread.el"
     "magent-agent-job.el"
     "magent-session.el"
     "magent-audit.el"

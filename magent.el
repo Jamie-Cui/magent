@@ -82,6 +82,7 @@
 (require 'magent-config)
 (require 'magent-audit)
 (require 'magent-protocol)
+(require 'magent-thread)
 (require 'magent-agent-job)
 (require 'magent-llm)
 (require 'magent-llm-gptel)

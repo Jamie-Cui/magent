@@ -73,11 +73,11 @@ The action layer that executes operations requested by agents.
 Orchestrates the tool-calling loop and LLM communication.
 
 **Key Files:**
-- `magent-agent-loop.el` — Active Magent-owned loop, tool dispatch, serial queueing, guards, abort helpers, continuation
+- `magent-agent-loop.el` — Active Magent-owned loop, tool dispatch, serial queueing, abort helpers, continuation
 - `magent-llm.el` — Provider-neutral request/event protocol
 - `magent-llm-gptel.el` — Thin `gptel-request` sampling adapter
 
-**What it does:** `magent-agent-loop.el` consumes normalized LLM events, records assistant/tool state into the session, dispatches tools through `magent-tool-orchestrator`, handles visible tool rendering, repeated `emacs_eval` guards, abort cleanup, and continuation. `magent-llm-gptel.el` still calls `gptel-request`; Magent does not rewrite provider transport.
+**What it does:** `magent-agent-loop.el` consumes normalized LLM events, records assistant/tool state into the session, dispatches tools through `magent-tool-orchestrator`, handles visible tool rendering, abort cleanup, and Codex-style continuation. Tool results are fed back to the model rather than being stopped by an `emacs_eval` call-count guard. `magent-llm-gptel.el` still calls `gptel-request`; Magent does not rewrite provider transport.
 
 ### Layer 6: User Interface
 
@@ -85,6 +85,7 @@ Org-mode derived buffer for interaction and output rendering.
 
 **Key Files:**
 - `magent-ui.el` — In-buffer input/output, org-mode derived, streaming sections, transient menu
+- `magent-evil.el` — Optional Evil integration loaded explicitly by Evil users
 - `magent-md2org.el` — Markdown → org-mode conversion for assistant output
 - `magent-file-loader.el` — Shared frontmatter parser for agent/skill/capability files
 
@@ -159,7 +160,7 @@ Read `magent-ui.el` to see how the `*magent*` buffer works. Key insight: it deri
 
 Trace a request through these files in order:
 1. `magent-agent.el` — `magent-agent-process` builds the prompt
-2. `magent-agent-loop.el` — Owns normalized events, tool dispatch, queueing, guards, abort, and continuation
+2. `magent-agent-loop.el` — Owns normalized events, tool dispatch, queueing, abort, and continuation
 3. `magent-llm-gptel.el` — Calls `gptel-request` for one sampling request
 4. `magent-tool-orchestrator.el` / `magent-tools.el` — Resolve permissions and execute tool implementations
 5. `magent-ui.el` — Results render in buffer
@@ -229,7 +230,7 @@ Look at `test/magent-test.el` to see how the codebase is tested. Tests mock `gpt
 These areas require careful attention when modifying:
 
 ### 1. magent-agent-loop.el (High Complexity)
-**Why it's complex:** Owns the active request/tool loop: normalized event accumulation, tool-call batching, serial execution, permission orchestration, UI tool rendering, repeated `emacs_eval` guard state, abort cleanup, tool-result session recording, and continuation.
+**Why it's complex:** Owns the active request/tool loop: normalized event accumulation, tool-call batching, serial execution, permission orchestration, UI tool rendering, abort cleanup, tool-result session recording, and continuation.
 
 **Approach carefully:** Any changes to loop state, tool callback ordering, or abort handling can hang a turn or corrupt session history. Add focused ERT coverage first, then verify live with tool-use prompts when Emacs is available.
 
@@ -239,7 +240,7 @@ These areas require careful attention when modifying:
 **Approach carefully:** Keep provider transport concerns here and loop behavior in `magent-agent-loop.el`. Do not add new main-loop dependencies on gptel private FSM handlers.
 
 ### 3. magent-ui.el (High Complexity)
-**Why it's complex:** Org-mode derived buffer with custom insertion logic, async fontification, chunk batching, and read-only region management. The `magent-ui--with-insert` macro suppresses buffer-boundary signals to prevent evil-mode errors.
+**Why it's complex:** Org-mode derived buffer with custom insertion logic, async fontification, chunk batching, and read-only region management. The `magent-ui--with-insert` macro suppresses buffer-boundary signals from process filters and active minor modes.
 
 **Approach carefully:** Insertions must use `inhibit-read-only`. Org fontification can trigger re-entrancy. Request generation counter prevents stale callbacks.
 

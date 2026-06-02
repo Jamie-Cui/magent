@@ -21,6 +21,7 @@
 (require 'magent-llm)
 (require 'magent-runtime)
 (require 'magent-session)
+(require 'magent-thread)
 (require 'magent-tool-orchestrator)
 (require 'magent-tools)
 
@@ -37,9 +38,6 @@
 
 (defvar magent-tools--register-cancel)
 (defvar magent-tools--request-context)
-
-(defconst magent-agent-loop-large-raw-content-threshold-bytes 65536
-  "Minimum raw text size usually sufficient for direct model answers.")
 
 (cl-defstruct
     (magent-agent-loop-abort-controller
@@ -88,14 +86,12 @@ If CONTROLLER is already aborted, run CLEANUP immediately."
   sampler
   session
   request-context
-  tool-guard-state
+  turn-id
   abort-controller
   tool-queue
   request-handle
   request-timeout-timer
   status
-  max-tool-rounds
-  tool-round-count
   text-chunks
   reasoning-chunks
   tool-calls
@@ -118,15 +114,12 @@ Recognized keys are `:request', `:sampler', `:status', and
      :sampler sampler
      :session (plist-get args :session)
      :request-context (plist-get args :request-context)
-     :tool-guard-state (or (plist-get args :tool-guard-state)
-                           (magent-agent-loop-tool-guard-state-create))
+     :turn-id (plist-get args :turn-id)
      :abort-controller (or (plist-get args :abort-controller)
                            (magent-agent-loop-abort-controller-create))
      :tool-queue (or (plist-get args :tool-queue)
                      (magent-agent-loop-tool-queue-create))
      :status (or (plist-get args :status) 'created)
-     :max-tool-rounds (plist-get args :max-tool-rounds)
-     :tool-round-count (or (plist-get args :tool-round-count) 0)
      :text-chunks nil
      :reasoning-chunks nil
      :tool-calls nil
@@ -196,26 +189,6 @@ Recognized keys are `:request', `:sampler', `:status', and
            (magent-llm-event-usage event))))
   loop)
 
-(defun magent-agent-loop-note-tool-round (loop)
-  "Increment and return LOOP's tool round count."
-  (let ((count (1+ (or (magent-agent-loop-tool-round-count loop) 0))))
-    (setf (magent-agent-loop-tool-round-count loop) count)
-    count))
-
-(defun magent-agent-loop-tool-round-limit-exceeded-p (loop)
-  "Return non-nil when LOOP has exceeded its configured tool round limit.
-This function increments the loop's round count."
-  (let ((limit (magent-agent-loop-max-tool-rounds loop)))
-    (and (numberp limit)
-         (> (magent-agent-loop-note-tool-round loop) limit))))
-
-(defun magent-agent-loop-tool-round-limit-message (loop)
-  "Return LOOP's user-facing tool round limit message."
-  (let ((limit (magent-agent-loop-max-tool-rounds loop)))
-    (format "Error: tool loop exceeded %d round%s. The model kept requesting more tools instead of answering."
-            limit
-            (if (= limit 1) "" "s"))))
-
 (defun magent-agent-loop--tool-name (tool-spec raw-call)
   "Return tool name from TOOL-SPEC or RAW-CALL."
   (or (and tool-spec
@@ -223,71 +196,6 @@ This function increments the loop's round count."
            (ignore-errors (gptel-tool-name tool-spec)))
       (plist-get raw-call :name)
       "unknown"))
-
-(defun magent-agent-loop-tool-guard-state-create ()
-  "Create per-turn state used by tool-call guards."
-  (let ((state (make-hash-table :test 'eq)))
-    (puthash :emacs-eval-count 0 state)
-    (puthash :seen-emacs-eval-sexps (make-hash-table :test 'equal) state)
-    (puthash :last-raw-content-tool nil state)
-    (puthash :last-raw-content-bytes nil state)
-    state))
-
-(defun magent-agent-loop-tool-guard-track-result (name result guard-state)
-  "Record request-local metadata for tool NAME and RESULT."
-  (when (and guard-state
-             (member name '("emacs_eval" "read_file"))
-             (stringp result)
-             (not (string-prefix-p "Error:" result)))
-    (let ((bytes (string-bytes result)))
-      (when (>= bytes magent-agent-loop-large-raw-content-threshold-bytes)
-        (puthash :last-raw-content-tool name guard-state)
-        (puthash :last-raw-content-bytes bytes guard-state)))))
-
-(defun magent-agent-loop-emacs-eval-direct-answer-guidance (&optional guard-state)
-  "Return guidance steering the model toward direct answers."
-  (let ((tool (and guard-state (gethash :last-raw-content-tool guard-state)))
-        (bytes (and guard-state (gethash :last-raw-content-bytes guard-state))))
-    (if (and (stringp tool)
-             (integerp bytes)
-             (>= bytes magent-agent-loop-large-raw-content-threshold-bytes))
-        (format "A prior %s call already returned %d bytes of raw content. That is enough context for summarization or general analysis. Answer directly from that content instead of calling formatting or filtering tools."
-                tool bytes)
-      "If you already retrieved the file or buffer content, use that raw content directly instead of calling formatting or filtering tools.")))
-
-(defun magent-agent-loop-emacs-eval-limit-message (limit &optional guard-state)
-  "Return a constructive repeated `emacs_eval' limit message."
-  (format "Error: tool_use_limit_reached. emacs_eval exceeded %d call%s in this turn. Stop exploring and answer the user directly. %s"
-          limit
-          (if (= limit 1) "" "s")
-          (magent-agent-loop-emacs-eval-direct-answer-guidance guard-state)))
-
-(defun magent-agent-loop-maybe-intercept-tool-call
-    (name args-plist guard-state)
-  "Return a synthetic tool result when NAME/ARGS-PLIST should be intercepted."
-  (when (and guard-state
-             (string= name "emacs_eval"))
-    (let* ((sexp (and-let* ((raw (plist-get args-plist :sexp))
-                            ((stringp raw)))
-                   (string-trim raw)))
-           (seen (gethash :seen-emacs-eval-sexps guard-state))
-           (count (gethash :emacs-eval-count guard-state 0))
-           (limit magent-emacs-eval-max-calls-per-turn))
-      (cond
-       ((and sexp (gethash sexp seen))
-        (format "[system-intercept] You already executed this exact emacs_eval query in this turn. Stop calling tools and answer the user directly. %s"
-                (magent-agent-loop-emacs-eval-direct-answer-guidance
-                 guard-state)))
-       ((and (natnump limit)
-             (>= count limit))
-        (concat "[system-intercept] "
-                (magent-agent-loop-emacs-eval-limit-message
-                 limit guard-state)))
-       (t
-        (puthash :emacs-eval-count (1+ count) guard-state)
-        (when sexp
-          (puthash sexp t seen))
-        nil)))))
 
 (defun magent-agent-loop-tool-call-summary (name args)
   "Format tool call NAME with ARGS into a concise display summary."
@@ -397,7 +305,6 @@ This function increments the loop's round count."
             (call-id (plist-get item :call-id))
             (summary (plist-get item :summary))
             (args-plist (plist-get item :args-plist))
-            (guard-state (plist-get item :guard-state))
             (fn (plist-get item :fn))
             (async-p (plist-get item :async))
             (fn-args (plist-get item :args))
@@ -422,8 +329,6 @@ This function increments the loop's round count."
                           (and abort-controller
                                (magent-agent-loop-abort-controller-aborted
                                 abort-controller)))
-                (magent-agent-loop-tool-guard-track-result
-                 name result guard-state)
                 (when (magent-agent-loop--ui-visible-p request-context)
                   (require 'magent-ui)
                   (magent-ui-insert-tool-result
@@ -476,10 +381,6 @@ This function increments the loop's round count."
          (args-plist (magent-agent-loop-args-to-plist args-spec arg-values))
          (call-id (magent-events-generate-id))
          (summary (magent-agent-loop-tool-call-summary name args-plist))
-         (guard-state (magent-agent-loop-tool-guard-state loop))
-         (intercept-result
-          (magent-agent-loop-maybe-intercept-tool-call
-           name args-plist guard-state))
          (fn-args (magent-agent-loop-filter-display-args
                    args-spec arg-values))
          (fn (gptel-tool-function tool-spec))
@@ -495,13 +396,45 @@ This function increments the loop's round count."
              :call-id call-id
              :summary summary
              :args-plist args-plist
-             :guard-state guard-state
-             :fn (if intercept-result
-                     (lambda () intercept-result)
-                   fn)
-             :async (and async-p (not intercept-result))
+             :fn fn
+             :async async-p
              :callback callback
-             :args (if intercept-result nil fn-args))))))
+             :args fn-args)))))
+
+(defun magent-agent-loop--record-tool-start (loop call-id name args-plist)
+  "Record a started tool item for LOOP."
+  (when-let* ((session (magent-agent-loop-session loop))
+              (thread (magent-session-thread-ledger session))
+              (turn-id (magent-agent-loop--ensure-turn-id loop thread)))
+    (magent-thread-start-item
+     thread turn-id 'tool
+     :id call-id
+     :call-id call-id
+     :name name
+     :input args-plist
+     :metadata (list :source 'tool-dispatch))
+    (magent-session-refresh-projections session)))
+
+(defun magent-agent-loop--ensure-turn-id (loop thread)
+  "Return LOOP's current turn id, creating a synthetic turn in THREAD if needed."
+  (let ((turn-id (or (magent-agent-loop-turn-id loop)
+                     (and (magent-agent-loop-request-context loop)
+                          (magent-request-context-turn-id
+                           (magent-agent-loop-request-context loop)))
+                     (and (magent-thread-active-turn thread)
+                          (magent-thread-turn-id
+                           (magent-thread-active-turn thread))))))
+    (unless turn-id
+      (let ((turn (magent-thread-create-turn
+                   thread nil nil (list :synthetic t
+                                         :source 'agent-loop-tool))))
+        (setq turn-id (magent-thread-turn-id turn))))
+    (setf (magent-agent-loop-turn-id loop) turn-id)
+    (when (magent-agent-loop-request-context loop)
+      (setf (magent-request-context-turn-id
+             (magent-agent-loop-request-context loop))
+            turn-id))
+    turn-id))
 
 (defun magent-agent-loop-find-file-arg-index (args-spec)
   "Return the 0-based file argument index from ARGS-SPEC, if any."
@@ -594,16 +527,21 @@ This function increments the loop's round count."
 ARG-VALUES are stored as the model-visible tool arguments.  RAW-CALL can
 carry provider-specific ids and names."
   (when-let ((session (magent-agent-loop-session loop)))
-    (magent-session-add-tool-message
-     session
-     (or (plist-get raw-call :id)
-         (plist-get raw-call :call-id)
-         (and (fboundp 'magent-events-generate-id)
-              (magent-events-generate-id))
-         "tool-call")
-     (magent-agent-loop--tool-name tool-spec raw-call)
-     (magent-agent-loop--tool-args-plist tool-spec arg-values raw-call)
-     result))
+    (let* ((thread (magent-session-thread-ledger session))
+           (turn-id (magent-agent-loop--ensure-turn-id loop thread))
+           (call-id (or (plist-get raw-call :id)
+                        (plist-get raw-call :call-id)
+                        (and (fboundp 'magent-events-generate-id)
+                             (magent-events-generate-id))
+                        "tool-call")))
+      (magent-thread-record-tool-result
+       thread
+       turn-id
+       call-id
+       (magent-agent-loop--tool-name tool-spec raw-call)
+       (magent-agent-loop--tool-args-plist tool-spec arg-values raw-call)
+       result)
+      (magent-session-refresh-projections session)))
   loop)
 
 (defun magent-agent-loop--tool-args (event)
@@ -665,12 +603,16 @@ available in LOOP's request tools."
   (let* ((name (magent-llm-event-name event))
          (tool-spec (magent-agent-loop--find-tool loop name)))
     (when tool-spec
-      (list tool-spec
-            (magent-agent-loop--tool-arg-values
-             tool-spec
-             (magent-agent-loop--tool-args event))
-            nil
-            (magent-agent-loop--tool-raw-call event)))))
+      (let ((raw-call (magent-agent-loop--tool-raw-call event)))
+        (unless (or (plist-get raw-call :id)
+                    (plist-get raw-call :call-id))
+          (plist-put raw-call :id (magent-events-generate-id)))
+        (list tool-spec
+              (magent-agent-loop--tool-arg-values
+               tool-spec
+               (magent-agent-loop--tool-args event))
+              nil
+              raw-call)))))
 
 (defun magent-agent-loop--unknown-tool-result (loop event known-tool-names)
   "Record and return an unknown-tool result for EVENT."
@@ -696,49 +638,51 @@ no known calls."
     (error "Expected magent-agent-loop, got: %S" loop))
   (unless (magent-tool-orchestrator-p orchestrator)
     (error "Expected magent-tool-orchestrator, got: %S" orchestrator))
-  (if (magent-agent-loop-tool-round-limit-exceeded-p loop)
-      (let ((message (magent-agent-loop-tool-round-limit-message loop)))
-        (setf (magent-agent-loop-status loop) 'failed
-              (magent-agent-loop-error loop) message)
-        (when done-callback
-          (funcall done-callback message)))
-    (let* ((events (nreverse (copy-sequence
-                              (magent-agent-loop-tool-calls loop))))
-           (tools (magent-llm-request-tools (magent-agent-loop-request loop)))
-           (known-tool-names
-            (delq nil
-                  (mapcar (lambda (tool)
-                            (magent-agent-loop--tool-name tool nil))
-                          tools)))
-           known-calls)
-      (setf (magent-agent-loop-tool-calls loop) nil)
-      (dolist (event events)
-        (if-let ((call (magent-agent-loop-tool-event-to-call loop event)))
-            (push call known-calls)
-          (magent-agent-loop--unknown-tool-result loop event known-tool-names)))
-      (setq known-calls (nreverse known-calls))
-      (if known-calls
-          (let ((base-result-callback
-                 (magent-tool-orchestrator-result-callback orchestrator))
-                (base-done-callback
-                 (magent-tool-orchestrator-done-callback orchestrator)))
-            (setf (magent-tool-orchestrator-result-callback orchestrator)
-                  (lambda (tool-spec arg-values raw-call result)
-                    (magent-agent-loop-record-tool-result
-                     loop tool-spec arg-values raw-call result)
-                    (when base-result-callback
-                      (funcall base-result-callback
-                               tool-spec arg-values raw-call result))))
-            (setf (magent-tool-orchestrator-done-callback orchestrator)
-                  (lambda ()
-                    (when base-done-callback
-                      (funcall base-done-callback))
-                    (when done-callback
-                      (funcall done-callback))))
-            (magent-tool-orchestrator-handle-tool-calls
-             orchestrator known-calls))
-        (when done-callback
-          (funcall done-callback)))))
+  (let* ((events (nreverse (copy-sequence
+                            (magent-agent-loop-tool-calls loop))))
+         (tools (magent-llm-request-tools (magent-agent-loop-request loop)))
+         (known-tool-names
+          (delq nil
+                (mapcar (lambda (tool)
+                          (magent-agent-loop--tool-name tool nil))
+                        tools)))
+         known-calls)
+    (setf (magent-agent-loop-tool-calls loop) nil)
+    (dolist (event events)
+      (if-let ((call (magent-agent-loop-tool-event-to-call loop event)))
+          (progn
+            (magent-agent-loop--record-tool-start
+             loop
+             (or (plist-get (nth 3 call) :id)
+                 (plist-get (nth 3 call) :call-id))
+             (magent-agent-loop--tool-name (car call) (nth 3 call))
+             (magent-agent-loop--tool-args-plist
+              (car call) (cadr call) (nth 3 call)))
+            (push call known-calls))
+        (magent-agent-loop--unknown-tool-result loop event known-tool-names)))
+    (setq known-calls (nreverse known-calls))
+    (if known-calls
+        (let ((base-result-callback
+               (magent-tool-orchestrator-result-callback orchestrator))
+              (base-done-callback
+               (magent-tool-orchestrator-done-callback orchestrator)))
+          (setf (magent-tool-orchestrator-result-callback orchestrator)
+                (lambda (tool-spec arg-values raw-call result)
+                  (magent-agent-loop-record-tool-result
+                   loop tool-spec arg-values raw-call result)
+                  (when base-result-callback
+                    (funcall base-result-callback
+                             tool-spec arg-values raw-call result))))
+          (setf (magent-tool-orchestrator-done-callback orchestrator)
+                (lambda ()
+                  (when base-done-callback
+                    (funcall base-done-callback))
+                  (when done-callback
+                    (funcall done-callback))))
+          (magent-tool-orchestrator-handle-tool-calls
+           orchestrator known-calls))
+      (when done-callback
+        (funcall done-callback))))
   loop)
 
 (defun magent-agent-loop-request-for-current-session (loop)
@@ -864,7 +808,10 @@ the sampler return value."
     (setf (magent-agent-loop-status loop) 'running)
     (when-let ((request-context (magent-agent-loop-request-context loop)))
       (setf (magent-request-context-abort-controller request-context)
-            (magent-agent-loop-abort-controller loop)))
+            (magent-agent-loop-abort-controller loop))
+      (unless (magent-agent-loop-turn-id loop)
+        (setf (magent-agent-loop-turn-id loop)
+              (magent-request-context-turn-id request-context))))
     (let ((loop-request
            (magent-llm-request-create
             :prompt (magent-llm-request-prompt request)

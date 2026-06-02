@@ -51,6 +51,18 @@ Add the project to your Emacs load path:
   (global-magent-mode 1))
 #+end_src
 
+** Optional Evil Integration
+
+Magent does not assume Evil by default.  Evil-specific state handling and
+bindings live in the optional ~magent-evil~ feature:
+
+#+begin_src elisp
+(use-package magent-evil
+  :after (magent evil)
+  :config
+  (magent-evil-mode 1))
+#+end_src
+
 * Configuration
 
 ** Quick Start
@@ -123,7 +135,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-list-agents~               | ~C-c m v~    | List all available agents                                                |
 | ~magent-toggle-by-pass-permission~ | ~M-x~        | Toggle permission bypass for tool filtering and approval prompts         |
 
-In the ~*magent*~ output buffer: ~TAB~ and ~S-TAB~ fold sections, ~?~ opens the transient menu, ~C-c C-c~ submits input, and ~C-g~ interrupts.
+In the ~*magent*~ output buffer: ~TAB~ and ~S-TAB~ fold sections, ~?~ opens the transient menu outside the editable input area, ~C-c C-c~ submits input, and ~C-g~ interrupts.
 
 The same bypass state is also exposed as the customize option
 ~magent-by-pass-permission~ under ~M-x customize-group RET magent RET~.
@@ -286,7 +298,7 @@ Tool availability is controlled by:
 
 5. *Capability System* (~magent-capability.el~): File-backed capability definitions score each request context and attach matching instruction skills.
 
-6. *Agent Loop*: ~magent-agent.el~ starts the Magent-owned loop in ~magent-agent-loop.el~. ~magent-llm.el~ defines normalized request/events, and ~magent-llm-gptel.el~ calls ~gptel-request~ for one sampling request while hiding gptel callback/FSM details. The loop owns tool dispatch, serial queueing, visible tool rendering, repeated ~emacs_eval~ guards, abort cleanup, permission audit hooks, tool-result session recording, and continuation.
+6. *Agent Loop*: ~magent-agent.el~ starts the Magent-owned loop in ~magent-agent-loop.el~. ~magent-llm.el~ defines normalized request/events, and ~magent-llm-gptel.el~ calls ~gptel-request~ for one sampling request while hiding gptel callback/FSM details. The loop owns tool dispatch, serial queueing, visible tool rendering, abort cleanup, permission audit hooks, tool-result session recording, and continuation.
 
 7. *LLM Integration* (via gptel): All LLM communication is handled by [[https://github.com/karthink/gptel][gptel]]. Provider, model, and API key configuration is managed entirely by gptel.
 
@@ -300,9 +312,11 @@ Tool availability is controlled by:
 
 12. *UI* (~magent-ui.el~): The ~*magent*~ buffer derives from ~org-mode~. It uses in-buffer input with ~* [USER]~ sections. Tool calls render as ~#+begin_tool~/~#+end_tool~ blocks; reasoning blocks as ~#+begin_think~/~#+end_think~. Single-request serialization now lives here via ~magent-ui--processing~ and ~magent-ui--enqueue~.
 
-13. *Markdown-to-Org* (~magent-md2org.el~): Converts markdown assistant output to org-mode format for rendering.
+13. *Evil Integration* (~magent-evil.el~): Optional feature for Evil users. It is not loaded by ~magent~ and is enabled explicitly with ~magent-evil-mode~.
 
-14. *File Loader* (~magent-file-loader.el~): Shared definition loader for agent, skill, and capability files. It includes frontmatter parsing and supports booleans, numbers, quoted strings, and comma-separated lists.
+14. *Markdown-to-Org* (~magent-md2org.el~): Converts markdown assistant output to org-mode format for rendering.
+
+15. *File Loader* (~magent-file-loader.el~): Shared definition loader for agent, skill, and capability files. It includes frontmatter parsing and supports booleans, numbers, quoted strings, and comma-separated lists.
 
 ** File Structure
 
@@ -330,6 +344,7 @@ magent/
 |-- magent-md2org.el               # Markdown to org-mode converter
 |-- magent-skills.el               # Skill registry, built-in skills, file loading, and skill commands
 |-- magent-ui.el                   # In-buffer UI and output buffer (org-mode derived)
+|-- magent-evil.el                 # Optional Evil integration
 |-- magent-pkg.el                  # Package descriptor
 |-- prompt.org                     # Default system prompt
 |-- Makefile                       # Build, test, and clean targets
