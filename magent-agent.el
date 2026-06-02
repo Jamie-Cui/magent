@@ -238,6 +238,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                     request-state))))
                   (streaming-started nil)
                   (reasoning-open nil)
+                  (sampling-count 0)
                   loop)
              (cl-labels
                  ((emit-request-start
@@ -261,8 +262,36 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                        (magent-ui-insert-reasoning-end))))
                   (sample
                    ()
+                   (cl-incf sampling-count)
                    (emit-request-start)
                    (magent-agent-loop-start loop))
+                  (continue-turn
+                   (outcome)
+                   (if (and (numberp magent-max-sampling-requests)
+                            (> magent-max-sampling-requests 0)
+                            (>= sampling-count
+                                magent-max-sampling-requests))
+                       (let ((message
+                              (format
+                               "Maximum sampling requests reached for this turn (%d)"
+                               magent-max-sampling-requests)))
+                         (magent-log
+                          "WARN stopping turn continuation after %d sampling request(s): %s"
+                          sampling-count
+                          (plist-get outcome :reason))
+                         (finish-turn 'failed message
+                                      (list :status 'sampling-limit
+                                            :sampling-count sampling-count
+                                            :continuation-reason
+                                            (plist-get outcome :reason))))
+                     (setf (magent-agent-loop-request loop)
+                           (magent-agent-loop-request-for-current-session
+                            loop))
+                     (magent-log
+                      "INFO continuing model response: reason=%s count=%d"
+                      (plist-get outcome :reason)
+                      (1+ sampling-count))
+                     (sample)))
                   (finish-streaming
                    ()
                    (close-reasoning)
@@ -359,17 +388,13 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                             loop
                             (magent-agent-info-permission agent)
                             request-state)
-                           (lambda (&optional result)
+                           (lambda (outcome)
                              (if (and (eq (magent-agent-loop-status loop)
                                           'failed)
-                                      (stringp result))
-                                 (finish-turn 'failed result)
-                               (setf (magent-agent-loop-request loop)
-                                     (magent-agent-loop-request-for-current-session
-                                      loop))
-                               (magent-log
-                                "INFO tools completed; continuing model response")
-                               (sample))))))
+                                      (stringp (plist-get outcome :result)))
+                                 (finish-turn 'failed
+                                              (plist-get outcome :result))
+                               (continue-turn outcome))))))
                        ('completed
                         (let ((ui-text
                                (magent-agent--completion-ui-text

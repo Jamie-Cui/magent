@@ -145,10 +145,18 @@ append-only record. The two are not interchangeable.
 4. `magent-agent-loop` consumes normalized LLM events.
 5. Tool-call events start `tool` items.
 6. Tool results update the same `tool` items to `completed` or `failed`.
-7. Assistant completion records an assistant message item and completes
+7. Tool output returns a continuation outcome such as `tool-output`;
+   `magent-agent-process` owns the decision to rebuild the prompt from
+   session history and start the next sampling request.  This keeps tool
+   execution separate from turn continuation policy.
+8. Assistant completion records an assistant message item and completes
    the turn.
-8. Abort, failure, and dropped queued submissions transition the turn to
+9. Abort, failure, and dropped queued submissions transition the turn to
    `interrupted`, `failed`, or `dropped`.
+10. `magent-max-sampling-requests` is a lifecycle guard for one user
+    turn.  It limits the number of model sampling requests, including
+    tool-output continuations, without inspecting or deduplicating tool
+    command contents.
 
 ## Codex Differences Still Preserved
 
@@ -161,8 +169,10 @@ areas:
 - Codex core runs a turn as a multi-sampling loop where pending user
   input, mailbox items, auto-compaction, and tool follow-up can all
   extend one active turn. Magent keeps request serialization in the
-  Emacs UI and uses Codex-style continuation for tool results, but does
-  not implement Codex's app-server mailbox or steering queue.
+  Emacs UI and uses Codex-style continuation for tool results: tool
+  execution records model-visible output, then the turn layer decides
+  whether to continue sampling.  Magent does not implement Codex's
+  app-server mailbox or steering queue.
 - Codex thread status is app-server-facing
   `notLoaded/idle/systemError/active{activeFlags}`. Magent keeps the
   same top-level status idea but also persists explicit local turn and

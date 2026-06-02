@@ -90,6 +90,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-project-root-function~ | ~nil~                         | Custom project root finder                                                            |
 | ~magent-max-history~           | ~100~                         | Max messages in history                                                               |
 | ~magent-request-timeout~       | ~120~                         | Timeout in seconds for LLM requests                                                   |
+| ~magent-max-sampling-requests~ | ~25~                          | Max model sampling requests in one user turn; 0 disables the lifecycle guard           |
 | ~magent-default-agent~         | ~"build"~                     | Default agent for new sessions                                                        |
 | ~magent-load-custom-agents~    | ~t~                           | Load custom agents from ~.magent/agent/*.md~                                            |
 | ~magent-enable-logging~        | ~t~                           | Enable logging to ~*magent-log*~ buffer                                                 |
@@ -310,7 +311,7 @@ Tool availability is controlled by:
 
 5. *Capability System* (~magent-capability.el~): File-backed capability definitions score each request context and attach matching instruction skills.
 
-6. *Agent Loop*: ~magent-agent.el~ starts the Magent-owned loop in ~magent-agent-loop.el~. ~magent-llm.el~ defines normalized request/events, and ~magent-llm-gptel.el~ calls ~gptel-request~ for one sampling request while hiding gptel callback/FSM details. The loop owns tool dispatch, serial queueing, visible tool rendering, abort cleanup, permission audit hooks, tool-result session recording, and continuation.
+6. *Agent Loop*: ~magent-agent.el~ starts the Magent-owned loop in ~magent-agent-loop.el~. ~magent-llm.el~ defines normalized request/events, and ~magent-llm-gptel.el~ calls ~gptel-request~ for one sampling request while hiding gptel callback/FSM details. The loop owns tool dispatch, serial queueing, visible tool rendering, abort cleanup, permission audit hooks, and tool-result session recording; ~magent-agent-process~ owns continuation policy across sampling requests.
 
 7. *LLM Integration* (via gptel): All LLM communication is handled by [[https://github.com/karthink/gptel][gptel]]. Provider, model, and API key configuration is managed entirely by gptel.
 
