@@ -4116,9 +4116,9 @@
     (unwind-protect
         (progn
           (magent-llm-gptel--callback
-           request state buffer '(reasoning . "think") '(:status "ok"))
+           request state buffer '(reasoning . "think") '(:status "ok" :stream t))
           (magent-llm-gptel--callback
-           request state buffer '(reasoning . t) '(:status "ok"))
+           request state buffer '(reasoning . t) '(:status "ok" :stream t))
           (magent-llm-gptel--callback
            request state buffer nil '(:status "bad request" :http-status 400))
           (should (= (length events) 3))
@@ -4128,6 +4128,57 @@
           (should (eq (magent-llm-event-type (nth 0 events)) 'error))
           (should (equal (magent-llm-event-message (nth 0 events))
                          "bad request")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-llm-gptel-reasoning-only-done-completes ()
+  "Test reasoning-only provider responses still produce completion events."
+  (require 'magent-llm-gptel)
+  (let* ((events nil)
+         (request (magent-llm-request-create
+                   :callback (lambda (event) (push event events))))
+         (buffer (generate-new-buffer " *magent-test-gptel*"))
+         (state (magent-llm-gptel--make-state))
+         (fsm (gptel-make-fsm
+               :info '(:status "ok"
+                       :tokens (:total 3)
+                       :stop-reason "stop"))))
+    (unwind-protect
+        (progn
+          (magent-llm-gptel--callback
+           request state buffer '(reasoning . "你好！") '(:status "ok"))
+          (magent-llm-gptel--handle-done request state buffer fsm)
+          (magent-llm-gptel--handle-done request state buffer fsm)
+          (should-not (buffer-live-p buffer))
+          (should (= (length events) 1))
+          (let ((completed (car events)))
+            (should (eq (magent-llm-event-type completed) 'completed))
+            (should (equal (magent-llm-event-text completed) "你好！"))
+            (should (equal (magent-llm-event-usage completed) '(:total 3)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-llm-gptel-nonstream-reasoning-flushes-before-content ()
+  "Test cached non-streaming reasoning is emitted before final content."
+  (require 'magent-llm-gptel)
+  (let* ((events nil)
+         (request (magent-llm-request-create
+                   :callback (lambda (event) (push event events))))
+         (buffer (generate-new-buffer " *magent-test-gptel*"))
+         (state (magent-llm-gptel--make-state)))
+    (unwind-protect
+        (progn
+          (magent-llm-gptel--callback
+           request state buffer '(reasoning . "thinking") '(:status "ok"))
+          (magent-llm-gptel--callback
+           request state buffer "answer" '(:status "ok"))
+          (should (= (length events) 2))
+          (let ((completed (car events))
+                (reasoning (cadr events)))
+            (should (eq (magent-llm-event-type reasoning) 'reasoning-delta))
+            (should (equal (magent-llm-event-text reasoning) "thinking"))
+            (should (eq (magent-llm-event-type completed) 'completed))
+            (should (equal (magent-llm-event-text completed) "answer"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
