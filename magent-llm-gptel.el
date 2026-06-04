@@ -16,6 +16,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'subr-x)
 (require 'gptel)
 (require 'gptel-request)
 (require 'magent-config)
@@ -166,6 +167,10 @@ requests, so Magent normalizes this boundary before curl serializes it."
   "Create adapter-local streaming state."
   (let ((state (make-hash-table :test #'eq)))
     (puthash :text-chunks nil state)
+    (puthash :reasoning-chunks nil state)
+    (puthash :reasoning-emitted nil state)
+    (puthash :reasoning-ended nil state)
+    (puthash :terminal-emitted nil state)
     state))
 
 (defun magent-llm-gptel--emit (request event)
@@ -173,12 +178,61 @@ requests, so Magent normalizes this boundary before curl serializes it."
   (when-let ((callback (magent-llm-request-callback request)))
     (funcall callback event)))
 
+(defun magent-llm-gptel--emit-terminal (request state event)
+  "Emit terminal EVENT for REQUEST once, tracking it in STATE."
+  (unless (gethash :terminal-emitted state)
+    (puthash :terminal-emitted t state)
+    (magent-llm-gptel--emit request event)))
+
+(defun magent-llm-gptel--reasoning-text (state)
+  "Return accumulated reasoning text from STATE."
+  (apply #'concat (nreverse (copy-sequence
+                             (gethash :reasoning-chunks state)))))
+
+(defun magent-llm-gptel--streamed-text (state)
+  "Return accumulated streamed text from STATE."
+  (apply #'concat (nreverse (copy-sequence
+                             (gethash :text-chunks state)))))
+
+(defun magent-llm-gptel--flush-reasoning (request state info)
+  "Emit cached non-streaming reasoning chunks for REQUEST.
+Streaming reasoning is emitted as it arrives.  Non-streaming reasoning is
+held until the adapter can distinguish actual reasoning from providers
+that put the final answer only in a reasoning field."
+  (unless (gethash :reasoning-emitted state)
+    (let ((metadata (magent-llm-gptel--metadata info)))
+      (dolist (text (nreverse (copy-sequence
+                               (gethash :reasoning-chunks state))))
+        (magent-llm-gptel--emit
+         request
+         (magent-llm-reasoning-delta-event text metadata)))
+      (puthash :reasoning-emitted t state)
+      (when (gethash :reasoning-ended state)
+        (magent-llm-gptel--emit
+         request
+         (magent-llm-reasoning-end-event metadata))))))
+
+(defun magent-llm-gptel--pending-tool-use-p (info)
+  "Return non-nil when INFO contains unfinished gptel tool calls."
+  (let ((tool-use (and (listp info) (plist-get info :tool-use))))
+    (cond
+     ((null tool-use) nil)
+     ((listp tool-use)
+      (cl-some (lambda (tool-call)
+                 (not (plist-get tool-call :result)))
+               tool-use))
+     (t t))))
+
 (defun magent-llm-gptel--final-text (state info)
   "Return final response text from STATE and gptel INFO."
-  (or (plist-get info :content)
-      (apply #'concat (nreverse (copy-sequence
-                                 (gethash :text-chunks state))))
-      ""))
+  (let ((content (and (listp info) (plist-get info :content)))
+        (streamed (magent-llm-gptel--streamed-text state))
+        (reasoning (magent-llm-gptel--reasoning-text state)))
+    (cond
+     ((and (stringp content) (not (string-empty-p content))) content)
+     ((not (string-empty-p streamed)) streamed)
+     ((not (string-empty-p reasoning)) reasoning)
+     (t ""))))
 
 (defun magent-llm-gptel--metadata (info)
   "Return adapter metadata extracted from gptel INFO."
@@ -236,7 +290,36 @@ METADATA is merged into the event metadata."
           (push (list tool-spec args nil tool-call) pending-calls)))
       (funcall callback (cons 'tool-call (nreverse pending-calls)) info))))
 
-(defun magent-llm-gptel--make-sampling-fsm ()
+(defun magent-llm-gptel--handle-done (request state buffer fsm)
+  "Emit a completion if gptel reaches DONE without a final callback.
+Some providers can return reasoning-only non-streaming responses.  gptel
+emits the reasoning callback, then reaches DONE without invoking the
+normal response callback because there is no content field.  Magent still
+needs a terminal event to cancel request timeout handling and release UI
+input."
+  (when (and request state)
+    (let ((info (gptel-fsm-info fsm)))
+      (unless (or (gethash :terminal-emitted state)
+                  (magent-llm-gptel--pending-tool-use-p info)
+                  (and (listp info) (plist-get info :error)))
+        (let ((content (and (listp info) (plist-get info :content))))
+          (when (or (and (stringp content)
+                         (not (string-empty-p content)))
+                    (not (string-empty-p
+                          (magent-llm-gptel--streamed-text state))))
+            (magent-llm-gptel--flush-reasoning request state info)))
+        (magent-llm-gptel--emit-terminal
+         request
+         state
+         (magent-llm-completed-event
+          (magent-llm-gptel--final-text state info)
+          (and (listp info) (plist-get info :tokens))
+          (and (listp info) (plist-get info :stop-reason))
+          (magent-llm-gptel--metadata info)))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(defun magent-llm-gptel--make-sampling-fsm (&optional request state buffer)
   "Create a gptel FSM for one model sampling request.
 It lets gptel own transport/parsing while preventing gptel from
 executing tools or continuing the tool loop."
@@ -249,7 +332,9 @@ executing tools or continuing the tool loop."
             (TOOL . ((t . DONE))))
    :handlers `((WAIT ,#'gptel--handle-wait)
                (TOOL ,#'magent-llm-gptel--handle-tool-use)
-               (DONE ,#'gptel--handle-post)
+               (DONE ,(apply-partially #'magent-llm-gptel--handle-done
+                                        request state buffer)
+                     ,#'gptel--handle-post)
                (ERRS ,#'gptel--handle-post)
                (ABRT ,#'gptel--handle-post))))
 
@@ -258,10 +343,12 @@ executing tools or continuing the tool loop."
   (cond
    ((stringp response)
     (if (and (not (plist-get info :stream))
-             (not (plist-get info :tool-use)))
+             (not (magent-llm-gptel--pending-tool-use-p info)))
         (progn
-          (magent-llm-gptel--emit
+          (magent-llm-gptel--flush-reasoning request state info)
+          (magent-llm-gptel--emit-terminal
            request
+           state
            (magent-llm-completed-event
             response
             (plist-get info :tokens)
@@ -276,15 +363,25 @@ executing tools or continuing the tool loop."
         response
         (magent-llm-gptel--metadata info)))))
    ((and (consp response) (eq (car response) 'reasoning))
-    (magent-llm-gptel--emit
-     request
-     (if (eq (cdr response) t)
-         (magent-llm-reasoning-end-event
-          (magent-llm-gptel--metadata info))
-       (magent-llm-reasoning-delta-event
-        (cdr response)
-        (magent-llm-gptel--metadata info)))))
+    (if (eq (cdr response) t)
+        (progn
+          (puthash :reasoning-ended t state)
+          (when (gethash :reasoning-emitted state)
+            (magent-llm-gptel--emit
+             request
+             (magent-llm-reasoning-end-event
+              (magent-llm-gptel--metadata info)))))
+      (let ((text (or (cdr response) "")))
+        (push text (gethash :reasoning-chunks state))
+        (when (plist-get info :stream)
+          (puthash :reasoning-emitted t state)
+          (magent-llm-gptel--emit
+           request
+           (magent-llm-reasoning-delta-event
+            text
+            (magent-llm-gptel--metadata info)))))))
    ((and (consp response) (eq (car response) 'tool-call))
+    (magent-llm-gptel--flush-reasoning request state info)
     (let ((calls (cdr response)))
       (cl-loop for call in calls
                for index from 0
@@ -295,11 +392,13 @@ executing tools or continuing the tool loop."
                     call
                     (when last-p '(:last t)))))))
    ((eq response t)
-    (if (plist-get info :tool-use)
+    (if (magent-llm-gptel--pending-tool-use-p info)
         (when (buffer-live-p buffer)
           (kill-buffer buffer))
-      (magent-llm-gptel--emit
+      (magent-llm-gptel--flush-reasoning request state info)
+      (magent-llm-gptel--emit-terminal
        request
+       state
        (magent-llm-completed-event
         (magent-llm-gptel--final-text state info)
         (plist-get info :tokens)
@@ -308,16 +407,18 @@ executing tools or continuing the tool loop."
       (when (buffer-live-p buffer)
         (kill-buffer buffer))))
    ((eq response 'abort)
-    (magent-llm-gptel--emit
+    (magent-llm-gptel--emit-terminal
      request
+     state
      (magent-llm-error-event
       "Request aborted"
       (append (magent-llm-gptel--metadata info) '(:status abort))))
     (when (buffer-live-p buffer)
       (kill-buffer buffer)))
    ((null response)
-    (magent-llm-gptel--emit
+    (magent-llm-gptel--emit-terminal
      request
+     state
      (magent-llm-error-event
       (or (plist-get info :status)
           (plist-get info :error)
@@ -355,7 +456,7 @@ Return the request buffer as the abort handle.  REQUEST must be a
         :context (list :magent-llm-gptel t)
         :system (magent-llm-request-system request)
         :stream (magent-llm-request-stream request)
-        :fsm (magent-llm-gptel--make-sampling-fsm)
+        :fsm (magent-llm-gptel--make-sampling-fsm request state buffer)
         :callback (lambda (response info)
                     (magent-llm-gptel--callback
                      request state buffer response info))))

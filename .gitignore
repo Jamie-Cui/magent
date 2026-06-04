@@ -34,3 +34,4 @@ auto-save-list
 /helper/node_modules/
 /helper/package-lock.json
 /.codex
+/magent-autoloads.el
