@@ -150,6 +150,13 @@ Recognized keys are `:request', `:sampler', `:status', and
    (t
     (concat streamed final))))
 
+(defun magent-agent-loop--fallback-result (loop)
+  "Return fallback text for LOOP when the provider yields empty content."
+  (let ((reasoning (magent-agent-loop-reasoning loop)))
+    (when (and (stringp reasoning)
+               (not (string-empty-p reasoning)))
+      reasoning)))
+
 (defun magent-agent-loop-apply-event (loop event)
   "Apply normalized LLM EVENT to LOOP and return LOOP."
   (unless (magent-agent-loop-p loop)
@@ -173,9 +180,12 @@ Recognized keys are `:request', `:sampler', `:status', and
     ('completed
      (setf (magent-agent-loop-status loop) 'completed
            (magent-agent-loop-result loop)
-           (magent-agent-loop--combined-result
-            (magent-agent-loop-text loop)
-            (magent-llm-event-text event))
+           (let ((result (magent-agent-loop--combined-result
+                          (magent-agent-loop-text loop)
+                          (magent-llm-event-text event))))
+             (if (string-empty-p result)
+                 (or (magent-agent-loop--fallback-result loop) result)
+               result))
            (magent-agent-loop-usage loop)
            (magent-llm-event-usage event)
            (magent-agent-loop-stop-reason loop)

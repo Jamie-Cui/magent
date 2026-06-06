@@ -1158,6 +1158,9 @@ Used for batching small streaming chunks to reduce UI updates.")
 (defvar-local magent-ui--reasoning-start nil
   "Buffer position where the current reasoning block begins.")
 
+(defvar-local magent-ui--fontify-timer nil
+  "Idle timer for deferred markdown-to-org conversion.")
+
 (defun magent-ui--reset-streaming-state ()
   "Reset streaming state variables for a new round.
 Must be called inside the magent output buffer."
@@ -1248,7 +1251,7 @@ When text was streamed, converts markdown to org-mode in the response body."
                                    (min magent-ui--streaming-start (point-max)))))
               (let ((inhibit-read-only t))
                 (when magent-ui--response-body-start
-                  (magent-md2org-convert-region
+                  (magent-ui--convert-markdown-region
                    magent-ui--response-body-start (point-max)))
                 (goto-char (point-max))
                 (unless (eq (char-before) ?\n)
@@ -1259,6 +1262,42 @@ When text was streamed, converts markdown to org-mode in the response body."
         (setq magent-ui--streaming-section-start nil)
         (setq magent-ui--response-body-start nil)
         (magent-ui--reset-streaming-state)))))
+
+(defun magent-ui--convert-markdown-region (start end)
+  "Convert markdown in region START END, deferring large regions."
+  (let ((size (- end start)))
+    (if (and (numberp magent-ui-fontify-threshold)
+             (> magent-ui-fontify-threshold 0)
+             (> size magent-ui-fontify-threshold))
+        (magent-ui--schedule-markdown-conversion
+         (current-buffer)
+         (copy-marker start)
+         (copy-marker end))
+      (magent-md2org-convert-region start end))))
+
+(defun magent-ui--schedule-markdown-conversion (buffer start-marker end-marker)
+  "Schedule markdown conversion for BUFFER between START-MARKER and END-MARKER."
+  (when magent-ui--fontify-timer
+    (cancel-timer magent-ui--fontify-timer)
+    (setq magent-ui--fontify-timer nil))
+  (setq magent-ui--fontify-timer
+        (run-with-idle-timer
+         magent-ui-fontify-idle-delay nil
+         (lambda ()
+           (unwind-protect
+               (when (buffer-live-p buffer)
+                 (with-current-buffer buffer
+                   (setq magent-ui--fontify-timer nil)
+                   (when (and (marker-position start-marker)
+                              (marker-position end-marker)
+                              (< (marker-position start-marker)
+                                 (marker-position end-marker)))
+                     (let ((inhibit-read-only t))
+                       (magent-md2org-convert-region
+                        (marker-position start-marker)
+                        (marker-position end-marker))))))
+             (set-marker start-marker nil)
+             (set-marker end-marker nil))))))
 
 (defun magent-ui-insert-reasoning-start ()
   "Insert the beginning of a reasoning block."
@@ -1566,7 +1605,7 @@ Handles both streaming and non-streaming completion."
     (condition-case err
         (progn
           (magent-ui--snapshot-buffer-content magent--current-session scope)
-          (magent-session-save))
+          (magent-session-save-deferred))
       (error
        (magent-log "ERROR session save failed: %s"
                    (error-message-string err))))))

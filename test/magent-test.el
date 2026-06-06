@@ -1227,8 +1227,8 @@
                       'agent)
                      'ask)))))
 
-(ert-deftest magent-test-agent-process-disables-streaming-for-tool-requests ()
-  "Test tool-enabled requests use non-streaming provider sampling."
+(ert-deftest magent-test-agent-process-keeps-streaming-for-tool-requests ()
+  "Test tool-enabled requests still use streaming provider sampling."
   (require 'magent-agent)
   (let* ((backend (gptel-make-openai "tools" :key "key"))
          (gptel-backend backend)
@@ -1260,7 +1260,7 @@
       (magent-agent-process "use a tool" nil agent))
     (let ((request (magent-agent-loop-request captured-loop)))
       (should (magent-llm-request-tools request))
-      (should-not (magent-llm-request-stream request)))))
+      (should (magent-llm-request-stream request)))))
 
 (ert-deftest magent-test-llm-gptel-applies-temperature-metadata ()
   "Test the gptel adapter applies request temperature metadata."
@@ -4200,6 +4200,28 @@
       (should (equal (magent-llm-event-text event) "done"))
       (should (equal (magent-llm-event-usage event) '(:total 3))))))
 
+(ert-deftest magent-test-llm-gptel-stream-final-empty-content-keeps-chunks ()
+  "Test streaming completion does not replace chunks with empty content."
+  (require 'magent-llm-gptel)
+  (let* ((events nil)
+         (request (magent-llm-request-create
+                   :stream t
+                   :callback (lambda (event) (push event events))))
+         (buffer (generate-new-buffer " *magent-test-gptel*"))
+         (state (magent-llm-gptel--make-state)))
+    (unwind-protect
+        (progn
+          (magent-llm-gptel--callback
+           request state buffer "MAGENT_TOOL_OK=42" '(:stream t))
+          (magent-llm-gptel--callback
+           request state buffer t '(:content "" :tokens (:total 5)))
+          (let ((event (car events)))
+            (should (eq (magent-llm-event-type event) 'completed))
+            (should (equal (magent-llm-event-text event)
+                           "MAGENT_TOOL_OK=42"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest magent-test-llm-gptel-normalizes-tool-call ()
   "Test gptel adapter maps tool-call callbacks to normalized events."
   (require 'magent-llm-gptel)
@@ -4310,6 +4332,17 @@
      loop (magent-llm-completed-event "Done."))
     (should (equal (magent-agent-loop-result loop)
                    "Checking buffers. Done."))))
+
+(ert-deftest magent-test-agent-loop-completion-falls-back-to-reasoning ()
+  "Test empty final content can recover provider reasoning text."
+  (require 'magent-agent-loop)
+  (let ((loop (magent-agent-loop-create)))
+    (magent-agent-loop-apply-event
+     loop (magent-llm-reasoning-delta-event "MAGENT_TOOL_OK=42"))
+    (magent-agent-loop-apply-event
+     loop (magent-llm-completed-event ""))
+    (should (equal (magent-agent-loop-result loop)
+                   "MAGENT_TOOL_OK=42"))))
 
 (ert-deftest magent-test-agent-loop-start-wraps-request-callback ()
   "Test loop start wraps request callback and invokes the sampler."
@@ -6146,7 +6179,7 @@
           (with-current-buffer buffer
             (setq magent-ui--input-marker nil))
           (cl-letf (((symbol-function 'spinner-stop) #'ignore)
-                    ((symbol-function 'magent-session-save)
+                    ((symbol-function 'magent-session-save-deferred)
                      (lambda ()
                        (setq prompt-visible-at-save
                              (with-current-buffer buffer
@@ -6177,7 +6210,7 @@
           (with-current-buffer buffer
             (setq magent-ui--input-marker nil))
           (cl-letf (((symbol-function 'spinner-stop) #'ignore)
-                    ((symbol-function 'magent-session-save) #'ignore))
+                    ((symbol-function 'magent-session-save-deferred) #'ignore))
             (magent-ui--finish-processing
              (magent-agent-result-failed "Request timed out after 5 seconds")))
           (should-not magent-ui--processing)
@@ -6589,6 +6622,26 @@
       (should (equal (magent-response-item-output (car items)) "match"))
       (should (eq (magent-response-item-status (car items)) 'completed)))))
 
+(ert-deftest magent-test-session-truncates-model-visible-tool-results ()
+  "Test oversized tool results are truncated before session prompt reuse."
+  (require 'magent-session)
+  (let ((magent-tool-result-model-max-length 80)
+        (magent-tool-result-model-preview-length 40)
+        (session (magent-session-create))
+        (payload (make-string 200 ?x)))
+    (magent-session-add-message session 'user "Run tool")
+    (magent-session-add-tool-message
+     session "call-1" "emacs_eval" '(:sexp "(big)") payload)
+    (let* ((tool-msg (cadr (magent-session-get-messages session)))
+           (result (plist-get (magent-msg-content tool-msg) :result))
+           (prompt (magent-session-to-gptel-prompt-list session))
+           (prompt-tool (cdr (cadr prompt))))
+      (should (< (length result) (length payload)))
+      (should (string-prefix-p (make-string 40 ?x) result))
+      (should (string-match-p "Tool result truncated" result))
+      (should-not (equal result payload))
+      (should (equal (plist-get prompt-tool :result) result)))))
+
 (ert-deftest magent-test-thread-ledger-turn-and-item-state-machine ()
   "Test explicit thread/turn/item state transitions."
   (require 'magent-thread)
@@ -6609,6 +6662,29 @@
     (magent-thread-complete-turn thread (magent-thread-turn-id turn))
     (should (eq (magent-thread-turn-status turn) 'completed))
     (should (eq (magent-thread-status thread) 'idle))))
+
+(ert-deftest magent-test-thread-journal-start-events-are-immutable ()
+  "Test early journal events do not grow later item output."
+  (require 'magent-thread)
+  (let* ((thread (magent-thread-create :id "thread-immutable"))
+         (turn (magent-thread-create-turn thread "hello"))
+         (item (magent-thread-start-item
+                thread (magent-thread-turn-id turn) 'tool
+                :id "call-1"
+                :call-id "call-1"
+                :name "emacs_eval"
+                :input '(:sexp "(big)")))
+         (started-event (cl-find 'item-started
+                                 (magent-thread-journal thread)
+                                 :key #'magent-thread-event-type)))
+    (magent-thread-complete-item thread item :output (make-string 200 ?x))
+    (let* ((payload (magent-thread-event-payload started-event))
+           (started-item (magent-thread--event-payload-item payload)))
+      (should (magent-thread-item-p started-item))
+      (should-not (magent-thread-item-output started-item)))
+    (let* ((alist (magent-thread-event-to-alist started-event))
+           (item-alist (cdr (assq 'item (cdr (assq 'payload alist))))))
+      (should-not (cdr (assq 'output item-alist))))))
 
 (ert-deftest magent-test-thread-ledger-replays-journal-from-snapshot ()
   "Test snapshot plus journal replay materializes latest state."

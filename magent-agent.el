@@ -422,7 +422,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                       :tools gptel-tools
                       :model model
                       :backend backend
-                      :stream (null gptel-tools)
+                      :stream t
                       :metadata (list :temperature temperature
                                       :top-p top-p)
                       :callback #'handle-event)

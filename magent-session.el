@@ -254,6 +254,9 @@ This is either the symbol `global' or a normalized project root path.")
 (defvar magent-session--last-id-seq 0
   "Sequence number used when multiple sessions are created in one second.")
 
+(defvar magent-session--save-timer nil
+  "Idle timer used for deferred UI session saves.")
+
 (defconst magent-session-schema-version 3
   "Current schema version written to session JSON files.")
 
@@ -608,6 +611,32 @@ before calling this function."
               (insert (json-encode data))))
           (magent-log "INFO session saved to %s (%d messages) scope=%s"
                       id (length messages) scope)))))))
+
+(defun magent-session-save-deferred (&optional delay)
+  "Schedule a session save to run after Emacs is idle.
+DELAY defaults to `magent-session-save-idle-delay'.  The active session
+and scope at scheduling time are saved even if the user switches scopes
+before the timer fires."
+  (let ((session magent--current-session)
+        (scope magent-session--current-scope)
+        timer)
+    (setq timer
+          (run-with-idle-timer
+           (or delay magent-session-save-idle-delay) nil
+           (lambda ()
+             (when (eq magent-session--save-timer timer)
+               (setq magent-session--save-timer nil))
+             (let ((previous-session magent--current-session)
+                   (previous-scope magent-session--current-scope))
+               (unwind-protect
+                   (progn
+                     (setq magent--current-session session
+                           magent-session--current-scope scope)
+                     (magent-session-save))
+                 (setq magent--current-session previous-session
+                       magent-session--current-scope previous-scope))))))
+    (setq magent-session--save-timer timer)
+    magent-session--save-timer))
 
 (defun magent-session-read-file (filepath)
   "Read session data from FILEPATH without changing active session state.
