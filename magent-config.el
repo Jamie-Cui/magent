@@ -288,6 +288,27 @@ If rg is not found, grep tool calls will fail with an informative error."
   :type 'integer
   :group 'magent)
 
+(defcustom magent-tool-result-model-max-length 12000
+  "Maximum characters of any tool result kept in model-visible history.
+Longer results are truncated before they are recorded in the session
+ledger, legacy messages, context items, and subsequent gptel prompts."
+  :type '(choice (const :tag "Do not truncate tool results" nil)
+                 integer)
+  :group 'magent)
+
+(defcustom magent-tool-result-model-preview-length 10000
+  "Prefix characters retained when a tool result is model-visible truncated.
+The final record also includes a compact truncation notice with the
+original result length."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-session-save-idle-delay 0.25
+  "Idle delay in seconds before UI-triggered session saves run.
+Explicit calls to `magent-session-save' remain synchronous."
+  :type 'number
+  :group 'magent)
+
 (defcustom magent-child-agent-max-depth 1
   "Maximum depth for recursive child-agent spawning.
 A value of 1 allows the visible root agent to spawn direct child agents,

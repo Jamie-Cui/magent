@@ -283,6 +283,14 @@
    :payload (magent-thread--alist-get 'payload alist)
    :created-at (magent-thread--alist-get 'created-at alist)))
 
+(defun magent-thread--turn-event-payload (turn)
+  "Return an immutable JSON-safe payload snapshot for TURN."
+  (list :turn (magent-thread-turn-to-alist turn)))
+
+(defun magent-thread--item-event-payload (item)
+  "Return an immutable JSON-safe payload snapshot for ITEM."
+  (list :item (magent-thread-item-to-alist item)))
+
 (defun magent-thread--event-payload-to-alist (payload)
   "Convert journal PAYLOAD to JSON-safe event payload."
   (cond
@@ -295,9 +303,17 @@
                (safe-value
                 (cond
                  ((eq key :turn)
-                  (and value (magent-thread-turn-to-alist value)))
+                  (cond
+                   ((magent-thread-turn-p value)
+                    (magent-thread-turn-to-alist value))
+                   ((listp value) value)
+                   (t (and value (magent-json-safe-value value)))))
                  ((eq key :item)
-                  (and value (magent-thread-item-to-alist value)))
+                  (cond
+                   ((magent-thread-item-p value)
+                    (magent-thread-item-to-alist value))
+                   ((listp value) value)
+                   (t (and value (magent-json-safe-value value)))))
                  (t
                   (and value (magent-json-safe-value value))))))
           (push (cons (magent-json--object-key key) safe-value) out)))
@@ -749,9 +765,10 @@ Return the new `magent-thread-turn'."
       :type 'turn-started
       :thread-id (magent-thread-id thread)
       :turn-id (magent-thread-turn-id turn)
-      :payload (list :turn turn)
+      :payload (magent-thread--turn-event-payload turn)
       :created-at now))
-    turn))
+    (or (magent-thread--find-turn thread (magent-thread-turn-id turn))
+        turn)))
 
 (defun magent-thread-start-item (thread turn-id type &rest args)
   "Start an item of TYPE in THREAD under TURN-ID using ARGS.
@@ -770,9 +787,10 @@ Return the new `magent-thread-item'."
       :thread-id (magent-thread-id thread)
       :turn-id turn-id
       :item-id (magent-thread-item-id item)
-      :payload (list :item item)
+      :payload (magent-thread--item-event-payload item)
       :created-at now))
-    item))
+    (or (magent-thread--find-item thread (magent-thread-item-id item))
+        item)))
 
 (defun magent-thread-update-item (thread item &rest args)
   "Update ITEM in THREAD with ARGS and return ITEM."
@@ -789,7 +807,7 @@ Return the new `magent-thread-item'."
       :thread-id (magent-thread-id thread)
       :turn-id (magent-thread-item-turn-id item)
       :item-id (magent-thread-item-id item)
-      :payload (list :item incoming)))
+      :payload (magent-thread--item-event-payload incoming)))
     item))
 
 (defun magent-thread-complete-item (thread item &rest args)
@@ -807,7 +825,7 @@ Return the new `magent-thread-item'."
       :thread-id (magent-thread-id thread)
       :turn-id (magent-thread-item-turn-id item)
       :item-id (magent-thread-item-id item)
-      :payload (list :item incoming)))
+      :payload (magent-thread--item-event-payload incoming)))
     item))
 
 (defun magent-thread-fail-item (thread item error &rest args)
@@ -826,7 +844,8 @@ Return the new `magent-thread-item'."
       :thread-id (magent-thread-id thread)
       :turn-id (magent-thread-item-turn-id item)
       :item-id (magent-thread-item-id item)
-      :payload (list :item incoming :error error)))
+      :payload (append (magent-thread--item-event-payload incoming)
+                       (list :error error))))
     item))
 
 (defun magent-thread-complete-turn
@@ -1014,6 +1033,31 @@ Return the new `magent-thread-item'."
   (magent-thread--legacy-tool-value
    (magent-thread--alist-to-keyword-plist input)))
 
+(defun magent-thread--model-visible-tool-result (result)
+  "Return RESULT bounded for model-visible tool history."
+  (let* ((safe-result (if (stringp result)
+                          result
+                        (magent-json-safe-value result)))
+         (text (if (stringp safe-result)
+                   safe-result
+                 (format "%s" safe-result)))
+         (max-length magent-tool-result-model-max-length))
+    (if (and (numberp max-length)
+             (> max-length 0)
+             (> (length text) max-length))
+        (let* ((preview-length
+                (min (max 0 (or magent-tool-result-model-preview-length
+                                max-length))
+                     max-length
+                     (length text)))
+               (truncated (- (length text) preview-length)))
+          (format "%s\n\n[Tool result truncated: original %d characters, kept first %d, omitted %d. Narrow the command, read a smaller range, or refine the query for more detail.]"
+                  (substring text 0 preview-length)
+                  (length text)
+                  preview-length
+                  truncated))
+      safe-result)))
+
 (defun magent-thread-record-message
     (thread turn-id role content &optional phase metadata)
   "Record a terminal message item in THREAD for TURN-ID."
@@ -1031,9 +1075,7 @@ Return the new `magent-thread-item'."
   "Record a merged tool call/result lifecycle item in THREAD."
   (let* ((safe-name (magent-json-safe-name name))
          (safe-args (magent-json-safe-tool-args args))
-         (safe-result (if (stringp result)
-                          result
-                        (magent-json-safe-value result)))
+         (safe-result (magent-thread--model-visible-tool-result result))
          (item (or (magent-thread--find-item thread call-id)
                    (magent-thread-start-item
                     thread turn-id 'tool
