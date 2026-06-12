@@ -85,6 +85,25 @@ was not already emitted as text deltas."
      (t
       event-text))))
 
+(defconst magent-agent--sampling-limit-final-prompt
+  "Magent has reached the per-turn tool budget. Stop using tools and answer the original user request now using only the tool results already available. Be concise.")
+
+(defun magent-agent--sampling-limit-final-request (loop)
+  "Return a no-tool final response request for LOOP's current session."
+  (let* ((request (magent-agent-loop-request-for-current-session loop))
+         (metadata (magent-llm-request-metadata request)))
+    (magent-llm-request-create
+     :prompt (append (magent-llm-request-prompt request)
+                     (list (cons 'prompt
+                                 magent-agent--sampling-limit-final-prompt)))
+     :system (magent-llm-request-system request)
+     :tools nil
+     :model (magent-llm-request-model request)
+     :backend (magent-llm-request-backend request)
+     :stream t
+     :callback (magent-llm-request-callback request)
+     :metadata (append metadata '(:sampling-limit-final t)))))
+
 (defun magent-agent-process
     (user-prompt &optional callback agent-info skill-names event-context
                  request-context capability-resolution ui-callback request-live-p
@@ -239,6 +258,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                   (streaming-started nil)
                   (reasoning-open nil)
                   (sampling-count 0)
+                  (sampling-limit-final-attempted nil)
                   loop)
              (cl-labels
                  ((emit-request-start
@@ -252,7 +272,10 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                     (length
                      (magent-llm-request-prompt
                       (magent-agent-loop-request loop)))
-                    :tool-count (length gptel-tools)
+                    :tool-count
+                    (length
+                     (magent-llm-request-tools
+                      (magent-agent-loop-request loop)))
                     :system-prompt-length (length (or system-msg ""))))
                   (close-reasoning
                    ()
@@ -271,19 +294,29 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                             (> magent-max-sampling-requests 0)
                             (>= sampling-count
                                 magent-max-sampling-requests))
-                       (let ((message
-                              (format
-                               "Maximum sampling requests reached for this turn (%d)"
-                               magent-max-sampling-requests)))
+                       (if sampling-limit-final-attempted
+                           (let ((message
+                                  (format
+                                   "Maximum sampling requests reached for this turn (%d)"
+                                   magent-max-sampling-requests)))
+                             (magent-log
+                              "WARN stopping turn continuation after %d sampling request(s): %s"
+                              sampling-count
+                              (plist-get outcome :reason))
+                             (finish-turn 'failed message
+                                          (list :status 'sampling-limit
+                                                :sampling-count sampling-count
+                                                :continuation-reason
+                                                (plist-get outcome :reason))))
+                         (setq sampling-limit-final-attempted t)
+                         (setf (magent-agent-loop-request loop)
+                               (magent-agent--sampling-limit-final-request
+                                loop))
                          (magent-log
-                          "WARN stopping turn continuation after %d sampling request(s): %s"
+                          "WARN forcing final response after %d sampling request(s): %s"
                           sampling-count
                           (plist-get outcome :reason))
-                         (finish-turn 'failed message
-                                      (list :status 'sampling-limit
-                                            :sampling-count sampling-count
-                                            :continuation-reason
-                                            (plist-get outcome :reason))))
+                         (sample))
                      (setf (magent-agent-loop-request loop)
                            (magent-agent-loop-request-for-current-session
                             loop))

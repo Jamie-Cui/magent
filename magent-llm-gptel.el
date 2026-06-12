@@ -390,7 +390,9 @@ executing tools or continuing the tool loop."
                    request
                    (magent-llm-gptel--normalize-tool-call
                     call
-                    (when last-p '(:last t)))))))
+                    (when last-p '(:last t)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))))
    ((eq response t)
     (if (magent-llm-gptel--pending-tool-use-p info)
         (when (buffer-live-p buffer)
