@@ -290,12 +290,14 @@
                              :args (:sexp "(+ 1 2)")
                              :result "eval:(+ 1 2)")))))))
 
-(ert-deftest magent-test-agent-process-stops-at-sampling-budget ()
-  "Test per-turn sampling budget stops tool-output continuations."
+(ert-deftest magent-test-agent-process-forces-final-at-sampling-budget ()
+  "Test per-turn sampling budget forces a final no-tool response."
   (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
          (gptel-model 'gpt-4o-mini)
          (magent-max-sampling-requests 1)
          (call-count 0)
+         (sampled-prompts nil)
+         (sampled-tool-use nil)
          (response nil)
          (session (magent-session-create :id "session-1"))
          (request-state (magent-request-context-create
@@ -318,16 +320,26 @@
               ((symbol-function 'magent-tool-registry-for-agent)
                (lambda (_agent) (list tool-runtime)))
               ((symbol-function 'gptel-request)
-               (lambda (_prompt &rest kwargs)
+               (lambda (prompt &rest kwargs)
                  (cl-incf call-count)
+                 (push prompt sampled-prompts)
+                 (push gptel-use-tools sampled-tool-use)
                  (let ((callback (plist-get kwargs :callback)))
-                   (funcall
-                    callback
-                    '(tool-call . ((nil ("(+ 1 2)") nil
-                                        (:id "call-1"
-                                         :name "emacs_eval"
-                                         :args (:sexp "(+ 1 2)")))))
-                    '(:tool-use t)))))
+                   (pcase call-count
+                     (1
+                      (funcall
+                       callback
+                       '(tool-call . ((nil ("(+ 1 2)") nil
+                                           (:id "call-1"
+                                            :name "emacs_eval"
+                                            :args (:sexp "(+ 1 2)")))))
+                       '(:tool-use t)))
+                     (2
+                      (should (plist-get kwargs :stream))
+                      (funcall callback "The result is 3." '(:stream t))
+                      (funcall callback t '(:content "The result is 3.")))
+                     (_
+                      (error "unexpected sampling request %d" call-count))))))
               ((symbol-function 'magent-log) #'ignore)
               ((symbol-function 'magent-events-emit) #'ignore)
               ((symbol-function 'magent-events-begin-turn)
@@ -338,12 +350,14 @@
        "Run eval"
        (lambda (result) (setq response result))
        agent nil nil nil nil nil nil request-state))
-    (should (= call-count 1))
-    (should (magent-agent-result-p response))
-    (should-not (magent-agent-result-success-p response))
-    (should (string-match-p
-             "Maximum sampling requests reached"
-             (magent-agent-result-content-string response)))))
+    (should (= call-count 2))
+    (should (equal response "The result is 3."))
+    (should (equal (nreverse sampled-tool-use) '(t nil)))
+    (let ((final-prompt (car sampled-prompts)))
+      (should (equal (caar (last final-prompt)) 'prompt))
+      (should (string-match-p
+               "Stop using tools"
+               (cdar (last final-prompt)))))))
 
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Frontmatter parsing tests
@@ -4245,7 +4259,8 @@
             (should (equal (magent-llm-event-id event) "call-1"))
             (should (equal (magent-llm-event-name event) "read_file"))
             (should (equal (magent-llm-event-arguments event)
-                           '(:path "README.org")))))
+                           '(:path "README.org"))))
+          (should-not (buffer-live-p buffer)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -5599,11 +5614,78 @@
                              "draft"))
             (should-not (get-text-property (marker-position magent-ui--input-marker)
                                            'read-only))
-            (should (get-text-property (1- (marker-position magent-ui--input-marker))
-                                       'read-only))))
+            (should-not (get-text-property
+                         (1- (marker-position magent-ui--input-marker))
+                         'read-only))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (magent-session-reset))))
+
+(ert-deftest magent-test-input-prompt-heading-is-editable-until-submit ()
+  "Test the active input prompt heading is editable, then read-only after submit."
+  (require 'magent-ui)
+  (let* ((magent-buffer-name "*magent-editable-input*")
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (buffer nil)
+         (captured nil)
+         (section-start nil))
+    (unwind-protect
+        (progn
+          (magent-session-activate 'global)
+          (setq buffer (magent-ui-get-buffer 'global))
+          (with-current-buffer buffer
+            (magent-ui--insert-input-prompt 'global)
+            (setq section-start magent-ui--input-section-start)
+            (let ((heading-end (marker-position magent-ui--input-marker)))
+              (should-not (get-text-property
+                           magent-ui--input-section-start 'read-only))
+              (should-not (get-text-property (1- heading-end) 'read-only))
+              (goto-char heading-end)
+              (insert "editable heading prompt")))
+          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
+                    ((symbol-function 'magent-ui-process)
+                     (lambda (text &optional source display skills agent)
+                       (setq captured (list text source display skills agent)))))
+            (with-current-buffer buffer
+              (magent-input-submit)))
+          (should (equal (car captured) "editable heading prompt"))
+          (with-current-buffer buffer
+            (should (get-text-property section-start 'read-only))
+            (should (get-text-property (1- (point-max)) 'read-only))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-input-submit-allows-deleted-prompt-heading ()
+  "Test deleting the active input heading does not corrupt submitted text."
+  (require 'magent-ui)
+  (let* ((magent-buffer-name "*magent-deleted-input-heading*")
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (buffer nil)
+         (captured nil))
+    (unwind-protect
+        (progn
+          (magent-session-activate 'global)
+          (setq buffer (magent-ui-get-buffer 'global))
+          (with-current-buffer buffer
+            (magent-ui--insert-input-prompt 'global)
+            (let ((inhibit-read-only t))
+              (delete-region magent-ui--input-section-start
+                             (marker-position magent-ui--input-marker))
+              (goto-char (point-max))
+              (insert "body survives")))
+          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
+                    ((symbol-function 'magent-ui-process)
+                     (lambda (text &optional source display skills agent)
+                       (setq captured (list text source display skills agent)))))
+            (with-current-buffer buffer
+              (magent-input-submit)))
+          (should (equal (car captured) "body survives")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest magent-test-resume-session-restores-loaded-buffer-content ()
   "Test resuming a session does not overwrite the loaded snapshot."

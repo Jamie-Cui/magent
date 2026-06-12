@@ -483,11 +483,8 @@ renders history into it on first use.  Returns the active session."
                       (forward-line 1)
                       (point))))
               (let ((inhibit-read-only t))
-                (remove-text-properties input-start (point-max) '(read-only t))
-                (when (> input-start section-start)
-                  (add-text-properties section-start input-start '(read-only t))
-                  (put-text-property (1- input-start) input-start
-                                     'rear-nonsticky '(read-only))))
+                (remove-text-properties section-start (point-max)
+                                        '(read-only t)))
               (setq magent-ui--input-section-start section-start)
               (setq magent-ui--input-marker (copy-marker input-start)))))))))
 
@@ -716,33 +713,26 @@ Called via `kill-buffer-hook' to prevent timers firing on dead buffers."
 
 (defvar-local magent-ui--input-marker nil
   "Marker at the start of the user input area.
-Non-nil only when an editable input prompt is active.  Everything
-before this marker is read-only; everything at or after it is
-editable by the user.")
+Non-nil only when an editable input prompt is active.  The marker
+separates the prompt heading from the user-entered prompt body.")
 
 (defvar-local magent-ui--input-section-start nil
   "Buffer position where the input prompt section starts.
-Includes the separator and header that precede the editable area.
-Used by `magent-ui--remove-input-prompt' to delete the entire section.")
+Includes the separator and header that precede the prompt body.
+Used by `magent-ui--remove-input-prompt' and `magent-input-submit'
+to handle the whole active input section.")
 
 (defun magent-ui--insert-input-prompt (&optional scope)
   "Insert a user input prompt at the end of the output buffer for SCOPE.
-The prompt consists of a separator, a `* [USER]' heading (both
-read-only), and an editable area below where the user can type.
-Sets `magent-ui--input-marker' to the start of the editable area."
+The prompt consists of an editable separator, a `* [USER]' heading,
+and an editable area below where the user can type.  Sets
+`magent-ui--input-marker' to the start of the prompt body."
   (with-current-buffer (magent-ui-get-buffer scope)
-    (let ((inhibit-read-only t)
-          (start (point-max)))
+    (let ((inhibit-read-only t))
       (goto-char (point-max))
+      (setq magent-ui--input-section-start (point))
       (magent-ui--insert-separator)
       (magent-ui--insert-header magent-user-prompt 'magent-user-header)
-      ;; Make separator + header read-only, last char rear-nonsticky
-      ;; so user-typed text after it does NOT inherit read-only.
-      (when (> (point-max) start)
-        (add-text-properties start (point-max) '(read-only t))
-        (put-text-property (1- (point-max)) (point-max)
-                           'rear-nonsticky '(read-only)))
-      (setq magent-ui--input-section-start start)
       (setq magent-ui--input-marker (copy-marker (point-max)))
       ;; Auto-scroll to input area
       (let ((win (get-buffer-window (current-buffer))))
@@ -863,9 +853,21 @@ with optional partial skill name."
              (eq (char-before) ?@))
     (completion-at-point)))
 
+(defun magent-ui--input-body-start ()
+  "Return the body start position for the active input prompt."
+  (or (and magent-ui--input-marker
+           (marker-position magent-ui--input-marker))
+      (when magent-ui--input-section-start
+        (save-excursion
+          (goto-char magent-ui--input-section-start)
+          (when (re-search-forward (magent-ui--header-regexp) nil t)
+            (forward-line 1)
+            (point))))
+      (point-max)))
+
 (defun magent-input-submit ()
   "Submit the text in the input area and send it to the agent.
-Makes the input text read-only, clears the input marker, and
+Makes the submitted input section read-only, clears the input marker, and
 dispatches to the queue.  Whole-input commands such as @clear are
 executed locally instead of sent to the agent.  The `* [USER]'
 heading already in the buffer is reused (the queue skips inserting
@@ -875,17 +877,9 @@ a duplicate)."
     (user-error "No input area active"))
   (magent--ensure-initialized)
   (magent-ui--activate-context-session)
-  ;; Find the actual start of user-editable content: the first position
-  ;; after the read-only header (separator + "* USER \n").  We use
-  ;; next-single-property-change rather than the marker directly because
-  ;; the marker can drift to point-max when text is inserted before it
-  ;; (e.g. via org-mode electric indent or completion-at-point), making
-  ;; buffer-substring return "" even though the user has typed text.
-  (let* ((input-start (or (when magent-ui--input-section-start
-                            (next-single-property-change
-                             magent-ui--input-section-start 'read-only nil
-                             (point-max)))
-                          (marker-position magent-ui--input-marker)))
+  (let* ((section-start (or magent-ui--input-section-start
+                            (marker-position magent-ui--input-marker)))
+         (input-start (magent-ui--input-body-start))
          (raw (string-trim
                (buffer-substring-no-properties input-start (point-max)))))
     (if-let* ((command (magent-ui--input-command raw)))
@@ -903,8 +897,8 @@ a duplicate)."
           (goto-char (point-max))
           (unless (eq (char-before) ?\n)
             (insert "\n"))
-          ;; Make the user text read-only
-          (add-text-properties input-start (point-max) '(read-only t)))
+          ;; Once submitted, the whole user section becomes history.
+          (add-text-properties section-start (point-max) '(read-only t)))
         (setq magent-ui--input-marker nil)
         (setq magent-ui--input-section-start nil)
         (run-hooks 'magent-ui-after-input-submit-hook)
