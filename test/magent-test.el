@@ -1017,11 +1017,9 @@
     (should (magent-agent-info-mode-p all-agent 'primary))
     (should (magent-agent-info-mode-p all-agent 'subagent))))
 
-(ert-deftest magent-test-agent-legacy-features-remain-requireable ()
-  "Test old agent feature names load through explicit shim files."
-  (require 'magent-agent-info)
+(ert-deftest magent-test-agent-types-legacy-feature-remains-requireable ()
+  "Test old agent-types feature name loads through its explicit shim file."
   (require 'magent-agent-types)
-  (should (featurep 'magent-agent-info))
   (should (featurep 'magent-agent-types))
   (should (featurep 'magent-agent-registry)))
 

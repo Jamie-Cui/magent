@@ -81,7 +81,6 @@
     "magent-runtime.el"
     "magent-permission.el"
     "magent-agent-registry.el"
-    "magent-agent-info.el"
     "magent-agent-types.el"
     "magent-agent-file.el"
     "magent-llm.el"
