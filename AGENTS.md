@@ -91,7 +91,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
   ├─ magent-tools.el      (14 gptel-tool structs)
   ├─ magent-agent.el      (magent-agent-process: builds gptel prompt, calls gptel-request)
   ├─ magent-agent-registry.el  (cl-defstruct, 7 built-in agents, hash-table registry)
-  ├─ magent-agent-info.el / magent-agent-types.el  (legacy feature-name compatibility shims)
+  ├─ magent-agent-types.el  (legacy feature-name compatibility shim)
   ├─ magent-agent-file.el      (loads custom agents from .magent/agent/*.md)
   ├─ magent-permission.el      (rule-based tool access control per agent)
   ├─ magent-ui.el              (in-buffer input/output, org-mode derived, overlay sections)
@@ -143,7 +143,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
 
 ### Agent Definitions
 
-Built-in agents: `build` (default), `plan`, `explore`, `general`, `compaction`, `title`, `summary`. Defined in `magent-agent-registry.el` with `cl-defstruct magent-agent-info` (fields: name, description, mode, native, hidden, temperature, top-p, color, model, prompt, options, steps, permission). `magent-agent-info.el` and `magent-agent-types.el` are now only compatibility shims for older `require` forms. Agent modes: `primary` (user-facing), `subagent` (internal), `all` (either).
+Built-in agents: `build` (default), `plan`, `explore`, `general`, `compaction`, `title`, `summary`. Defined in `magent-agent-registry.el` with `cl-defstruct magent-agent-info` (fields: name, description, mode, native, hidden, temperature, top-p, color, model, prompt, options, steps, permission). `magent-agent-types.el` is a compatibility shim for older `require` forms. Agent modes: `primary` (user-facing), `subagent` (internal), `all` (either).
 
 Custom agents: `.magent/agent/*.md` files with YAML frontmatter + markdown body (system prompt). Frontmatter is parsed by `magent-file-loader.el` (supports booleans, numbers, quoted strings, comma-separated lists; converts underscores to hyphens in keys).
 

@@ -45,7 +45,6 @@ SRCS = magent-config.el \
        magent-tool-orchestrator.el \
        magent-turn.el \
        magent-agent.el \
-       magent-agent-info.el \
        magent-agent-types.el \
        magent-agent-registry.el \
        magent-agent-file.el \

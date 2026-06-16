@@ -9,13 +9,11 @@
 ;;; Commentary:
 
 ;; Agent info structure, built-in agent definitions, and central registry.
-;; This file consolidates what was previously split across:
-;;   magent-agent-info.el   (struct + helpers)
-;;   magent-agent-types.el  (built-in agent definitions)
-;;   magent-agent-registry.el (registry operations)
+;; The struct/helper API still uses the `magent-agent-info-' prefix because
+;; that is the public data type name.
 ;;
-;; Tiny compatibility shim files still exist for the historical
-;; `magent-agent-info' and `magent-agent-types' feature names.
+;; A tiny compatibility shim still exists for the historical
+;; `magent-agent-types' feature name.
 
 ;;; Code:
 

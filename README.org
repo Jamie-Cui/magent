@@ -348,7 +348,6 @@ magent/
 |-- magent-tools.el                # Tool implementations (14 gptel-tool structs)
 |-- magent-tool-orchestrator.el    # Permission, approval, audit, and tool-call orchestration
 |-- magent-agent.el                # Agent logic (gptel integration)
-|-- magent-agent-info.el           # Compatibility shim for legacy agent-info feature
 |-- magent-agent-types.el          # Compatibility shim for legacy agent-types feature
 |-- magent-agent-registry.el       # Agent struct, built-in definitions, and registry
 |-- magent-agent-file.el           # Custom agent file loader (.magent/agent/*.md)
