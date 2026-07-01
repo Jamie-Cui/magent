@@ -149,13 +149,30 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                 request-live-p)
             (magent-request-context-event-context request-state) context))
     (magent-session-set-agent session agent)
-    (magent-session-add-message session 'user user-prompt)
-    (when request-state
-      (when-let* ((turn (magent-thread-active-turn
-                         (magent-session-thread-ledger session))))
-        (setf (magent-request-context-turn-id request-state)
-              (magent-thread-turn-id turn))))
-    (let* ((prompt-list (magent-session-to-gptel-prompt-list session))
+    (let* ((thread (magent-session-thread-ledger session))
+           (state-turn-id (and request-state
+                               (magent-request-context-turn-id request-state)))
+           (state-turn (and state-turn-id
+                            (magent-thread-find-turn thread state-turn-id))))
+      (if state-turn
+          (progn
+            (magent-thread-record-user-message-if-needed
+             thread state-turn-id user-prompt nil
+             (list :source 'agent-process))
+            (magent-session-refresh-projections session))
+        (magent-session-add-message session 'user user-prompt))
+      (when request-state
+        (let* ((active-turn (magent-thread-active-turn
+                             (magent-session-thread-ledger session)))
+               (turn-id (or (and state-turn state-turn-id)
+                            (and active-turn
+                                 (magent-thread-turn-id active-turn)))))
+          (when turn-id
+            (setf (magent-request-context-turn-id request-state) turn-id)))))
+    (let* ((current-turn-id (and request-state
+                                 (magent-request-context-turn-id request-state)))
+           (prompt-list (magent-session-to-gptel-prompt-list
+                         session current-turn-id))
            (base-system-msg (or (magent-agent-info-prompt agent)
                                 magent-system-prompt))
            (capability-resolution
@@ -257,11 +274,128 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                     request-state))))
                   (streaming-started nil)
                   (reasoning-open nil)
+                  (assistant-item nil)
+                  (reasoning-item nil)
                   (sampling-count 0)
                   (sampling-limit-final-attempted nil)
                   loop)
              (cl-labels
-                 ((emit-request-start
+                 ((current-turn-id
+                   ()
+                   (or (and request-state
+                            (magent-request-context-turn-id request-state))
+                       (and loop
+                            (magent-agent-loop-turn-id loop))
+                       (and (magent-thread-active-turn
+                             (magent-session-thread-ledger session))
+                            (magent-thread-turn-id
+                             (magent-thread-active-turn
+                              (magent-session-thread-ledger session))))))
+                  (ensure-assistant-item
+                   ()
+                   (or assistant-item
+                       (when-let* ((thread (magent-session-thread-ledger
+                                            session))
+                                   (turn-id (current-turn-id)))
+                         (setq assistant-item
+                               (magent-thread-ensure-message-item
+                                thread turn-id 'assistant nil
+                                (list :source 'streaming)))
+                         assistant-item)))
+                  (ensure-reasoning-item
+                   ()
+                   (or reasoning-item
+                       (when-let* ((thread (magent-session-thread-ledger
+                                            session))
+                                   (turn-id (current-turn-id)))
+                         (setq reasoning-item
+                               (magent-thread-start-item
+                                thread turn-id 'reasoning
+                                :metadata
+                                (list :source 'streaming
+                                      :include-reasoning
+                                      magent-include-reasoning)))
+                         reasoning-item)))
+                  (record-text-delta
+                   (text)
+                   (when-let* ((chunk (and (stringp text) text))
+                               (thread (magent-session-thread-ledger session))
+                               (item (ensure-assistant-item)))
+                     (magent-thread-append-item-content thread item chunk)
+                     (magent-session-save-deferred)))
+                  (record-reasoning-delta
+                   (text)
+                   (when (not (null magent-include-reasoning))
+                     (when-let* ((chunk (and (stringp text) text))
+                                 (thread (magent-session-thread-ledger session))
+                                 (item (ensure-reasoning-item)))
+                       (magent-thread-append-item-content thread item chunk)
+                       (magent-session-save-deferred))))
+                  (finish-reasoning-item
+                   ()
+                   (when-let* ((thread (magent-session-thread-ledger session))
+                               (item reasoning-item))
+                     (unless (magent-thread-terminal-item-p item)
+                       (magent-thread-complete-item
+                        thread item
+                        :content (magent-thread-item-content item)
+                        :metadata (magent-thread-item-metadata item))
+                       (magent-session-refresh-projections session)
+                       (magent-session-save-deferred))
+                     (setq reasoning-item nil)))
+                  (record-assistant-terminal
+                   (status response)
+                   (let* ((thread (magent-session-thread-ledger session))
+                          (turn-id (current-turn-id))
+                          (text (cond
+                                 ((stringp response) response)
+                                 ((null response) "")
+                                 (t (format "%S" response)))))
+                     (if (and thread turn-id)
+                         (let ((item (or assistant-item
+                                         (magent-thread-ensure-message-item
+                                          thread turn-id 'assistant nil
+                                          (list :source 'terminal)))))
+                           (pcase status
+                             ('completed
+                              (let ((final-text
+                                     (if (string-empty-p text)
+                                         (or (magent-thread-item-content item)
+                                             "")
+                                       text)))
+                                (magent-thread-complete-item
+                                 thread item
+                                 :role 'assistant
+                                 :content final-text)
+                                (if (magent-session--assistant-response-reusable-p
+                                     final-text)
+                                    (magent-thread-complete-turn
+                                     thread turn-id)
+                                  (magent-thread-fail-turn
+                                   thread turn-id final-text))))
+                             (_
+                              (let ((message
+                                     (if (string-prefix-p "Error:" text)
+                                         text
+                                       (concat "Error: " text))))
+                                (magent-thread-fail-item
+                                 thread item message
+                                 :role 'assistant
+                                 :content message)
+                                (magent-thread-fail-turn
+                                 thread turn-id message))))
+                           (setq assistant-item item)
+                           (magent-session-refresh-projections session)
+                           (condition-case err
+                               (magent-session-save)
+                             (error
+                              (magent-log
+                               "ERROR immediate session save failed: %s"
+                               (error-message-string err)))))
+                       (when (eq status 'completed)
+                         (magent-session-add-message
+                          session 'assistant text)))))
+                  (emit-request-start
                    ()
                    (magent-events-emit
                     'llm-request-start
@@ -282,7 +416,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                    (when reasoning-open
                      (setq reasoning-open nil)
                      (when (magent-agent--ui-visible-p request-state)
-                       (magent-ui-insert-reasoning-end))))
+                       (magent-ui-insert-reasoning-end)))
+                   (finish-reasoning-item))
                   (sample
                    ()
                    (cl-incf sampling-count)
@@ -342,29 +477,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                     :model (format "%s" model))
                    (unless event-context
                      (magent-events-end-turn context status))
-                   (when (and (eq status 'completed)
-                              (stringp response))
-                     (magent-session-add-message session 'assistant response))
-                   (when (not (eq status 'completed))
-                     (let* ((thread (magent-session-thread-ledger session))
-                            (active-turn (magent-thread-active-turn thread))
-                            (turn-id (or (and request-state
-                                              (magent-request-context-turn-id
-                                               request-state))
-                                         (and active-turn
-                                              (magent-thread-turn-id
-                                               active-turn))))
-                            (raw-message (if (stringp response)
-                                             response
-                                           (format "%S" response)))
-                            (message (if (string-prefix-p "Error:" raw-message)
-                                         raw-message
-                                       (concat "Error: " raw-message))))
-                       (when turn-id
-                         (magent-thread-record-message
-                          thread turn-id 'assistant message)
-                         (magent-thread-fail-turn thread turn-id message)
-                         (magent-session-refresh-projections session))))
+                   (record-assistant-terminal status response)
                    (when callback
                      (funcall callback
                               (if (eq status 'completed)
@@ -384,10 +497,11 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                      (pcase (magent-llm-event-type event)
                        ('text-delta
                         (start-streaming)
-                        (magent-events-emit
-                         'text-delta
-                         :context context
-                         :text (magent-llm-event-text event))
+                       (magent-events-emit
+                        'text-delta
+                        :context context
+                        :text (magent-llm-event-text event))
+                        (record-text-delta (magent-llm-event-text event))
                         (when (magent-agent--ui-visible-p request-state)
                           (funcall (or ui-callback
                                        #'magent-ui-insert-streaming)
@@ -399,35 +513,40 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                             (setq reasoning-open t)
                             (magent-ui-insert-reasoning-start))
                           (magent-ui-insert-reasoning-text
-                           (magent-llm-event-text event))))
+                           (magent-llm-event-text event)))
+                        (record-reasoning-delta
+                         (magent-llm-event-text event)))
                        ('reasoning-end
                         (close-reasoning))
                        ('tool-call
                         (close-reasoning)
                         (when (and streaming-started
                                    (magent-agent--ui-visible-p request-state))
+                          (magent-ui-continue-streaming)))
+                       ('tool-call-batch-end
+                        (close-reasoning)
+                        (when (and streaming-started
+                                   (magent-agent--ui-visible-p request-state))
                           (magent-ui-continue-streaming))
-                        (when (plist-get (magent-llm-event-metadata event)
-                                         :last)
-                          (magent-events-emit
-                           'llm-request-end
-                           :context context
-                           :status 'tool-calls
-                           :backend (and backend (gptel-backend-name backend))
-                           :model (format "%s" model))
-                          (magent-agent-loop-dispatch-tool-calls
-                           loop
-                           (magent-agent-loop-create-orchestrator
-                            loop
-                            (magent-agent-info-permission agent)
-                            request-state)
-                           (lambda (outcome)
-                             (if (and (eq (magent-agent-loop-status loop)
-                                          'failed)
-                                      (stringp (plist-get outcome :result)))
-                                 (finish-turn 'failed
-                                              (plist-get outcome :result))
-                               (continue-turn outcome))))))
+                        (magent-events-emit
+                         'llm-request-end
+                         :context context
+                         :status 'tool-calls
+                         :backend (and backend (gptel-backend-name backend))
+                         :model (format "%s" model))
+                        (magent-agent-loop-dispatch-tool-calls
+                         loop
+                         (magent-agent-loop-create-orchestrator
+                          loop
+                          (magent-agent-info-permission agent)
+                          request-state)
+                         (lambda (outcome)
+                           (if (and (eq (magent-agent-loop-status loop)
+                                        'failed)
+                                    (stringp (plist-get outcome :result)))
+                               (finish-turn 'failed
+                                            (plist-get outcome :result))
+                             (continue-turn outcome)))))
                        ('completed
                         (let ((ui-text
                                (magent-agent--completion-ui-text

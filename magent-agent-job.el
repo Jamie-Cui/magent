@@ -96,8 +96,11 @@ Recognized keys are `:id', `:parent-session-id', `:agent-name',
 (defun magent-agent-job-set-status (job status &optional result error)
   "Set JOB to STATUS and optionally record RESULT or ERROR.
 Return JOB."
-  (setf (magent-agent-job-status job)
-        (magent-agent-job--coerce-status status))
+  (let ((status (magent-agent-job--coerce-status status)))
+    (setf (magent-agent-job-status job) status)
+    (when (memq status '(queued running waiting))
+      (setf (magent-agent-job-result job) nil
+            (magent-agent-job-error job) nil)))
   (setf (magent-agent-job-updated-at job) (float-time))
   (when result
     (setf (magent-agent-job-result job) result))

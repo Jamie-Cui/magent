@@ -37,7 +37,7 @@
 
 (defface magent-tool-header
   '((t :inherit (bold font-lock-type-face)))
-  "Face for `#+begin_tool'/`#+end_tool' lines."
+  "Face for compact tool status rows."
   :group 'magent)
 
 (defface magent-tool-args
@@ -62,7 +62,7 @@
 
 (defface magent-reasoning-header
   '((t :inherit (bold font-lock-doc-face)))
-  "Face for `#+begin_think'/`#+end_think' lines."
+  "Face for compact reasoning status rows."
   :group 'magent)
 
 (defface magent-separator
@@ -94,6 +94,21 @@ Default value is read from prompt.txt next to this file."
 Output buffers are named like `*magent:global*' or
 `*magent:PROJECT-NAME*'."
   :type 'string
+  :group 'magent)
+
+(defcustom magent-compose-window-height 0.25
+  "Height used when displaying the Magent compose popup.
+If this is an integer, it is interpreted as a number of lines.  If
+it is a float, it is interpreted as a fraction of the frame height."
+  :type '(choice (integer :tag "Lines")
+                 (float :tag "Frame fraction"))
+  :group 'magent)
+
+(defcustom magent-compose-close-after-submit t
+  "Whether to close the Magent compose popup after submitting a prompt.
+When non-nil, submitting from compose closes its window and selects the
+Magent workspace buffer.  When nil, the compose window remains open."
+  :type 'boolean
   :group 'magent)
 
 (defcustom magent-auto-scroll t
@@ -388,10 +403,10 @@ In other words, `ignore' means \"hidden but kept\", while nil means
   :group 'magent)
 
 (defcustom magent-ui-wrap-reasoning-in-think-block t
-  "Whether to wrap displayed reasoning in `#+begin_think' blocks.
-When nil, displayed reasoning is inserted as plain assistant text.
-This only affects reasoning shown in the Magent UI, so it has no
-effect unless `magent-include-reasoning' is t."
+  "Legacy compatibility flag for the old `#+begin_think' UI.
+The current workspace renders reasoning as compact status rows and
+does not display raw reasoning text.  This option is retained so
+older configurations do not fail when loaded."
   :type 'boolean
   :group 'magent)
 

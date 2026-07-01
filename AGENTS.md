@@ -14,7 +14,7 @@ Stable child-agent architecture document:
 Important boundaries:
 
 - Do not implement Codex sandbox, seatbelt, bubblewrap, or shell isolation parity as part of this goal.
-- Preserve Magent's Emacs-native workflow: live buffers, `emacs_eval`, org output, project-scoped sessions, and gptel transport.
+- Preserve Magent's Emacs-native workflow: live buffers, `emacs_eval`, workspace/compose buffers, project-scoped sessions, and gptel transport.
 - Keep using `gptel-request` for provider/request/HTTP/SSE plumbing. Do not rewrite gptel provider integration.
 - The old `delegate` tool has been replaced by `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, and `close_agent`; do not reintroduce a compatibility wrapper unless explicitly requested.
 - When work is interrupted, update the relevant stable docs or active task notes before stopping so progress can be recovered from git on another machine.
@@ -94,9 +94,9 @@ magent.el (entry point: magent-mode, global-magent-mode)
   ├─ magent-agent-types.el  (legacy feature-name compatibility shim)
   ├─ magent-agent-file.el      (loads custom agents from .magent/agent/*.md)
   ├─ magent-permission.el      (rule-based tool access control per agent)
-  ├─ magent-ui.el              (in-buffer input/output, org-mode derived, overlay sections)
+  ├─ magent-ui.el              (special-mode workspace, compose buffer, ledger projection)
   ├─ magent-file-loader.el     (shared file-backed definition loader and frontmatter parser)
-  ├─ magent-md2org.el          (markdown → org-mode conversion for assistant output)
+  ├─ magent-md2org.el          (legacy markdown → org-mode compatibility helpers)
   ├─ magent-evil.el            (optional Evil integration; not loaded by magent by default)
   └─ magent-skills.el          (skill registry, built-in skill definitions, file loading, and interactive commands)
 ```
@@ -107,32 +107,32 @@ magent.el (entry point: magent-mode, global-magent-mode)
 
 2. **Runtime** (`magent-runtime.el`): Owns the ordered initialization pipeline for agents, skills, and capabilities. Static bundled definitions load once; project-local overlays under `.magent/` are activated and unloaded as session scope changes.
 
-3. **UI** (`magent-ui.el`): The `*magent*` buffer derives from `org-mode` (`magent-output-mode`). Uses **in-buffer input**: `magent-prompt` inserts an editable `* [USER]` section at buffer end; `C-c C-c` submits. Past content is read-only.
-   - Message sections use level-1 org headings with custom faces
-   - Tool calls render as `#+begin_tool`/`#+end_tool` blocks (auto-folded via deferred `org-cycle`)
-   - Reasoning blocks render as `#+begin_think`/`#+end_think` (auto-folded)
-   - Child-agent lifecycle events render as `#+begin_agent`/`#+end_agent` blocks; `magent-show-agent-transcript` (`C-c m j`) opens persisted child transcript details
-   - Streaming uses chunk batching (`magent-ui-batch-insert-delay`) and async fontification above `magent-ui-fontify-threshold`
-   - Request serialization is owned here via `magent-ui--processing` and `magent-ui--enqueue`; concurrent prompts are rejected with a busy message instead of buffered
-   - `?` opens a transient menu; `TAB`/`S-TAB` fold sections; `C-g` interrupts
+3. **UI** (`magent-ui.el`): The Magent workspace derives from `special-mode` (`magent-output-mode`) and renders a read-only current/recent turn projection from the ledger. Prompt composition lives in a scope-specific `magent-compose-mode` buffer; `C-c C-c` submits from compose.
+   - Workspace restore is ledger-driven; `buffer-content` is legacy fallback data and is no longer the UI source of truth
+   - Tool calls render as compact rows with bounded result previews
+   - Reasoning is stored in ledger items when enabled, while the workspace shows status and character count only
+   - Child-agent lifecycle events render as compact rows; `magent-show-agent-transcript` (`C-c m j`) opens persisted child transcript details
+   - Streaming uses chunk batching (`magent-ui-batch-insert-delay`) and does not convert markdown to org in the live path
+   - Request serialization is owned by `magent-turn`; `magent-ui--processing` remains a compatibility flag
+   - `?` opens a transient menu; `TAB` folds workspace fragments; `C-c C-c` opens compose when idle or confirms interrupt while a request is running
 
 4. **Agent processing** (`magent-agent.el`): `magent-agent-process` builds a gptel prompt list from the session, applies per-agent overrides (model, temperature via `default-value` — intentionally avoids buffer-local gptel settings), exposes filtered tools to the provider, then starts `magent-agent-loop`.
 
 5. **Tools** (`magent-tools.el`): 14 `gptel-tool` structs — `read_file`, `write_file`, `edit_file`, `grep`, `glob`, `bash`, `emacs_eval`, `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, `close_agent`, `skill_invoke`, `web_search`. Tools are registered globally but filtered per-agent through permissions. The child-agent tools share the `agent` permission key. `web_search` uses DuckDuckGo via `url-retrieve` + `libxml-parse-html-region` (requires Emacs built with `--with-xml2`).
 
-6. **Agent Loop**: `magent-agent.el` starts the Magent-owned loop through `magent-agent-loop.el`. `magent-llm.el` defines normalized request/events, and `magent-llm-gptel.el` calls `gptel-request` while hiding gptel callback/FSM details. The loop owns tool dispatch through `magent-tool-orchestrator`, serial tool queueing, permission audit hooks, visible tool rendering, request abort cleanup, tool-result session recording, and Codex-style continuation. Tool results are fed back to the model; the loop does not impose an `emacs_eval` per-turn call cap.
+6. **Agent Loop**: `magent-agent.el` starts the Magent-owned loop through `magent-agent-loop.el`. `magent-llm.el` defines normalized request/events, including `tool-call-batch-end`, and `magent-llm-gptel.el` calls `gptel-request` while hiding gptel callback/FSM details. The loop owns tool dispatch through `magent-tool-orchestrator`, serial tool queueing, permission audit hooks, visible tool rendering, request abort cleanup, tool-result session recording, and Codex-style continuation. Tool results are fed back to the model; the loop does not impose an `emacs_eval` per-turn call cap.
 
 7. **Permissions** (`magent-permission.el`): Rules map tool names to `allow`/`deny`/`ask`, with optional file-pattern sub-rules (glob syntax). Resolution: exact tool match → file-pattern rules → wildcard (`*`) fallback → **default allow**. File-pattern rules are order-dependent (first match wins); more specific patterns must come before less specific ones.
 
 8. **Capabilities** (`magent-capability.el`): File-backed capability definitions score the current request context and attach matching instruction skills. Bundled, user, and project-local capability overlays all feed the same resolver.
 
-9. **Session and workflow ledger** (`magent-thread.el`, `magent-session.el`): The canonical agent workflow state is an explicit thread/turn/item ledger. Thread statuses are `not-loaded`, `idle`, `active`, `system-error`, and `closed`; turn statuses are `queued`, `in-progress`, `completed`, `interrupted`, `failed`, and `dropped`; item statuses are `pending`, `in-progress`, `completed`, `failed`, and `cancelled`. Tool call/result is one `tool` item lifecycle keyed by call id. Session JSON persists both an append-only `journal` and a materialized `snapshot`; snapshot restores materialized state, while journal remains the audit log and only events after `snapshot.last-event-seq` are replayed. Legacy `messages` and `context-items` are derived projections used for gptel prompt reuse, UI restore, and migration. The `buffer-content` slot stores raw buffer text for lossless restore, and `agent-jobs` stores durable child-agent metadata.
+9. **Session and workflow ledger** (`magent-thread.el`, `magent-session.el`): The canonical agent workflow state is an explicit thread/turn/item ledger. Thread statuses are `not-loaded`, `idle`, `active`, `system-error`, and `closed`; turn statuses are `queued`, `in-progress`, `completed`, `interrupted`, `failed`, and `dropped`; item statuses are `pending`, `in-progress`, `completed`, `failed`, and `cancelled`. Tool call/result is one `tool` item lifecycle keyed by call id. Session JSON persists both an append-only `journal` and a materialized `snapshot`; snapshot restores materialized state, while journal remains the audit log and only events after `snapshot.last-event-seq` are replayed. Legacy `messages` and `context-items` are derived projections used for gptel prompt reuse and migration. `buffer-content` remains only legacy data; UI restore comes from the ledger. `agent-jobs` stores durable child-agent metadata.
 
 10. **Skills** (`magent-skills.el`): Two types — `instruction` (markdown injected into system prompt) and `tool` (invoked via `skill_invoke`). The module now contains the registry, built-in `skill-creator`, file-based skill loading, and interactive inspection commands. Skills load in priority order from (1) built-in `skills/`, (2) user directory `~/.emacs.d/magent-skills/<name>/SKILL.md`, and (3) project-local `.magent/skills/<name>/SKILL.md`.
 
 ### Gotchas
 
-- **`magent-output-mode` derives from `org-mode`**: All org keybindings, font-lock, and folding apply. Use `inhibit-read-only` for insertions; org fontification can trigger re-entrancy.
+- **`magent-output-mode` derives from `special-mode`**: The workspace is read-only and ledger-rendered. Use `inhibit-read-only` for insertions; do not reintroduce org folding or markdown-to-org conversion in the live path.
 - **`magent-ui--with-insert` suppresses buffer-boundary signals**: Catches `beginning-of-buffer`, `end-of-buffer`, etc. to suppress cursor-adjustment errors from process filters and active minor modes.
 - **Evil integration is optional**: Keep Evil-specific behavior in `magent-evil.el`. Do not add `evil-*` calls, variables, or `with-eval-after-load 'evil` forms to core UI files.
 - **`magent-log` is a stub in `magent-config.el`**: No-op until `magent-ui` is loaded. In batch tests, logs go nowhere unless you explicitly load `magent-ui`.
@@ -185,11 +185,12 @@ Key settings: `magent-default-agent` (`"build"`), `magent-enable-tools` (list of
 | `C-c m t` | `magent-ui-toggle-section` |
 | `C-c m A` | `magent-select-agent` |
 | `C-c m R` | `magent-resume-session` |
+| `C-c m T` | `magent-show-transcript` |
 | `C-c m j` | `magent-show-agent-transcript` |
 | `C-c m i` | `magent-show-current-agent` |
 | `C-c m v` | `magent-list-agents` |
 
-In `magent-output-mode`: `TAB` fold/unfold, `S-TAB` toggle all, `?` transient menu, `C-g` interrupt.
+In `magent-output-mode`: `TAB` fold/unfold workspace fragments, `?` transient menu, `C-c C-c` opens compose when idle or confirms interrupt while a request is running. In `magent-compose-mode`: `C-c C-c` submits and `C-c C-k` clears compose.
 
 ## Conventions
 

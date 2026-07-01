@@ -676,14 +676,15 @@ return that path."
                       (magent-ui-start-streaming)
                       (magent-ui-insert-streaming "live response")
                       (magent-ui-finish-streaming-fontify)
+                      (magent-session-add-message
+                       (magent-session-get) 'assistant "live response")
                       (setq response "live response")
                       (funcall callback "live response")))
                    'magent-live-test-loop)))
-        (let ((buffer (magent-ui-get-buffer 'global)))
-          (with-current-buffer buffer
-            (magent-output-mode)
-            (magent-ui--insert-input-prompt 'global)
-            (goto-char (point-max))
+        (let ((buffer (magent-ui-get-buffer 'global))
+              (compose (magent-ui-compose-buffer 'global)))
+          (with-current-buffer compose
+            (erase-buffer)
             (insert "hello from live buffer")
             (magent-input-submit))
           (magent-live-test--wait-until
@@ -692,12 +693,11 @@ return that path."
            5 "Magent live buffer input did not finish")
           (with-current-buffer buffer
             (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-              (should (string-match-p "^\\* USER" text))
+              (should (string-match-p "User\nhello from live buffer" text))
               (should (string-match-p "hello from live buffer" text))
-              (should (string-match-p "^\\* ASSISTANT" text))
-              (should (string-match-p "live response" text))
-              (should magent-ui--input-marker)
-              (should (= (marker-position magent-ui--input-marker) (point-max))))))))))
+              (should (string-match-p "Assistant \\[completed\\]\nlive response" text))
+              (should-not (string-match-p "^\\* USER" text))
+              (should-not (string-match-p "^\\* ASSISTANT" text)))))))))
 
 (ert-deftest magent-live-test-loop-runs-emacs-eval-and-continues ()
   "Run a live Magent turn through loop tool execution and continuation."
@@ -754,12 +754,17 @@ return that path."
         (magent-ui-dispatch-prompt "count live buffers" 'send-prompt nil nil t)
         (magent-live-test--wait-until
          (lambda ()
-           (let* ((session (magent-session-get))
-                  (messages (magent-session-get-messages session))
-                  (last-msg (car (last messages))))
-             (when (and last-msg
-                        (eq (magent-msg-role last-msg) 'assistant))
-               (setq final-response (magent-msg-content last-msg)))))
+           (when (not (magent-ui-processing-p))
+             (let* ((session (magent-session-get))
+                    (messages (magent-session-get-messages session))
+                    (assistant-msg
+                     (cl-find-if
+                      (lambda (msg)
+                        (eq (magent-msg-role msg) 'assistant))
+                      (reverse messages))))
+               (when assistant-msg
+                 (setq final-response
+                       (magent-msg-content assistant-msg))))))
          8 "Magent live loop tool turn did not finish")
         (should (equal final-response "Checking buffers. Done."))
         (should (= call-count 2))
@@ -775,10 +780,9 @@ return that path."
                                   (plist-get tool-content :result))))
         (with-current-buffer (magent-ui-get-buffer (magent-session-current-scope))
           (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "#\\+begin_tool emacs_eval" text))
+            (should (string-match-p "Tool emacs_eval" text))
             (should (string-match-p "Checking buffers\\." text))
-            (should (string-match-p "Done\\." text))
-            (should magent-ui--input-marker)))))))
+            (should (string-match-p "Done\\." text))))))))
 
 (ert-deftest magent-live-test-timer-renders-symbol-tool-args ()
   "Render non-string tool args from a timer without leaking JSON errors."
@@ -797,7 +801,7 @@ return that path."
        3 "Magent live timer did not render symbol tool args")
       (with-current-buffer (magent-ui-get-buffer 'global)
         (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-          (should (string-match-p "#\\+begin_tool emacs_eval" text))
+          (should (string-match-p "Tool emacs_eval running" text))
           (should (string-match-p "emacs_eval" text)))))))
 
 (ert-deftest magent-live-test-real-simple-prompt ()
@@ -814,8 +818,10 @@ return that path."
         (should (string-match-p "MAGENT_LIVE_OK" response))
         (with-current-buffer (magent-ui-get-buffer (magent-session-current-scope))
           (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "^\\* USER" text))
-            (should (string-match-p "^\\* ASSISTANT" text))
+            (should (string-match-p "User\n" text))
+            (should (string-match-p "Assistant \\[completed\\]" text))
+            (should-not (string-match-p "^\\* USER" text))
+            (should-not (string-match-p "^\\* ASSISTANT" text))
             (should (string-match-p "MAGENT_LIVE_OK" text))))))))
 
 (ert-deftest magent-live-test-real-emacs-eval-tool ()
@@ -847,7 +853,7 @@ return that path."
           (should (equal (plist-get tool-content :result) "42")))
         (with-current-buffer (magent-ui-get-buffer (magent-session-current-scope))
           (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "#\\+begin_tool emacs_eval" text))
+            (should (string-match-p "Tool emacs_eval" text))
             (should (string-match-p "MAGENT_TOOL_OK=42" text))))))))
 
 (defun magent-live-test--result-description (result)

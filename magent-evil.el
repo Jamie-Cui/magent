@@ -33,15 +33,14 @@
   (when (and magent-evil--enabled
              (fboundp 'evil-define-key*))
     (evil-define-key* 'normal magent-output-mode-map
+      (kbd "C-g") nil)
+    (evil-define-key* '(insert replace visual motion operator emacs)
+        magent-output-mode-map
+      (kbd "C-g") nil)
+    (evil-define-key* 'normal magent-output-mode-map
       (kbd "?") #'magent-evil--menu)
     (evil-define-key* 'normal magent-output-mode-map
-      (kbd "C-g") #'magent-interrupt)
-    (evil-define-key* '(insert replace) magent-output-mode-map
-      (kbd "C-g") #'magent-evil--insert-c-g)
-    (evil-define-key* '(visual motion operator emacs) magent-output-mode-map
-      (kbd "C-g") #'magent-evil--quit-c-g)
-    (evil-define-key* 'normal magent-output-mode-map
-      (kbd "C-c C-c") #'magent-input-submit)))
+      (kbd "C-c C-c") #'magent-ui-submit-or-interrupt)))
 
 (defun magent-evil--unset-keys ()
   "Remove Evil-specific Magent bindings when possible."
@@ -50,9 +49,8 @@
       (kbd "?") nil)
     (evil-define-key* 'normal magent-output-mode-map
       (kbd "C-g") nil)
-    (evil-define-key* '(insert replace) magent-output-mode-map
-      (kbd "C-g") nil)
-    (evil-define-key* '(visual motion operator emacs) magent-output-mode-map
+    (evil-define-key* '(insert replace visual motion operator emacs)
+        magent-output-mode-map
       (kbd "C-g") nil)
     (evil-define-key* 'normal magent-output-mode-map
       (kbd "C-c C-c") nil)))
@@ -63,21 +61,6 @@
   (if magent-evil--enabled
       (call-interactively #'magent-transient-menu)
     (magent-ui-menu-or-insert-question-mark)))
-
-(defun magent-evil--insert-c-g ()
-  "Handle `C-g' in Evil insert-like states for Magent buffers."
-  (interactive)
-  (if (and magent-evil--enabled
-           (fboundp 'evil-normal-state))
-      (evil-normal-state)
-    (magent-interrupt)))
-
-(defun magent-evil--quit-c-g ()
-  "Handle `C-g' in Evil non-normal states for Magent buffers."
-  (interactive)
-  (if magent-evil--enabled
-      (keyboard-quit)
-    (magent-interrupt)))
 
 (defun magent-evil--output-mode-setup ()
   "Configure buffer-local Evil behavior for Magent output buffers."
@@ -137,6 +120,10 @@ bindings.  Loading `magent' alone does not enable this mode."
   "Enable optional Evil integration for Magent."
   (interactive)
   (magent-evil-mode 1))
+
+(when (and magent-evil--enabled
+           (featurep 'evil))
+  (magent-evil--setup-keys))
 
 (provide 'magent-evil)
 
