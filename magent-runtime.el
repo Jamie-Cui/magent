@@ -1,6 +1,7 @@
 ;;; magent-runtime.el --- Runtime state for Magent  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
+;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;;; Commentary:
 

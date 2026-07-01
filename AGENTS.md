@@ -23,11 +23,13 @@ Important boundaries:
 
 ```bash
 make compile    # Byte-compile all Elisp files
-make test       # Run ERT tests in batch mode
+make test-unit  # Run ERT unit tests in batch mode
+make test       # Run unit tests plus deterministic live smoke tests
+make coverage   # Run ERT under testcover and write coverage/testcover-summary.tsv
 make clean      # Remove compiled .elc files
 ```
 
-The Makefile auto-detects dependency paths (`gptel`, `spinner`, `transient`, `cond-let`) by scanning `~/.emacs.d/elpa/`. Override any with e.g. `GPTEL_DIR=/path/to/gptel`.
+The Makefile auto-detects dependency paths (`gptel`, `spinner`, `transient`, `cond-let`, `compat`, `evil`, `yaml`, `llama`, `with-editor`) by scanning `~/.emacs.d/elpa/`. Override any with e.g. `GPTEL_DIR=/path/to/gptel`.
 
 Single-file compilation:
 ```bash
@@ -49,6 +51,19 @@ emacs -Q --batch -L . -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'gptel-*' -typ
 - Skills tests bind `magent-skills--registry` to nil
 - Session tests call `magent-session-reset` to clear global state
 - Loop/tool permission tests should use `magent-agent-loop.el` and `magent-tool-orchestrator.el`
+
+### Coverage
+
+`test/coverage.el` is the batch `testcover` runner used by `make coverage` and GitHub Actions. It instruments Magent sources, reloads built-in skill/capability directories from this checkout, runs `test/magent-test.el`, and writes `coverage/testcover-summary.tsv`.
+
+### GitHub Actions
+
+CI is defined under `.github/workflows/`:
+- `test.yml`: installs Emacs 29.4 via Nix, installs package dependencies, runs `make compile`, `make test-unit`, and `make test-live-smoke` in a temporary daemon.
+- `coverage.yml`: runs `make coverage` and uploads `coverage/testcover-summary.tsv`.
+- `melpazoid.yml`: runs MELPA-style package checks. Its recipe must include `prompt.org`, `skills/`, and `capabilities/`, because `magent-config.el`, skills, and capabilities depend on bundled package data at runtime.
+
+Package metadata should stay centralized in `magent.el` and `magent-pkg.el`; non-main modules should not carry `Package-Requires` headers. Keep SPDX license identifiers in every Elisp source file so melpazoid can detect licensing consistently.
 
 ### End-to-End Testing
 

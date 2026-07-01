@@ -1,6 +1,10 @@
 #+TITLE: Magent - AI Coding Agent for Emacs
 #+OPTIONS: toc:2 num:nil
 
+[[https://github.com/Jamie-Cui/magent/actions/workflows/test.yml][https://github.com/Jamie-Cui/magent/actions/workflows/test.yml/badge.svg]]
+[[https://github.com/Jamie-Cui/magent/actions/workflows/coverage.yml][https://github.com/Jamie-Cui/magent/actions/workflows/coverage.yml/badge.svg]]
+[[https://github.com/Jamie-Cui/magent/actions/workflows/melpazoid.yml][https://github.com/Jamie-Cui/magent/actions/workflows/melpazoid.yml/badge.svg]]
+
 An Emacs Lisp AI coding agent with multi-agent architecture, permission-based tool access, and LLM integration via [[https://github.com/karthink/gptel][gptel]].
 
 * Agent Workflow
@@ -28,7 +32,9 @@ The old one-shot ~delegate~ tool has been replaced by ~spawn_agent~, ~send_agent
 - Emacs 27.1+
 - [[https://github.com/karthink/gptel][gptel]] 0.9.8+
 - [[https://github.com/Malabarba/spinner.el][spinner]] 1.7.4+
-- [[https://github.com/magit/transient][transient]] 0.4+
+- [[https://github.com/magit/transient][transient]] 0.7.8+
+- [[https://elpa.gnu.org/packages/compat.html][compat]] 30.1+
+- [[https://elpa.gnu.org/packages/yaml.html][yaml]] 1.0+
 - [[https://github.com/BurntSushi/ripgrep][ripgrep]] (for the ~grep~ tool)
 
 * Installation
@@ -335,6 +341,10 @@ Tool availability is controlled by:
 
 #+begin_src text
 magent/
+|-- .github/workflows/             # GitHub Actions CI, coverage, and melpazoid checks
+|   |-- test.yml
+|   |-- coverage.yml
+|   `-- melpazoid.yml
 |-- magent.el                      # Main entry point and mode definition
 |-- magent-config.el               # Configuration (customize group, defcustom vars)
 |-- magent-runtime.el              # Static initialization and project overlay activation
@@ -379,6 +389,8 @@ magent/
 |   |-- research-explore/SKILL.md
 |   `-- research-report/SKILL.md
 `-- test/
+    |-- coverage.el                # Batch testcover runner
+    |-- magent-live-test.el        # Live Emacs smoke and real-provider tests
     `-- magent-test.el             # ERT test suite
 #+end_src
 
@@ -396,9 +408,34 @@ magent/
 
 #+begin_src bash
 make compile    # Byte-compile all Elisp files
-make test       # Run ERT tests
+make test-unit  # Run batch ERT unit tests
+make test       # Run unit tests and deterministic live smoke tests
+make coverage   # Run ERT under built-in testcover
 make clean      # Remove compiled .elc files
 #+end_src
+
+~make coverage~ writes ~coverage/testcover-summary.tsv~. The
+~test-live-smoke~ target requires an Emacs server and uses stubbed gptel
+transport; ~make test-live~ uses the real configured provider and may consume
+tokens.
+
+** Continuous Integration
+
+GitHub Actions runs three workflows:
+
+- ~test.yml~ installs Emacs 29.4 with Nix, installs package dependencies,
+  byte-compiles, runs unit tests, and runs live smoke tests in a temporary
+  daemon.
+- ~coverage.yml~ runs ~make coverage~ and uploads
+  ~coverage/testcover-summary.tsv~ as an artifact.
+- ~melpazoid.yml~ runs MELPA-style package checks. The recipe includes
+  ~prompt.org~, ~skills/~, and ~capabilities/~ because those files are runtime
+  package data, not optional repository extras.
+
+Keep package metadata centralized in ~magent.el~ and ~magent-pkg.el~. Non-main
+module files carry SPDX license identifiers but should not declare
+~Package-Requires~, because package-lint treats those headers outside the main
+file as ineffective.
 
 ** Single File Compilation
 

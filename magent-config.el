@@ -1,10 +1,10 @@
 ;;; magent-config.el --- Configuration for Magent  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
+;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; Author: Jamie Cui <jamie.cui@outlook.com>
 ;; Keywords: tools, ai
-;; Package-Requires: ((emacs "27.1") (gptel "0.9.8"))
 
 ;;; Commentary:
 

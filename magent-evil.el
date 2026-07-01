@@ -1,10 +1,10 @@
 ;;; magent-evil.el --- Evil integration for Magent  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
+;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; Author: Jamie Cui <jamie.cui@outlook.com>
 ;; Keywords: tools, ai
-;; Package-Requires: ((emacs "27.1") (evil "1.15.0"))
 
 ;;; Commentary:
 
@@ -22,6 +22,7 @@
 (declare-function evil-visual-state-p "evil-states")
 
 (defvar evil-mode)
+(defvar evil-mode-hook)
 (defvar evil-local-mode)
 (defvar evil-move-beyond-eol)
 
@@ -98,18 +99,18 @@ bindings.  Loading `magent' alone does not enable this mode."
   (setq magent-evil--enabled magent-evil-mode)
   (if magent-evil-mode
       (progn
-        (if (featurep 'evil)
-            (magent-evil--setup-keys)
-          (with-eval-after-load 'evil
-            (magent-evil--setup-keys)))
+        (add-hook 'evil-mode-hook #'magent-evil--setup-keys)
+        (when (featurep 'evil)
+          (magent-evil--setup-keys))
         (add-hook 'magent-output-mode-hook #'magent-evil--output-mode-setup)
         (add-hook 'magent-ui-after-input-submit-hook #'magent-evil--input-submit)
         (add-hook 'magent-dwim-hook #'magent-evil--dwim)
         (add-hook 'magent-ui-region-active-functions
-                  #'magent-evil--region-active-p))
+                 #'magent-evil--region-active-p))
     (remove-hook 'magent-output-mode-hook #'magent-evil--output-mode-setup)
     (remove-hook 'magent-ui-after-input-submit-hook #'magent-evil--input-submit)
     (remove-hook 'magent-dwim-hook #'magent-evil--dwim)
+    (remove-hook 'evil-mode-hook #'magent-evil--setup-keys)
     (remove-hook 'magent-ui-region-active-functions
                  #'magent-evil--region-active-p)
     (when (featurep 'evil)

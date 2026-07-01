@@ -13,6 +13,7 @@ Welcome to the Magent documentation. Stable user-facing material remains in the 
 
 ### Contribution
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — Contribution guidelines, code style, testing, and PR process
+- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md#github-actions-failures)** — CI, live smoke, and melpazoid failure notes
 
 ### Project Root Documentation
 - **[../README.org](../README.org)** — Main project README with features, installation, and usage
@@ -37,6 +38,12 @@ Welcome to the Magent documentation. Stable user-facing material remains in the 
 2. [../AGENTS.md](../AGENTS.md) — Build commands, testing, architecture notes, and development guidance
 3. [ONBOARDING.md](ONBOARDING.md) — Architecture overview and guided code tour
 4. [AGENT_JOBS.md](AGENT_JOBS.md) — Current child-agent job architecture
+
+### CI And Packaging
+1. [../README.org](../README.org) — Public workflow badges and development commands
+2. [CONTRIBUTING.md](CONTRIBUTING.md#continuous-integration) — Local and CI verification sequence
+3. [TROUBLESHOOTING.md](TROUBLESHOOTING.md#github-actions-failures) — Known GitHub Actions failure signatures
+4. [../AGENTS.md](../AGENTS.md#testing) — Agent-facing test, coverage, live smoke, and melpazoid notes
 
 ## Documentation Standards
 

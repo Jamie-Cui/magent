@@ -1,10 +1,10 @@
 ;;; magent-tools.el --- Tool implementations for Magent  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
+;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; Author: Jamie Cui <jamie.cui@outlook.com>
 ;; Keywords: tools, ai
-;; Package-Requires: ((emacs "27.1") (gptel "0.9.8"))
 
 ;;; Commentary:
 
@@ -520,9 +520,9 @@ This is the single source of truth for all tool names in the permission system."
                (plist-get capability-context :skill-names))))
     `((scope . ,(and child-context
                      (magent-request-context-scope child-context)))
-      (project-root . ,(and child-context
-                            (magent-request-context-project-root
-                             child-context)))
+      (,(intern "project-root") . ,(and child-context
+                                         (magent-request-context-project-root
+                                          child-context)))
       (parent-request-id
        . ,(and parent-context
                (magent-request-context-id parent-context)))
@@ -814,7 +814,7 @@ Return the child loop handle when startup succeeds."
                     `((scope . ,(and parent-context
                                      (magent-request-context-scope
                                       parent-context)))
-                      (project-root
+                      (,(intern "project-root")
                        . ,(and parent-context
                                (magent-request-context-project-root
                                 parent-context)))

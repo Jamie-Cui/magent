@@ -1,10 +1,10 @@
 ;;; magent-skills.el --- Skill registry and loading for Magent  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
+;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; Author: Jamie Cui <jamie.cui@outlook.com>
 ;; Keywords: tools, ai
-;; Package-Requires: ((emacs "27.1"))
 
 ;;; Commentary:
 
@@ -73,7 +73,7 @@ Use for structured operations with discrete inputs/outputs.
 
 ## Skill Locations
 
-- User global: `~/.emacs.d/magent-skills/<name>/SKILL.md`
+- User global: `magent-skills/<name>/SKILL.md` under `user-emacs-directory`
 - Project-local: `.magent/skills/<name>/SKILL.md`
 
 Place each skill in its own subdirectory named after the skill.
@@ -101,7 +101,7 @@ Key principles:
 
 Write the SKILL.md using `write_file`:
 ```
-~/.emacs.d/magent-skills/<name>/SKILL.md
+`magent-skills/<name>/SKILL.md` under `user-emacs-directory`
 ```
 
 ### 3. Test in Emacs
