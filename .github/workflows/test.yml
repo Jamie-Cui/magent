@@ -1,0 +1,44 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ert:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v31.10.6
+        with:
+          github_access_token: ${{ github.token }}
+
+      - name: Install Emacs 29.4
+        run: |
+          nix profile install --accept-flake-config \
+            github:purcell/nix-emacs-ci/868482a78575138aebb1b5c16a9266b95c800f2e#emacs-29-4
+          emacs --version
+
+      - name: Install Emacs package dependencies
+        run: |
+          emacs -Q --batch \
+            --eval "(require 'package)" \
+            --eval "(setq package-archives '((\"gnu\" . \"https://elpa.gnu.org/packages/\") (\"nongnu\" . \"https://elpa.nongnu.org/nongnu/\") (\"melpa\" . \"https://melpa.org/packages/\")))" \
+            --eval "(package-initialize)" \
+            --eval "(package-refresh-contents)" \
+            --eval "(dolist (pkg '(gptel spinner transient yaml cond-let compat llama with-editor)) (unless (package-installed-p pkg) (package-install pkg)))"
+
+      - name: Byte-compile
+        run: make compile
+
+      - name: Run ERT unit tests
+        run: make test-unit
+
+      - name: Run live smoke tests
+        run: |
+          emacs --daemon=magent-ci
+          trap 'emacsclient -s magent-ci --eval "(kill-emacs)" || true' EXIT
+          EMACSCLIENT="emacsclient -s magent-ci" make test-live-smoke

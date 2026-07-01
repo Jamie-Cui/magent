@@ -35,3 +35,4 @@ auto-save-list
 /helper/package-lock.json
 /.codex
 /magent-autoloads.el
+/magent-pkg.el

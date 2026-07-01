@@ -1,12 +1,15 @@
 EMACS ?= emacs
 EMACSCLIENT ?= emacsclient
 EMACS_BATCH = $(EMACS) -Q --batch
+COVERAGE_DIR ?= coverage
+COVERAGE_MIN ?= 0
 
 # Auto-detect dependency paths
 GPTEL_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'gptel-[0-9]*' -type d 2>/dev/null | head -1)
 SPINNER_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'spinner-*' -type d 2>/dev/null | head -1)
 TRANSIENT_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'transient-*' -type d 2>/dev/null | head -1)
 COND_LET_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'cond-let-*' -type d 2>/dev/null | head -1)
+COMPAT_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'compat-*' -type d 2>/dev/null | head -1)
 EVIL_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'evil-*' -type d 2>/dev/null | head -1)
 YAML_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'yaml-[0-9]*' -type d 2>/dev/null | head -1)
 LLAMA_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'llama-*' -type d 2>/dev/null | head -1)
@@ -17,6 +20,7 @@ LOADPATH = -L . \
 	$(if $(SPINNER_DIR),-L $(SPINNER_DIR)) \
 	$(if $(TRANSIENT_DIR),-L $(TRANSIENT_DIR)) \
 	$(if $(COND_LET_DIR),-L $(COND_LET_DIR)) \
+	$(if $(COMPAT_DIR),-L $(COMPAT_DIR)) \
 	$(if $(EVIL_DIR),-L $(EVIL_DIR)) \
 	$(if $(YAML_DIR),-L $(YAML_DIR)) \
 	$(if $(LLAMA_DIR),-L $(LLAMA_DIR)) \
@@ -58,7 +62,7 @@ SRCS = magent-config.el \
 
 COMPILED = $(SRCS:.el=.elc)
 
-.PHONY: all compile clean test test-unit test-live test-live-smoke help
+.PHONY: all compile clean test test-unit test-live test-live-smoke coverage help
 
 all: compile
 
@@ -71,6 +75,7 @@ help:
 	@echo "  test-unit     - Run batch unit tests"
 	@echo "  test-live     - Run real live gptel tests; consumes tokens and requires Emacs server"
 	@echo "  test-live-smoke - Run live Emacs smoke tests with stubbed gptel transport"
+	@echo "  coverage      - Run ERT under built-in testcover"
 	@echo "  clean         - Remove compiled files"
 	@echo "  help          - Show this help message"
 
@@ -100,6 +105,12 @@ test-live:
 test-live-smoke:
 	@echo "Running live Emacs smoke tests..."
 	@$(EMACSCLIENT) -e "(progn (load-file \"$(CURDIR)/test/magent-live-test.el\") (magent-live-test-run-smoke))"
+
+coverage:
+	@echo "Running coverage..."
+	@$(EMACS) -Q --batch $(LOADPATH) \
+		--eval "(setq magent-coverage-directory \"$(COVERAGE_DIR)\" magent-coverage-min $(COVERAGE_MIN))" \
+		-l test/coverage.el
 
 clean:
 	@echo "Cleaning compiled files..."
