@@ -18,7 +18,14 @@
 (require 'cl-lib)
 
 (defconst magent-llm-event-types
-  '(text-delta reasoning-delta reasoning-end tool-call completed error usage)
+  '(text-delta
+    reasoning-delta
+    reasoning-end
+    tool-call
+    tool-call-batch-end
+    completed
+    error
+    usage)
   "Valid normalized LLM event types.")
 
 (cl-defstruct (magent-llm-request
@@ -112,6 +119,10 @@ Recognized keys are `:prompt', `:system', `:tools', `:model',
                            :arguments arguments
                            :raw raw
                            :metadata metadata))
+
+(defun magent-llm-tool-call-batch-end-event (&optional metadata)
+  "Create a tool-call batch-end event with optional METADATA."
+  (magent-llm-event-create 'tool-call-batch-end :metadata metadata))
 
 (defun magent-llm-completed-event (&optional text usage stop-reason metadata)
   "Create a completed event with TEXT, USAGE, STOP-REASON, and METADATA."

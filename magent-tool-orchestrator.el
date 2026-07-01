@@ -57,6 +57,14 @@
   (when-let ((fn (magent-tool-orchestrator-result-callback orchestrator)))
     (funcall fn tool-spec arg-values raw-call result)))
 
+(defun magent-tool-orchestrator--annotate-approval
+    (raw-call decision source)
+  "Return RAW-CALL annotated with approval DECISION and SOURCE."
+  (let ((call (or raw-call nil)))
+    (setq call (plist-put call :approval-decision decision))
+    (setq call (plist-put call :approval-source source))
+    call))
+
 (defun magent-tool-orchestrator--file-arg-index (orchestrator args-spec)
   "Return file arg index for ARGS-SPEC using ORCHESTRATOR."
   (when-let ((fn (magent-tool-orchestrator-file-arg-index-function orchestrator)))
@@ -102,6 +110,9 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
             (magent-log "PERM bypass allow: %s" tool-name)
             (magent-tool-orchestrator--call-audit
              orchestrator tool-spec arg-values 'allow 'bypass)
+            (setq raw-call
+                  (magent-tool-orchestrator--annotate-approval
+                   raw-call 'allow 'bypass))
             (magent-tool-orchestrator--run
              orchestrator tool-spec
              (lambda (result)
@@ -144,6 +155,9 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
               (magent-tool-orchestrator--call-audit
                orchestrator tool-spec arg-values
                'allow 'session-override-allow)
+              (setq raw-call
+                    (magent-tool-orchestrator--annotate-approval
+                     raw-call 'allow 'session-override-allow))
               (magent-tool-orchestrator--run
                orchestrator tool-spec
                (lambda (result)
@@ -156,6 +170,9 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
               (magent-tool-orchestrator--call-audit
                orchestrator tool-spec arg-values
                'deny 'session-override-deny)
+              (setq raw-call
+                    (magent-tool-orchestrator--annotate-approval
+                     raw-call 'deny 'session-override-deny))
               (let ((result (format "Error: tool '%s' denied by session policy"
                                     tool-name)))
                 (when cb
@@ -166,6 +183,9 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
                           tool-name (or file-path ""))
               (magent-tool-orchestrator--call-audit
                orchestrator tool-spec arg-values 'deny 'file-rule-deny)
+              (setq raw-call
+                    (magent-tool-orchestrator--annotate-approval
+                     raw-call 'deny 'file-rule-deny))
               (let ((result (format "Error: access denied for %s on %s"
                                     tool-name
                                     (or file-path "this resource"))))
@@ -177,6 +197,9 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
                           tool-name file-path)
               (magent-tool-orchestrator--call-audit
                orchestrator tool-spec arg-values 'allow 'file-rule-allow)
+              (setq raw-call
+                    (magent-tool-orchestrator--annotate-approval
+                     raw-call 'allow 'file-rule-allow))
               (magent-tool-orchestrator--run
                orchestrator tool-spec
                (lambda (result)
@@ -188,6 +211,9 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
               (magent-log "PERM auto-allow: %s" tool-name)
               (magent-tool-orchestrator--call-audit
                orchestrator tool-spec arg-values 'allow 'rule-allow)
+              (setq raw-call
+                    (magent-tool-orchestrator--annotate-approval
+                     raw-call 'allow 'rule-allow))
               (magent-tool-orchestrator--run
                orchestrator tool-spec
                (lambda (result)
@@ -235,6 +261,9 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
             (magent-log "PERM user allowed (once): %s" tool-name)
             (magent-tool-orchestrator--call-audit
              orchestrator tool-spec arg-values 'allow 'user-allow-once)
+            (setq raw-call
+                  (magent-tool-orchestrator--annotate-approval
+                   raw-call 'allow 'user-allow-once))
             (magent-tool-orchestrator--run
              orchestrator tool-spec
              (lambda (result)
@@ -247,6 +276,9 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
             (magent-log "PERM user denied (once): %s" tool-name)
             (magent-tool-orchestrator--call-audit
              orchestrator tool-spec arg-values 'deny 'user-deny-once)
+            (setq raw-call
+                  (magent-tool-orchestrator--annotate-approval
+                   raw-call 'deny 'user-deny-once))
             (let ((result (format "Error: tool '%s' denied by user" tool-name)))
               (when cb
                 (funcall cb result))
@@ -259,6 +291,9 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
                perm-key 'allow approval-session))
             (magent-tool-orchestrator--call-audit
              orchestrator tool-spec arg-values 'allow 'user-allow-session)
+            (setq raw-call
+                  (magent-tool-orchestrator--annotate-approval
+                   raw-call 'allow 'user-allow-session))
             (magent-tool-orchestrator--run
              orchestrator tool-spec
              (lambda (result)
@@ -274,6 +309,9 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
                perm-key 'deny approval-session))
             (magent-tool-orchestrator--call-audit
              orchestrator tool-spec arg-values 'deny 'user-deny-session)
+            (setq raw-call
+                  (magent-tool-orchestrator--annotate-approval
+                   raw-call 'deny 'user-deny-session))
             (let ((result (format "Error: tool '%s' denied by user" tool-name)))
               (when cb
                 (funcall cb result))

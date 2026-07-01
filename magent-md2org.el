@@ -8,8 +8,8 @@
 
 ;;; Commentary:
 
-;; Small conversion helpers used by Magent's UI when rendering assistant
-;; output into an org-mode buffer.
+;; Legacy conversion helpers for callers that still need markdown-to-org
+;; conversion.  The live Magent workspace no longer renders through Org.
 
 ;;; Code:
 
@@ -21,7 +21,7 @@ Headers are shifted +1 level (# -> **, ## -> ***).
 Fenced code blocks (```) become #+begin_src/#+end_src.
 Bold (**text**) becomes *text*, italic (*text*) becomes /text/,
 inline code (`code`) becomes ~code~.
-Preserves #+begin_tool and #+begin_think blocks unchanged."
+Preserves legacy #+begin_tool and #+begin_think blocks unchanged."
   (save-excursion
     (save-restriction
       (narrow-to-region beg end)

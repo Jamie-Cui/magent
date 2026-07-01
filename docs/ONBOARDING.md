@@ -81,15 +81,22 @@ Orchestrates the tool-calling loop and LLM communication.
 
 ### Layer 6: User Interface
 
-Org-mode derived buffer for interaction and output rendering.
+Read-only workspace plus independent compose buffer for interaction and
+output rendering.
 
 **Key Files:**
-- `magent-ui.el` — In-buffer input/output, org-mode derived, streaming sections, transient menu
+- `magent-ui.el` — Workspace/compose buffers, ledger projection, streaming summaries, transient menu
 - `magent-evil.el` — Optional Evil integration loaded explicitly by Evil users
-- `magent-md2org.el` — Markdown → org-mode conversion for assistant output
+- `magent-md2org.el` — Legacy markdown → org converter, no longer used by the live workspace path
 - `magent-file-loader.el` — Shared frontmatter parser for agent/skill/capability files
 
-**What it does:** `*magent*` buffer uses org-mode with custom faces. In-buffer input via `* [USER]` sections. Tool calls render as `#+begin_tool`/`#+end_tool` blocks, reasoning as `#+begin_think`/`#+end_think`, and child-agent lifecycle events as `#+begin_agent`/`#+end_agent`. Streaming uses chunk batching and async fontification. `magent-show-agent-transcript` (`C-c m j`) opens persisted child job details.
+**What it does:** The Magent workspace derives from `special-mode` and
+renders current/recent turns from the ledger. Prompt text is edited in a
+scope-specific `magent-compose-mode` buffer. Tool calls and child-agent
+events render as compact rows; reasoning is stored in the ledger but the
+workspace shows only status and character count. `magent-show-transcript`
+opens the full parent ledger transcript, and `magent-show-agent-transcript`
+(`C-c m j`) opens persisted child job details.
 
 ### Layer 7: Events
 
@@ -160,7 +167,10 @@ Begin at `magent.el` to understand how the mode is activated and what commands a
 
 ### Step 2: Explore the UI
 
-Read `magent-ui.el` to see how the `*magent*` buffer works. Key insight: it derives from org-mode, so all org features (folding, fontification) apply. The `magent-ui--with-insert` macro is critical for understanding how streaming works.
+Read `magent-ui.el` to see how workspace rendering and compose submission
+work. Key insight: the workspace is a ledger projection, not restored
+buffer text. The `magent-ui--with-insert` macro is still critical for
+safe streaming updates into read-only buffers.
 
 ### Step 3: Follow a Request Lifecycle
 
@@ -224,8 +234,8 @@ Look at `test/magent-test.el` to see how the codebase is tested. Tests mock `gpt
 - **magent-llm-gptel.el** — `gptel-request` adapter
 
 ### User Interface
-- **magent-ui.el** — Org-mode derived buffer, streaming, sections, transient menu
-- **magent-md2org.el** — Markdown to org-mode converter
+- **magent-ui.el** — Workspace/compose buffers, streaming summaries, transcript/detail views, transient menu
+- **magent-md2org.el** — Legacy markdown to org-mode converter outside the live workspace path
 - **magent-file-loader.el** — Shared frontmatter parser
 
 ### Events
@@ -236,7 +246,7 @@ Look at `test/magent-test.el` to see how the codebase is tested. Tests mock `gpt
 These areas require careful attention when modifying:
 
 ### 1. magent-agent-loop.el (High Complexity)
-**Why it's complex:** Owns the active request/tool loop: normalized event accumulation, tool-call batching, serial execution, permission orchestration, UI tool rendering, abort cleanup, tool-result session recording, and continuation.
+**Why it's complex:** Owns the active request/tool loop: normalized event accumulation, provider-neutral tool-call batch completion, serial execution, permission orchestration, UI tool rendering, abort cleanup, tool-result session recording, and continuation.
 
 **Approach carefully:** Any changes to loop state, tool callback ordering, or abort handling can hang a turn or corrupt session history. Add focused ERT coverage first, then verify live with tool-use prompts when Emacs is available.
 
@@ -261,7 +271,7 @@ These areas require careful attention when modifying:
 **Approach carefully:** Tools run in process filters. Timeout handling must be robust. Context capture for `emacs_eval`, child-agent status persistence, and parent/child request-context inheritance are critical.
 
 ### 6. magent-session.el (Medium Complexity)
-**Why it's complex:** Per-project session scoping with global fallback, JSON persistence, buffer-content restoration, child-agent job persistence, and history trimming.
+**Why it's complex:** Per-project session scoping with global fallback, JSON persistence, ledger-driven UI restoration, legacy buffer-content migration, child-agent job persistence, and history trimming.
 
 **Approach carefully:** Session directory calculation uses SHA1 of project root. Buffer content and `agent-jobs` must be preserved for lossless restore and child transcript inspection.
 

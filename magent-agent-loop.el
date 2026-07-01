@@ -142,8 +142,7 @@ Recognized keys are `:request', `:sampler', `:status', and
     (or final ""))
    ((or (null final) (string-empty-p final))
     streamed)
-   ((or (string= streamed final)
-        (string-suffix-p final streamed))
+   ((string= streamed final)
     streamed)
    ((string-prefix-p streamed final)
     final)
@@ -176,6 +175,8 @@ Recognized keys are `:request', `:sampler', `:status', and
      (setf (magent-agent-loop-status loop) 'streaming))
     ('tool-call
      (push event (magent-agent-loop-tool-calls loop))
+     (setf (magent-agent-loop-status loop) 'tool-pending))
+    ('tool-call-batch-end
      (setf (magent-agent-loop-status loop) 'tool-pending))
     ('completed
      (setf (magent-agent-loop-status loop) 'completed
@@ -425,6 +426,15 @@ Recognized keys are `:request', `:sampler', `:status', and
      :metadata (list :source 'tool-dispatch))
     (magent-session-refresh-projections session)))
 
+(defun magent-agent-loop--tool-result-metadata (raw-call)
+  "Return ledger metadata extracted from RAW-CALL."
+  (let ((metadata (list :source 'tool-result)))
+    (dolist (key '(:approval-decision :approval-source))
+      (when (plist-member raw-call key)
+        (setq metadata
+              (append metadata (list key (plist-get raw-call key))))))
+    metadata))
+
 (defun magent-agent-loop--ensure-turn-id (loop thread)
   "Return LOOP's current turn id, creating a synthetic turn in THREAD if needed."
   (let ((turn-id (or (magent-agent-loop-turn-id loop)
@@ -550,7 +560,8 @@ carry provider-specific ids and names."
        call-id
        (magent-agent-loop--tool-name tool-spec raw-call)
        (magent-agent-loop--tool-args-plist tool-spec arg-values raw-call)
-       result)
+       result
+       (magent-agent-loop--tool-result-metadata raw-call))
       (magent-session-refresh-projections session)))
   loop)
 
@@ -726,7 +737,9 @@ session, the existing request prompt is reused."
       (error "Agent loop requires a magent-llm-request"))
     (magent-llm-request-create
      :prompt (if-let ((session (magent-agent-loop-session loop)))
-                 (magent-session-to-gptel-prompt-list session)
+                 (magent-session-to-gptel-prompt-list
+                  session
+                  (magent-agent-loop-turn-id loop))
                (magent-llm-request-prompt request))
      :system (magent-llm-request-system request)
      :tools (magent-llm-request-tools request)
@@ -808,6 +821,12 @@ provider request exceeds `magent-request-timeout'."
        (magent-agent-loop-abort-controller loop))
       (magent-agent-loop--abort-request-handle
        (magent-agent-loop-request-handle loop))
+      (when-let* ((session (magent-agent-loop-session loop))
+                  (thread (magent-session-thread-ledger session))
+                  (turn-id (magent-agent-loop-turn-id loop)))
+        (magent-thread-cancel-in-progress-items
+         thread turn-id "User aborted")
+        (magent-session-refresh-projections session))
       (when-let ((request-context (magent-agent-loop-request-context loop)))
         (when (eq (magent-request-context-abort-controller request-context)
                   (magent-agent-loop-abort-controller loop))
@@ -853,7 +872,7 @@ the sampler return value."
             :callback (lambda (event)
                         (unless (magent-agent-loop--aborted-p loop)
                           (when (memq (magent-llm-event-type event)
-                                      '(tool-call completed error))
+                                      '(tool-call-batch-end completed error))
                             (magent-agent-loop--cancel-request-timeout
                              loop))
                           (magent-agent-loop-apply-event loop event)

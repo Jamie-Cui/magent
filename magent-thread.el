@@ -31,6 +31,7 @@
 (defconst magent-journal-event-types
   '(thread-started
     thread-status-changed
+    turn-queued
     turn-started
     turn-status-changed
     turn-completed
@@ -454,6 +455,10 @@
            :key #'magent-thread-turn-id
            :test #'equal))
 
+(defun magent-thread-find-turn (thread turn-id)
+  "Return THREAD turn TURN-ID, or nil."
+  (magent-thread--find-turn thread turn-id))
+
 (defun magent-thread--find-item (thread item-id)
   "Return THREAD item ITEM-ID, or nil."
   (cl-loop for turn in (magent-thread-turns thread)
@@ -591,16 +596,73 @@
               'idle
               "thread"))
        (magent-thread--update-timestamp thread now))
-      ('turn-started
-       (let ((turn (magent-thread--event-payload-turn payload)))
+      ('turn-queued
+       (let* ((incoming (magent-thread--event-payload-turn payload))
+              (turn-id (or (magent-thread-event-turn-id event)
+                           (and incoming
+                                (magent-thread-turn-id incoming))))
+              (turn (or (magent-thread--find-turn thread turn-id)
+                        incoming)))
          (unless (magent-thread-turn-p turn)
            (setq turn
                  (magent-thread-turn-create
-                  :id (magent-thread-event-turn-id event)
+                  :id turn-id
+                  :thread-id (magent-thread-id thread)
+                  :input (magent-thread--event-payload-value :input payload)
+                  :status 'queued
+                  :queued-at now)))
+         (when (and incoming
+                    (not (eq turn incoming)))
+           (unless (magent-thread-turn-op-id turn)
+             (setf (magent-thread-turn-op-id turn)
+                   (magent-thread-turn-op-id incoming)))
+           (unless (magent-thread-turn-input turn)
+             (setf (magent-thread-turn-input turn)
+                   (magent-thread-turn-input incoming)))
+           (unless (magent-thread-turn-metadata turn)
+             (setf (magent-thread-turn-metadata turn)
+                   (magent-thread-turn-metadata incoming)))
+           (unless (magent-thread-turn-items turn)
+             (setf (magent-thread-turn-items turn)
+                   (magent-thread-turn-items incoming))))
+         (setf (magent-thread-turn-thread-id turn) (magent-thread-id thread)
+               (magent-thread-turn-status turn) 'queued
+               (magent-thread-turn-queued-at turn)
+               (or (magent-thread-turn-queued-at turn) now))
+         (magent-thread--replace-turn thread turn)
+         (unless (magent-thread-preview thread)
+           (setf (magent-thread-preview thread)
+                 (magent-thread-turn-input turn)))
+         (magent-thread--update-timestamp thread now)))
+      ('turn-started
+       (let* ((incoming (magent-thread--event-payload-turn payload))
+              (turn-id (or (magent-thread-event-turn-id event)
+                           (and incoming
+                                (magent-thread-turn-id incoming))))
+              (turn (or (magent-thread--find-turn thread turn-id)
+                        incoming)))
+         (unless (magent-thread-turn-p turn)
+           (setq turn
+                 (magent-thread-turn-create
+                  :id turn-id
                   :thread-id (magent-thread-id thread)
                   :input (magent-thread--event-payload-value :input payload)
                   :status 'in-progress
                   :started-at now)))
+         (when (and incoming
+                    (not (eq turn incoming)))
+           (unless (magent-thread-turn-op-id turn)
+             (setf (magent-thread-turn-op-id turn)
+                   (magent-thread-turn-op-id incoming)))
+           (unless (magent-thread-turn-input turn)
+             (setf (magent-thread-turn-input turn)
+                   (magent-thread-turn-input incoming)))
+           (unless (magent-thread-turn-metadata turn)
+             (setf (magent-thread-turn-metadata turn)
+                   (magent-thread-turn-metadata incoming)))
+           (unless (magent-thread-turn-items turn)
+             (setf (magent-thread-turn-items turn)
+                   (magent-thread-turn-items incoming))))
          (setf (magent-thread-turn-thread-id turn) (magent-thread-id thread)
                (magent-thread-turn-status turn) 'in-progress
                (magent-thread-turn-started-at turn)
@@ -746,29 +808,57 @@ SNAPSHOT may be nil, a `magent-thread', or a snapshot alist."
                        (or (magent-thread-event-seq event) 0)))
             (magent-thread-apply-event thread event)))))))
 
-(defun magent-thread-create-turn
+(defun magent-thread-queue-turn
     (thread input &optional op-id metadata)
-  "Create and start a new turn in THREAD for INPUT.
+  "Create a queued turn in THREAD for INPUT.
 Return the new `magent-thread-turn'."
   (let* ((now (magent-thread--now))
          (turn (magent-thread-turn-create
                 :thread-id (magent-thread-id thread)
                 :op-id op-id
-                :status 'in-progress
+                :status 'queued
                 :input input
                 :metadata metadata
-                :queued-at now
-                :started-at now)))
+                :queued-at now)))
     (magent-thread-append-event
      thread
      (magent-thread-event-create
-      :type 'turn-started
+      :type 'turn-queued
       :thread-id (magent-thread-id thread)
       :turn-id (magent-thread-turn-id turn)
       :payload (magent-thread--turn-event-payload turn)
       :created-at now))
     (or (magent-thread--find-turn thread (magent-thread-turn-id turn))
         turn)))
+
+(defun magent-thread-start-turn (thread turn-id)
+  "Mark THREAD turn TURN-ID in-progress and return it."
+  (let* ((now (magent-thread--now))
+         (turn (or (magent-thread--find-turn thread turn-id)
+                   (magent-thread-turn-create
+                    :id turn-id
+                    :thread-id (magent-thread-id thread)
+                    :status 'in-progress
+                    :queued-at now
+                    :started-at now))))
+    (setf (magent-thread-turn-started-at turn)
+          (or (magent-thread-turn-started-at turn) now))
+    (magent-thread-append-event
+     thread
+     (magent-thread-event-create
+      :type 'turn-started
+      :thread-id (magent-thread-id thread)
+      :turn-id turn-id
+      :payload (magent-thread--turn-event-payload turn)
+      :created-at now))
+    (magent-thread--find-turn thread turn-id)))
+
+(defun magent-thread-create-turn
+    (thread input &optional op-id metadata)
+  "Create and start a new turn in THREAD for INPUT.
+Return the new `magent-thread-turn'."
+  (let ((turn (magent-thread-queue-turn thread input op-id metadata)))
+    (magent-thread-start-turn thread (magent-thread-turn-id turn))))
 
 (defun magent-thread-start-item (thread turn-id type &rest args)
   "Start an item of TYPE in THREAD under TURN-ID using ARGS.
@@ -847,6 +937,37 @@ Return the new `magent-thread-item'."
       :payload (append (magent-thread--item-event-payload incoming)
                        (list :error error))))
     item))
+
+(defun magent-thread-cancel-item (thread item &optional error)
+  "Mark ITEM cancelled in THREAD with optional ERROR."
+  (let ((incoming (magent-thread-item-create
+                   :id (magent-thread-item-id item)
+                   :turn-id (magent-thread-item-turn-id item)
+                   :type (magent-thread-item-type item)
+                   :status 'cancelled
+                   :error error)))
+    (magent-thread-append-event
+     thread
+     (magent-thread-event-create
+      :type 'item-cancelled
+      :thread-id (magent-thread-id thread)
+      :turn-id (magent-thread-item-turn-id item)
+      :item-id (magent-thread-item-id item)
+      :payload (append (magent-thread--item-event-payload incoming)
+                       (list :error error))))
+    item))
+
+(defun magent-thread-cancel-in-progress-items
+    (thread turn-id &optional error)
+  "Cancel all in-progress items for THREAD turn TURN-ID.
+Return the number of cancelled items."
+  (let ((count 0))
+    (when-let ((turn (magent-thread--find-turn thread turn-id)))
+      (dolist (item (copy-sequence (magent-thread-turn-items turn)))
+        (when (eq (magent-thread-item-status item) 'in-progress)
+          (magent-thread-cancel-item thread item error)
+          (cl-incf count))))
+    count))
 
 (defun magent-thread-complete-turn
     (thread turn-id &optional usage)
@@ -1069,6 +1190,65 @@ Return the new `magent-thread-item'."
                :metadata metadata)))
     (magent-thread-complete-item thread item)
     item))
+
+(defun magent-thread-turn-message-item
+    (turn role &optional content)
+  "Return TURN's first message item for ROLE.
+When CONTENT is non-nil, require an `equal' content match."
+  (cl-find-if
+   (lambda (item)
+     (and (eq (magent-thread-item-type item) 'message)
+          (eq (magent-thread-item-role item) role)
+          (or (null content)
+              (equal (magent-thread-item-content item) content))))
+   (magent-thread-turn-items turn)))
+
+(defun magent-thread-record-user-message-if-needed
+    (thread turn-id content &optional phase metadata)
+  "Record CONTENT as TURN-ID's user message unless one already exists.
+Return the existing or newly created item."
+  (when-let ((turn (magent-thread--find-turn thread turn-id)))
+    (unless (magent-thread-turn-input turn)
+      (setf (magent-thread-turn-input turn)
+            (if (stringp content) content (format "%s" content))))
+    (or (magent-thread-turn-message-item turn 'user)
+        (magent-thread-record-message
+         thread turn-id 'user content phase metadata))))
+
+(defun magent-thread-ensure-message-item
+    (thread turn-id role &optional phase metadata)
+  "Return an in-progress message item for ROLE in TURN-ID.
+Create it when needed."
+  (when-let ((turn (magent-thread--find-turn thread turn-id)))
+    (or (cl-find-if
+         (lambda (item)
+           (and (eq (magent-thread-item-type item) 'message)
+                (eq (magent-thread-item-role item) role)
+                (not (magent-thread-terminal-item-p item))))
+         (magent-thread-turn-items turn))
+        (magent-thread-start-item
+         thread turn-id 'message
+         :role role
+         :phase phase
+         :metadata metadata))))
+
+(defun magent-thread-append-item-content
+    (thread item chunk &optional output-p)
+  "Append CHUNK to ITEM's content, or output when OUTPUT-P is non-nil.
+This updates the materialized snapshot only; callers should complete or
+fail the item with a terminal journal event containing the final content."
+  (when (and item (stringp chunk) (> (length chunk) 0))
+    (let* ((old (if output-p
+                    (magent-thread-item-output item)
+                  (magent-thread-item-content item)))
+           (new (concat (or old "") chunk))
+           (now (magent-thread--now)))
+      (if output-p
+          (setf (magent-thread-item-output item) new)
+        (setf (magent-thread-item-content item) new))
+      (setf (magent-thread-item-updated-at item) now)
+      (magent-thread--update-timestamp thread now)))
+  item)
 
 (defun magent-thread-record-tool-result
     (thread turn-id call-id name args result &optional metadata)

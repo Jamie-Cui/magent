@@ -62,7 +62,9 @@ Child jobs inherit the parent request context where practical:
 
 ## UI And Resume
 
-The parent `*magent*` buffer renders compact lifecycle blocks as `#+begin_agent` / `#+end_agent`. Full child prompt, metadata, result/error, and transcript state remain inspectable with:
+The parent Magent workspace renders compact child-agent lifecycle rows.
+Full child prompt, metadata, result/error, and transcript state remain
+inspectable with:
 
 - `M-x magent-show-agent-transcript`
 - `C-c m j`
@@ -75,7 +77,7 @@ This lifecycle intentionally preserves Magent's Emacs-native workflow:
 
 - live Emacs buffers
 - `emacs_eval`
-- org-mode output
+- read-only workspace buffers plus compose buffers
 - project-scoped sessions
 - gptel transport
 

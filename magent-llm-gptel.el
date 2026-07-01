@@ -269,7 +269,9 @@ METADATA is merged into the event metadata."
      name
      args
      raw-call
-     (append (list :provider 'gptel) metadata))))
+     (if (plist-member metadata :provider)
+         metadata
+       (append (list :provider 'gptel) metadata)))))
 
 (defun magent-llm-gptel--handle-tool-use (fsm)
   "Report pending gptel tool calls without executing them."
@@ -382,15 +384,15 @@ executing tools or continuing the tool loop."
             (magent-llm-gptel--metadata info)))))))
    ((and (consp response) (eq (car response) 'tool-call))
     (magent-llm-gptel--flush-reasoning request state info)
-    (let ((calls (cdr response)))
-      (cl-loop for call in calls
-               for index from 0
-               for last-p = (= index (1- (length calls)))
-               do (magent-llm-gptel--emit
-                   request
-                   (magent-llm-gptel--normalize-tool-call
-                    call
-                    (when last-p '(:last t)))))
+    (let ((calls (cdr response))
+          (metadata (magent-llm-gptel--metadata info)))
+      (dolist (call calls)
+        (magent-llm-gptel--emit
+         request
+         (magent-llm-gptel--normalize-tool-call call metadata)))
+      (magent-llm-gptel--emit
+       request
+       (magent-llm-tool-call-batch-end-event metadata))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))))
    ((eq response t)

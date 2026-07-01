@@ -8,19 +8,18 @@
 
 ;;; Commentary:
 
-;; User interface for Magent with in-buffer input and output.
-;; The output buffer derives from org-mode for native folding support.
-;; Each message section uses a level-1 heading (*), and LLM content uses
-;; level-2+ headings (**).
+;; User interface for Magent with a read-only workspace buffer and an
+;; independent compose buffer.  The workspace renders a compact projection of
+;; the thread ledger; the durable ledger, not buffer text, is the source of
+;; truth for restore and transcript views.
 
 ;;; Code:
 
-(require 'org)
+(require 'button)
 (require 'cl-lib)
 (require 'spinner)
 (require 'subr-x)
 (require 'transient)
-(require 'magent-md2org)
 (require 'magent-approval)
 (require 'magent-events)
 (require 'magent-runtime)
@@ -33,17 +32,20 @@
 (require 'magent-turn)
 
 (defvar magent--spinner)
+(defvar magent-compose-close-after-submit)
+(defvar magent-compose-window-height)
 (defvar magent-enable-logging)
 (defvar magent-log-level)
 
 (defvar magent--current-request-handle nil
   "Current active request handle, if any.")
 
-;; Forward declarations for buffer-local input state (defined in
-;; "In-buffer input" section below).
+;; Forward declaration for buffer-local scope state (defined in
+;; "Compose input" section below).
 (defvar magent-ui--buffer-scope nil)
-(defvar magent-ui--input-marker)
-(defvar magent-ui--input-section-start)
+
+(defvar-local magent-ui--fold-state nil
+  "Hash table of persisted fragment fold state for the current workspace.")
 
 (defvar magent-ui-after-input-submit-hook nil
   "Hook run in the Magent buffer after successful in-buffer input submission.
@@ -228,6 +230,80 @@ When SCOPE is nil, use the current session scope."
       (setq-local magent-ui--buffer-scope target-scope))
     buffer))
 
+(defun magent-ui--compose-buffer-name (&optional scope)
+  "Return the compose buffer name for SCOPE."
+  (let* ((target-scope (or scope (magent-session-current-scope)))
+         (base (magent-ui--buffer-name-base))
+         (label (magent-ui--scope-buffer-label target-scope))
+         (hash (substring (secure-hash 'sha1 (format "%s" target-scope)) 0 6)))
+    (format "*%s-compose:%s#%s*" base label hash)))
+
+(defun magent-ui-compose-buffer (&optional scope)
+  "Return the Magent compose buffer for SCOPE."
+  (let* ((target-scope (or scope (magent-session-current-scope)))
+         (buffer (get-buffer-create
+                  (magent-ui--compose-buffer-name target-scope))))
+    (with-current-buffer buffer
+      (unless (derived-mode-p 'magent-compose-mode)
+        (magent-compose-mode))
+      (setq-local magent-ui--buffer-scope target-scope))
+    buffer))
+
+(defun magent-ui--display-compose-buffer (buffer)
+  "Display BUFFER as the Magent compose popup and select it."
+  (let ((window
+         (display-buffer
+          buffer
+          `((display-buffer-in-side-window)
+            (side . bottom)
+            (slot . 1)
+            (window-height . ,magent-compose-window-height)))))
+    (when (and (windowp window)
+               (window-live-p window))
+      (select-window window))
+    window))
+
+(defun magent-ui-open-compose (&optional scope initial-text)
+  "Display the compose buffer for SCOPE and optionally append INITIAL-TEXT."
+  (interactive)
+  (let ((buffer (magent-ui-compose-buffer scope)))
+    (when (and initial-text (not (string-empty-p initial-text)))
+      (with-current-buffer buffer
+        (goto-char (point-max))
+        (unless (or (bobp) (eq (char-before) ?\n))
+          (insert "\n"))
+        (insert initial-text)
+        (unless (eq (char-before) ?\n)
+          (insert "\n"))))
+    (with-current-buffer buffer
+      (goto-char (point-max)))
+    (magent-ui--display-compose-buffer buffer)
+    buffer))
+
+(defun magent-ui--select-workspace (&optional scope)
+  "Display and select the Magent workspace for SCOPE."
+  (let ((window (magent-ui-display-buffer scope)))
+    (when (and (windowp window)
+               (window-live-p window))
+      (select-window window))
+    window))
+
+(defun magent-ui--maybe-close-compose-window (buffer)
+  "Close BUFFER's compose window when configured to do so."
+  (when magent-compose-close-after-submit
+    (when-let* ((window (get-buffer-window buffer t)))
+      (when (and (windowp window)
+                 (window-live-p window))
+        (quit-window nil window)))))
+
+(defun magent-compose-cancel ()
+  "Clear the current Magent compose buffer."
+  (interactive)
+  (unless (derived-mode-p 'magent-compose-mode)
+    (user-error "Not in a Magent compose buffer"))
+  (erase-buffer)
+  (message "Magent compose cleared"))
+
 (defun magent-ui-get-log-buffer ()
   "Get or create the Magent log buffer."
   (let ((buffer (get-buffer-create magent-log-buffer-name)))
@@ -322,19 +398,18 @@ past messages so the user can see the full conversation."
              (magent-ui--context-scope))))))
 
 (defun magent-ui--snapshot-buffer-content (session &optional scope)
-  "Capture the output buffer text into SESSION's buffer-content slot.
-Returns the captured string, or nil if the buffer is empty or SESSION is nil."
+  "Stop persisting workspace text into SESSION.
+The ledger is the restore source.  This function remains as a harmless
+compatibility hook for older callers."
+  (ignore scope)
   (when session
-    (let ((buf (magent-ui-get-buffer scope)))
-      (when (> (buffer-size buf) 0)
-        (let ((content (with-current-buffer buf
-                         (buffer-substring-no-properties (point-min) (point-max)))))
-          (setf (magent-session-buffer-content session) content)
-          content)))))
+    (setf (magent-session-buffer-content session) nil))
+  nil)
 
 (defun magent-ui--context-scope ()
   "Return the session scope implied by the current command context."
-  (if (derived-mode-p 'magent-output-mode)
+  (if (or (derived-mode-p 'magent-output-mode)
+          (derived-mode-p 'magent-compose-mode))
       (or magent-ui--buffer-scope
           (magent-session-current-scope))
     (magent-session-scope-from-directory default-directory)))
@@ -374,181 +449,386 @@ renders history into it on first use.  Returns the active session."
       (magent-ui--snapshot-buffer-content magent--current-session current-scope))
     (magent-ui--activate-scope target-scope nil nil t)))
 
-(defun magent-ui--header-specs ()
-  "Return Magent heading labels and the faces used to render them."
-  `((,magent-user-prompt . magent-user-header)
-    (,magent-assistant-prompt . magent-assistant-header)
-    (,magent-error-prompt . magent-error-header)))
+(defun magent-ui--one-line (value &optional width)
+  "Return VALUE as a single display line truncated to WIDTH."
+  (truncate-string-to-width
+   (replace-regexp-in-string "[ \t\n\r]+" " " (format "%s" (or value "")))
+   (or width 96) nil nil "..."))
 
-(defun magent-ui--header-regexp ()
-  "Return a regexp matching Magent's level-1 heading lines."
-  (concat "^\\* "
-          (regexp-opt (mapcar #'car (magent-ui--header-specs)))
-          " +$"))
+(defun magent-ui--item-text (item)
+  "Return ITEM text content."
+  (or (magent-thread-item-content item)
+      (magent-thread-item-output item)
+      ""))
 
-(defun magent-ui--header-spec-for-line (line)
-  "Return the `(LABEL . FACE)' spec for heading LINE, or nil."
-  (catch 'match
-    (dolist (spec (magent-ui--header-specs))
-      (when (string-match-p
-             (concat "\\`\\* " (regexp-quote (car spec)) " +\\'")
-             line)
-        (throw 'match spec)))
-    nil))
-
-(defun magent-ui--rehydrate-header-line (line-start line-end spec)
-  "Rebuild Magent heading overlays for SPEC between LINE-START and LINE-END."
-  (let* ((label (car spec))
-         (face (cdr spec))
-         (label-start (+ line-start 2))
-         (label-end (+ label-start (length label))))
-    (when (<= label-end line-end)
-      (let ((ov (make-overlay label-start label-end)))
-        (overlay-put ov 'face face)
-        (overlay-put ov 'magent-ui-overlay t)))
-    (when (and magent-ui-header-strike-through
-               (> line-end (1+ label-end)))
-      (let ((ov (make-overlay (1- line-end) line-end)))
-        (overlay-put ov 'display '(space :align-to right))
-        (overlay-put ov 'face 'magent-strike-through)
-        (overlay-put ov 'magent-ui-overlay t)))))
-
-(defun magent-ui--rehydrate-separator-line (line-start line-end)
-  "Rebuild a full-width separator overlay between LINE-START and LINE-END."
-  (when (and magent-ui-separator-char
-             (/= (char-syntax magent-ui-separator-char) ?\s)
-             (= (- line-end line-start) 1)
-             (= (char-after line-start) magent-ui-separator-char))
-    (let ((ov (make-overlay line-start line-end)))
-      (overlay-put ov 'display '(space :align-to right))
-      (overlay-put ov 'face 'magent-separator)
-      (overlay-put ov 'magent-ui-overlay t))))
-
-(defun magent-ui--rehydrate-visual-state ()
-  "Rebuild Magent overlays after restoring a plain-text buffer snapshot."
-  (save-excursion
-    (goto-char (point-min))
-    (while (< (point) (point-max))
-      (let* ((line-start (point))
-             (line-end (line-end-position))
-             (line (buffer-substring-no-properties line-start line-end))
-             (spec (magent-ui--header-spec-for-line line)))
-        (when spec
-          (magent-ui--rehydrate-header-line line-start line-end spec))
-        (magent-ui--rehydrate-separator-line line-start line-end)
-        (forward-line 1)))))
-
-(defun magent-ui--last-session-message-role (session)
-  "Return the role of SESSION's last message, or nil when empty."
-  (when-let ((last-msg (car (last (magent-session-get-messages session)))))
-    (magent-msg-role last-msg)))
-
-(defun magent-ui--input-section-start-from-heading (heading-start)
-  "Infer the prompt section start from trailing prompt HEADING-START."
+(defun magent-ui--metadata-get (metadata key)
+  "Return KEY from plist or alist METADATA."
   (cond
-   ((= heading-start (point-min))
-    heading-start)
-   ((null magent-ui-separator-char)
-    heading-start)
-   ((= (char-syntax magent-ui-separator-char) ?\s)
-    (max (point-min) (1- heading-start)))
-   (t
-    (let ((candidate (max (point-min) (- heading-start 3))))
-      (if (and (< (1+ candidate) heading-start)
-               (= (char-after (1+ candidate)) magent-ui-separator-char))
-          candidate
-        heading-start)))))
+   ((plist-member metadata key)
+    (plist-get metadata key))
+   ((assq key metadata)
+    (cdr (assq key metadata)))
+   ((and (keywordp key)
+         (assq (intern (substring (symbol-name key) 1)) metadata))
+    (cdr (assq (intern (substring (symbol-name key) 1)) metadata)))
+   ((and (keywordp key)
+         (assoc (substring (symbol-name key) 1) metadata))
+    (cdr (assoc (substring (symbol-name key) 1) metadata)))))
 
-(defun magent-ui--restore-input-prompt-state (session)
-  "Restore prompt markers and editability from a trailing prompt in SESSION."
-  (setq magent-ui--input-marker nil)
-  (setq magent-ui--input-section-start nil)
-  (when (and (not (magent-ui-processing-p))
-             (> (point-max) (point-min)))
+(defun magent-ui--arg-get (args key)
+  "Return KEY from plist or alist ARGS."
+  (magent-ui--metadata-get args key))
+
+(defun magent-ui--apply-assistant-text-properties (start end)
+  "Apply lightweight markdown text properties between START and END."
+  (when (< start end)
     (save-excursion
-      (goto-char (point-max))
-      (when (re-search-backward (magent-ui--header-regexp) nil t)
-        (let* ((line-start (line-beginning-position))
-               (line (buffer-substring-no-properties
-                      line-start (line-end-position)))
-               (spec (magent-ui--header-spec-for-line line)))
-          (when (and spec
-                     (string= (car spec) magent-user-prompt)
-                     (not (eq (magent-ui--last-session-message-role session) 'user)))
-            (let* ((section-start
-                    (magent-ui--input-section-start-from-heading line-start))
-                   (input-start
-                    (save-excursion
-                      (goto-char line-start)
-                      (forward-line 1)
-                      (point))))
-              (let ((inhibit-read-only t))
-                (remove-text-properties section-start (point-max)
-                                        '(read-only t)))
-              (setq magent-ui--input-section-start section-start)
-              (setq magent-ui--input-marker (copy-marker input-start)))))))))
+      (goto-char start)
+      (while (re-search-forward "^#+[ \t]+\\(.+\\)$" end t)
+        (add-text-properties
+         (match-beginning 1) (match-end 1)
+         '(face font-lock-function-name-face)))
+      (goto-char start)
+      (while (re-search-forward "`\\([^`\n]+\\)`" end t)
+        (add-text-properties
+         (match-beginning 1) (match-end 1)
+         '(face font-lock-constant-face)))
+      (goto-char start)
+      (while (re-search-forward "\\*\\*\\([^*\n]+\\)\\*\\*" end t)
+        (add-text-properties
+         (match-beginning 1) (match-end 1)
+         '(face bold))))))
 
-(defun magent-ui--restore-buffer-snapshot (buffer session saved)
-  "Restore SAVED into BUFFER and rebuild Magent UI state for SESSION."
-  (with-current-buffer buffer
-    (let ((inhibit-read-only t))
-      (insert saved)
-      (add-text-properties (point-min) (point-max) '(read-only t)))
-    (magent-ui--rehydrate-visual-state)
-    (magent-ui--restore-input-prompt-state session)
-    (goto-char (point-max))))
+(defun magent-ui--insert-rendered-text (text)
+  "Insert TEXT and apply lightweight assistant text properties."
+  (let ((start (point)))
+    (insert text)
+    (magent-ui--apply-assistant-text-properties start (point))))
 
-(defun magent-ui-render-history (&optional skip-snapshot scope)
-  "Render session history into the output buffer for SCOPE.
-If the session has saved buffer content (from a previous render),
-restore it directly to preserve tool calls, reasoning blocks, and
-error messages, then rebuild Magent-specific overlays and prompt
-editability.  Otherwise fall back to re-rendering from session
-messages (which only contains user/assistant text).
-Before clearing the buffer, the current content is saved to the
-session so that future calls can restore it losslessly.
-When SKIP-SNAPSHOT is non-nil, skip snapshotting the current
-buffer before rendering.  This is required when switching to a
-different session; otherwise the old buffer text would overwrite the
-newly loaded session snapshot."
+(defun magent-ui--insert-labelled-block (label text &optional face render-text)
+  "Insert LABEL and TEXT into the current buffer."
+  (insert (propertize label 'face (or face 'font-lock-keyword-face)) "\n")
+  (when (and (stringp text) (not (string-empty-p text)))
+    (if render-text
+        (magent-ui--insert-rendered-text text)
+      (insert text))
+    (unless (eq (char-before) ?\n)
+      (insert "\n"))))
+
+(defun magent-ui--fold-state-table ()
+  "Return the current buffer's fragment fold state table."
+  (or (and (hash-table-p magent-ui--fold-state)
+           magent-ui--fold-state)
+      (setq-local magent-ui--fold-state
+                  (make-hash-table :test #'equal))))
+
+(defun magent-ui--apply-fold-overlay (start end)
+  "Fold the fragment body from START to END."
+  (when (< start end)
+    (let ((ov (make-overlay start end)))
+      (overlay-put ov 'invisible 'magent-ui)
+      (overlay-put ov 'isearch-open-invisible #'delete-overlay)
+      (overlay-put ov 'magent-ui-overlay t)
+      (overlay-put ov 'magent-ui-fold t)
+      ov)))
+
+(defun magent-ui--insert-fragment (title face body-fn &optional key)
+  "Insert a foldable fragment with TITLE, FACE, and BODY-FN."
+  (let ((header-start (point))
+        (fragment-key (or key title)))
+    (insert (propertize title 'face face) "\n")
+    (let ((header-end (1- (point)))
+          (body-start (point)))
+      (funcall body-fn)
+      (let ((body-end (point)))
+        (add-text-properties
+         header-start header-end
+         (list 'magent-ui-fragment t
+               'magent-ui-fragment-key fragment-key
+               'magent-ui-fragment-body-start body-start
+               'magent-ui-fragment-body-end body-end))
+        (when (gethash fragment-key (magent-ui--fold-state-table))
+          (magent-ui--apply-fold-overlay body-start body-end))))))
+
+(defun magent-ui--turn-title (turn)
+  "Return workspace title for TURN."
+  (format "Turn %s  [%s]"
+          (magent-ui--one-line
+           (or (magent-thread-turn-input turn)
+               (magent-thread-turn-id turn))
+           72)
+          (symbol-name (magent-thread-turn-status turn))))
+
+(defun magent-ui--tool-result-preview (item)
+  "Return a compact display string for tool ITEM."
+  (let* ((output (or (magent-thread-item-output item)
+                     (magent-thread-item-error item)
+                     ""))
+         (text (format "%s" output)))
+    (if (> (length text) magent-ui-result-max-length)
+        (format "[result %d chars; use transcript/detail view]" (length text))
+      (magent-ui--one-line text magent-ui-result-max-length))))
+
+(defconst magent-ui--tool-path-keys
+  '(:path :file :filepath :filename :target-file :old-file :new-file)
+  "Tool argument keys that should render as file links.")
+
+(defun magent-ui--key-label (key)
+  "Return a compact display label for KEY."
+  (if (keywordp key)
+      (substring (symbol-name key) 1)
+    (format "%s" key)))
+
+(defun magent-ui--keywordize-key (key)
+  "Return KEY as a keyword symbol when possible."
+  (cond
+   ((keywordp key) key)
+   ((symbolp key) (intern (concat ":" (symbol-name key))))
+   ((stringp key) (intern (concat ":" key)))
+   (t key)))
+
+(defun magent-ui--line-number (value)
+  "Return VALUE as a positive line number, or nil."
+  (cond
+   ((and (integerp value) (> value 0)) value)
+   ((and (stringp value)
+         (string-match-p "\\`[0-9]+\\'" value)
+         (> (string-to-number value) 0))
+    (string-to-number value))))
+
+(defun magent-ui--tool-path-entries (args)
+  "Return path entries from tool ARGS.
+Each entry is `(KEY PATH LINE)'."
+  (let ((line (magent-ui--line-number
+               (or (magent-ui--arg-get args :line)
+                   (magent-ui--arg-get args :line-number))))
+        entries)
+    (cond
+     ((and (listp args)
+           (keywordp (car args)))
+      (let ((copy args))
+        (while copy
+          (let ((key (pop copy))
+                (value (pop copy)))
+            (when (and (memq key magent-ui--tool-path-keys)
+                       (stringp value)
+                       (not (string-empty-p value)))
+              (push (list key value line) entries))))))
+     ((listp args)
+      (dolist (cell args)
+        (let ((key (magent-ui--keywordize-key (car-safe cell)))
+              (value (cdr-safe cell)))
+          (when (and (memq key magent-ui--tool-path-keys)
+                     (stringp value)
+                     (not (string-empty-p value)))
+            (push (list key value line) entries))))))
+    (nreverse entries)))
+
+(defun magent-ui--resolve-file-path (path)
+  "Return PATH resolved relative to the current Magent scope."
+  (if (file-name-absolute-p path)
+      path
+    (let ((scope (magent-ui--context-scope)))
+      (expand-file-name
+       path
+       (cond
+        ((stringp scope)
+         (file-name-as-directory scope))
+        ((stringp default-directory)
+         default-directory)
+        (t
+         (file-name-as-directory (expand-file-name "."))))))))
+
+(defun magent-ui--file-button-action (button)
+  "Open the file represented by BUTTON."
+  (let ((file (button-get button 'magent-ui-file))
+        (line (button-get button 'magent-ui-line)))
+    (find-file file)
+    (when line
+      (goto-char (point-min))
+      (forward-line (1- line)))))
+
+(defun magent-ui--insert-file-button (path &optional line)
+  "Insert a clickable file PATH with optional LINE."
+  (let ((file (magent-ui--resolve-file-path path)))
+    (insert-text-button
+     path
+     'follow-link t
+     'help-echo (if line
+                    (format "Open %s:%s" file line)
+                  (format "Open %s" file))
+     'magent-ui-file file
+     'magent-ui-line line
+     'action #'magent-ui--file-button-action))
+  (when line
+    (insert (format ":%d" line))))
+
+(defun magent-ui--insert-tool-path-details (item)
+  "Insert file/path detail rows for tool ITEM."
+  (dolist (entry (magent-ui--tool-path-entries
+                  (magent-thread-item-input item)))
+    (pcase-let ((`(,key ,path ,line) entry))
+      (insert "  " (magent-ui--key-label key) ": ")
+      (magent-ui--insert-file-button path line)
+      (insert "\n"))))
+
+(defun magent-ui--insert-tool-approval-detail (item)
+  "Insert approval detail row for tool ITEM when present."
+  (let* ((metadata (magent-thread-item-metadata item))
+         (decision (magent-ui--metadata-get metadata :approval-decision))
+         (source (magent-ui--metadata-get metadata :approval-source)))
+    (when decision
+      (insert (format "  approval: %s%s\n"
+                      decision
+                      (if source
+                          (format " (%s)" source)
+                        ""))))))
+
+(defun magent-ui--grep-result-entries (text)
+  "Return up to three `(PATH LINE)' entries parsed from TEXT."
+  (let (entries)
+    (when (stringp text)
+      (with-temp-buffer
+        (insert text)
+        (goto-char (point-min))
+        (while (and (< (length entries) 3)
+                    (re-search-forward
+                     "^\\([^:\n]+\\):\\([0-9]+\\):" nil t))
+          (push (list (match-string 1)
+                      (magent-ui--line-number (match-string 2)))
+                entries))))
+    (nreverse entries)))
+
+(defun magent-ui--insert-tool-output-details (item)
+  "Insert tool-specific output detail rows for ITEM."
+  (let ((name (magent-thread-item-name item))
+        (output (or (magent-thread-item-output item)
+                    (magent-thread-item-error item))))
+    (when (and output
+               (member name '("grep" "glob")))
+      (dolist (entry (magent-ui--grep-result-entries output))
+        (pcase-let ((`(,path ,line) entry))
+          (insert "  match: ")
+          (magent-ui--insert-file-button path line)
+          (insert "\n"))))))
+
+(defun magent-ui--insert-tool-item (item)
+  "Insert a compact tool ITEM row."
+  (insert
+   (propertize
+    (format "Tool %s [%s] %s\n"
+            (or (magent-thread-item-name item) "tool")
+            (symbol-name (magent-thread-item-status item))
+            (magent-ui--one-line
+             (magent-thread-item-input item)
+             magent-ui-tool-input-max-length))
+    'face 'magent-tool-header))
+  (magent-ui--insert-tool-path-details item)
+  (magent-ui--insert-tool-approval-detail item)
+  (magent-ui--insert-tool-output-details item)
+  (when (magent-thread-terminal-item-p item)
+    (insert (propertize
+             (concat "  -> " (magent-ui--tool-result-preview item) "\n")
+             'face 'magent-tool-result))))
+
+(defun magent-ui--insert-reasoning-item (item)
+  "Insert a compact reasoning ITEM row without exposing chain text."
+  (let* ((text (or (magent-thread-item-content item) ""))
+         (visibility (magent-ui--metadata-get
+                      (magent-thread-item-metadata item)
+                      :include-reasoning)))
+    (insert
+     (propertize
+      (format "Reasoning [%s] %d chars%s\n"
+              (symbol-name (magent-thread-item-status item))
+              (length text)
+              (if (eq visibility 'ignore) " hidden" ""))
+      'face 'magent-reasoning-header))))
+
+(defun magent-ui--insert-turn-body (turn)
+  "Insert workspace body for TURN."
+  (dolist (item (magent-thread-turn-items turn))
+    (pcase (magent-thread-item-type item)
+      ('message
+       (pcase (magent-thread-item-role item)
+         ('user
+          (magent-ui--insert-labelled-block
+           "User" (magent-thread-item-content item) 'magent-user-header))
+         ('assistant
+          (magent-ui--insert-labelled-block
+           (format "Assistant [%s]"
+                   (symbol-name (magent-thread-item-status item)))
+           (magent-thread-item-content item)
+           'magent-assistant-header
+           t))))
+      ('tool
+       (magent-ui--insert-tool-item item))
+      ('reasoning
+       (magent-ui--insert-reasoning-item item))))
+  (when (magent-thread-turn-error turn)
+    (insert (propertize
+             (format "Error: %s\n" (magent-thread-turn-error turn))
+             'magent-error-body)))
+  (insert "\n"))
+
+(defun magent-ui--workspace-turns (thread)
+  "Return the current/recent turns to show for THREAD."
+  (let* ((turns (cl-remove-if
+                 (lambda (turn)
+                   (eq (magent-thread-turn-status turn) 'dropped))
+                 (or (and thread (magent-thread-turns thread)) nil)))
+         (count (length turns)))
+    (if (> count 4)
+        (nthcdr (- count 4) turns)
+      turns)))
+
+(defun magent-ui-render-history (&optional _skip-snapshot scope)
+  "Render the current/recent ledger workspace for SCOPE."
+  (interactive)
   (let* ((target-scope (or scope
-                           (and (derived-mode-p 'magent-output-mode)
+                           (and (or (derived-mode-p 'magent-output-mode)
+                                    (derived-mode-p 'magent-compose-mode))
                                 (magent-ui--context-scope))
                            (magent-session-current-scope)))
          (session (magent-session--session-for-scope target-scope))
-         (buf (magent-ui-get-buffer target-scope))
-         (saved (or (and (not skip-snapshot)
-                         (magent-ui--snapshot-buffer-content session target-scope))
-                    (magent-session-buffer-content session))))
-    (magent-ui-clear-buffer target-scope)
-    (if saved
-        ;; Restore saved content losslessly, then rebuild UI overlays/state.
-        (magent-ui--restore-buffer-snapshot buf session saved)
-      ;; Fallback: re-render from session messages
-      (let ((magent-auto-scroll nil))
-        (dolist (msg (magent-session-get-messages session))
-          (let ((role (magent-msg-role msg))
-                (content (magent-msg-content msg)))
-            (pcase role
-              ('user
-               (when (stringp content)
-                 (magent-ui-insert-user-message content)))
-              ('assistant
-               (when (and (stringp content) (> (length content) 0))
-                 (magent-ui-insert-assistant-message content)))))))
-      (with-current-buffer buf
-        (goto-char (point-max))))
-    (magent-ui--maybe-show-input-prompt target-scope)))
+         (thread (and session (magent-session-thread-ledger session)))
+         (buf (magent-ui-get-buffer target-scope)))
+    (with-current-buffer buf
+      (let ((inhibit-read-only t))
+        (remove-overlays (point-min) (point-max) 'magent-ui-overlay t)
+        (erase-buffer)
+        (setq-local buffer-invisibility-spec '(magent-ui))
+        (insert (propertize
+                 (format "Magent workspace  scope=%s  thread=%s\n"
+                         (magent-ui--scope-buffer-label target-scope)
+                         (or (and thread (magent-thread-id thread)) "none"))
+                 'face 'font-lock-keyword-face))
+        (insert (format "status=%s  active=%s  queued=%s\n\n"
+                        (or (and thread
+                                 (symbol-name (magent-thread-status thread)))
+                            "idle")
+                        (if (magent-turn-processing-p) "yes" "no")
+                        (magent-turn-queue-length)))
+        (let ((turns (magent-ui--workspace-turns thread)))
+          (if turns
+              (dolist (turn turns)
+                (magent-ui--insert-fragment
+                 (magent-ui--turn-title turn)
+                 'font-lock-function-name-face
+                 (lambda ()
+                   (magent-ui--insert-turn-body turn))
+                 (format "turn:%s" (magent-thread-turn-id turn))))
+            (insert "No turns yet. Use `C-c m p` to compose a prompt.\n")))
+        (add-text-properties (point-min) (point-max) '(read-only t))
+        (goto-char (point-min))))))
 
 (defun magent-ui-clear-buffer (&optional scope)
-  "Clear the Magent output buffer for SCOPE and reset input state."
+  "Clear the Magent output buffer for SCOPE."
   (interactive)
   (with-current-buffer (magent-ui-get-buffer scope)
     (let ((inhibit-read-only t))
       (remove-overlays (point-min) (point-max) 'magent-ui-overlay t)
-      (erase-buffer))
-    (setq magent-ui--input-marker nil)
-    (setq magent-ui--input-section-start nil)))
+      (erase-buffer))))
 
 ;;; Interrupt command
 
@@ -572,6 +852,14 @@ request are discarded."
               magent-ui--request-generation)
   (magent-ui--clear-processing)
   (magent-ui--maybe-show-input-prompt))
+
+(defun magent-ui-submit-or-interrupt ()
+  "Open compose when idle, or confirm interrupt when a request is running."
+  (interactive)
+  (if (magent-ui-processing-p)
+      (when (y-or-n-p "Interrupt current Magent request? ")
+        (magent-interrupt))
+    (magent-ui-open-compose (magent-ui--context-scope))))
 
 ;;; Transient menu
 
@@ -626,6 +914,7 @@ Skips keys already reserved by the static parts of `magent-transient-menu'."
     ("d" "Diagnose Emacs" magent-diagnose-emacs)
     ("D" "Magent doctor" magent-doctor)
     ("R" "Resume session" magent-resume-session)
+    ("T" "Show transcript" magent-show-transcript)
     ("j" "Inspect child agent" magent-show-agent-transcript)]]
   ["Agent"
    [:class transient-column
@@ -644,46 +933,60 @@ Skips keys already reserved by the static parts of `magent-transient-menu'."
 ;;; Output mode
 
 (defun magent-ui-menu-or-insert-question-mark ()
-  "Open the Magent menu, or insert ? when point is in the input area."
+  "Open the Magent menu."
   (interactive)
-  (if (and magent-ui--input-marker
-           (>= (point) (marker-position magent-ui--input-marker)))
-      (insert "?")
-    (call-interactively #'magent-transient-menu)))
+  (call-interactively #'magent-transient-menu))
 
-(defvar magent-output-mode-map
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map org-mode-map)
-    (define-key map (kbd "?") #'magent-ui-menu-or-insert-question-mark)
-    (define-key map (kbd "C-g") #'magent-interrupt)
-    (define-key map (kbd "C-c C-c") #'magent-input-submit)
-    map)
+(defvar magent-output-mode-map (make-sparse-keymap)
   "Keymap for `magent-output-mode'.")
 
-(define-derived-mode magent-output-mode org-mode "M"
+(defun magent-ui--setup-output-mode-map ()
+  "Install Magent output mode bindings.
+This is deliberately repeatable so reloading `magent-ui' updates an
+already-created `magent-output-mode-map'."
+  (define-key magent-output-mode-map (kbd "?")
+              #'magent-ui-menu-or-insert-question-mark)
+  (define-key magent-output-mode-map (kbd "C-g") nil)
+  (define-key magent-output-mode-map (kbd "C-c C-c")
+              #'magent-ui-submit-or-interrupt)
+  (define-key magent-output-mode-map (kbd "TAB")
+              #'magent-ui-toggle-section)
+  (define-key magent-output-mode-map (kbd "g")
+              #'magent-ui-render-history))
+
+(magent-ui--setup-output-mode-map)
+
+(define-derived-mode magent-output-mode special-mode "Magent"
   "Major mode for Magent output.
-Derives from org-mode for native folding.  Each message section
-is a level-1 heading (*), and LLM content uses level-2+ headings (**).
+The workspace is read-only and renders a compact ledger projection.
 \\<magent-output-mode-map>
-Press \\[magent-interrupt] to interrupt the current request.
-Press \\[magent-ui-menu-or-insert-question-mark] outside the input area for the command menu."
+Press \\[magent-ui-submit-or-interrupt] to compose, or interrupt with confirmation.
+Press \\[magent-ui-menu-or-insert-question-mark] for the command menu."
   (visual-line-mode 1)
   (setq-local magent-ui--buffer-scope
               (or magent-ui--buffer-scope
                   (magent-session-current-scope)))
   (setq-local display-fill-column-indicator-column nil)
   (setq-local revert-buffer-function #'magent-ui--revert-buffer)
-  ;; Prevent org-mode from fontifying content inside tool/think/agent blocks
-  (setq-local org-protecting-blocks
-              (append '("tool" "think" "agent") org-protecting-blocks))
-  (add-hook 'completion-at-point-functions #'magent-ui--slash-capf nil t)
-  (add-hook 'post-self-insert-hook #'magent-ui--maybe-slash-complete nil t)
   (add-hook 'kill-buffer-hook #'magent-ui--cancel-timers nil t))
 
+(defvar magent-compose-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-c") #'magent-input-submit)
+    (define-key map (kbd "C-c C-k") #'magent-compose-cancel)
+    map)
+  "Keymap for `magent-compose-mode'.")
+
+(define-derived-mode magent-compose-mode text-mode "MagentCompose"
+  "Major mode for composing Magent prompts."
+  (setq-local magent-ui--buffer-scope
+              (or magent-ui--buffer-scope
+                  (magent-session-current-scope)))
+  (add-hook 'completion-at-point-functions #'magent-ui--slash-capf nil t)
+  (add-hook 'post-self-insert-hook #'magent-ui--maybe-slash-complete nil t))
+
 (defun magent-ui--revert-buffer (_ignore-auto _noconfirm)
-  "Revert the Magent buffer by re-rendering from saved content.
-Delegates to `magent-ui-render-history' which saves the current
-buffer content to the session before clearing, then restores it."
+  "Revert the Magent buffer by re-rendering from the ledger."
   (magent-ui-render-history))
 
 (defun magent-ui--cancel-timers ()
@@ -706,58 +1009,15 @@ Called via `kill-buffer-hook' to prevent timers firing on dead buffers."
                  ("\\<\\(ERROR\\|WARNING\\|INFO\\|DEBUG\\)\\>"
                   0 font-lock-keyword-face)))))
 
-;;; In-buffer input
+;;; Compose input
 
 (defvar-local magent-ui--buffer-scope nil
   "Scope associated with the current Magent output buffer.")
 
-(defvar-local magent-ui--input-marker nil
-  "Marker at the start of the user input area.
-Non-nil only when an editable input prompt is active.  The marker
-separates the prompt heading from the user-entered prompt body.")
-
-(defvar-local magent-ui--input-section-start nil
-  "Buffer position where the input prompt section starts.
-Includes the separator and header that precede the prompt body.
-Used by `magent-ui--remove-input-prompt' and `magent-input-submit'
-to handle the whole active input section.")
-
-(defun magent-ui--insert-input-prompt (&optional scope)
-  "Insert a user input prompt at the end of the output buffer for SCOPE.
-The prompt consists of an editable separator, a `* [USER]' heading,
-and an editable area below where the user can type.  Sets
-`magent-ui--input-marker' to the start of the prompt body."
-  (with-current-buffer (magent-ui-get-buffer scope)
-    (let ((inhibit-read-only t))
-      (goto-char (point-max))
-      (setq magent-ui--input-section-start (point))
-      (magent-ui--insert-separator)
-      (magent-ui--insert-header magent-user-prompt 'magent-user-header)
-      (setq magent-ui--input-marker (copy-marker (point-max)))
-      ;; Auto-scroll to input area
-      (let ((win (get-buffer-window (current-buffer))))
-        (when win
-          (set-window-point win (point-max)))))))
-
 (defun magent-ui--maybe-show-input-prompt (&optional scope)
-  "Insert an input prompt for SCOPE unless a queued item is about to run."
-  (with-current-buffer (magent-ui-get-buffer scope)
-    (unless (or (magent-ui-processing-p)
-                magent-ui--input-marker)
-      (magent-ui--insert-input-prompt scope))))
-
-(defun magent-ui--remove-input-prompt (&optional scope)
-  "Remove the input prompt section for SCOPE.
-Deletes the separator, header, and any draft text.
-No-op if no input prompt is active."
-  (with-current-buffer (magent-ui-get-buffer scope)
-    (when magent-ui--input-marker
-      (let ((inhibit-read-only t))
-        (delete-region (or magent-ui--input-section-start
-                           (marker-position magent-ui--input-marker))
-                       (point-max)))
-      (setq magent-ui--input-marker nil)
-      (setq magent-ui--input-section-start nil))))
+  "Ensure SCOPE's compose buffer exists.
+This does not display it; workspace rendering stays read-only."
+  (magent-ui-compose-buffer scope))
 
 (defun magent-ui--slash-parse (text)
   "Parse @skill-name tokens from TEXT.
@@ -812,8 +1072,8 @@ Commands are recognized only when the trimmed input is exactly
   "Execute whole-input COMMAND and return non-nil when handled."
   (pcase command
     ('clear
-     (setq magent-ui--input-marker nil)
-     (setq magent-ui--input-section-start nil)
+     (when (derived-mode-p 'magent-compose-mode)
+       (erase-buffer))
      (run-hooks 'magent-ui-after-input-submit-hook)
      (magent-clear-session)
      (message "Magent: session context cleared")
@@ -824,8 +1084,7 @@ Commands are recognized only when the trimmed input is exactly
   "Completion-at-point function for @skill-name in the input area.
 Only active when the input zone is open and point follows a @
 with optional partial skill name."
-  (when (and magent-ui--input-marker
-             (>= (point) (marker-position magent-ui--input-marker)))
+  (when (derived-mode-p 'magent-compose-mode)
     (save-excursion
       (when (re-search-backward "@\\([a-zA-Z0-9_-]*\\)\\=" nil t)
         (let ((word-start (match-beginning 1))
@@ -848,40 +1107,23 @@ with optional partial skill name."
 
 (defun magent-ui--maybe-slash-complete ()
   "Auto-trigger completion when `@` is typed in the input area."
-  (when (and magent-ui--input-marker
-             (>= (point) (marker-position magent-ui--input-marker))
+  (when (and (derived-mode-p 'magent-compose-mode)
              (eq (char-before) ?@))
     (completion-at-point)))
 
-(defun magent-ui--input-body-start ()
-  "Return the body start position for the active input prompt."
-  (or (and magent-ui--input-marker
-           (marker-position magent-ui--input-marker))
-      (when magent-ui--input-section-start
-        (save-excursion
-          (goto-char magent-ui--input-section-start)
-          (when (re-search-forward (magent-ui--header-regexp) nil t)
-            (forward-line 1)
-            (point))))
-      (point-max)))
-
 (defun magent-input-submit ()
-  "Submit the text in the input area and send it to the agent.
-Makes the submitted input section read-only, clears the input marker, and
-dispatches to the queue.  Whole-input commands such as @clear are
-executed locally instead of sent to the agent.  The `* [USER]'
-heading already in the buffer is reused (the queue skips inserting
-a duplicate)."
+  "Submit the current compose buffer and send it to the agent.
+Whole-input commands such as @clear are executed locally instead of sent
+to the agent."
   (interactive)
-  (unless magent-ui--input-marker
-    (user-error "No input area active"))
+  (unless (derived-mode-p 'magent-compose-mode)
+    (magent-ui-open-compose (magent-ui--context-scope))
+    (user-error "Submit from the Magent compose buffer"))
   (magent--ensure-initialized)
   (magent-ui--activate-context-session)
-  (let* ((section-start (or magent-ui--input-section-start
-                            (marker-position magent-ui--input-marker)))
-         (input-start (magent-ui--input-body-start))
+  (let* ((scope (magent-ui--context-scope))
          (raw (string-trim
-               (buffer-substring-no-properties input-start (point-max)))))
+               (buffer-substring-no-properties (point-min) (point-max)))))
     (if-let* ((command (magent-ui--input-command raw)))
         (magent-ui--execute-input-command command)
       (let* ((parsed      (magent-ui--slash-parse raw))
@@ -892,17 +1134,14 @@ a duplicate)."
                               (magent-ui--parsed-input-message parsed))))
         (when (string-blank-p text)
           (user-error "Empty input"))
-        (let ((inhibit-read-only t))
-          ;; Ensure trailing newline
-          (goto-char (point-max))
-          (unless (eq (char-before) ?\n)
-            (insert "\n"))
-          ;; Once submitted, the whole user section becomes history.
-          (add-text-properties section-start (point-max) '(read-only t)))
-        (setq magent-ui--input-marker nil)
-        (setq magent-ui--input-section-start nil)
-        (run-hooks 'magent-ui-after-input-submit-hook)
-        (magent-ui-process text 'buffer-input nil skill-names)))))
+        (let ((compose-buffer (current-buffer)))
+          (erase-buffer)
+          (display-buffer (magent-ui-get-buffer scope))
+          (run-hooks 'magent-ui-after-input-submit-hook)
+          (when magent-compose-close-after-submit
+            (magent-ui--maybe-close-compose-window compose-buffer)
+            (magent-ui--select-workspace scope)))
+        (magent-ui-process text 'compose nil skill-names)))))
 
 ;;; Section folding
 
@@ -910,8 +1149,37 @@ a duplicate)."
   "Toggle folding of the section at point in the Magent output buffer."
   (interactive)
   (with-current-buffer (magent-ui-get-buffer (magent-ui--context-scope))
-    (when (derived-mode-p 'magent-output-mode)
-      (org-cycle))))
+    (let ((pos (save-excursion
+                 (beginning-of-line)
+                 (point)))
+          start end key)
+      (save-excursion
+        (beginning-of-line)
+        (while (and (not (bobp))
+                    (not (get-text-property (point) 'magent-ui-fragment)))
+          (forward-line -1))
+        (setq start (get-text-property (point)
+                                       'magent-ui-fragment-body-start)
+              end (get-text-property (point)
+                                     'magent-ui-fragment-body-end)
+              key (get-text-property (point)
+                                     'magent-ui-fragment-key)))
+      (unless (and start end (< start end))
+        (user-error "No Magent fragment at point"))
+      (let* ((folds (cl-remove-if-not
+                     (lambda (ov)
+                       (overlay-get ov 'magent-ui-fold))
+                     (overlays-in start end)))
+             (table (magent-ui--fold-state-table)))
+        (if folds
+            (progn
+              (mapc #'delete-overlay folds)
+              (when key
+                (puthash key nil table)))
+          (magent-ui--apply-fold-overlay start end)
+          (when key
+            (puthash key t table))))
+      (goto-char pos))))
 
 ;;; Rendering functions
 
@@ -942,16 +1210,15 @@ Skipped at buffer start or when `magent-ui-separator-char' is nil."
       (insert "\n"))))
 
 (defun magent-ui--insert-header (label &optional face)
-  "Insert \"* LABEL\" heading followed by a dash line extending to window edge.
+  "Insert LABEL followed by a dash line extending to window edge.
 FACE, when non-nil, is applied to the label text via an overlay.
 The trailing line uses the `magent-strike-through' face.  Overlays are
-required because org-mode font-lock overwrites text-property faces on
-heading lines."
+used for consistent visual treatment in special buffers."
   (let ((heading-start (point)))
-    (insert "* " label " ")
+    (insert label " ")
     (when face
-      (let ((ov (make-overlay (+ heading-start 2)
-                              (+ heading-start 2 (length label)))))
+      (let ((ov (make-overlay heading-start
+                              (+ heading-start (length label)))))
         (overlay-put ov 'face face)
         (overlay-put ov 'magent-ui-overlay t))))
   (when magent-ui-header-strike-through
@@ -959,60 +1226,38 @@ heading lines."
   (insert "\n"))
 
 (defun magent-ui-insert-user-message (text)
-  "Insert user message TEXT into output buffer with level-1 heading."
+  "Insert user message TEXT into the workspace buffer."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (magent-ui--insert-separator)
     (magent-ui--insert-header magent-user-prompt 'magent-user-header)
     (insert text "\n")))
 
 (defun magent-ui-insert-assistant-message (text)
-  "Insert assistant message TEXT into output buffer with level-1 heading.
-Converts markdown to org-mode before insertion."
+  "Insert assistant message TEXT into the workspace buffer."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (magent-ui--insert-separator)
     (magent-ui--insert-header magent-assistant-prompt 'magent-assistant-header)
-    (let ((body-start (point)))
-      (insert text)
-      (unless (string-suffix-p "\n" text)
-        (insert "\n"))
-      (magent-md2org-convert-region body-start (point)))))
+    (insert text)
+    (unless (string-suffix-p "\n" text)
+      (insert "\n"))))
 
 (defun magent-ui--fold-block-at (pos block-re)
-  "Fold the block at POS if it matches BLOCK-RE.
-Defers `org-cycle' via timer to avoid blocking process filters."
-  (when pos
-    (let ((buf (current-buffer)))
-      (run-at-time 0 nil
-                   (lambda ()
-                     (when (buffer-live-p buf)
-                       (with-current-buffer buf
-                         (let ((inhibit-read-only t))
-                           (save-excursion
-                             (condition-case nil
-                                 (progn
-                                   (goto-char pos)
-                                   (when (looking-at block-re)
-                                     (org-cycle)))
-                               (error nil)))))))))))
+  "Compatibility no-op for the old org block folder.
+POS and BLOCK-RE are ignored."
+  (ignore pos block-re))
 
 (defvar-local magent-ui--tool-call-start nil
-  "Buffer position where the current #+begin_tool block was inserted.
-Set by `magent-ui-insert-tool-call', consumed by
-`magent-ui-insert-tool-result' to auto-fold the completed block.")
+  "Buffer position where the current tool row was inserted.")
 
 (defun magent-ui--sanitize-tool-text (text)
-  "Collapse newlines in TEXT to prevent org-mode from parsing headings.
-Tool result/input strings are display-only summaries inside
-#+begin_tool blocks; embedded newlines can produce spurious org
-headings (e.g. \"* Introduction\" from a file read)."
+  "Collapse newlines in TEXT for compact tool rows."
   (replace-regexp-in-string "\n" "\\\\n" text))
 
 (defun magent-ui-insert-tool-call (tool-name input)
-  "Insert tool call notification into output buffer.
-Wraps in #+begin_tool block."
+  "Insert a compact tool call notification into the workspace."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (setq magent-ui--tool-call-start (point))
-    (insert (propertize (concat "#+begin_tool " tool-name)
+    (insert (propertize (format "Tool %s running" tool-name)
                         'face 'magent-tool-header)
             "\n")
     (let ((input-str (magent-ui--sanitize-tool-text
@@ -1024,8 +1269,7 @@ Wraps in #+begin_tool block."
       (insert (propertize input-str 'face 'magent-tool-args) "\n"))))
 
 (defun magent-ui-insert-tool-result (_tool-name result)
-  "Insert tool RESULT for _TOOL-NAME into output buffer.
-Closes the #+begin_tool block and auto-folds it."
+  "Insert tool RESULT for _TOOL-NAME into the workspace."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (let ((result-str (magent-ui--sanitize-tool-text
                        (truncate-string-to-width
@@ -1033,10 +1277,7 @@ Closes the #+begin_tool block and auto-folds it."
                         magent-ui-result-max-length nil nil "..."))))
       (insert (propertize (concat "-> " result-str) 'face 'magent-tool-result)
               "\n"))
-    (insert (propertize "#+end_tool" 'face 'magent-tool-header) "\n")
-    (when magent-ui--tool-call-start
-      (magent-ui--fold-block-at magent-ui--tool-call-start "#\\+begin_tool")
-      (setq magent-ui--tool-call-start nil))))
+    (setq magent-ui--tool-call-start nil)))
 
 (defun magent-ui--agent-job-line (label value)
   "Return a display line for child-agent LABEL and VALUE."
@@ -1068,7 +1309,7 @@ When SCOPE is non-nil, insert into that scoped Magent buffer."
              (event-name (symbol-name event))
              (start (point)))
         (insert (propertize
-                 (format "#+begin_agent %s %s"
+                 (format "Agent %s %s"
                          event-name
                          (magent-agent-job-id job))
                  'face 'magent-tool-header)
@@ -1090,8 +1331,7 @@ When SCOPE is non-nil, insert into that scoped Magent buffer."
                                         (magent-ui--agent-job-status-face status)
                                       'magent-tool-args))
                   "\n"))
-        (insert (propertize "#+end_agent" 'face 'magent-tool-header) "\n")
-        (magent-ui--fold-block-at start "#\\+begin_agent")))))
+        (ignore start)))))
 
 (defun magent-ui-insert-error (error-text)
   "Insert ERROR-TEXT into output buffer with level-1 heading."
@@ -1111,11 +1351,9 @@ FACE defaults to `magent-error-body'."
   "Insert capability SUMMARY into the output buffer."
   (when (and summary (not (string-empty-p summary)))
     (magent-ui--with-insert (magent-ui-get-buffer)
-      (let ((quote-start (point)))
-        (insert "#+begin_quote\n")
-        (insert (format "Capability resolver: %s\n" summary))
-        (insert "#+end_quote\n")
-        (magent-ui--fold-block-at quote-start "#\\+begin_quote")))))
+      (insert (propertize
+               (format "Capability resolver: %s\n" summary)
+               'face 'font-lock-comment-face)))))
 
 ;;; Streaming support
 
@@ -1152,8 +1390,11 @@ Used for batching small streaming chunks to reduce UI updates.")
 (defvar-local magent-ui--reasoning-start nil
   "Buffer position where the current reasoning block begins.")
 
+(defvar-local magent-ui--reasoning-char-count 0
+  "Number of reasoning characters observed in the current reasoning row.")
+
 (defvar-local magent-ui--fontify-timer nil
-  "Idle timer for deferred markdown-to-org conversion.")
+  "Legacy idle timer slot for removed deferred markdown-to-org conversion.")
 
 (defun magent-ui--reset-streaming-state ()
   "Reset streaming state variables for a new round.
@@ -1202,6 +1443,8 @@ All buffer-local variable access is done inside the magent output buffer."
           (condition-case nil
               (progn
                 (insert magent-ui--streaming-batch-buffer)
+                (magent-ui--apply-assistant-text-properties
+                 ro-start (point-max))
                 (setq magent-ui--streaming-has-text t)
                 (setq magent-ui--streaming-batch-buffer "")
                 (when (> (point-max) ro-start)
@@ -1232,7 +1475,7 @@ Small chunks are batched to reduce UI updates."
 (defun magent-ui-finish-streaming-fontify ()
   "Finalize streaming section.
 If no text was streamed (tool-only round), removes the orphaned heading.
-When text was streamed, converts markdown to org-mode in the response body."
+When text was streamed, leaves the raw markdown/plain text intact."
   (let ((buf (magent-ui-get-buffer)))
     (with-current-buffer buf
       (magent-ui--flush-streaming-batch)
@@ -1244,9 +1487,6 @@ When text was streamed, converts markdown to org-mode in the response body."
                     (delete-region magent-ui--streaming-section-start
                                    (min magent-ui--streaming-start (point-max)))))
               (let ((inhibit-read-only t))
-                (when magent-ui--response-body-start
-                  (magent-ui--convert-markdown-region
-                   magent-ui--response-body-start (point-max)))
                 (goto-char (point-max))
                 (unless (eq (char-before) ?\n)
                   (insert "\n"))))
@@ -1258,62 +1498,60 @@ When text was streamed, converts markdown to org-mode in the response body."
         (magent-ui--reset-streaming-state)))))
 
 (defun magent-ui--convert-markdown-region (start end)
-  "Convert markdown in region START END, deferring large regions."
-  (let ((size (- end start)))
-    (if (and (numberp magent-ui-fontify-threshold)
-             (> magent-ui-fontify-threshold 0)
-             (> size magent-ui-fontify-threshold))
-        (magent-ui--schedule-markdown-conversion
-         (current-buffer)
-         (copy-marker start)
-         (copy-marker end))
-      (magent-md2org-convert-region start end))))
+  "Compatibility no-op for the removed live markdown-to-org path."
+  (ignore start end))
 
 (defun magent-ui--schedule-markdown-conversion (buffer start-marker end-marker)
-  "Schedule markdown conversion for BUFFER between START-MARKER and END-MARKER."
-  (when magent-ui--fontify-timer
-    (cancel-timer magent-ui--fontify-timer)
-    (setq magent-ui--fontify-timer nil))
-  (setq magent-ui--fontify-timer
-        (run-with-idle-timer
-         magent-ui-fontify-idle-delay nil
-         (lambda ()
-           (unwind-protect
-               (when (buffer-live-p buffer)
-                 (with-current-buffer buffer
-                   (setq magent-ui--fontify-timer nil)
-                   (when (and (marker-position start-marker)
-                              (marker-position end-marker)
-                              (< (marker-position start-marker)
-                                 (marker-position end-marker)))
-                     (let ((inhibit-read-only t))
-                       (magent-md2org-convert-region
-                        (marker-position start-marker)
-                        (marker-position end-marker))))))
-             (set-marker start-marker nil)
-             (set-marker end-marker nil))))))
+  "Compatibility no-op for removed deferred markdown conversion."
+  (ignore buffer start-marker end-marker))
 
 (defun magent-ui-insert-reasoning-start ()
-  "Insert the beginning of a reasoning block."
+  "Insert or reset a compact reasoning status row."
   (magent-ui--with-insert (magent-ui-get-buffer)
     (setq magent-ui--in-reasoning-block t)
     (setq magent-ui--reasoning-start (point))
-    (when magent-ui-wrap-reasoning-in-think-block
-      (insert (propertize "#+begin_think" 'face 'magent-reasoning-header) "\n"))))
+    (setq-local magent-ui--reasoning-char-count 0)
+    (insert (propertize "Reasoning [streaming] 0 chars\n"
+                        'face 'magent-reasoning-header))))
 
 (defun magent-ui-insert-reasoning-text (text)
-  "Insert reasoning TEXT into the output buffer."
+  "Update the compact reasoning status with TEXT length."
   (magent-ui--with-insert (magent-ui-get-buffer)
-    (insert text)))
+    (setq-local magent-ui--reasoning-char-count
+                (+ (or (and (boundp 'magent-ui--reasoning-char-count)
+                            magent-ui--reasoning-char-count)
+                       0)
+                   (length (or text ""))))
+    (when magent-ui--reasoning-start
+      (let ((inhibit-read-only t)
+            (start magent-ui--reasoning-start))
+        (save-excursion
+          (goto-char start)
+          (delete-region start (line-end-position))
+          (insert (propertize
+                   (format "Reasoning [streaming] %d chars"
+                           magent-ui--reasoning-char-count)
+                   'face 'magent-reasoning-header)))))))
 
 (defun magent-ui-insert-reasoning-end ()
-  "Insert the end of a reasoning block."
+  "Finalize the compact reasoning status row."
   (let ((buf (magent-ui-get-buffer)))
     (magent-ui--with-insert buf
-      (if magent-ui-wrap-reasoning-in-think-block
-          (insert "\n" (propertize "#+end_think" 'face 'magent-reasoning-header) "\n")
-        (unless (or (bobp) (eq (char-before) ?\n))
-          (insert "\n")))
+      (when magent-ui--reasoning-start
+        (let ((start magent-ui--reasoning-start))
+          (save-excursion
+            (goto-char start)
+            (delete-region start (line-end-position))
+            (insert (propertize
+                     (format "Reasoning [done] %d chars"
+                             (or (and (boundp
+                                       'magent-ui--reasoning-char-count)
+                                      magent-ui--reasoning-char-count)
+                                 0))
+                     'face 'magent-reasoning-header)))))
+      (goto-char (point-max))
+      (unless (or (bobp) (eq (char-before) ?\n))
+        (insert "\n"))
       (setq magent-ui--in-reasoning-block nil)
       (setq magent-ui--streaming-has-text t)
       (when magent-ui--reasoning-start
@@ -1399,11 +1637,9 @@ Returns a context string or nil if context should not be captured."
 
 ;;;###autoload
 (defun magent-dwim ()
-  "Switch to the Magent buffer and position cursor at the input area.
-If no input prompt exists (e.g. first use or after processing),
-one is inserted at the end of the buffer.  When `magent-auto-context'
-is non-nil, the calling buffer's metadata is pre-filled as editable
-text that the user can keep or delete."
+  "Display the Magent workspace and focus the compose buffer.
+When `magent-auto-context' is non-nil, the calling buffer's metadata is
+inserted into compose as editable text."
   (interactive)
   (let (ctx buf)
     (magent-ui--activate-context-session)
@@ -1412,13 +1648,7 @@ text that the user can keep or delete."
     (when (zerop (buffer-size buf))
       (magent-ui-render-history t))
     (display-buffer buf)
-    (pop-to-buffer buf)
-    (unless magent-ui--input-marker
-      (magent-ui--insert-input-prompt))
-    (when ctx
-      (goto-char magent-ui--input-marker)
-      (insert ctx "\n"))
-    (goto-char (point-max))
+    (magent-ui-open-compose nil ctx)
     (run-hooks 'magent-dwim-hook)))
 
 (defun magent-send-prompt (prompt)
@@ -1510,9 +1740,7 @@ stale callbacks are discarded."
                (magent-turn-active-submission)))
          request-state)
     (magent-ui-display-buffer)
-    (magent-ui--remove-input-prompt scope)
-    (unless (eq (magent-ui--request-source item) 'buffer-input)
-      (magent-ui-insert-user-message (or (magent-ui--request-display item) input)))
+    (magent-ui-render-history t scope)
     (when (and (boundp 'magent--spinner) magent--spinner)
       (spinner-start magent--spinner))
     (magent-log "INFO processing [%s] gen=%d: %s"
@@ -1566,14 +1794,15 @@ stale callbacks are discarded."
             (magent-turn-set-current-request-handle
              magent--current-request-handle)))
       (error
-       (magent-log "ERROR in run-item: %s" (error-message-string err))
-       (magent-ui-insert-error (error-message-string err))
+      (magent-log "ERROR in run-item: %s" (error-message-string err))
+      (magent-ui-insert-error (error-message-string err))
        (setq magent--current-request-handle nil)
        (when submission-id
          (magent-turn-finish 'failed (error-message-string err)))
        (when (and (boundp 'magent--spinner) magent--spinner)
          (spinner-stop magent--spinner))
        (magent-ui--clear-processing)
+       (magent-ui-render-history t scope)
        (magent-ui--maybe-show-input-prompt scope)))))
 
 (defun magent-ui--finish-processing (response &optional submission-id)
@@ -1595,6 +1824,7 @@ Handles both streaming and non-streaming completion."
     (magent-ui--clear-processing)
     (when submission-id
       (magent-turn-finish (if success 'completed 'failed) content))
+    (magent-ui-render-history t scope)
     (magent-ui--maybe-show-input-prompt scope)
     (condition-case err
         (progn
@@ -1613,7 +1843,8 @@ Handles both streaming and non-streaming completion."
   (magent-ui--activate-context-session)
   (magent-session-reset)
   (magent-ui-clear-buffer)
-  (magent-ui--insert-input-prompt))
+  (magent-ui-render-history t)
+  (magent-ui-open-compose))
 
 ;;;###autoload
 (defun magent-resume-session ()
@@ -1731,31 +1962,31 @@ the buffer flag is cleared."
   "Insert one child-agent transcript ENTRY into the current buffer."
   (let ((role (or (cdr (assq 'role entry)) "?"))
         (content (or (cdr (assq 'content entry)) "")))
-    (insert (format "** %s\n" (upcase (format "%s" role))))
+    (insert (format "%s\n" (upcase (format "%s" role))))
     (insert (format "%s\n\n" content))))
 
 (defun magent-ui--render-agent-transcript (job)
   "Render child-agent JOB into the current transcript buffer."
   (let ((inhibit-read-only t))
     (erase-buffer)
-    (insert (format "* Child Agent %s\n\n" (magent-agent-job-id job)))
-    (insert (format "- Agent: %s\n" (or (magent-agent-job-agent-name job) "?")))
-    (insert (format "- Task: %s\n" (or (magent-agent-job-task-name job) "")))
-    (insert (format "- Status: %s\n" (symbol-name (magent-agent-job-status job))))
+    (insert (format "Child Agent %s\n\n" (magent-agent-job-id job)))
+    (insert (format "Agent: %s\n" (or (magent-agent-job-agent-name job) "?")))
+    (insert (format "Task: %s\n" (or (magent-agent-job-task-name job) "")))
+    (insert (format "Status: %s\n" (symbol-name (magent-agent-job-status job))))
     (when-let ((result (magent-agent-job-result job)))
-      (insert (format "- Result: %s\n" result)))
+      (insert (format "Result: %s\n" result)))
     (when-let ((error (magent-agent-job-error job)))
-      (insert (format "- Error: %s\n" error)))
+      (insert (format "Error: %s\n" error)))
     (when-let ((prompt (magent-agent-job-prompt job)))
-      (insert "\n** Prompt\n")
+      (insert "\nPrompt\n")
       (insert prompt "\n"))
     (when-let ((metadata (magent-agent-job-metadata job)))
-      (insert "\n** Metadata\n")
+      (insert "\nMetadata\n")
       (dolist (entry metadata)
-        (insert (format "- %s: %s\n"
+        (insert (format "%s: %s\n"
                         (car entry)
                         (magent-ui--metadata-value-string (cdr entry))))))
-    (insert "\n** Transcript\n\n")
+    (insert "\nTranscript\n\n")
     (let ((transcript (magent-agent-job-transcript job)))
       (if transcript
           (dolist (entry transcript)
@@ -1763,6 +1994,37 @@ the buffer flag is cleared."
         (insert "No transcript captured yet.\n")))
     (goto-char (point-min))
     (setq buffer-read-only t)))
+
+;;;###autoload
+(defun magent-show-transcript ()
+  "Show the full ledger transcript for the current Magent session."
+  (interactive)
+  (magent--ensure-initialized)
+  (magent-ui--activate-context-session)
+  (let* ((session (magent-session-get))
+         (thread (magent-session-thread-ledger session))
+         (buffer (get-buffer-create
+                  (format "*Magent Transcript: %s*"
+                          (or (and thread (magent-thread-id thread))
+                              "none")))))
+    (with-current-buffer buffer
+      (special-mode)
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (format "Magent Transcript  thread=%s\n\n"
+                        (or (and thread (magent-thread-id thread)) "none")))
+        (if (and thread (magent-thread-turns thread))
+            (dolist (turn (magent-thread-turns thread))
+              (magent-ui--insert-fragment
+               (magent-ui--turn-title turn)
+               'font-lock-function-name-face
+               (lambda ()
+                 (magent-ui--insert-turn-body turn))
+               (format "turn:%s" (magent-thread-turn-id turn))))
+          (insert "No transcript items.\n"))
+        (add-text-properties (point-min) (point-max) '(read-only t))
+        (goto-char (point-min))))
+    (display-buffer buffer)))
 
 ;;;###autoload
 (defun magent-show-agent-transcript ()
@@ -1785,7 +2047,7 @@ the buffer flag is cleared."
                     (format "*Magent Agent: %s*"
                             (magent-agent-job-id job)))))
       (with-current-buffer buffer
-        (org-mode)
+        (special-mode)
         (magent-ui--render-agent-transcript job))
       (display-buffer buffer))))
 

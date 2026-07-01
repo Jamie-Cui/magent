@@ -3,13 +3,14 @@
 Magent now models the agent loop as an explicit `thread -> turn -> item`
 ledger. This is the source of truth for agent workflow state. Legacy
 session `messages` and `context-items` remain as derived projections for
-gptel prompt construction, UI restore, and older tests.
+gptel prompt construction, migration, and older tests.
 
 ## Codex Alignment
 
 Codex exposes a thread event stream at the SDK/app-server boundary:
 
 - `thread.started`
+- `turn.queued`
 - `turn.started`
 - `item.started`
 - `item.updated`
@@ -107,7 +108,7 @@ turn parent.
 Persistence is `snapshot + journal`.
 
 - `journal`: append-only event log. It records lifecycle transitions such
-  as `turn-started`, `item-started`, `item-completed`, and
+  as `turn-queued`, `turn-started`, `item-started`, `item-completed`, and
   `turn-completed`. It is the audit log and is preserved even when its
   events are already reflected in the current snapshot.
 - `snapshot`: materialized full thread state. It stores the current
@@ -123,8 +124,9 @@ Session JSON now writes both:
 }
 ```
 
-Older `messages` and `context-items` are kept as projections for display
-and migration. On load, Magent prefers replaying `snapshot + journal`; if
+Older `messages` and `context-items` are kept as projections for gptel
+prompt reuse and migration. On load, Magent prefers replaying
+`snapshot + journal`; if
 those fields are absent, it migrates legacy `messages` into a thread
 ledger.
 
@@ -140,30 +142,63 @@ append-only record. The two are not interchangeable.
 ## Loop Flow
 
 1. UI submission enters `magent-turn`.
-2. `magent-turn` creates a ledger turn and starts it.
-3. `magent-agent-process` records the user message item in that turn.
-4. `magent-agent-loop` consumes normalized LLM events.
-5. Tool-call events start `tool` items.
-6. Tool results update the same `tool` items to `completed` or `failed`.
-7. Tool output returns a continuation outcome such as `tool-output`;
+2. `magent-turn` creates a queued ledger turn and records the completed
+   user message item immediately.
+3. When the submission actually starts, `magent-turn` transitions the
+   turn to `in-progress`.
+4. `magent-agent-process` reuses that turn/user item idempotently instead
+   of duplicating the user message.
+5. `magent-agent-loop` consumes normalized LLM events.
+6. Text and reasoning deltas update materialized in-progress items in
+   the snapshot without appending one journal event per chunk. Terminal
+   item events carry the final content.
+7. Tool-call events are accumulated until the provider-neutral
+   `tool-call-batch-end` event closes the sampling batch.
+8. Tool dispatch starts `tool` items, records approval metadata when
+   available, and updates those same items to `completed` or `failed`.
+9. Tool output returns a continuation outcome such as `tool-output`;
    `magent-agent-process` owns the decision to rebuild the prompt from
    session history and start the next sampling request.  This keeps tool
    execution separate from turn continuation policy.
-8. Assistant completion records an assistant message item and completes
+10. Assistant completion records an assistant message item and completes
    the turn.
-9. Abort, failure, and dropped queued submissions transition the turn to
-   `interrupted`, `failed`, or `dropped`.
-10. `magent-max-sampling-requests` is a lifecycle guard for one user
+11. Abort, failure, and dropped queued submissions transition the turn to
+   `interrupted`, `failed`, or `dropped`; in-progress items under an
+   aborted turn are marked `cancelled`.
+12. `magent-max-sampling-requests` is a lifecycle guard for one user
     turn.  It limits the number of model sampling requests, including
     tool-output continuations, without inspecting or deduplicating tool
     command contents.
+
+Prompt reconstruction is ledger-driven.  When a current turn id is known,
+Magent includes completed history plus that turn only, preventing later
+queued user submissions from leaking into the active model request.
+
+## UI Projection
+
+The main Magent buffer is a read-only `special-mode` workspace.  It shows
+the current/recent turn projection from the ledger, not a restored copy of
+old buffer text.  Prompt composition lives in an independent
+`magent-compose-mode` buffer keyed by session scope.
+
+Reasoning is stored as a ledger item when `magent-include-reasoning` is
+`t` or `ignore`.  The workspace shows only status and character count;
+raw reasoning text is reserved for transcript/detail inspection.  Tool
+items render as compact rows with bounded result previews, approval
+state, file/path buttons, and selected tool-specific output links.  Turn
+fragments preserve fold state across workspace re-renders.  Assistant
+text uses lightweight text properties for markdown-like emphasis and
+inline code; the live streaming path applies those properties only to
+newly flushed chunks and does not convert markdown to org.  Full history
+is available through `M-x magent-show-transcript`.
 
 ## Codex Differences Still Preserved
 
 Magent intentionally still differs from Codex in these loop-adjacent
 areas:
 
-- UI is an Emacs org buffer, not a TUI/app-server client.
+- UI is an Emacs-native workspace/compose pair, not a TUI/app-server
+  client.
 - Provider streaming is normalized behind `magent-llm-gptel.el`, but
   transport remains gptel.
 - Codex core runs a turn as a multi-sampling loop where pending user
@@ -180,8 +215,8 @@ areas:
   truth.
 - Codex rollout history stores response items and turn context items.
   Magent stores a ledger `snapshot + journal`; `messages` and
-  `context-items` are projections used for gptel prompt reuse and UI
-  restoration.
+  `context-items` are projections used for gptel prompt reuse and
+  migration.
 - Codex provider/model plumbing is native to codex-core. Magent keeps
   `gptel-request` as the provider transport and normalizes gptel events
   before the Magent-owned loop consumes them.
@@ -191,6 +226,16 @@ areas:
   workflow goal.
 - Child agents are durable Magent jobs, documented in `AGENT_JOBS.md`,
   not Codex app-server threads.
+
+## Backlog / TODO
+
+No open TODO remains from the agent-workflow/UI refactor backlog.  Future
+hardening candidates:
+
+- Add per-tool renderer plugins for additional structured outputs beyond
+  the generic file/path and grep-style link extraction.
+- Add live visual smoke coverage for very large transcripts and long
+  streaming sessions.
 
 ## Design Review Summary
 

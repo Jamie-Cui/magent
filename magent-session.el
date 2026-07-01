@@ -920,7 +920,52 @@ Returns a condensed version of the conversation."
 
 ;;; gptel prompt list conversion
 
-(defun magent-session-to-gptel-prompt-list (session)
+(defun magent-session--turn-message-content (turn role)
+  "Return TURN's last message content for ROLE, or nil."
+  (catch 'content
+    (dolist (item (reverse (magent-thread-turn-items turn)))
+      (when (and (eq (magent-thread-item-type item) 'message)
+                 (eq (magent-thread-item-role item) role)
+                 (magent-thread-terminal-item-p item))
+        (throw 'content (magent-thread-item-content item))))
+    nil))
+
+(defun magent-session--turn-user-content (turn)
+  "Return TURN's prompt-visible user content."
+  (or (magent-session--turn-message-content turn 'user)
+      (magent-thread-turn-input turn)))
+
+(defun magent-session--tool-prompt-entry (item)
+  "Return a gptel prompt-list tool plist for ledger ITEM."
+  (let ((output (magent-thread-item-output item)))
+    (list :id (or (magent-thread-item-call-id item)
+                  (magent-thread-item-id item))
+          :name (magent-json-safe-name
+                 (magent-thread-item-name item))
+          :args (magent-json-safe-tool-args
+                 (magent-thread--tool-input-plist
+                  (magent-thread-item-input item)))
+          :result (if (stringp output)
+                      output
+                    (format "%s" output)))))
+
+(defun magent-session--turn-tool-prompt-entries (turn)
+  "Return prompt-visible tool entries for TURN."
+  (let (tools)
+    (dolist (item (magent-thread-turn-items turn) (nreverse tools))
+      (when (and (eq (magent-thread-item-type item) 'tool)
+                 (magent-thread-terminal-item-p item))
+        (push (magent-session--tool-prompt-entry item) tools)))))
+
+(defun magent-session--turn-include-p (turn current-turn-id)
+  "Return non-nil when TURN should be included in prompt generation."
+  (let ((status (magent-thread-turn-status turn)))
+    (or (eq status 'completed)
+        (and current-turn-id
+             (equal (magent-thread-turn-id turn) current-turn-id)
+             (memq status '(queued in-progress))))))
+
+(defun magent-session-to-gptel-prompt-list (session &optional current-turn-id)
   "Convert SESSION messages to a gptel-request prompt list.
 Returns a list in gptel's advanced format:
   ((prompt . \"user msg\") (response . \"assistant msg\") ...)
@@ -930,53 +975,62 @@ gptel can serialize historical tool calls/results for the active backend.
 Only completed turns are reused.  When an assistant reply is empty or a
 synthetic error string, Magent drops both that reply and its paired user
 prompt from future prompt reuse.  The final pending user prompt is still
-included so the current turn is preserved."
-  (let ((messages (magent-session-get-messages session))
-        pending-user
-        pending-tools
-        prompt-list)
-    (cl-labels
-        ((append-pending-turn
-          (assistant-content)
-          (when pending-user
-            (if (magent-session--assistant-response-reusable-p assistant-content)
-                (progn
-                  (push (cons 'prompt pending-user) prompt-list)
-                  (dolist (tool (nreverse pending-tools))
-                    (push (cons 'tool tool) prompt-list))
-                  (push (cons 'response
-                              (magent-session--content-to-string assistant-content))
-                        prompt-list))
-              (magent-log "INFO dropping failed session turn from prompt reuse")))
-          (setq pending-user nil
-                pending-tools nil)))
-      (dolist (msg messages)
-        (let ((role (magent-msg-role msg))
-             (content (magent-msg-content msg)))
-          (pcase role
-            ('user
-             (setq pending-user (magent-session--content-to-string content)
-                   pending-tools nil))
-            ('tool
-             (when (and pending-user
-                        (magent-session--tool-content-p content))
-               (let ((tool (copy-sequence content)))
-                 (plist-put tool
-                            :name
-                            (magent-json-safe-name
-                             (plist-get content :name)))
-                 (plist-put tool
-                            :args
-                            (magent-json-safe-tool-args
-                             (plist-get content :args)))
-                 (push tool pending-tools))))
-            ('assistant
-             (append-pending-turn content))
-            (_ nil)))))
-    (when pending-user
-      (push (cons 'prompt pending-user) prompt-list)
-      (dolist (tool (nreverse pending-tools))
-        (push (cons 'tool tool) prompt-list)))
+included so the current turn is preserved.
+
+When CURRENT-TURN-ID is non-nil, prompt generation stops after that turn.
+This prevents later queued user submissions from leaking into the active
+sampling request."
+  (let* ((thread (magent-session-thread-ledger session))
+         (turns (and thread (magent-thread-turns thread)))
+         (effective-current-turn-id
+          (or current-turn-id
+              (and (cl-find-if
+                    (lambda (turn)
+                      (memq (magent-thread-turn-status turn)
+                            '(queued in-progress)))
+                    (reverse turns))
+                   (magent-thread-turn-id
+                    (cl-find-if
+                     (lambda (turn)
+                       (memq (magent-thread-turn-status turn)
+                             '(queued in-progress)))
+                     (reverse turns))))))
+         prompt-list
+         stop)
+    (dolist (turn turns)
+      (unless stop
+        (when (magent-session--turn-include-p
+               turn effective-current-turn-id)
+          (let* ((user-content (magent-session--turn-user-content turn))
+                 (user-text (magent-session--content-to-string user-content))
+                 (assistant-content
+                  (magent-session--turn-message-content turn 'assistant))
+                 (completed (eq (magent-thread-turn-status turn)
+                                'completed)))
+            (when (and user-text (not (string-empty-p user-text)))
+              (cond
+               ((and completed
+                     (magent-session--assistant-response-reusable-p
+                      assistant-content))
+                (push (cons 'prompt user-text) prompt-list)
+                (dolist (tool (magent-session--turn-tool-prompt-entries turn))
+                  (push (cons 'tool tool) prompt-list))
+                (push (cons 'response
+                            (magent-session--content-to-string
+                             assistant-content))
+                      prompt-list))
+               ((and completed assistant-content)
+                (magent-log
+                 "INFO dropping failed session turn from prompt reuse"))
+               ((or effective-current-turn-id
+                    (not completed))
+                (push (cons 'prompt user-text) prompt-list)
+                (dolist (tool (magent-session--turn-tool-prompt-entries turn))
+                  (push (cons 'tool tool) prompt-list)))))))
+        (when (and effective-current-turn-id
+                   (equal (magent-thread-turn-id turn)
+                          effective-current-turn-id))
+          (setq stop t))))
     (nreverse prompt-list)))
 
 (provide 'magent-session)

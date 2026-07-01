@@ -52,6 +52,10 @@
   "Return non-nil when submissions are queued."
   (and magent-turn--queue t))
 
+(defun magent-turn-queue-length ()
+  "Return the number of queued submissions."
+  (length magent-turn--queue))
+
 (defun magent-turn-current-request-handle ()
   "Return the request handle associated with the active turn."
   magent-turn--current-request-handle)
@@ -106,10 +110,10 @@
         magent-turn--current-request-handle nil)
   (setf (magent-turn-submission-status submission) 'running
         (magent-turn-submission-started-at submission) (float-time))
-  (when-let ((turn (magent-turn--submission-turn submission)))
-    (setf (magent-thread-turn-status turn) 'in-progress
-          (magent-thread-turn-started-at turn)
-          (or (magent-thread-turn-started-at turn) (float-time))))
+  (when-let* ((thread (magent-turn--session-thread))
+              (turn-id (magent-turn-submission-turn-id submission)))
+    (magent-thread-start-turn thread turn-id)
+    (magent-session-refresh-projections (magent-session-get)))
   (magent-turn--emit 'submission-start submission)
   (run-at-time 0 nil
                (lambda (submission)
@@ -128,10 +132,11 @@
 When a turn is already active, the submission is queued and will run
 after the active turn finishes.  Return the submission id."
   (let* ((thread (magent-turn--session-thread))
+         (prompt (magent-turn--payload-prompt payload))
          (turn (when thread
-                 (magent-thread-create-turn
+                 (magent-thread-queue-turn
                   thread
-                  (magent-turn--payload-prompt payload)
+                  prompt
                   (and op (magent-op-id op))
                   (list :source 'submission-queue))))
          (submission (magent-turn-submission-create
@@ -144,6 +149,11 @@ after the active turn finishes.  Return the submission id."
                       :status 'queued
                       :submitted-at (float-time)
                       :turn-id (and turn (magent-thread-turn-id turn)))))
+    (when (and thread turn prompt)
+      (magent-thread-record-user-message-if-needed
+       thread (magent-thread-turn-id turn) prompt nil
+       (list :source 'submission-queue))
+      (magent-session-refresh-projections (magent-session-get)))
     (magent-turn--emit 'submission-received submission)
     (if magent-turn--active
         (progn
