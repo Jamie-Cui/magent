@@ -768,7 +768,7 @@ Each entry is `(KEY PATH LINE)'."
   (when (magent-thread-turn-error turn)
     (insert (propertize
              (format "Error: %s\n" (magent-thread-turn-error turn))
-             'magent-error-body)))
+             'face 'magent-error-body)))
   (insert "\n"))
 
 (defun magent-ui--workspace-turns (thread)
