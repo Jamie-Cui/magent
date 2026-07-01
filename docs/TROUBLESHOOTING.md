@@ -6,6 +6,67 @@ If you are debugging agent lifecycle or subagent behavior, first check `docs/AGE
 
 ## Common Issues
 
+### GitHub Actions Failures
+
+#### melpazoid cannot find `prompt.org`
+**Problem:** The melpazoid job fails with errors like:
+
+```text
+Opening input file: No such file or directory, /workspace/pkg/prompt.org
+```
+
+**Cause:** MELPA-style packaging copies only files matched by the recipe.
+Magent needs bundled runtime data (`prompt.org`, `skills/`, and
+`capabilities/`) after packaging.
+
+**Solution:** Keep `.github/workflows/melpazoid.yml` aligned with this recipe
+shape:
+
+```elisp
+(magent :fetcher github :repo "Jamie-Cui/magent"
+        :files (:defaults "prompt.org" "skills" "capabilities"))
+```
+
+#### package-lint reports ineffective `Package-Requires`
+**Problem:** melpazoid reports:
+
+```text
+Package-Requires outside the main file have no effect.
+```
+
+**Solution:** Keep `Package-Requires` only in `magent.el` and mirror it in
+`magent-pkg.el`. Secondary modules should declare normal `(require ...)`
+dependencies in code, but not package headers.
+
+#### package license is unknown
+**Problem:** melpazoid reports `license unknown` for module files.
+
+**Solution:** Ensure every Elisp source has a formal license header or an SPDX
+line, for example:
+
+```elisp
+;; SPDX-License-Identifier: GPL-3.0-or-later
+```
+
+#### Live smoke test times out on GitHub Actions
+**Problem:** `test.yml` fails in `Run live smoke tests` with:
+
+```text
+Magent live loop tool turn did not finish
+```
+
+**Cause:** CI runners can be slower than a local daemon when timers, tool
+callbacks, and UI rendering all run in one live Emacs process.
+
+**Solution:** Keep deterministic live smoke waits long enough for CI and avoid
+hard-coding local-machine timing assumptions. Reproduce with:
+
+```bash
+emacs --daemon=magent-ci
+EMACSCLIENT="emacsclient -s magent-ci" make test-live-smoke
+emacsclient -s magent-ci --eval '(kill-emacs)'
+```
+
 ### Installation Issues
 
 #### "Cannot find gptel"
@@ -24,6 +85,10 @@ If you are debugging agent lifecycle or subagent behavior, first check `docs/AGE
 ```bash
 make compile  # Auto-detects dependencies in ~/.emacs.d/elpa/
 ```
+
+If dependencies live outside `~/.emacs.d/elpa/`, pass the relevant Makefile
+variables explicitly, such as `GPTEL_DIR`, `TRANSIENT_DIR`, `COMPAT_DIR`, or
+`YAML_DIR`.
 
 ### Runtime Issues
 

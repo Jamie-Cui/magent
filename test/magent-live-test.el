@@ -765,7 +765,7 @@ return that path."
                (when assistant-msg
                  (setq final-response
                        (magent-msg-content assistant-msg))))))
-         8 "Magent live loop tool turn did not finish")
+         20 "Magent live loop tool turn did not finish")
         (should (equal final-response "Checking buffers. Done."))
         (should (= call-count 2))
         (let* ((messages (magent-session-get-messages (magent-session-get)))

@@ -1,10 +1,10 @@
 ;;; magent-session.el --- Session management for Magent  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
+;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; Author: Jamie Cui <jamie.cui@outlook.com>
 ;; Keywords: tools, ai
-;; Package-Requires: ((emacs "27.1"))
 
 ;;; Commentary:
 
@@ -440,10 +440,10 @@ Fall back to the file modification time for legacy filenames."
            :project-root nil
            :summary-title nil))))
 
-(defun magent-session--project-label (project-root)
-  "Return a human-readable label for PROJECT-ROOT."
-  (if project-root
-      (abbreviate-file-name project-root)
+(defun magent-session--project-label (root)
+  "Return a human-readable label for ROOT."
+  (if root
+      (abbreviate-file-name root)
     "Unknown project"))
 
 (defun magent-session--file-group (filepath)

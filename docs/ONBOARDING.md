@@ -1,6 +1,6 @@
 # Magent Onboarding Guide
 
-**Updated:** 2026-06-01
+**Updated:** 2026-07-02
 
 ## Project Overview
 
@@ -8,7 +8,7 @@
 
 - **Languages:** Emacs Lisp
 - **Primary Dependency:** [gptel](https://github.com/karthink/gptel) (handles all LLM communication)
-- **Requirements:** Emacs 27.1+, spinner, transient, ripgrep
+- **Requirements:** Emacs 27.1+, gptel, spinner, transient, compat, yaml, ripgrep
 - **Purpose:** Provide AI-assisted coding capabilities within Emacs with fine-grained control over agent permissions and tool access
 
 ## Current Agent Workflow
@@ -241,6 +241,17 @@ Look at `test/magent-test.el` to see how the codebase is tested. Tests mock `gpt
 ### Events
 - **magent-events.el** — Event system for extensibility
 
+### CI And Package Data
+- **.github/workflows/test.yml** — Byte-compilation, unit tests, and deterministic live smoke tests
+- **.github/workflows/coverage.yml** — Batch `testcover` run and coverage artifact upload
+- **.github/workflows/melpazoid.yml** — MELPA-style package checks
+- **test/coverage.el** — Coverage runner used by `make coverage`
+
+Magent packages runtime data as well as Elisp. `prompt.org`, `skills/`, and
+`capabilities/` must remain included in the melpazoid/MELPA recipe because
+`magent-config.el`, `magent-skills.el`, and `magent-capability.el` resolve
+those paths at runtime.
+
 ## Complexity Hotspots
 
 These areas require careful attention when modifying:
@@ -286,9 +297,19 @@ make compile
 # Run full test suite
 make test
 
+# Run unit tests only
+make test-unit
+
+# Run coverage and write coverage/testcover-summary.tsv
+make coverage
+
 # Clean compiled files
 make clean
 ```
+
+`make test-live-smoke` requires an Emacs server and uses stubbed gptel
+transport. `make test-live` uses the real configured provider and may consume
+tokens, so run it only against an isolated daemon.
 
 ### Live Development
 
@@ -378,7 +399,7 @@ Skill instructions for the agent.
 
 ## Next Steps
 
-1. **Run the tests** — `make test` to verify your environment
+1. **Run the tests** — Start with `make test-unit`; use an isolated Emacs server before running the full `make test`
 2. **Try the examples** — Enable `magent-mode` and run `C-c m p`
 3. **Read the code** — Follow the guided tour above
 4. **Experiment** — Create a custom agent or skill

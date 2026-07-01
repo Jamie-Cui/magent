@@ -14,16 +14,25 @@ The lifecycle surface is `spawn_agent`, `send_agent_message`, `wait_agent`, `lis
 - Emacs 27.1+
 - gptel 0.9.8+
 - spinner 1.7.4+
-- transient 0.4+
+- transient 0.7.8+
+- compat 30.1+
+- yaml 1.0+
 - ripgrep (for grep tool)
 
 ### Building
 
 ```bash
 make compile    # Byte-compile all files
-make test       # Run test suite
+make test-unit  # Run batch ERT unit tests
+make test       # Run unit tests plus deterministic live smoke tests
+make coverage   # Run ERT under built-in testcover
 make clean      # Remove compiled files
 ```
+
+The Makefile auto-detects ELPA dependency directories under
+`~/.emacs.d/elpa/`. Override variables such as `GPTEL_DIR`, `TRANSIENT_DIR`,
+`COMPAT_DIR`, or `YAML_DIR` when testing against nonstandard dependency
+checkouts.
 
 ## Code Style
 
@@ -55,6 +64,12 @@ All files must include:
 ```bash
 # Full suite
 make test
+
+# Unit tests only
+make test-unit
+
+# Coverage summary
+make coverage
 
 # Single test by regexp
 emacs -Q --batch -L . -L ~/.emacs.d/elpa/gptel-* \
@@ -94,12 +109,31 @@ During and after the run, inspect `*Messages*`, `*Backtrace*`,
 raw `*gptel-log*` output into issues or commits without checking for provider
 headers, request bodies, or API-key material.
 
+### Continuous Integration
+
+GitHub Actions runs:
+
+- `test.yml`: Emacs 29.4 installation, dependency installation, byte-compile,
+  unit tests, and deterministic live smoke tests in a temporary daemon.
+- `coverage.yml`: `make coverage`, uploading `coverage/testcover-summary.tsv`.
+- `melpazoid.yml`: MELPA-style package checks.
+
+The melpazoid recipe includes `prompt.org`, `skills/`, and `capabilities/`.
+Those are bundled runtime data and must stay in the package recipe whenever
+their paths are used by `magent-config.el`, `magent-skills.el`, or
+`magent-capability.el`.
+
+Keep package metadata centralized in `magent.el` and `magent-pkg.el`. Do not
+add `Package-Requires` headers to secondary modules; package-lint treats those
+as ineffective outside the main file. Every Elisp file should include an SPDX
+license identifier.
+
 ## Pull Request Process
 
 1. **Fork and branch** — Create a feature branch from `dev`
 2. **Make changes** — Follow code style and add tests
 3. **Test** — Run `make test` and verify manually
-4. **Document** — Update relevant docs
+4. **Document** — Update relevant docs, including CI/package docs when build metadata changes
 5. **Commit** — Use conventional commits: `feat:`, `fix:`, `docs:`, `test:`
 6. **Submit PR** — Target the `dev` branch
 
