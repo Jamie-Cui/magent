@@ -122,6 +122,23 @@
                root
                (string-join (nreverse mismatches) "; "))))))
 
+(defun magent-live-test--dispatch-active-turn-now ()
+  "Dispatch the active Magent turn immediately when tests block timer dispatch.
+`magent-turn--start' normally defers dispatch with a zero-delay timer.  When a
+live smoke test itself is running synchronously under `emacsclient --eval', the
+test can end up waiting for the turn before that timer is serviced.  This
+helper cancels the pending dispatcher timer for the active submission and runs
+the same dispatcher directly."
+  (when-let* ((submission (and (boundp 'magent-turn--active)
+                               magent-turn--active))
+              (dispatcher (magent-turn-submission-dispatcher submission)))
+    (when (and (eq (magent-turn-submission-status submission) 'running)
+               (null (magent-turn-current-request-handle)))
+      (dolist (timer (copy-sequence timer-list))
+        (when (memq submission (timer--args timer))
+          (cancel-timer timer)))
+      (funcall dispatcher submission))))
+
 (defun magent-live-test-reload-source ()
   "Reload Magent source files into the live Emacs instance."
   (interactive)
@@ -191,12 +208,55 @@
 (defun magent-live-test--debug-state ()
   "Return compact live Magent state for assertion failures."
   (format (concat "processing=%S current-scope=%S"
+                  " turn-active=%S turn-queue=%S session-scopes=%S"
+                  " current-messages=%S current-turns=%S"
+                  " timers=%S"
                   " magent-buffer=%S log-tail=%S"
                   " messages-tail=%S backtrace-tail=%S gptel-summary=%S")
           (and (fboundp 'magent-ui-processing-p)
                (magent-ui-processing-p))
           (and (fboundp 'magent-session-current-scope)
                (magent-session-current-scope))
+          (and (boundp 'magent-turn--active)
+               magent-turn--active
+               (magent-turn-submission-status magent-turn--active))
+          (and (fboundp 'magent-turn-queue-length)
+               (magent-turn-queue-length))
+          (and (boundp 'magent-session--scoped-sessions)
+               (hash-table-p magent-session--scoped-sessions)
+               (let (scopes)
+                 (maphash (lambda (scope session)
+                            (push (list scope
+                                        :messages
+                                        (length
+                                         (magent-session-messages session))
+                                        :turns
+                                        (length
+                                         (magent-thread-turns
+                                          (magent-session-thread-ledger
+                                           session))))
+                                  scopes))
+                          magent-session--scoped-sessions)
+                 (nreverse scopes)))
+          (and (fboundp 'magent-session-get)
+               (magent-session-messages (magent-session-get))
+               (length (magent-session-messages (magent-session-get))))
+          (and (fboundp 'magent-session-get)
+               (magent-session-thread-ledger (magent-session-get))
+               (length
+                (magent-thread-turns
+                 (magent-session-thread-ledger (magent-session-get)))))
+          (mapcar
+           (lambda (timer)
+             (list :idle (timer--idle-delay timer)
+                   :until (ignore-errors (timer-until timer))
+                   :function (let ((fn (timer--function timer)))
+                               (cond
+                                ((symbolp fn) fn)
+                                ((byte-code-function-p fn) 'byte-code-function)
+                                ((functionp fn) 'function)
+                                (t (type-of fn))))))
+           timer-list)
           (when (fboundp 'magent-ui-get-buffer)
             (let ((buffer (magent-ui-get-buffer (magent-session-current-scope))))
               (when (buffer-live-p buffer)
@@ -704,9 +764,13 @@ return that path."
   :tags '(:magent-live-smoke)
   (require 'magent)
   (require 'gptel)
+  (require 'gptel-openai)
   (magent-live-test--with-isolated-runtime
     (let ((call-count 0)
           (final-response nil)
+          (gptel-backend (gptel-make-openai "magent-live-stub"
+                                           :key "test-key"))
+          (gptel-model 'gpt-4o-mini)
           (magent-by-pass-permission t)
           (magent-enable-tools '(emacs_eval)))
       (cl-letf (((symbol-function 'magent-capability-capture-context) (lambda () nil))
@@ -752,6 +816,7 @@ return that path."
                                     (list :error "unexpected extra request")))))))
                    nil)))
         (magent-ui-dispatch-prompt "count live buffers" 'send-prompt nil nil t)
+        (magent-live-test--dispatch-active-turn-now)
         (magent-live-test--wait-until
          (lambda ()
            (when (not (magent-ui-processing-p))
@@ -765,7 +830,9 @@ return that path."
                (when assistant-msg
                  (setq final-response
                        (magent-msg-content assistant-msg))))))
-         20 "Magent live loop tool turn did not finish")
+         20
+         (format "Magent live loop tool turn did not finish: %s"
+                 (magent-live-test--debug-state)))
         (should (equal final-response "Checking buffers. Done."))
         (should (= call-count 2))
         (let* ((messages (magent-session-get-messages (magent-session-get)))
