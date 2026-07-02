@@ -56,16 +56,11 @@
 ;;
 ;; Usage:
 ;;   M-x magent                - Send a prompt to the AI
-;;   M-x magent-diagnose-emacs - Diagnose the current Emacs session
-;;   M-x magent-doctor         - Run Magent self-check and diagnose Magent issues
+;;   M-x magent-transient-menu - Open the command menu
 ;;   M-x magent-prompt-region  - Send the selected region to the AI
 ;;   M-x magent-ask-at-point   - Ask about the symbol at point
-;;   M-x magent-clear-session  - Clear the current session
-;;   M-x magent-resume-session - Resume the last saved session
-;;   M-x magent-show-agent-transcript - Inspect a child-agent transcript
-;;   M-x magent-select-agent   - Select an agent for this session
-;;   M-x magent-list-agents    - List all available agents
-;;   M-x magent-show-current-agent - Show current session's agent
+;; Commands such as diagnosis, session clearing, agent selection, logs, and
+;; one-shot skills are available from `magent-transient-menu'.
 ;;
 ;; Setup:
 ;; 1. Configure gptel with your provider and API key:
@@ -148,27 +143,22 @@ redefined on reload without needing to update `global-mode-string'.")
 
 (defconst magent--mode-bindings
   '(("C-c m p" . magent-dwim)
-    ("C-c m d" . magent-diagnose-emacs)
-    ("C-c m D" . magent-doctor)
     ("C-c m r" . magent-prompt-region)
     ("C-c m a" . magent-ask-at-point)
-    ("C-c m c" . magent-clear-session)
-    ("C-c m R" . magent-resume-session)
-    ("C-c m x" . magent-list-capabilities-for-current-context)
-    ("C-c m e" . magent-explain-last-capability-resolution)
-    ("C-c m k" . magent-toggle-capability-locally)
-    ("C-c m l" . magent-show-log)
-    ("C-c m L" . magent-clear-log)
-    ("C-c m t" . magent-ui-toggle-section)
-    ("C-c m A" . magent-select-agent)
-    ("C-c m T" . magent-show-transcript)
-    ("C-c m j" . magent-show-agent-transcript)
-    ("C-c m i" . magent-show-current-agent)
-    ("C-c m v" . magent-list-agents))
+    ("C-c m ?" . magent-transient-menu))
   "Declarative keybinding table for `magent-mode'.")
+
+(defconst magent--obsolete-mode-binding-keys
+  '("C-c m d" "C-c m D" "C-c m c" "C-c m R"
+    "C-c m x" "C-c m e" "C-c m k" "C-c m l"
+    "C-c m L" "C-c m t" "C-c m A" "C-c m T"
+    "C-c m j" "C-c m i" "C-c m v")
+  "Former direct command bindings now routed through `magent-transient-menu'.")
 
 (defun magent--populate-mode-map (map)
   "Install `magent-mode' bindings into MAP."
+  (dolist (key magent--obsolete-mode-binding-keys)
+    (define-key map (kbd key) nil))
   (dolist (binding magent--mode-bindings map)
     (define-key map (kbd (car binding)) (cdr binding))))
 

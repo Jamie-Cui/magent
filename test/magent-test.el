@@ -1479,7 +1479,7 @@
       (should (eq (magent-skill-type skill) 'instruction)))))
 
 (ert-deftest magent-test-skills-load-all-includes-init-skill ()
-  "Test bundled skill loading includes the @init workflow skill."
+  "Test bundled skill loading includes the init workflow skill."
   (require 'magent-skills)
   (let ((magent-skills--registry nil))
     (cl-letf (((symbol-function 'magent-log) #'ignore))
@@ -5366,16 +5366,15 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest magent-test-input-submit-clear-command-clears-context ()
-  "Test submitting @clear clears context without dispatching to the agent."
+(ert-deftest magent-test-input-submit-former-clear-command-is-prompt-text ()
+  "Test formerly special @clear input is now sent as prompt text."
   (require 'magent-ui)
   (let* ((magent-buffer-name "*magent-submit-clear*")
          (magent-session--scoped-sessions (make-hash-table :test #'equal))
          (magent-session--current-scope 'global)
          (magent--current-session nil)
          (buffer nil)
-         (processed nil)
-         (hook-called nil))
+         (captured nil))
     (unwind-protect
         (progn
           (magent-session-activate 'global)
@@ -5383,26 +5382,22 @@
           (setq buffer (magent-test--compose-with-text 'global "@clear"))
           (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
                     ((symbol-function 'magent-ui-process)
-                     (lambda (&rest _args)
-                       (setq processed t))))
+                     (lambda (text &optional source display skills agent)
+                       (setq captured (list text source display skills agent)))))
             (with-current-buffer buffer
-              (add-hook 'magent-ui-after-input-submit-hook
-                        (lambda () (setq hook-called t))
-                        nil t)
               (magent-input-submit)))
-          (should-not processed)
-          (should hook-called)
-          (should (null (magent-session-messages (magent-session-get))))
-          (with-current-buffer buffer
-            (let ((text (buffer-string)))
-              (should-not (string-match-p "@clear" text)))))
+          (should (equal (nth 0 captured) "@clear"))
+          (should (eq (nth 1 captured) 'compose))
+          (should (null (nth 3 captured)))
+          (should (= (length (magent-session-messages (magent-session-get))) 1)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest magent-test-input-submit-embedded-clear-stays-prompt-text ()
-  "Test @clear embedded in normal input is sent as prompt text."
+(ert-deftest magent-test-input-submit-uses-and-clears-pending-skills ()
+  "Test compose submission consumes one-shot skills selected for the scope."
   (require 'magent-ui)
   (let* ((magent-buffer-name "*magent-submit-clear-text*")
+         (magent-ui--pending-skills-by-scope (make-hash-table :test #'equal))
          (magent-session--scoped-sessions (make-hash-table :test #'equal))
          (magent-session--current-scope 'global)
          (magent--current-session nil)
@@ -5411,66 +5406,33 @@
     (unwind-protect
         (progn
           (magent-session-activate 'global)
-          (magent-session-add-message (magent-session-get) 'user "old context")
+          (magent-ui--set-pending-skills
+           'global '("magit-workflow" "git-workflow"))
           (setq buffer (magent-test--compose-with-text
-                        'global "keep @clear as prompt text"))
+                        'global "review this change"))
           (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
                     ((symbol-function 'magent-ui-process)
                      (lambda (text &optional source display skills agent)
                        (setq captured (list text source display skills agent)))))
             (with-current-buffer buffer
               (magent-input-submit)))
-          (should (equal (nth 0 captured) "keep @clear as prompt text"))
+          (should (equal (nth 0 captured) "review this change"))
           (should (eq (nth 1 captured) 'compose))
-          (should (null (nth 3 captured)))
-          (should (= (length (magent-session-messages (magent-session-get))) 1)))
+          (should (equal (nth 3 captured)
+                         '("magit-workflow" "git-workflow")))
+          (should-not (magent-ui--pending-skills 'global)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest magent-test-slash-parse-uses-skill-default-prompt ()
-  "Test @skill-only input can supply a default prompt."
-  (require 'magent-ui)
-  (let ((magent-skills--registry nil))
-    (magent-skills-register
-     (magent-skill-create
-      :name "init"
-      :type 'instruction
-      :default-prompt "Initialize AGENTS.md."))
-    (let ((parsed (magent-ui--slash-parse "@init")))
-      (should (equal (magent-ui--parsed-input-skills parsed) '("init")))
-      (should (equal (magent-ui--parsed-input-message parsed) ""))
-      (should (equal (magent-ui--parsed-input-default-prompt parsed)
-                     "Initialize AGENTS.md.")))))
-
-(ert-deftest magent-test-slash-parse-keeps-message-when-present ()
-  "Test @skill input with message does not replace it with default prompt."
-  (require 'magent-ui)
-  (let ((magent-skills--registry nil))
-    (magent-skills-register
-     (magent-skill-create
-      :name "init"
-      :type 'instruction
-      :default-prompt "Initialize AGENTS.md."))
-    (let ((parsed (magent-ui--slash-parse "@init focus on tests")))
-      (should (equal (magent-ui--parsed-input-skills parsed) '("init")))
-      (should (equal (magent-ui--parsed-input-message parsed) "focus on tests"))
-      (should-not (magent-ui--parsed-input-default-prompt parsed)))))
-
-(ert-deftest magent-test-input-submit-allows-skill-only-default-prompt ()
-  "Test submitting only @init dispatches the skill default prompt."
+(ert-deftest magent-test-input-submit-former-init-command-is-prompt-text ()
+  "Test formerly special @init input is now ordinary prompt text."
   (require 'magent-ui)
   (let* ((magent-buffer-name "*magent-submit-init*")
          (magent-session--scoped-sessions (make-hash-table :test #'equal))
          (magent-session--current-scope 'global)
          (magent--current-session nil)
-         (magent-skills--registry nil)
          (buffer nil)
          (captured nil))
-    (magent-skills-register
-     (magent-skill-create
-      :name "init"
-      :type 'instruction
-      :default-prompt "Initialize AGENTS.md."))
     (unwind-protect
         (progn
           (magent-session-activate 'global)
@@ -5481,9 +5443,103 @@
                        (setq captured (list text source display skills agent)))))
             (with-current-buffer buffer
               (magent-input-submit)))
-          (should (equal (nth 0 captured) "Initialize AGENTS.md."))
+          (should (equal (nth 0 captured) "@init"))
           (should (eq (nth 1 captured) 'compose))
-          (should (equal (nth 3 captured) '("init"))))
+          (should (null (nth 3 captured))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-toggle-skill-for-next-request-uses-instruction-skills ()
+  "Test pending skill toggling only accepts instruction skills."
+  (require 'magent-ui)
+  (let ((magent-skills--registry nil)
+        (magent-ui--pending-skills-by-scope (make-hash-table :test #'equal)))
+    (magent-skills-register
+     (magent-skill-create :name "inst" :type 'instruction))
+    (magent-skills-register
+     (magent-skill-create :name "tool-skill" :type 'tool))
+    (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
+              ((symbol-function 'magent-ui--activate-command-context)
+               (lambda () 'global)))
+      (magent-ui-toggle-skill-for-next-request "inst")
+      (should (equal (magent-ui--pending-skills 'global) '("inst")))
+      (magent-ui-toggle-skill-for-next-request "inst")
+      (should-not (magent-ui--pending-skills 'global))
+      (should-error
+       (magent-ui-toggle-skill-for-next-request "tool-skill")
+       :type 'user-error))))
+
+(ert-deftest magent-test-run-skill-command-dispatches-default-prompt ()
+  "Test command-like skills dispatch default prompt with extra instruction."
+  (require 'magent-ui)
+  (let ((magent-skills--registry nil)
+        (magent-ui--pending-skills-by-scope (make-hash-table :test #'equal))
+        captured)
+    (magent-skills-register
+     (magent-skill-create
+      :name "init"
+      :type 'instruction
+      :default-prompt "Initialize AGENTS.md."))
+    (magent-ui--set-pending-skills 'global '("git-workflow"))
+    (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
+              ((symbol-function 'magent-ui--activate-command-context)
+               (lambda () 'global))
+              ((symbol-function 'magent-ui--dispatch-from-command-context)
+               (lambda (prompt source display skills agent)
+                 (setq captured (list prompt source display skills agent)))))
+      (magent-ui-run-skill-command "init" "focus on tests")
+      (should (string-match-p "Initialize AGENTS\\.md\\." (nth 0 captured)))
+      (should (string-match-p "Additional instruction:\nfocus on tests"
+                              (nth 0 captured)))
+      (should (eq (nth 1 captured) 'skill-command))
+      (should (equal (nth 3 captured) '("git-workflow" "init")))
+      (should-not (magent-ui--pending-skills 'global)))))
+
+(ert-deftest magent-test-transient-submenus-are-commands ()
+  "Test Magent's grouped transient submenus are interactive commands."
+  (require 'magent-ui)
+  (dolist (command '(magent-transient-menu
+                     magent-transient-agent-menu
+                     magent-transient-skill-menu
+                     magent-transient-capability-menu
+                     magent-transient-session-menu
+                     magent-transient-log-menu
+                     magent-transient-health-menu
+                     magent-transient-buffer-menu))
+    (should (commandp command))))
+
+(ert-deftest magent-test-transient-agent-menu-uses-mnemonic-agent-keys ()
+  "Test dynamic agent suffixes prefer mnemonic keys in the Agent submenu."
+  (require 'magent-ui)
+  (let* ((agents (list (magent-agent-info-create :name "build" :mode 'primary)
+                       (magent-agent-info-create :name "plan" :mode 'primary)
+                       (magent-agent-info-create :name "explore" :mode 'primary)))
+         (pairs (magent-transient-menu--assign-agent-keys agents)))
+    (should (equal (mapcar #'car pairs) '("b" "p" "e")))))
+
+(ert-deftest magent-test-header-line-shows-pending-skills ()
+  "Test workspace header-line displays scope, agent, status, and skills."
+  (require 'magent-ui)
+  (let* ((magent-buffer-name "*magent-header*")
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (magent-ui--pending-skills-by-scope (make-hash-table :test #'equal))
+         (buffer nil))
+    (unwind-protect
+        (progn
+          (magent-session-activate 'global)
+          (setq buffer (magent-ui-get-buffer 'global))
+          (magent-ui--set-pending-skills 'global '("git-workflow"))
+          (with-current-buffer buffer
+            (let ((line (magent-ui--header-line)))
+              (should (string-match-p "scope: global" line))
+              (should (string-match-p "agent: build" line))
+              (should (string-match-p "thread: idle" line))
+              (should (string-match-p "request: idle" line))
+              (should (string-match-p "queue: 0" line))
+              (should (string-match-p "session:" line))
+              (should (string-match-p "skills: git-workflow" line)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -5846,7 +5902,8 @@ active, so an activated input method (e.g. rime) stayed on after submit."
           (magent-ui-render-history t)
           (with-current-buffer buffer
             (let ((text (buffer-string)))
-              (should (string-match-p "Magent  global" text))
+              (should-not (string-match-p "active=" text))
+              (should-not (string-match-p "^Magent  " text))
               (should (string-match-p
                        "- \\[DONE\\] Turn 1  [0-9][0-9]:[0-9][0-9]  hello"
                        text))
@@ -6990,29 +7047,38 @@ tolerate leading whitespace."
       (when (get-buffer "*Magent Agent: agent-1*")
         (kill-buffer "*Magent Agent: agent-1*")))))
 
-(ert-deftest magent-test-mode-map-binds-diagnose-emacs ()
-  "Test `magent-mode-map' binds the Emacs diagnosis command."
+(ert-deftest magent-test-mode-map-binds-entry-points ()
+  "Test `magent-mode-map' keeps prompt and transient entry points."
   (require 'magent)
-  (should (eq (lookup-key magent-mode-map (kbd "C-c m d"))
-              'magent-diagnose-emacs)))
+  (should (eq (lookup-key magent-mode-map (kbd "C-c m p"))
+              'magent-dwim))
+  (should (eq (lookup-key magent-mode-map (kbd "C-c m r"))
+              'magent-prompt-region))
+  (should (eq (lookup-key magent-mode-map (kbd "C-c m a"))
+              'magent-ask-at-point))
+  (should (eq (lookup-key magent-mode-map (kbd "C-c m ?"))
+              'magent-transient-menu)))
 
-(ert-deftest magent-test-mode-map-binds-magent-doctor ()
-  "Test `magent-mode-map' binds the Magent doctor command."
+(ert-deftest magent-test-mode-map-keeps-formal-commands-in-transient ()
+  "Test formal commands are not directly bound under `magent-mode-map'."
   (require 'magent)
-  (should (eq (lookup-key magent-mode-map (kbd "C-c m D"))
-              'magent-doctor)))
+  (dolist (key '("C-c m d" "C-c m D" "C-c m c" "C-c m R"
+                 "C-c m x" "C-c m e" "C-c m k" "C-c m l"
+                 "C-c m L" "C-c m t" "C-c m A" "C-c m T"
+                 "C-c m j" "C-c m i" "C-c m v"))
+    (should-not (lookup-key magent-mode-map (kbd key)))))
 
-(ert-deftest magent-test-mode-map-binds-capability-context-list ()
-  "Test `magent-mode-map' binds current-context capability listing."
+(ert-deftest magent-test-populate-mode-map-removes-obsolete-bindings ()
+  "Test reloading `magent' removes old direct formal-command bindings."
   (require 'magent)
-  (should (eq (lookup-key magent-mode-map (kbd "C-c m x"))
-              'magent-list-capabilities-for-current-context)))
-
-(ert-deftest magent-test-mode-map-binds-agent-transcript-inspection ()
-  "Test `magent-mode-map' binds child-agent transcript inspection."
-  (require 'magent)
-  (should (eq (lookup-key magent-mode-map (kbd "C-c m j"))
-              'magent-show-agent-transcript)))
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c m d") #'magent-diagnose-emacs)
+    (define-key map (kbd "C-c m A") #'magent-select-agent)
+    (magent--populate-mode-map map)
+    (should-not (lookup-key map (kbd "C-c m d")))
+    (should-not (lookup-key map (kbd "C-c m A")))
+    (should (eq (lookup-key map (kbd "C-c m ?"))
+                'magent-transient-menu))))
 
 (ert-deftest magent-test-list-agents-loads-project-scope-before-first-prompt ()
   "Test listing agents loads project-local agents without a prior prompt."
@@ -7185,18 +7251,6 @@ tolerate leading whitespace."
       (when (get-buffer "*Magent Skill: project-skill*")
         (kill-buffer "*Magent Skill: project-skill*"))
       (delete-directory project-root t))))
-
-(ert-deftest magent-test-mode-map-binds-capability-last-resolution ()
-  "Test `magent-mode-map' binds last capability resolution explanation."
-  (require 'magent)
-  (should (eq (lookup-key magent-mode-map (kbd "C-c m e"))
-              'magent-explain-last-capability-resolution)))
-
-(ert-deftest magent-test-mode-map-binds-capability-local-toggle ()
-  "Test `magent-mode-map' binds local capability toggling."
-  (require 'magent)
-  (should (eq (lookup-key magent-mode-map (kbd "C-c m k"))
-              'magent-toggle-capability-locally)))
 
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Codex-like runtime skeleton tests

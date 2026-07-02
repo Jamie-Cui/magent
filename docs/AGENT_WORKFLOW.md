@@ -179,7 +179,11 @@ queued user submissions from leaking into the active model request.
 The main Magent buffer is a read-only `special-mode` workspace.  It shows
 an oldest-first timeline of all retained non-dropped ledger turns, not a
 restored copy of old buffer text.  Prompt composition lives in an independent
-`magent-compose-mode` buffer keyed by session scope.
+`magent-compose-mode` buffer keyed by session scope. Compose is plain user
+prompt text; formal commands and one-shot skills are selected from the
+Magit-style transient menu. The workspace `header-line` is the single status
+surface for scope, agent, thread status, request state, queue length, session
+id, and selected skills.
 
 Reasoning is stored as a ledger item when `magent-include-reasoning` is
 `t` or `ignore`.  The workspace shows only status and character count;

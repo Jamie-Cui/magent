@@ -93,11 +93,14 @@ output rendering.
 **What it does:** The Magent workspace derives from `special-mode` and
 renders an oldest-first timeline of all retained non-dropped ledger turns.
 Prompt text is edited in a scope-specific `magent-compose-mode` buffer.
-Tool calls and child-agent events render as compact rows; reasoning is
-stored in the ledger but the workspace shows only status and character
-count. `magent-show-transcript` opens a separate parent ledger detail
-buffer, and `magent-show-agent-transcript` (`C-c m j`) opens persisted
-child job details.
+Compose is plain prompt text; formal commands and one-shot skills are selected
+from a compact Magit-style transient menu. The workspace header-line is the
+single status surface for scope, agent, thread status, request state, queue
+length, session id, and selected one-shot skills. Tool calls and child-agent
+events render as compact rows; reasoning is stored in the ledger but the
+workspace shows only status and character count. `magent-show-transcript` opens
+a separate parent ledger detail buffer, and `magent-show-agent-transcript` or
+transient `S j` opens persisted child job details.
 
 ### Layer 7: Events
 
@@ -140,11 +143,12 @@ Two skill types:
 - **instruction** — Markdown injected into system prompt
 - **tool** — Invoked via `skill_invoke` tool
 
-Instruction skills can be explicitly enabled in the input area with `@skill-name`.
-Skills that define `default-prompt` can be submitted alone; built-in `@init`
-initializes or refreshes the project root `AGENTS.md`, similar to Codex `/init`.
-Submit `@clear` as the whole input to clear the current session context,
-similar to Codex `/clear`, without sending a request to the model.
+Instruction skills are selected from the transient Skills submenu as one-shot
+context for the next request. Skills that define `default-prompt` can also be
+run as command-like transient actions; built-in `init` initializes or refreshes
+the project root `AGENTS.md`, similar to Codex `/init`, and accepts optional
+extra instructions. Compose buffers are plain prompt text and no longer parse
+`@skill` or `@clear` control syntax.
 
 Skills load from: (1) built-in `skills/`, (2) user `~/.emacs.d/magent-skills/`, (3) project `.magent/skills/`.
 
@@ -395,8 +399,10 @@ Skill instructions for the agent.
 - **Documentation:** `README.org`, `AGENTS.md` in repo root
 - **Child-agent architecture:** `docs/AGENT_JOBS.md`
 - **Interactive help:** `M-x magent-doctor` for self-diagnostics
-- **Logs:** `C-c m l` to view request/response log
-- **Agent info:** `C-c m v` to list agents, `C-c m i` for current agent
+- **Command menu:** `C-c m ?` from any Magent-enabled buffer, or `?` in `*magent*`
+- **Skills:** transient `s s` to toggle a one-shot instruction skill, `s K` to clear selected skills
+- **Logs:** transient `l l` to view request/response log
+- **Agent info:** transient `A v` to list agents, transient `A m` for current agent
 
 ## Next Steps
 

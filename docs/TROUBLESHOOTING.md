@@ -210,7 +210,7 @@ Expected final status files include `:status passed`, `:repo-source` paths under
 **Problem:** Request hangs or times out.
 
 **Diagnosis:**
-1. Check `*magent-log*` buffer: `C-c m l`
+1. Check `*magent-log*` buffer: open the transient menu with `C-c m ?` or `?`, then press `l l`
 2. Verify gptel configuration:
    ```elisp
    gptel-model      ; Should show your model
@@ -242,7 +242,7 @@ Expected final status files include `:status passed`, `:repo-source` paths under
 **Diagnosis:**
 1. Check whether the code path uses the lifecycle tools: `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, and `close_agent`.
 2. Review `docs/AGENT_JOBS.md` for the child-agent/job lifecycle contract.
-3. Inspect compact `Agent ...` rows in `*magent*`, or run `M-x magent-show-agent-transcript` / `C-c m j` to view the persisted child transcript.
+3. Inspect compact `Agent ...` rows in `*magent*`, or run `M-x magent-show-agent-transcript` / transient `S j` to view the persisted child transcript.
 4. Check `*magent-log*` for nested request or tool-call errors.
 5. After resume, confirm the parent session still has the expected job metadata in `agent-jobs`.
 
@@ -259,7 +259,7 @@ Check agent permissions: `M-x magent-show-current-agent`
 **Solution:**
 - Temporarily bypass: `M-x magent-toggle-by-pass-permission`
 - Or customize: `(setq magent-by-pass-permission t)`
-- Or switch agent: `C-c m A` and select one with appropriate permissions
+- Or switch agent from the transient menu with `A A` and select one with appropriate permissions
 
 #### Session not saving
 **Problem:** Session state lost between Emacs restarts.
@@ -287,7 +287,7 @@ magent-session-directory  ; Default: ~/.emacs.d/magent-sessions/
 3. Press `C-c C-c` in the output buffer and confirm the interrupt
 
 **Solution:**
-- Clear and retry: `C-c m c` then `C-c m p`
+- Clear from the transient menu with `c`, then retry with `C-c m p`
 - Restart Emacs if issue persists
 
 #### Org-mode folding issues
@@ -334,7 +334,7 @@ Runs comprehensive self-check and reports issues.
 
 ### View Logs
 ```elisp
-M-x magent-show-log  ; or C-c m l
+M-x magent-show-log  ; or open transient with C-c m ? / ? and press l l
 ```
 Shows API request/response log.
 

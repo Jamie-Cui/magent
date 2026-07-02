@@ -74,10 +74,14 @@ are valid for the current buffer.")
 (declare-function magent-skills-default-prompt "magent-skills")
 (declare-function magent-skills-list "magent-skills")
 (declare-function magent-skills-list-by-type "magent-skills")
+(declare-function magent-list-skills "magent-skills")
+(declare-function magent-describe-skill "magent-skills")
+(declare-function magent-reload-skills "magent-skills")
 (declare-function magent-skill-type "magent-skills")
 (declare-function magent-skill-description "magent-skills")
 (declare-function magent-show-audit "magent-audit")
 (declare-function magent-session--session-for-scope "magent-session")
+(declare-function magent-toggle-by-pass-permission "magent-permission")
 
 ;; Forward declaration for magent entry point (magent.el loaded first)
 (declare-function magent--ensure-initialized "magent")
@@ -107,17 +111,8 @@ are valid for the current buffer.")
 Kept for compatibility with older tests and external callers.  The
 active runtime state is owned by `magent-turn'.")
 
-(cl-defstruct (magent-ui--parsed-input
-               (:constructor magent-ui--parsed-input-create)
-               (:copier nil))
-  "Parsed user input with explicit instruction skills removed."
-  (skills nil :type list)
-  (message "" :type string)
-  (default-prompt nil :type (or string null)))
-
-(defconst magent-ui--input-command-descriptions
-  '(("clear" . "Clear current session context"))
-  "Whole-input @command names and completion annotations.")
+(defvar magent-ui--pending-skills-by-scope (make-hash-table :test #'equal)
+  "One-shot instruction skills selected for the next request by scope.")
 
 (defun magent-ui-processing-p ()
   "Return non-nil if a request is currently being processed."
@@ -130,7 +125,7 @@ active runtime state is owned by `magent-turn'.")
   "Submit PROMPT to the runtime queue.
 SOURCE is a symbol identifying the calling command.
 DISPLAY is the text to show in the user message heading; defaults to PROMPT.
-SKILLS is a list of skill name strings selected via slash commands.
+SKILLS is a list of explicit instruction skill names for this request.
 AGENT is an optional `magent-agent-info' override for this request.
 REQUEST-CONTEXT is an optional structured context plist captured from
 the originating buffer.
@@ -154,7 +149,8 @@ Returns the submitted operation id."
 (defun magent-ui--clear-processing ()
   "Release the processing lock.
 Called by `magent-ui--finish-processing' and `magent-interrupt'."
-  (setq magent-ui--processing nil))
+  (setq magent-ui--processing nil)
+  (magent-ui--refresh-header-line (magent-session-current-scope)))
 
 (defun magent-ui--dispatch (item)
   "Set the processing lock and hand ITEM off to the UI layer.
@@ -162,11 +158,13 @@ Must only be called when `magent-ui--processing' is nil.
 Uses `run-at-time' to defer dispatch so callers finish their
 stack frame before UI mutations happen."
   (setq magent-ui--processing t)
+  (magent-ui--refresh-header-line (magent-session-current-scope))
   (run-at-time 0 nil #'magent-ui--run-item item))
 
 (defun magent-ui--dispatch-submission (submission)
   "Dispatch a queued runtime SUBMISSION to the UI runner."
   (setq magent-ui--processing t)
+  (magent-ui--refresh-header-line (magent-session-current-scope))
   (magent-ui--run-item (magent-turn-submission-payload submission)
                        (magent-turn-submission-id submission)))
 
@@ -457,6 +455,108 @@ renders history into it on first use.  Returns the active session."
   (truncate-string-to-width
    (replace-regexp-in-string "[ \t\n\r]+" " " (format "%s" (or value "")))
    (or width 96) nil nil "..."))
+
+(defun magent-ui--dedupe-string-list (strings)
+  "Return STRINGS without duplicates, preserving first occurrence."
+  (let (result)
+    (dolist (string strings)
+      (when (and (stringp string)
+                 (not (string-blank-p string))
+                 (not (member string result)))
+        (push string result)))
+    (nreverse result)))
+
+(defun magent-ui--scope-key (&optional scope)
+  "Return the normalized pending-state key for SCOPE."
+  (or scope (magent-session-current-scope)))
+
+(defun magent-ui--pending-skills (&optional scope)
+  "Return one-shot skills selected for SCOPE's next request."
+  (copy-sequence
+   (gethash (magent-ui--scope-key scope) magent-ui--pending-skills-by-scope)))
+
+(defun magent-ui--set-pending-skills (scope skills)
+  "Set SCOPE's one-shot pending SKILLS and refresh its workspace."
+  (let ((key (magent-ui--scope-key scope))
+        (normalized (magent-ui--dedupe-string-list skills)))
+    (if normalized
+        (puthash key normalized magent-ui--pending-skills-by-scope)
+      (remhash key magent-ui--pending-skills-by-scope))
+    (magent-ui--refresh-header-line key)
+    normalized))
+
+(defun magent-ui--clear-pending-skills (&optional scope)
+  "Clear one-shot pending skills for SCOPE."
+  (magent-ui--set-pending-skills scope nil))
+
+(defun magent-ui--toggle-pending-skill (skill-name &optional scope)
+  "Toggle SKILL-NAME for SCOPE's next request."
+  (let* ((key (magent-ui--scope-key scope))
+         (skills (magent-ui--pending-skills key))
+         (enabled (member skill-name skills)))
+    (magent-ui--set-pending-skills
+     key
+     (if enabled
+         (remove skill-name skills)
+       (append skills (list skill-name))))
+    (not enabled)))
+
+(defun magent-ui--header-skills-text (skills)
+  "Return compact header-line text for pending SKILLS."
+  (cond
+   ((null skills) nil)
+   ((<= (length skills) 3)
+    (concat "skills: " (magent-ui--one-line
+                        (mapconcat #'identity skills ", ") 72)))
+   (t
+    (format "skills: %d selected" (length skills)))))
+
+(defun magent-ui--request-state-text ()
+  "Return compact text for the current request queue state."
+  (cond
+   ((magent-turn-processing-p) "active")
+   ((magent-turn-pending-p) "queued")
+   (t "idle")))
+
+(defun magent-ui--header-line ()
+  "Return the Magent workspace header-line for the current buffer."
+  (let* ((scope (magent-ui--scope-key magent-ui--buffer-scope))
+         (session (magent-session--session-for-scope scope))
+         (thread (and session (magent-session-thread-ledger session)))
+         (agent (magent-session-agent session))
+         (agent-name (if agent
+                         (magent-agent-info-name agent)
+                       magent-default-agent))
+         (thread-state (or (and thread
+                                (symbol-name (magent-thread-status thread)))
+                           "idle"))
+         (thread-id (or (and thread (magent-thread-id thread)) "none"))
+         (request-state (magent-ui--request-state-text))
+         (skills-text
+          (magent-ui--header-skills-text
+           (magent-ui--pending-skills scope))))
+    (string-join
+     (delq nil
+           (list "Magent"
+                 (format "scope: %s"
+                         (magent-ui--one-line
+                          (magent-ui--scope-buffer-label scope) 24))
+                 (format "agent: %s" agent-name)
+                 (format "thread: %s" thread-state)
+                 (format "request: %s" request-state)
+                 (format "queue: %s" (magent-turn-queue-length))
+                 (format "session: %s" (magent-ui--one-line thread-id 36))
+                 skills-text))
+     "  ")))
+
+(defun magent-ui--refresh-header-line (&optional scope)
+  "Refresh the workspace header-line for SCOPE if its buffer exists."
+  (let* ((key (magent-ui--scope-key scope))
+         (buffer (get-buffer (magent-ui--scope-buffer-name key))))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (setq-local header-line-format '(:eval (magent-ui--header-line)))
+        (force-mode-line-update)))))
 
 (defun magent-ui--item-text (item)
   "Return ITEM text content."
@@ -1125,17 +1225,6 @@ Each entry is `(KEY PATH LINE)'."
         (remove-overlays (point-min) (point-max) 'magent-ui-overlay t)
         (erase-buffer)
         (setq-local buffer-invisibility-spec '(magent-ui))
-        (insert
-         (propertize
-          (format "Magent  %s  %s  active=%s  queued=%s  %s\n\n"
-                  (magent-ui--scope-buffer-label target-scope)
-                  (or (and thread
-                           (symbol-name (magent-thread-status thread)))
-                      "idle")
-                  (if (magent-turn-processing-p) "yes" "no")
-                  (magent-turn-queue-length)
-                  (or (and thread (magent-thread-id thread)) "none"))
-          'face 'font-lock-keyword-face))
         (let ((turns (magent-ui--workspace-turns thread))
               (magent-ui--section-depth 0))
           (if turns
@@ -1202,13 +1291,126 @@ request are discarded."
 
 ;;; Transient menu
 
+(defun magent-ui--transient-source-buffer ()
+  "Return the buffer that opened the current transient, when available."
+  (when (boundp 'transient--source-buffer)
+    (let ((buffer (symbol-value 'transient--source-buffer)))
+      (and (buffer-live-p buffer) buffer))))
+
+(defun magent-ui--call-in-command-context (function)
+  "Call FUNCTION from the transient source buffer when there is one."
+  (if-let* ((buffer (magent-ui--transient-source-buffer)))
+      (with-current-buffer buffer
+        (funcall function))
+    (funcall function)))
+
+(defun magent-ui--activate-command-context ()
+  "Activate and return the scope for a UI command invocation."
+  (magent-ui--call-in-command-context
+   (lambda ()
+     (magent-ui--activate-context-session)
+     (magent-ui--context-scope))))
+
+(defun magent-ui--dispatch-from-command-context
+    (prompt source display skills agent)
+  "Dispatch PROMPT using the original UI command context."
+  (magent-ui--call-in-command-context
+   (lambda ()
+     (magent-ui-dispatch-prompt prompt source display skills t agent))))
+
+(defun magent-ui-open-compose-command ()
+  "Open compose for the current command context."
+  (interactive)
+  (magent-ui-open-compose (magent-ui--activate-command-context)))
+
+(defun magent-ui-clear-session-command ()
+  "Clear the session for the current command context."
+  (interactive)
+  (magent-ui--call-in-command-context #'magent-clear-session))
+
+(defun magent-ui--instruction-skill-names ()
+  "Return sorted instruction skill names."
+  (sort (copy-sequence (magent-skills-list-by-type 'instruction)) #'string<))
+
+(defun magent-ui--command-skill-names ()
+  "Return sorted instruction skill names that have a default prompt."
+  (cl-remove-if-not #'magent-skills-default-prompt
+                    (magent-ui--instruction-skill-names)))
+
+(defun magent-ui--read-instruction-skill (prompt)
+  "Read an instruction skill name with PROMPT."
+  (let ((names (magent-ui--instruction-skill-names)))
+    (unless names
+      (user-error "Magent: no instruction skills are registered"))
+    (completing-read prompt names nil t)))
+
+(defun magent-ui-toggle-skill-for-next-request (&optional skill-name)
+  "Toggle an instruction skill for the current scope's next request."
+  (interactive)
+  (magent--ensure-initialized)
+  (let* ((scope (magent-ui--activate-command-context))
+         (name (or skill-name
+                   (magent-ui--read-instruction-skill
+                    "Toggle skill for next request: "))))
+    (unless (member name (magent-ui--instruction-skill-names))
+      (user-error "Magent: '%s' is not an instruction skill" name))
+    (message "Magent: skill %s %s for next request"
+             name
+             (if (magent-ui--toggle-pending-skill name scope)
+                 "selected"
+               "cleared"))))
+
+(defun magent-ui-clear-skills-for-next-request ()
+  "Clear pending instruction skills for the current scope's next request."
+  (interactive)
+  (let ((scope (magent-ui--activate-command-context)))
+    (magent-ui--clear-pending-skills scope)
+    (message "Magent: selected skills cleared")))
+
+(defun magent-ui--skill-command-text (skill-name extra-instruction)
+  "Return default prompt text for SKILL-NAME plus EXTRA-INSTRUCTION."
+  (let ((prompt (magent-skills-default-prompt skill-name))
+        (extra (string-trim (or extra-instruction ""))))
+    (unless prompt
+      (user-error "Magent: skill '%s' has no default prompt" skill-name))
+    (if (string-blank-p extra)
+        prompt
+      (concat prompt "\n\nAdditional instruction:\n" extra))))
+
+(defun magent-ui-run-skill-command (&optional skill-name extra-instruction)
+  "Run a command-like skill with its default prompt.
+When EXTRA-INSTRUCTION is non-nil, append it to the default prompt."
+  (interactive)
+  (magent--ensure-initialized)
+  (let* ((scope (magent-ui--activate-command-context))
+         (name (or skill-name
+                   (let ((names (magent-ui--command-skill-names)))
+                     (unless names
+                       (user-error "Magent: no command-like skills are registered"))
+                     (completing-read "Run skill command: " names nil t))))
+         (extra (if extra-instruction
+                    extra-instruction
+                  (read-string
+                   (format "Extra instruction for %s (optional): " name))))
+         (text (magent-ui--skill-command-text name extra))
+         (skills (magent-ui--dedupe-string-list
+                  (append (magent-ui--pending-skills scope)
+                          (list name)))))
+    (magent-ui--dispatch-from-command-context text 'skill-command nil skills nil)
+    (magent-ui--clear-pending-skills scope)))
+
+(defun magent-ui-run-init-command (&optional extra-instruction)
+  "Run the built-in init skill command."
+  (interactive)
+  (magent-ui-run-skill-command "init" extra-instruction))
+
 (defun magent-transient-menu--assign-agent-keys (agents)
   "Return alist of (KEY . AGENT-INFO) for AGENTS with unique single-char keys.
-Skips keys already reserved by the static parts of `magent-transient-menu'."
+Skips keys already reserved by `magent-transient-agent-menu'."
   (let ((used (make-hash-table :test #'equal))
         result)
-    ;; Reserve keys used by static menu entries
-    (dolist (k '("c" "d" "D" "R" "r" "l" "a" "L" "x" "e" "k"))
+    ;; Reserve keys used by static agent menu entries.
+    (dolist (k '("A" "m" "v"))
       (puthash k t used))
     (dolist (agent agents)
       (let* ((name (magent-agent-info-name agent))
@@ -1234,40 +1436,95 @@ Skips keys already reserved by the static parts of `magent-transient-menu'."
                    (agent (cdr pair))
                    (name  (magent-agent-info-name agent)))
               (transient-parse-suffix
-               'magent-transient-menu
+               'magent-transient-agent-menu
                (list key name
                      (let ((agent-name name))
                        (lambda ()
                          (interactive)
-                         (let* ((info    (magent-agent-registry-get agent-name))
+                         (let* ((scope   (magent-ui--activate-command-context))
+                                (info    (magent-agent-registry-get agent-name))
                                 (session (magent-session-get)))
                            (magent-session-set-agent session info)
+                           (magent-ui--refresh-header-line scope)
                            (magent-log "INFO agent selected: %s" agent-name))))))))
           (magent-transient-menu--assign-agent-keys
            (magent-agent-registry-primary-agents))))
 
+(transient-define-prefix magent-transient-agent-menu ()
+  "Magent agent menu."
+  ["Agent"
+   [("A" "select" magent-select-agent)
+    ("m" "current" magent-show-current-agent)
+    ("v" "list" magent-list-agents)]]
+  ["Primary agents"
+   [:class transient-column
+           :setup-children magent-transient-menu--agent-suffixes]])
+
+(transient-define-prefix magent-transient-skill-menu ()
+  "Magent skill menu."
+  ["Next Request"
+   [("s" "toggle skill" magent-ui-toggle-skill-for-next-request)
+    ("K" "clear selected" magent-ui-clear-skills-for-next-request)]]
+  ["Run"
+   [("i" "init project" magent-ui-run-init-command)
+    ("!" "skill command" magent-ui-run-skill-command)]]
+  ["Inspect"
+   [("Y" "list" magent-list-skills)
+    ("H" "describe" magent-describe-skill)
+    ("U" "reload" magent-reload-skills)]])
+
+(transient-define-prefix magent-transient-capability-menu ()
+  "Magent capability menu."
+  ["Capabilities"
+   [("x" "current context" magent-list-capabilities-for-current-context)
+    ("e" "last resolution" magent-explain-last-capability-resolution)
+    ("k" "toggle local" magent-toggle-capability-locally)]])
+
+(transient-define-prefix magent-transient-session-menu ()
+  "Magent session menu."
+  ["Session"
+   [("c" "clear" magent-ui-clear-session-command)
+    ("R" "resume" magent-resume-session)]]
+  ["Transcripts"
+   [("T" "parent transcript" magent-show-transcript)
+    ("j" "child agent" magent-show-agent-transcript)]])
+
+(transient-define-prefix magent-transient-log-menu ()
+  "Magent log menu."
+  ["Logs"
+   [("l" "show log" magent-show-log)
+    ("a" "show audit" magent-show-audit)
+    ("L" "clear log" magent-clear-log)]])
+
+(transient-define-prefix magent-transient-health-menu ()
+  "Magent health menu."
+  ["Diagnostics"
+   [("d" "diagnose Emacs" magent-diagnose-emacs)
+    ("D" "Magent doctor" magent-doctor)]])
+
+(transient-define-prefix magent-transient-buffer-menu ()
+  "Magent buffer menu."
+  ["Buffer"
+   [("r" "toggle read-only" magent-toggle-read-only)
+    ("P" "permission bypass" magent-toggle-by-pass-permission)]])
+
 (transient-define-prefix magent-transient-menu ()
   "Magent command menu."
+  ["Request"
+   [("o" "Open compose" magent-ui-open-compose-command)
+    ("i" "Init project" magent-ui-run-init-command)
+    ("!" "Run skill command" magent-ui-run-skill-command)]]
+  ["Context"
+   [("A" "Agent..." magent-transient-agent-menu)
+    ("s" "Skills..." magent-transient-skill-menu)
+    ("x" "Capabilities..." magent-transient-capability-menu)]]
   ["Session"
-   [("c" "Clear session" magent-clear-session)
-    ("d" "Diagnose Emacs" magent-diagnose-emacs)
-    ("D" "Magent doctor" magent-doctor)
-    ("R" "Resume session" magent-resume-session)
-    ("T" "Show transcript" magent-show-transcript)
-    ("j" "Inspect child agent" magent-show-agent-transcript)]]
-  ["Agent"
-   [:class transient-column
-           :setup-children magent-transient-menu--agent-suffixes]]
-  ["Capabilities"
-   [("x" "Current context" magent-list-capabilities-for-current-context)
-    ("e" "Last resolution" magent-explain-last-capability-resolution)
-    ("k" "Toggle local" magent-toggle-capability-locally)]]
-  ["Buffer"
-   [("r" "Toggle read-only" magent-toggle-read-only)]]
-  ["Logs"
-   [("l" "Show log" magent-show-log)
-    ("a" "Show audit" magent-show-audit)
-    ("L" "Clear log" magent-clear-log)]])
+   [("c" "Clear session" magent-ui-clear-session-command)
+    ("S" "Session..." magent-transient-session-menu)]]
+  ["More"
+   [("l" "Logs..." magent-transient-log-menu)
+    ("h" "Health..." magent-transient-health-menu)
+    ("b" "Buffer..." magent-transient-buffer-menu)]])
 
 ;;; Output mode
 
@@ -1310,6 +1567,7 @@ Press \\[magent-ui-menu-or-insert-question-mark] for the command menu."
   (setq-local magent-ui--buffer-scope
               (or magent-ui--buffer-scope
                   (magent-session-current-scope)))
+  (setq-local header-line-format '(:eval (magent-ui--header-line)))
   (setq-local display-fill-column-indicator-column nil)
   (setq-local revert-buffer-function #'magent-ui--revert-buffer)
   (add-hook 'kill-buffer-hook #'magent-ui--cancel-timers nil t))
@@ -1325,9 +1583,7 @@ Press \\[magent-ui-menu-or-insert-question-mark] for the command menu."
   "Major mode for composing Magent prompts."
   (setq-local magent-ui--buffer-scope
               (or magent-ui--buffer-scope
-                  (magent-session-current-scope)))
-  (add-hook 'completion-at-point-functions #'magent-ui--slash-capf nil t)
-  (add-hook 'post-self-insert-hook #'magent-ui--maybe-slash-complete nil t))
+                  (magent-session-current-scope))))
 
 (defun magent-ui--revert-buffer (_ignore-auto _noconfirm)
   "Revert the Magent buffer by re-rendering from the ledger."
@@ -1363,102 +1619,8 @@ Called via `kill-buffer-hook' to prevent timers firing on dead buffers."
 This does not display it; workspace rendering stays read-only."
   (magent-ui-compose-buffer scope))
 
-(defun magent-ui--slash-parse (text)
-  "Parse @skill-name tokens from TEXT.
-Returns a `magent-ui--parsed-input' where recognized instruction
-skill tokens are removed from the message.  If the remaining
-message is blank, the first recognized skill with a default prompt
-supplies `default-prompt'.  Unrecognized @tokens are left in the
-message text unchanged."
-  (require 'magent-skills)
-  (let ((names nil)
-        (pos 0)
-        (parts nil))
-    (while (string-match "@\\([a-zA-Z][a-zA-Z0-9_-]*\\)@?" text pos)
-      (let* ((match-start (match-beginning 0))
-             (match-end   (match-end 0))
-             (name        (match-string 1 text)))
-        (push (substring text pos match-start) parts)
-        (let ((skill (magent-skills-get name)))
-          (if (and skill (eq (magent-skill-type skill) 'instruction))
-              (push name names)
-            (push (match-string 0 text) parts)))
-        (setq pos match-end)))
-    (push (substring text pos) parts)
-    (let* ((skill-names (nreverse names))
-           (message (string-trim (apply #'concat (nreverse parts))))
-           (default-prompt
-            (and (string-blank-p message)
-                 (cl-some #'magent-skills-default-prompt skill-names))))
-      (magent-ui--parsed-input-create
-       :skills skill-names
-       :message message
-       :default-prompt default-prompt))))
-
-(defun magent-ui--input-command (text)
-  "Return a whole-input command symbol for TEXT, or nil.
-Commands are recognized only when the trimmed input is exactly
-@command.  Embedded command-like text remains normal prompt text."
-  (let ((trimmed (string-trim text)))
-    (when (string-match "\\`@\\([a-zA-Z][a-zA-Z0-9_-]*\\)\\'" trimmed)
-      (let ((name (match-string 1 trimmed)))
-        (when (assoc name magent-ui--input-command-descriptions)
-          (intern name))))))
-
-(defun magent-ui--input-completion-candidates ()
-  "Return completion candidates for @skill-name and @command input."
-  (cl-remove-duplicates
-   (append (magent-skills-list-by-type 'instruction)
-           (mapcar #'car magent-ui--input-command-descriptions))
-   :test #'string=))
-
-(defun magent-ui--execute-input-command (command)
-  "Execute whole-input COMMAND and return non-nil when handled."
-  (pcase command
-    ('clear
-     (when (derived-mode-p 'magent-compose-mode)
-       (erase-buffer))
-     (run-hooks 'magent-ui-after-input-submit-hook)
-     (magent-clear-session)
-     (message "Magent: session context cleared")
-     t)
-    (_ nil)))
-
-(defun magent-ui--slash-capf ()
-  "Completion-at-point function for @skill-name in the input area.
-Only active when the input zone is open and point follows a @
-with optional partial skill name."
-  (when (derived-mode-p 'magent-compose-mode)
-    (save-excursion
-      (when (re-search-backward "@\\([a-zA-Z0-9_-]*\\)\\=" nil t)
-        (let ((word-start (match-beginning 1))
-              (word-end   (match-end 1)))
-          (magent--ensure-initialized)
-          (list word-start word-end
-                (magent-ui--input-completion-candidates)
-                :annotation-function
-                (lambda (name)
-                  (or
-                   (when-let* ((skill (magent-skills-get name))
-                               (desc  (magent-skill-description skill)))
-                     (concat "  " (if (listp desc)
-                                      (mapconcat #'identity desc ", ")
-                                    desc)))
-                   (when-let* ((desc (cdr (assoc name
-                                                 magent-ui--input-command-descriptions))))
-                     (concat "  " desc))))
-                :exclusive 'no))))))
-
-(defun magent-ui--maybe-slash-complete ()
-  "Auto-trigger completion when `@` is typed in the input area."
-  (when (and (derived-mode-p 'magent-compose-mode)
-             (eq (char-before) ?@))
-    (completion-at-point)))
-
 (defun magent-input-submit ()
-  "Submit the current compose buffer and send it to the agent.
-Whole-input commands such as @clear are executed locally instead of sent
-to the agent."
+  "Submit the current compose buffer and send it to the agent."
   (interactive)
   (unless (derived-mode-p 'magent-compose-mode)
     (magent-ui-open-compose (magent-ui--context-scope))
@@ -1468,24 +1630,18 @@ to the agent."
   (let* ((scope (magent-ui--context-scope))
          (raw (string-trim
                (buffer-substring-no-properties (point-min) (point-max)))))
-    (if-let* ((command (magent-ui--input-command raw)))
-        (magent-ui--execute-input-command command)
-      (let* ((parsed      (magent-ui--slash-parse raw))
-             (skill-names (magent-ui--parsed-input-skills parsed))
-             (text        (or (and (string-blank-p
-                                    (magent-ui--parsed-input-message parsed))
-                                   (magent-ui--parsed-input-default-prompt parsed))
-                              (magent-ui--parsed-input-message parsed))))
-        (when (string-blank-p text)
-          (user-error "Empty input"))
-        (let ((compose-buffer (current-buffer)))
-          (erase-buffer)
-          (display-buffer (magent-ui-get-buffer scope))
-          (run-hooks 'magent-ui-after-input-submit-hook)
-          (when magent-compose-close-after-submit
-            (magent-ui--maybe-close-compose-window compose-buffer)
-            (magent-ui--select-workspace scope)))
-        (magent-ui-process text 'compose nil skill-names)))))
+    (when (string-blank-p raw)
+      (user-error "Empty input"))
+    (let ((compose-buffer (current-buffer))
+          (skill-names (magent-ui--pending-skills scope)))
+      (erase-buffer)
+      (display-buffer (magent-ui-get-buffer scope))
+      (run-hooks 'magent-ui-after-input-submit-hook)
+      (when magent-compose-close-after-submit
+        (magent-ui--maybe-close-compose-window compose-buffer)
+        (magent-ui--select-workspace scope))
+      (magent-ui-process raw 'compose nil skill-names)
+      (magent-ui--clear-pending-skills scope))))
 
 ;;; Section folding
 
@@ -2067,7 +2223,7 @@ AGENT is an optional `magent-agent-info' override for this request."
 SOURCE is a symbol identifying the caller (default: \\='prompt).
 DISPLAY is the text shown in the buffer's user-message heading;
 defaults to PROMPT when nil.
-SKILLS is a list of skill name strings selected via slash commands.
+SKILLS is a list of explicit instruction skill names for this request.
 AGENT is an optional `magent-agent-info' override for this request."
   (let* ((request-context
           (when (require 'magent-capability nil t)
@@ -2194,6 +2350,7 @@ Handles both streaming and non-streaming completion."
   "Clear the current session."
   (interactive)
   (magent-ui--activate-context-session)
+  (magent-ui--clear-pending-skills (magent-session-current-scope))
   (magent-session-reset)
   (magent-ui-clear-buffer)
   (magent-ui-render-history t)
@@ -2417,6 +2574,7 @@ the buffer flag is cleared."
       (let* ((agent-info (magent-agent-registry-get selected))
              (session (magent-session-get)))
         (magent-session-set-agent session agent-info)
+        (magent-ui--refresh-header-line (magent-session-current-scope))
         (magent-log "INFO agent selected: %s" selected)))))
 
 ;;;###autoload

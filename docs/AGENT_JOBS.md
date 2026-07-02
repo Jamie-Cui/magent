@@ -67,7 +67,7 @@ Full child prompt, metadata, result/error, and transcript state remain
 inspectable with:
 
 - `M-x magent-show-agent-transcript`
-- `C-c m j`
+- transient `S j` from `C-c m ?` or `?` in `*magent*`
 
 `magent-resume-session` restores persisted `agent-jobs` with the parent session. Active request handles are not restored after Emacs restart, but saved job metadata, result/error state, and transcripts remain available for inspection.
 
