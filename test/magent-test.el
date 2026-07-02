@@ -5499,7 +5499,8 @@
          (captured nil)
          (normal-state-called nil)
          (magent-evil-mode nil)
-         (magent-evil--enabled nil))
+         (magent-evil--enabled nil)
+         (magent-evil-reset-input-method-after-submit t))
     (magent-evil-mode 1)
     (unwind-protect
         (progn
@@ -5507,7 +5508,8 @@
           (setq buffer (magent-test--compose-with-text
                         'global "return to normal"))
           (with-current-buffer buffer
-            (evil-local-mode 1))
+            (evil-local-mode 1)
+            (setq-local evil-input-method "rime"))
           (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
                     ((symbol-function 'magent-ui-process)
                      (lambda (text &optional source display skills agent)
@@ -5519,7 +5521,86 @@
               (magent-input-submit)))
           (should normal-state-called)
           (should (equal (car captured) "return to normal"))
-          (should (eq (nth 1 captured) 'compose)))
+          (should (eq (nth 1 captured) 'compose))
+          (with-current-buffer buffer
+            (should-not evil-input-method)))
+      (magent-evil-mode -1)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-evil-mode-input-submit-can-preserve-input-method ()
+  "Test Evil input method reset after Magent submission is configurable."
+  (skip-unless (require 'evil nil t))
+  (require 'magent-evil)
+  (let* ((magent-buffer-name "*magent-evil-submit-input-method*")
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (buffer nil)
+         (captured nil)
+         (magent-evil-mode nil)
+         (magent-evil--enabled nil)
+         (magent-evil-reset-input-method-after-submit nil))
+    (magent-evil-mode 1)
+    (unwind-protect
+        (progn
+          (magent-session-activate 'global)
+          (setq buffer (magent-test--compose-with-text
+                        'global "keep input method"))
+          (with-current-buffer buffer
+            (evil-local-mode 1)
+            (setq-local evil-input-method "rime"))
+          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
+                    ((symbol-function 'magent-ui-process)
+                     (lambda (text &optional source display skills agent)
+                       (setq captured (list text source display skills agent))))
+                    ((symbol-function 'evil-normal-state) #'ignore))
+            (with-current-buffer buffer
+              (magent-input-submit)))
+          (should (equal (car captured) "keep input method"))
+          (with-current-buffer buffer
+            (should (equal evil-input-method "rime"))))
+      (magent-evil-mode -1)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-evil-mode-input-submit-deactivates-input-method ()
+  "Test Magent submission deactivates a live input method, not just Evil's copy.
+Regression: clearing `evil-input-method' alone left `current-input-method'
+active, so an activated input method (e.g. rime) stayed on after submit."
+  (skip-unless (require 'evil nil t))
+  (require 'magent-evil)
+  (let* ((magent-buffer-name "*magent-evil-submit-deactivate-im*")
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (buffer nil)
+         (captured nil)
+         (magent-evil-mode nil)
+         (magent-evil--enabled nil)
+         (magent-evil-reset-input-method-after-submit t))
+    (magent-evil-mode 1)
+    (unwind-protect
+        (progn
+          (magent-session-activate 'global)
+          (setq buffer (magent-test--compose-with-text
+                        'global "deactivate input method"))
+          (with-current-buffer buffer
+            (evil-local-mode 1)
+            ;; Activate a real, always-available input method the proper
+            ;; way (same mechanism rime uses via `current-input-method').
+            (activate-input-method "greek"))
+          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
+                    ((symbol-function 'magent-ui-process)
+                     (lambda (text &optional source display skills agent)
+                       (setq captured (list text source display skills agent))))
+                    ((symbol-function 'evil-normal-state) #'ignore))
+            (with-current-buffer buffer
+              (magent-input-submit)))
+          (should (equal (car captured) "deactivate input method"))
+          (with-current-buffer buffer
+            (should-not current-input-method)
+            (should-not evil-input-method)))
       (magent-evil-mode -1)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -5569,6 +5650,19 @@
         (magent-ui-submit-or-interrupt)))
     (should (equal opened '(global nil)))))
 
+(ert-deftest magent-test-output-compose-command-opens-current-scope ()
+  "Test explicit output compose command opens compose for current scope."
+  (require 'magent-ui)
+  (let ((opened nil))
+    (cl-letf (((symbol-function 'magent-ui-open-compose)
+               (lambda (&optional scope initial-text)
+                 (setq opened (list scope initial-text)))))
+      (with-temp-buffer
+        (magent-output-mode)
+        (setq-local magent-ui--buffer-scope 'global)
+        (magent-ui-compose-from-output)))
+    (should (equal opened '(global nil)))))
+
 (ert-deftest magent-test-output-mode-c-g-is-not-magent-interrupt ()
   "Test `C-g' in Magent output mode keeps its normal quit role."
   (require 'magent-ui)
@@ -5576,7 +5670,13 @@
     (magent-output-mode)
     (should-not (eq (key-binding (kbd "C-g")) 'magent-interrupt))
     (should (eq (lookup-key magent-output-mode-map (kbd "C-c C-c"))
-                'magent-ui-submit-or-interrupt))))
+                'magent-ui-submit-or-interrupt))
+    (should (eq (lookup-key magent-output-mode-map (kbd "C-c C-o"))
+                'magent-ui-compose-from-output))
+    (should (eq (lookup-key magent-output-mode-map (kbd "TAB"))
+                'magent-ui-toggle-section))
+    (should (eq (lookup-key magent-output-mode-map (kbd "<tab>"))
+                'magent-ui-toggle-section))))
 
 (ert-deftest magent-test-evil-mode-does-not-override-c-g-in-output-mode ()
   "Test optional Evil integration leaves output `C-g' for quit behavior."
@@ -5592,7 +5692,9 @@
           (evil-normal-state)
           (should-not (eq (key-binding (kbd "C-g")) 'magent-interrupt))
           (should (eq (key-binding (kbd "C-c C-c"))
-                      'magent-ui-submit-or-interrupt)))
+                      'magent-ui-submit-or-interrupt))
+          (should (eq (key-binding (kbd "i"))
+                      'magent-ui-compose-from-output)))
       (magent-evil-mode -1))))
 
 (ert-deftest magent-test-config-reload-preserves-ui-logger ()
@@ -5744,9 +5846,15 @@
           (magent-ui-render-history t)
           (with-current-buffer buffer
             (let ((text (buffer-string)))
-              (should (string-match-p "Magent workspace" text))
-              (should (string-match-p "User\nhello" text))
-              (should (string-match-p "Assistant \\[completed\\]\nworld" text))
+              (should (string-match-p "Magent  global" text))
+              (should (string-match-p
+                       "- \\[DONE\\] Turn 1  [0-9][0-9]:[0-9][0-9]  hello"
+                       text))
+              (should (string-match-p "  - Prompt" text))
+              (should (string-match-p "    hello" text))
+              (should (string-match-p "  - Response" text))
+              (should-not (string-match-p "Response \\[completed\\]" text))
+              (should (string-match-p "    world" text))
               (should-not (string-match-p "stale saved buffer text" text)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
@@ -5767,7 +5875,7 @@
           (magent-ui-render-history t)
           (with-current-buffer buffer
             (goto-char (point-min))
-            (search-forward "Turn ")
+            (search-forward "Turn 1")
             (beginning-of-line)
             (magent-ui-toggle-section)
             (should
@@ -5778,6 +5886,212 @@
             (should
              (cl-some (lambda (ov) (overlay-get ov 'magent-ui-fold))
                       (overlays-in (point-min) (point-max))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (magent-session-reset))))
+
+(ert-deftest magent-test-ui-turn-section-title-uses-fixed-status-and-start-time ()
+  "Test timeline turn titles use fixed-width status and started-at time."
+  (require 'magent-ui)
+  (let* ((turn (magent-thread-turn-create
+                :status 'queued
+                :input "pending prompt"
+                :started-at nil))
+         (labels (mapcar
+                  #'magent-ui--turn-status-label
+                  '(queued in-progress completed failed interrupted dropped))))
+    (should (equal (delete-dups (mapcar #'length labels)) '(4)))
+    (should (equal (magent-ui--turn-section-title turn 7)
+                   "[WAIT] Turn 7  --:--  pending prompt"))))
+
+(ert-deftest magent-test-ui-toggle-section-only-toggles-current-fragment ()
+  "Test TAB on a parent section ignores folded child sections."
+  (require 'magent-ui)
+  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (session (magent-session-create :id "parent-fold"))
+         (buffer (magent-ui-get-buffer)))
+    (unwind-protect
+        (progn
+          (magent-session-install 'global session)
+          (magent-session-add-message session 'user "use a tool")
+          (magent-session-add-tool-message
+           session "call-1" "grep" '(:pattern "foo") "foo:1:match")
+          (magent-session-add-message session 'assistant "done")
+          (magent-ui-render-history t)
+          (with-current-buffer buffer
+            (goto-char (point-min))
+            (search-forward "Turn 1")
+            (beginning-of-line)
+            (let* ((header-pos (point))
+                   (start (get-text-property
+                           header-pos 'magent-ui-fragment-body-start))
+                   (end (get-text-property
+                         header-pos 'magent-ui-fragment-body-end)))
+              (should
+               (cl-some
+                (lambda (ov)
+                  (and (overlay-get ov 'magent-ui-fold)
+                       (not (and (= (overlay-start ov) start)
+                                 (= (overlay-end ov) end)))))
+                (overlays-in start end)))
+              (magent-ui-toggle-section)
+              (should
+               (cl-some
+                (lambda (ov)
+                  (and (overlay-get ov 'magent-ui-fold)
+                       (= (overlay-start ov) start)
+                       (= (overlay-end ov) end)))
+                (overlays-in start end))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (magent-session-reset))))
+
+(ert-deftest magent-test-ui-render-history-parses-context-into-meta ()
+  "Test auto-context is removed from Prompt and rendered as Meta fields."
+  (require 'magent-ui)
+  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (session (magent-session-create :id "context-meta"))
+         (buffer (magent-ui-get-buffer)))
+    (unwind-protect
+        (progn
+          (magent-session-install 'global session)
+          (magent-session-add-message
+           session
+           'user
+           "[Context: buffer=\"notes.org\" file=\"/tmp/notes.org\" mode=org-mode line=7]\nhello")
+          (magent-session-add-message session 'assistant "world")
+          (magent-ui-render-history t)
+          (with-current-buffer buffer
+            (let ((text (buffer-string)))
+              (should (string-match-p "    hello" text))
+              (should-not (string-match-p
+                           "Prompt\n[[:space:]]*\\[Context:"
+                           text))
+              (should (string-match-p (regexp-quote "  + Meta") text))
+              (should (string-match-p "buffer: notes.org" text))
+              (should (string-match-p "file: /tmp/notes.org" text))
+              (should (string-match-p "mode: org-mode" text))
+              (should (string-match-p "line: 7" text)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (magent-session-reset))))
+
+(ert-deftest magent-test-ui-render-history-skips-empty-response-fragment ()
+  "Test an empty-content assistant item renders no toggle-breaking fragment.
+An assistant turn that produced no text (e.g. tool-only or an empty
+completion) must not emit a Response header whose empty body makes
+`magent-ui-toggle-section' signal an error."
+  (require 'magent-ui)
+  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (session (magent-session-create :id "tool-only-turn"))
+         (buffer (magent-ui-get-buffer)))
+    (unwind-protect
+        (progn
+          (magent-session-install 'global session)
+          (magent-session-add-message session 'user "run a tool")
+          (magent-session-add-message session 'assistant "")
+          (magent-ui-render-history t)
+          (with-current-buffer buffer
+            (let ((text (buffer-string)))
+              (should (string-match-p "  - Prompt" text))
+              (should-not (string-match-p "Response" text)))
+            ;; Toggling the turn section must not error even though the
+            ;; turn body is otherwise sparse.
+            (goto-char (point-min))
+            (search-forward "Turn 1")
+            (beginning-of-line)
+            (magent-ui-toggle-section)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (magent-session-reset))))
+
+(ert-deftest magent-test-ui-render-history-highlights-indented-markdown-heading ()
+  "Test markdown headings in assistant text are highlighted despite indentation.
+Workspace Response bodies are indented, so the heading regex must
+tolerate leading whitespace."
+  (require 'magent-ui)
+  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (session (magent-session-create :id "indented-heading"))
+         (buffer (magent-ui-get-buffer)))
+    (unwind-protect
+        (progn
+          (magent-session-install 'global session)
+          (magent-session-add-message session 'user "summarize")
+          (magent-session-add-message session 'assistant "# Summary\nbody text")
+          (magent-ui-render-history t)
+          (with-current-buffer buffer
+            (goto-char (point-min))
+            (should (search-forward "Summary" nil t))
+            (let ((face (get-text-property (match-beginning 0) 'face)))
+              (should (eq face 'font-lock-function-name-face)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (magent-session-reset))))
+
+(ert-deftest magent-test-ui-render-history-timeline-latest-open-history-folded ()
+  (require 'magent-ui)
+  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (session (magent-session-create :id "timeline-folds"))
+         (buffer (magent-ui-get-buffer)))
+    (unwind-protect
+        (progn
+          (magent-session-install 'global session)
+          (magent-session-add-message session 'user "first")
+          (magent-session-add-message session 'assistant "one")
+          (magent-session-add-message session 'user "second")
+          (magent-session-add-message session 'assistant "two")
+          (magent-ui-render-history t)
+          (with-current-buffer buffer
+            (let ((text (buffer-string)))
+              (should (string-match-p
+                       "[+] \\[DONE\\] Turn 1  [0-9][0-9]:[0-9][0-9]  first"
+                       text))
+              (should (string-match-p
+                       "- \\[DONE\\] Turn 2  [0-9][0-9]:[0-9][0-9]  second"
+                       text))
+              (should-not (string-match-p "Current Turn" text))
+              (should-not (string-match-p "Recent Turns" text)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (magent-session-reset))))
+
+(ert-deftest magent-test-ui-render-history-shows-all-timeline-turns ()
+  "Test workspace timeline does not truncate to the last four turns."
+  (require 'magent-ui)
+  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (session (magent-session-create :id "all-turns"))
+         (buffer (magent-ui-get-buffer)))
+    (unwind-protect
+        (progn
+          (magent-session-install 'global session)
+          (cl-loop for i from 1 to 5
+                   do
+                   (magent-session-add-message
+                    session 'user (format "prompt-%d" i))
+                   (magent-session-add-message
+                    session 'assistant (format "reply-%d" i)))
+          (magent-ui-render-history t)
+          (with-current-buffer buffer
+            (let ((text (buffer-string))
+                  (pos 0))
+              (cl-loop for i from 1 to 5
+                       do
+                       (setq pos
+                             (or (string-match
+                                  (format
+                                   "\\[DONE\\] Turn %d  [0-9][0-9]:[0-9][0-9]  prompt-%d"
+                                   i i)
+                                  text
+                                  pos)
+                                 (ert-fail
+                                  (format "Missing timeline turn %d" i))))
+                       (setq pos (match-end 0))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (magent-session-reset))))
@@ -5834,6 +6148,7 @@
           (magent-ui-render-history t)
           (with-current-buffer buffer
             (let ((text (buffer-string)))
+              (should (string-match-p (regexp-quote "  + Tools (1)") text))
               (should (string-match-p
                        "approval: allow (rule-allow)"
                        text))
@@ -5868,8 +6183,11 @@
           (magent-ui--revert-buffer nil nil)
           (with-current-buffer buffer
             (let ((text (buffer-string)))
-              (should (string-match-p "User\nhello" text))
-              (should (string-match-p "Assistant \\[completed\\]\nworld" text))
+              (should (string-match-p "  - Prompt" text))
+              (should (string-match-p "    hello" text))
+              (should (string-match-p "  - Response" text))
+              (should-not (string-match-p "Response \\[completed\\]" text))
+              (should (string-match-p "    world" text))
               (should-not (string-match-p "draft" text))))
           (with-current-buffer (magent-ui-compose-buffer 'global)
             (should (equal (buffer-string) "draft"))))
@@ -6017,9 +6335,12 @@
                     ((symbol-function 'message) #'ignore))
             (magent-resume-session))
           (with-current-buffer buffer
-            (should (string-match-p "User\nhello" (buffer-string)))
-            (should (string-match-p "Assistant \\[completed\\]\nworld"
-                                    (buffer-string)))
+            (should (string-match-p "  - Prompt" (buffer-string)))
+            (should (string-match-p "    hello" (buffer-string)))
+            (should (string-match-p "  - Response" (buffer-string)))
+            (should-not (string-match-p "Response \\[completed\\]"
+                                        (buffer-string)))
+            (should (string-match-p "    world" (buffer-string)))
             (should-not (string-match-p "legacy draft should not render"
                                         (buffer-string)))
             (should-not (string-prefix-p "stale buffer content"

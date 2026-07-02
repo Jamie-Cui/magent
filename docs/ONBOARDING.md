@@ -91,12 +91,13 @@ output rendering.
 - `magent-file-loader.el` — Shared frontmatter parser for agent/skill/capability files
 
 **What it does:** The Magent workspace derives from `special-mode` and
-renders current/recent turns from the ledger. Prompt text is edited in a
-scope-specific `magent-compose-mode` buffer. Tool calls and child-agent
-events render as compact rows; reasoning is stored in the ledger but the
-workspace shows only status and character count. `magent-show-transcript`
-opens the full parent ledger transcript, and `magent-show-agent-transcript`
-(`C-c m j`) opens persisted child job details.
+renders an oldest-first timeline of all retained non-dropped ledger turns.
+Prompt text is edited in a scope-specific `magent-compose-mode` buffer.
+Tool calls and child-agent events render as compact rows; reasoning is
+stored in the ledger but the workspace shows only status and character
+count. `magent-show-transcript` opens a separate parent ledger detail
+buffer, and `magent-show-agent-transcript` (`C-c m j`) opens persisted
+child job details.
 
 ### Layer 7: Events
 

@@ -177,8 +177,8 @@ queued user submissions from leaking into the active model request.
 ## UI Projection
 
 The main Magent buffer is a read-only `special-mode` workspace.  It shows
-the current/recent turn projection from the ledger, not a restored copy of
-old buffer text.  Prompt composition lives in an independent
+an oldest-first timeline of all retained non-dropped ledger turns, not a
+restored copy of old buffer text.  Prompt composition lives in an independent
 `magent-compose-mode` buffer keyed by session scope.
 
 Reasoning is stored as a ledger item when `magent-include-reasoning` is
@@ -189,8 +189,9 @@ state, file/path buttons, and selected tool-specific output links.  Turn
 fragments preserve fold state across workspace re-renders.  Assistant
 text uses lightweight text properties for markdown-like emphasis and
 inline code; the live streaming path applies those properties only to
-newly flushed chunks and does not convert markdown to org.  Full history
-is available through `M-x magent-show-transcript`.
+newly flushed chunks and does not convert markdown to org.  A separate
+ledger transcript/detail buffer is available through
+`M-x magent-show-transcript`.
 
 ## Codex Differences Still Preserved
 

@@ -387,6 +387,16 @@ rendering to reduce UI updates."
   :type 'float
   :group 'magent)
 
+(defcustom magent-evil-reset-input-method-after-submit t
+  "Whether Magent clears Evil's input method state after prompt submission.
+
+When non-nil, submitting from a Magent compose buffer clears Evil's
+buffer-local `evil-input-method' after returning to normal state.  This
+prevents Evil from restoring a stale input method, such as rime, when the
+compose buffer later re-enters insert state."
+  :type 'boolean
+  :group 'magent)
+
 (defcustom magent-include-reasoning t
   "How to handle LLM reasoning/thinking blocks.
 If t, display reasoning blocks in the Magent UI and retain them.

@@ -142,7 +142,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-list-agents~               | ~C-c m v~    | List all available agents                                                |
 | ~magent-toggle-by-pass-permission~ | ~M-x~        | Toggle permission bypass for tool filtering and approval prompts         |
 
-In the ~*magent*~ output buffer: ~TAB~ and ~S-TAB~ fold sections, ~?~ opens the transient menu outside the editable input area, and ~C-c C-c~ opens compose when idle or confirms interrupt while a request is running.  Submit ~@clear~ as the whole input to clear the current session context, similar to Codex ~/clear~.
+In the ~*magent*~ output buffer: ~TAB~ and ~S-TAB~ fold sections, ~?~ opens the transient menu outside the editable input area, ~C-c C-o~ opens compose directly, and ~C-c C-c~ opens compose when idle or confirms interrupt while a request is running.  Submit ~@clear~ as the whole input to clear the current session context, similar to Codex ~/clear~.
 
 The same bypass state is also exposed as the customize option
 ~magent-by-pass-permission~ under ~M-x customize-group RET magent RET~.
@@ -329,7 +329,7 @@ Tool availability is controlled by:
 
 11. *Audit* (~magent-audit.el~): Persistent JSONL audit logging for permission prompts and decisions plus sensitive actions such as ~bash~, ~emacs_eval~, ~write_file~, ~edit_file~, and child-agent lifecycle tools. Payloads are redacted to metadata and truncated previews.
 
-12. *UI* (~magent-ui.el~): The ~*magent*~ workspace derives from ~special-mode~ and renders a compact read-only projection of current/recent ledger turns. Prompt editing lives in scope-specific ~magent-compose-mode~ buffers; ~C-c C-c~ submits. Tool calls, child-agent events, and reasoning render as compact status rows/fragments rather than Org source blocks.
+12. *UI* (~magent-ui.el~): The ~*magent*~ workspace derives from ~special-mode~ and renders a compact read-only oldest-first timeline of retained non-dropped ledger turns. Prompt editing lives in scope-specific ~magent-compose-mode~ buffers; ~C-c C-c~ submits. Tool calls, child-agent events, and reasoning render as compact status rows/fragments rather than Org source blocks.
 
 13. *Evil Integration* (~magent-evil.el~): Optional feature for Evil users. It is not loaded by ~magent~ and is enabled explicitly with ~magent-evil-mode~.
 

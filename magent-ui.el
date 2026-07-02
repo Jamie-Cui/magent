@@ -47,6 +47,9 @@
 (defvar-local magent-ui--fold-state nil
   "Hash table of persisted fragment fold state for the current workspace.")
 
+(defvar magent-ui--section-depth 0
+  "Dynamic indentation depth for Magent workspace sections.")
+
 (defvar magent-ui-after-input-submit-hook nil
   "Hook run in the Magent buffer after successful in-buffer input submission.
 Functions are called with no arguments before the prompt is dispatched.")
@@ -484,7 +487,7 @@ renders history into it on first use.  Returns the active session."
   (when (< start end)
     (save-excursion
       (goto-char start)
-      (while (re-search-forward "^#+[ \t]+\\(.+\\)$" end t)
+      (while (re-search-forward "^[ \t]*#+[ \t]+\\(.+\\)$" end t)
         (add-text-properties
          (match-beginning 1) (match-end 1)
          '(face font-lock-function-name-face)))
@@ -522,6 +525,24 @@ renders history into it on first use.  Returns the active session."
       (setq-local magent-ui--fold-state
                   (make-hash-table :test #'equal))))
 
+(defconst magent-ui--fold-state-missing
+  (make-symbol "magent-ui-fold-state-missing")
+  "Sentinel for missing fragment fold state.")
+
+(defun magent-ui--fragment-folded-p (key default-folded)
+  "Return non-nil when fragment KEY should render folded.
+DEFAULT-FOLDED is used only when KEY has no persisted state."
+  (let ((state (gethash key (magent-ui--fold-state-table)
+                        magent-ui--fold-state-missing)))
+    (cond
+     ((eq state magent-ui--fold-state-missing)
+      default-folded)
+     ((eq state 'expanded)
+      nil)
+     ((or (eq state 'folded) state)
+      t)
+     (t nil))))
+
 (defun magent-ui--apply-fold-overlay (start end)
   "Fold the fragment body from START to END."
   (when (< start end)
@@ -532,23 +553,76 @@ renders history into it on first use.  Returns the active session."
       (overlay-put ov 'magent-ui-fold t)
       ov)))
 
-(defun magent-ui--insert-fragment (title face body-fn &optional key)
-  "Insert a foldable fragment with TITLE, FACE, and BODY-FN."
-  (let ((header-start (point))
-        (fragment-key (or key title)))
+(defun magent-ui--fragment-marker (folded)
+  "Return the Magit-like marker for FOLDED."
+  (if folded "+" "-"))
+
+(defun magent-ui--section-prefix ()
+  "Return indentation prefix for the current section depth."
+  (make-string (* 2 (max 0 magent-ui--section-depth)) ?\s))
+
+(defun magent-ui--insert-workspace-prefix ()
+  "Insert indentation for content at the current workspace section depth."
+  (insert (magent-ui--section-prefix)))
+
+(defun magent-ui--insert-workspace-line (text &optional face)
+  "Insert TEXT as one workspace line at the current section depth."
+  (magent-ui--insert-workspace-prefix)
+  (insert (if face
+              (propertize text 'face face)
+            text)
+          "\n"))
+
+(defun magent-ui--update-fragment-marker (pos folded)
+  "Update the fold marker visible at fragment POS to FOLDED."
+  (let ((marker-pos (get-text-property pos 'magent-ui-fragment-marker-position)))
+    (when (and marker-pos
+               (<= (point-min) marker-pos)
+               (< marker-pos (point-max)))
+      (let ((inhibit-read-only t)
+            (new-char (aref (magent-ui--fragment-marker folded) 0))
+            (old-char (char-after marker-pos)))
+        (when old-char
+          (subst-char-in-region marker-pos (1+ marker-pos)
+                                old-char new-char t))))))
+
+(defun magent-ui--insert-fragment
+    (title face body-fn &optional key default-folded magit-style)
+  "Insert a foldable fragment with TITLE, FACE, and BODY-FN.
+When MAGIT-STYLE is non-nil, prefix the header with a Magit-like
+fold marker and indentation.  DEFAULT-FOLDED controls first render
+state when KEY has no persisted fold state."
+  (let* ((fragment-key (or key title))
+         (folded (magent-ui--fragment-folded-p fragment-key default-folded))
+         (header-start (point))
+         (marker-position nil))
+    (when magit-style
+      (insert (magent-ui--section-prefix))
+      (setq marker-position (point))
+      (insert (magent-ui--fragment-marker folded) " "))
     (insert (propertize title 'face face) "\n")
     (let ((header-end (1- (point)))
           (body-start (point)))
-      (funcall body-fn)
+      (let ((magent-ui--section-depth
+             (if magit-style
+                 (1+ magent-ui--section-depth)
+               magent-ui--section-depth)))
+        (funcall body-fn))
       (let ((body-end (point)))
         (add-text-properties
          header-start header-end
          (list 'magent-ui-fragment t
                'magent-ui-fragment-key fragment-key
                'magent-ui-fragment-body-start body-start
-               'magent-ui-fragment-body-end body-end))
-        (when (gethash fragment-key (magent-ui--fold-state-table))
-          (magent-ui--apply-fold-overlay body-start body-end))))))
+               'magent-ui-fragment-body-end body-end
+               'magent-ui-fragment-marker-position marker-position))
+        (if (< body-start body-end)
+            (when folded
+              (magent-ui--apply-fold-overlay body-start body-end))
+          ;; Empty body: no overlay is created, so never leave a folded
+          ;; marker that misrepresents a fold the user cannot toggle.
+          (when (and magit-style folded)
+            (magent-ui--update-fragment-marker header-start nil)))))))
 
 (defun magent-ui--turn-title (turn)
   "Return workspace title for TURN."
@@ -558,6 +632,262 @@ renders history into it on first use.  Returns the active session."
                (magent-thread-turn-id turn))
            72)
           (symbol-name (magent-thread-turn-status turn))))
+
+(defun magent-ui--turn-items (turn &optional type role)
+  "Return TURN items filtered by TYPE and ROLE."
+  (cl-remove-if-not
+   (lambda (item)
+     (and (or (null type)
+              (eq (magent-thread-item-type item) type))
+          (or (null role)
+              (eq (magent-thread-item-role item) role))))
+   (or (and turn (magent-thread-turn-items turn)) nil)))
+
+(defun magent-ui--parse-context-fields (raw)
+  "Parse auto-context RAW into an alist of string fields."
+  (let ((pos 0)
+        fields)
+    (while (and (stringp raw)
+                (string-match
+                 "\\([[:alnum:]_-]+\\)=\\(\"\\([^\"]*\\)\"\\|[^[:space:]]+\\)"
+                 raw pos))
+      (let ((key (match-string 1 raw))
+            (quoted-value (match-string 3 raw))
+            (value (match-string 2 raw)))
+        (push (cons key (or quoted-value value)) fields)
+        (setq pos (match-end 0))))
+    (nreverse fields)))
+
+(defun magent-ui--split-user-context (text)
+  "Split auto-context prefix from user TEXT for workspace display."
+  (let ((body (or text ""))
+        raw)
+    (when (and (stringp text)
+               (string-prefix-p "[Context: " text))
+      (let* ((line-end (or (string-match "\n" text) (length text)))
+             (first-line (substring text 0 line-end)))
+        (when (string-match "\\`\\[Context: \\(.*\\)\\]\\'" first-line)
+          (setq raw (match-string 1 first-line))
+          (setq body (string-trim-left (substring text line-end))))))
+    (list :body body
+          :context-raw raw
+          :context-fields (magent-ui--parse-context-fields raw))))
+
+(defun magent-ui--item-content-string (item)
+  "Return ITEM content as a display string, or nil."
+  (let ((content (and item (magent-thread-item-content item))))
+    (when content
+      (format "%s" content))))
+
+(defun magent-ui--turn-display-data (turn)
+  "Return display data derived from TURN without mutating ledger state."
+  (let* ((user-items (magent-ui--turn-items turn 'message 'user))
+         (first-user (car user-items))
+         (split (magent-ui--split-user-context
+                 (magent-ui--item-content-string first-user)))
+         (first-body (plist-get split :body))
+         (rest-bodies (mapcar
+                       #'magent-ui--item-content-string
+                       (cdr user-items)))
+         (prompt (string-trim-right
+                  (string-join
+                   (cl-remove-if
+                    (lambda (value)
+                      (or (null value)
+                          (and (stringp value)
+                               (string-empty-p value))))
+                    (cons first-body rest-bodies))
+                   "\n\n"))))
+    (list :prompt prompt
+          :context-raw (plist-get split :context-raw)
+          :context-fields (plist-get split :context-fields)
+          :assistant-items (magent-ui--turn-items turn 'message 'assistant)
+          :tool-items (magent-ui--turn-items turn 'tool)
+          :reasoning-items (magent-ui--turn-items turn 'reasoning))))
+
+(defun magent-ui--turn-preview (turn)
+  "Return a compact prompt preview for TURN.
+Extracts only the first user message so the title path avoids the
+full item scan performed by `magent-ui--turn-display-data'."
+  (let* ((first-user (magent-thread-turn-message-item turn 'user))
+         (split (magent-ui--split-user-context
+                 (magent-ui--item-content-string first-user)))
+         (display-prompt (plist-get split :body))
+         (prompt (or (and (stringp display-prompt)
+                          (not (string-empty-p display-prompt))
+                          display-prompt)
+                     (magent-thread-turn-input turn)
+                     (magent-thread-turn-id turn))))
+    (magent-ui--one-line prompt 58)))
+
+(defun magent-ui--turn-status-label (status)
+  "Return a fixed-width workspace label for turn STATUS."
+  (pcase status
+    ('queued "WAIT")
+    ('in-progress "RUN ")
+    ('completed "DONE")
+    ('failed "FAIL")
+    ('interrupted "STOP")
+    ('dropped "DROP")
+    (_ "????")))
+
+(defun magent-ui--turn-start-time-label (turn)
+  "Return TURN's `started-at' timestamp as HH:MM, or --:--."
+  (let ((started-at (and turn (magent-thread-turn-started-at turn))))
+    (if (numberp started-at)
+        (condition-case nil
+            (format-time-string "%H:%M" (seconds-to-time started-at))
+          (error "--:--"))
+      "--:--")))
+
+(defun magent-ui--turn-section-title (turn index)
+  "Return timeline section title for TURN at one-based INDEX."
+  (let ((preview (magent-ui--turn-preview turn)))
+    (format "[%s] Turn %d  %s%s%s"
+            (magent-ui--turn-status-label
+             (magent-thread-turn-status turn))
+            index
+            (magent-ui--turn-start-time-label turn)
+            (or (magent-ui--turn-alert-summary turn) "")
+            (if (string-empty-p preview)
+                ""
+              (format "  %s" preview)))))
+
+(defun magent-ui--tool-approval-attention-p (item)
+  "Return non-nil when ITEM approval metadata deserves header attention."
+  (let* ((metadata (magent-thread-item-metadata item))
+         (decision (magent-ui--metadata-get metadata :approval-decision))
+         (name (and decision (format "%s" decision))))
+    (member name '("ask" "deny" "denied"))))
+
+(defun magent-ui--turn-alert-summary (turn)
+  "Return a compact abnormal-state summary for TURN."
+  (let* ((tools (magent-ui--turn-items turn 'tool))
+         (failed (cl-count-if
+                  (lambda (item)
+                    (memq (magent-thread-item-status item)
+                          '(failed cancelled)))
+                  tools))
+         (running (cl-count-if
+                   (lambda (item)
+                     (memq (magent-thread-item-status item)
+                           '(pending in-progress)))
+                   tools))
+         (approvals (cl-count-if
+                     #'magent-ui--tool-approval-attention-p
+                     tools))
+         (parts (delq
+                 nil
+                 (list
+                  (when (magent-thread-turn-error turn) "error")
+                  (when (> failed 0) (format "failed tools:%d" failed))
+                  (when (> running 0) (format "running tools:%d" running))
+                  (when (> approvals 0) (format "approval:%d" approvals))))))
+    (when parts
+      (format "  ! %s" (string-join parts ", ")))))
+
+(defun magent-ui--insert-workspace-text (text &optional render-text face)
+  "Insert TEXT as indented workspace content.
+When RENDER-TEXT is non-nil, apply lightweight assistant text
+properties to the inserted region.  FACE applies to the full region."
+  (when (and (stringp text)
+             (not (string-empty-p text)))
+    (let ((start (point))
+          (lines (split-string text "\n")))
+      (while (and lines
+                  (string-empty-p (car (last lines))))
+        (setq lines (butlast lines)))
+      (dolist (line lines)
+        (magent-ui--insert-workspace-line line))
+      (when face
+        (add-text-properties start (point) (list 'face face)))
+      (when render-text
+        (magent-ui--apply-assistant-text-properties start (point))))))
+
+(defun magent-ui--insert-context-details (fields raw)
+  "Insert parsed context FIELDS, falling back to RAW."
+  (magent-ui--insert-workspace-line "Context" 'font-lock-comment-face)
+  (if fields
+      (dolist (field fields)
+        (magent-ui--insert-workspace-line
+         (format "  %s: %s" (car field) (cdr field))
+         'font-lock-comment-face))
+    (when raw
+      (magent-ui--insert-workspace-line
+       (format "  context: %s" raw)
+       'font-lock-comment-face))))
+
+(defun magent-ui--insert-workspace-meta-section (turn data)
+  "Insert folded Meta section for TURN using DATA."
+  (let ((context-raw (plist-get data :context-raw))
+        (context-fields (plist-get data :context-fields))
+        (reasoning-items (plist-get data :reasoning-items))
+        (error (magent-thread-turn-error turn)))
+    (when (or context-raw reasoning-items error)
+      (magent-ui--insert-fragment
+       "Meta"
+       'font-lock-comment-face
+       (lambda ()
+         (when context-raw
+           (magent-ui--insert-context-details context-fields context-raw))
+         (dolist (item reasoning-items)
+           (magent-ui--insert-reasoning-item item))
+         (when error
+           (magent-ui--insert-workspace-line
+            (format "Error: %s" error)
+            'magent-error-body)))
+       (format "turn:%s:meta" (magent-thread-turn-id turn))
+       t
+       t))))
+
+(defun magent-ui--insert-workspace-tools-section (turn data)
+  "Insert folded Tools section for TURN using DATA."
+  (let ((tool-items (plist-get data :tool-items)))
+    (when tool-items
+      (magent-ui--insert-fragment
+       (format "Tools (%d)" (length tool-items))
+       'magent-tool-header
+       (lambda ()
+         (dolist (item tool-items)
+           (magent-ui--insert-tool-item item)))
+       (format "turn:%s:tools" (magent-thread-turn-id turn))
+       t
+       t))))
+
+(defun magent-ui--insert-workspace-turn-body (turn)
+  "Insert Magit-like workspace body for TURN."
+  (let* ((data (magent-ui--turn-display-data turn))
+         (prompt (plist-get data :prompt))
+         (assistant-items (plist-get data :assistant-items)))
+    (when (and prompt (not (string-empty-p prompt)))
+      (magent-ui--insert-fragment
+       "Prompt"
+       'magent-user-header
+       (lambda ()
+         (magent-ui--insert-workspace-text prompt nil))
+       (format "turn:%s:prompt" (magent-thread-turn-id turn))
+       nil
+       t))
+    (cl-loop with multiple = (cdr assistant-items)
+             for item in assistant-items
+             for index from 1
+             for content = (or (magent-thread-item-content item) "")
+             unless (string-empty-p content)
+             do
+             (magent-ui--insert-fragment
+              (if multiple
+                  (format "Response %d" index)
+                "Response")
+              'magent-assistant-header
+              (lambda ()
+                (magent-ui--insert-workspace-text content t))
+              (format "turn:%s:response:%s"
+                      (magent-thread-turn-id turn)
+                      (magent-thread-item-id item))
+              nil
+              t))
+    (magent-ui--insert-workspace-tools-section turn data)
+    (magent-ui--insert-workspace-meta-section turn data)))
 
 (defun magent-ui--tool-result-preview (item)
   "Return a compact display string for tool ITEM."
@@ -668,6 +998,7 @@ Each entry is `(KEY PATH LINE)'."
   (dolist (entry (magent-ui--tool-path-entries
                   (magent-thread-item-input item)))
     (pcase-let ((`(,key ,path ,line) entry))
+      (magent-ui--insert-workspace-prefix)
       (insert "  " (magent-ui--key-label key) ": ")
       (magent-ui--insert-file-button path line)
       (insert "\n"))))
@@ -678,11 +1009,12 @@ Each entry is `(KEY PATH LINE)'."
          (decision (magent-ui--metadata-get metadata :approval-decision))
          (source (magent-ui--metadata-get metadata :approval-source)))
     (when decision
-      (insert (format "  approval: %s%s\n"
-                      decision
-                      (if source
-                          (format " (%s)" source)
-                        ""))))))
+      (magent-ui--insert-workspace-line
+       (format "  approval: %s%s"
+               decision
+               (if source
+                   (format " (%s)" source)
+                 ""))))))
 
 (defun magent-ui--grep-result-entries (text)
   "Return up to three `(PATH LINE)' entries parsed from TEXT."
@@ -708,28 +1040,28 @@ Each entry is `(KEY PATH LINE)'."
                (member name '("grep" "glob")))
       (dolist (entry (magent-ui--grep-result-entries output))
         (pcase-let ((`(,path ,line) entry))
+          (magent-ui--insert-workspace-prefix)
           (insert "  match: ")
           (magent-ui--insert-file-button path line)
           (insert "\n"))))))
 
 (defun magent-ui--insert-tool-item (item)
   "Insert a compact tool ITEM row."
-  (insert
-   (propertize
-    (format "Tool %s [%s] %s\n"
-            (or (magent-thread-item-name item) "tool")
-            (symbol-name (magent-thread-item-status item))
-            (magent-ui--one-line
-             (magent-thread-item-input item)
-             magent-ui-tool-input-max-length))
-    'face 'magent-tool-header))
+  (magent-ui--insert-workspace-line
+   (format "Tool %s [%s] %s"
+           (or (magent-thread-item-name item) "tool")
+           (symbol-name (magent-thread-item-status item))
+           (magent-ui--one-line
+            (magent-thread-item-input item)
+            magent-ui-tool-input-max-length))
+   'magent-tool-header)
   (magent-ui--insert-tool-path-details item)
   (magent-ui--insert-tool-approval-detail item)
   (magent-ui--insert-tool-output-details item)
   (when (magent-thread-terminal-item-p item)
-    (insert (propertize
-             (concat "  -> " (magent-ui--tool-result-preview item) "\n")
-             'face 'magent-tool-result))))
+    (magent-ui--insert-workspace-line
+     (concat "  -> " (magent-ui--tool-result-preview item))
+     'magent-tool-result)))
 
 (defun magent-ui--insert-reasoning-item (item)
   "Insert a compact reasoning ITEM row without exposing chain text."
@@ -737,13 +1069,12 @@ Each entry is `(KEY PATH LINE)'."
          (visibility (magent-ui--metadata-get
                       (magent-thread-item-metadata item)
                       :include-reasoning)))
-    (insert
-     (propertize
-      (format "Reasoning [%s] %d chars%s\n"
-              (symbol-name (magent-thread-item-status item))
-              (length text)
-              (if (eq visibility 'ignore) " hidden" ""))
-      'face 'magent-reasoning-header))))
+    (magent-ui--insert-workspace-line
+     (format "Reasoning [%s] %d chars%s"
+             (symbol-name (magent-thread-item-status item))
+             (length text)
+             (if (eq visibility 'ignore) " hidden" ""))
+     'magent-reasoning-header)))
 
 (defun magent-ui--insert-turn-body (turn)
   "Insert workspace body for TURN."
@@ -772,18 +1103,14 @@ Each entry is `(KEY PATH LINE)'."
   (insert "\n"))
 
 (defun magent-ui--workspace-turns (thread)
-  "Return the current/recent turns to show for THREAD."
-  (let* ((turns (cl-remove-if
-                 (lambda (turn)
-                   (eq (magent-thread-turn-status turn) 'dropped))
-                 (or (and thread (magent-thread-turns thread)) nil)))
-         (count (length turns)))
-    (if (> count 4)
-        (nthcdr (- count 4) turns)
-      turns)))
+  "Return non-dropped turns to show for THREAD in chronological order."
+  (cl-remove-if
+   (lambda (turn)
+     (eq (magent-thread-turn-status turn) 'dropped))
+   (or (and thread (magent-thread-turns thread)) nil)))
 
 (defun magent-ui-render-history (&optional _skip-snapshot scope)
-  "Render the current/recent ledger workspace for SCOPE."
+  "Render the chronological ledger workspace for SCOPE."
   (interactive)
   (let* ((target-scope (or scope
                            (and (or (derived-mode-p 'magent-output-mode)
@@ -798,26 +1125,33 @@ Each entry is `(KEY PATH LINE)'."
         (remove-overlays (point-min) (point-max) 'magent-ui-overlay t)
         (erase-buffer)
         (setq-local buffer-invisibility-spec '(magent-ui))
-        (insert (propertize
-                 (format "Magent workspace  scope=%s  thread=%s\n"
-                         (magent-ui--scope-buffer-label target-scope)
-                         (or (and thread (magent-thread-id thread)) "none"))
-                 'face 'font-lock-keyword-face))
-        (insert (format "status=%s  active=%s  queued=%s\n\n"
-                        (or (and thread
-                                 (symbol-name (magent-thread-status thread)))
-                            "idle")
-                        (if (magent-turn-processing-p) "yes" "no")
-                        (magent-turn-queue-length)))
-        (let ((turns (magent-ui--workspace-turns thread)))
+        (insert
+         (propertize
+          (format "Magent  %s  %s  active=%s  queued=%s  %s\n\n"
+                  (magent-ui--scope-buffer-label target-scope)
+                  (or (and thread
+                           (symbol-name (magent-thread-status thread)))
+                      "idle")
+                  (if (magent-turn-processing-p) "yes" "no")
+                  (magent-turn-queue-length)
+                  (or (and thread (magent-thread-id thread)) "none"))
+          'face 'font-lock-keyword-face))
+        (let ((turns (magent-ui--workspace-turns thread))
+              (magent-ui--section-depth 0))
           (if turns
-              (dolist (turn turns)
-                (magent-ui--insert-fragment
-                 (magent-ui--turn-title turn)
-                 'font-lock-function-name-face
-                 (lambda ()
-                   (magent-ui--insert-turn-body turn))
-                 (format "turn:%s" (magent-thread-turn-id turn))))
+              (let ((latest-index (length turns)))
+                (cl-loop for turn in turns
+                         for index from 1
+                         do
+                         (magent-ui--insert-fragment
+                          (magent-ui--turn-section-title turn index)
+                          'font-lock-function-name-face
+                          (lambda ()
+                            (magent-ui--insert-workspace-turn-body turn))
+                          (format "turn:%s"
+                                  (magent-thread-turn-id turn))
+                          (/= index latest-index)
+                          t)))
             (insert "No turns yet. Use `C-c m p` to compose a prompt.\n")))
         (add-text-properties (point-min) (point-max) '(read-only t))
         (goto-char (point-min))))))
@@ -860,6 +1194,11 @@ request are discarded."
       (when (y-or-n-p "Interrupt current Magent request? ")
         (magent-interrupt))
     (magent-ui-open-compose (magent-ui--context-scope))))
+
+(defun magent-ui-compose-from-output ()
+  "Open the compose buffer for the current Magent output scope."
+  (interactive)
+  (magent-ui-open-compose (magent-ui--context-scope)))
 
 ;;; Transient menu
 
@@ -949,7 +1288,11 @@ already-created `magent-output-mode-map'."
   (define-key magent-output-mode-map (kbd "C-g") nil)
   (define-key magent-output-mode-map (kbd "C-c C-c")
               #'magent-ui-submit-or-interrupt)
+  (define-key magent-output-mode-map (kbd "C-c C-o")
+              #'magent-ui-compose-from-output)
   (define-key magent-output-mode-map (kbd "TAB")
+              #'magent-ui-toggle-section)
+  (define-key magent-output-mode-map (kbd "<tab>")
               #'magent-ui-toggle-section)
   (define-key magent-output-mode-map (kbd "g")
               #'magent-ui-render-history))
@@ -961,6 +1304,7 @@ already-created `magent-output-mode-map'."
 The workspace is read-only and renders a compact ledger projection.
 \\<magent-output-mode-map>
 Press \\[magent-ui-submit-or-interrupt] to compose, or interrupt with confirmation.
+Press \\[magent-ui-compose-from-output] to open compose directly.
 Press \\[magent-ui-menu-or-insert-question-mark] for the command menu."
   (visual-line-mode 1)
   (setq-local magent-ui--buffer-scope
@@ -1152,33 +1496,42 @@ to the agent."
     (let ((pos (save-excursion
                  (beginning-of-line)
                  (point)))
-          start end key)
+          start end key header-pos)
       (save-excursion
         (beginning-of-line)
         (while (and (not (bobp))
                     (not (get-text-property (point) 'magent-ui-fragment)))
           (forward-line -1))
+        (setq header-pos (point))
         (setq start (get-text-property (point)
                                        'magent-ui-fragment-body-start)
               end (get-text-property (point)
                                      'magent-ui-fragment-body-end)
               key (get-text-property (point)
                                      'magent-ui-fragment-key)))
-      (unless (and start end (< start end))
+      (unless (get-text-property header-pos 'magent-ui-fragment)
         (user-error "No Magent fragment at point"))
+      ;; A fragment header with an empty body (e.g. a turn or response
+      ;; that produced no renderable text) has nothing to fold; treat
+      ;; toggling as a no-op rather than signalling an error.
+      (when (and start end (< start end))
       (let* ((folds (cl-remove-if-not
                      (lambda (ov)
-                       (overlay-get ov 'magent-ui-fold))
+                       (and (overlay-get ov 'magent-ui-fold)
+                            (= (overlay-start ov) start)
+                            (= (overlay-end ov) end)))
                      (overlays-in start end)))
              (table (magent-ui--fold-state-table)))
         (if folds
             (progn
               (mapc #'delete-overlay folds)
               (when key
-                (puthash key nil table)))
+                (puthash key 'expanded table))
+              (magent-ui--update-fragment-marker header-pos nil))
           (magent-ui--apply-fold-overlay start end)
           (when key
-            (puthash key t table))))
+            (puthash key 'folded table))
+          (magent-ui--update-fragment-marker header-pos t))))
       (goto-char pos))))
 
 ;;; Rendering functions

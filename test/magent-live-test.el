@@ -753,9 +753,10 @@ return that path."
            5 "Magent live buffer input did not finish")
           (with-current-buffer buffer
             (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-              (should (string-match-p "User\nhello from live buffer" text))
+              (should (string-match-p "  - Prompt" text))
               (should (string-match-p "hello from live buffer" text))
-              (should (string-match-p "Assistant \\[completed\\]\nlive response" text))
+              (should (string-match-p "  - Response \\[completed\\]" text))
+              (should (string-match-p "live response" text))
               (should-not (string-match-p "^\\* USER" text))
               (should-not (string-match-p "^\\* ASSISTANT" text)))))))))
 
@@ -885,8 +886,8 @@ return that path."
         (should (string-match-p "MAGENT_LIVE_OK" response))
         (with-current-buffer (magent-ui-get-buffer (magent-session-current-scope))
           (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "User\n" text))
-            (should (string-match-p "Assistant \\[completed\\]" text))
+            (should (string-match-p "  - Prompt" text))
+            (should (string-match-p "  - Response \\[completed\\]" text))
             (should-not (string-match-p "^\\* USER" text))
             (should-not (string-match-p "^\\* ASSISTANT" text))
             (should (string-match-p "MAGENT_LIVE_OK" text))))))))
