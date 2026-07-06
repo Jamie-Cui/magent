@@ -138,11 +138,16 @@ Plain prompt interaction uses agent-shell by default through Magent's
 in-process ACP adapter.  Set ~magent-ui-backend~ to ~legacy~ to use the old
 read-only workspace and compose buffers.
 
-Formal legacy session commands are selected from the transient menu instead of
-typed into compose or bound as a wide set of default ~C-c m~ shortcuts. Open the
-menu with ~C-c m ?~ from any Magent-enabled buffer or ~?~ from the legacy
-~*magent*~ workspace. The top-level menu routes agent, skill, capability,
-session, log, health, and buffer commands through small Magit-style submenus.
+Formal legacy session commands are selected from the Magent transient menu
+instead of typed into compose or bound as a wide set of default ~C-c m~
+shortcuts. Open the menu with ~C-c m ?~ from any Magent-enabled buffer or ~?~
+from the legacy ~*magent*~ workspace. The top-level menu routes agent, skill,
+capability, session, log, health, and buffer commands through small Magit-style
+submenus. Agent-shell also has native instruction skill commands for the common
+request path: ~magent-agent-shell-toggle-skill-for-next-request~,
+~magent-agent-shell-clear-skills-for-next-request~,
+~magent-agent-shell-run-skill-command~, and
+~magent-agent-shell-run-init-command~.
 
 In the legacy ~*magent*~ output buffer: ~TAB~ and ~S-TAB~ fold sections, ~?~
 opens the transient menu, ~C-c C-o~ opens compose directly, and ~C-c C-c~ opens
@@ -203,19 +208,21 @@ C-c m p
 
 ** Skill Commands
 
-Instruction skills are selected from the transient menu as one-shot context for
-the next request.  Use ~? s s~ to toggle an instruction skill, and ~? s K~ to
-clear the selected skills.  Selected skills are scoped to the current Magent
-session scope and are shown in the legacy ~*magent*~ workspace header-line until
-the next prompt is submitted.
+Instruction skills can be selected as one-shot context for the next request.
+In agent-shell, use ~M-x magent-agent-shell-toggle-skill-for-next-request~ to
+toggle a skill and ~M-x magent-agent-shell-clear-skills-for-next-request~ to
+clear selected skills.  In the legacy workspace, use ~? s s~ and ~? s K~ from
+the transient menu.  Selected skills are scoped to the active Magent session and
+are consumed by the next prompt.
 
-Skills with a ~default-prompt~ can also be run as command-like transient
-actions.  For example, ~? i~ runs the built-in ~init~ skill from the top-level
-menu, while ~? s i~ runs the same action from the Skills submenu.  It
-initializes or refreshes the project's root ~AGENTS.md~ and prompts for optional
-extra instructions such as focusing on tests.  Compose buffers no longer parse
-~@skill~ or ~@clear~ control syntax; that text is sent to the model as ordinary
-prompt text.
+Skills with a ~default-prompt~ can also be run as command-like actions.  In
+agent-shell, use ~M-x magent-agent-shell-run-skill-command~ or
+~M-x magent-agent-shell-run-init-command~.  In the legacy menu, ~? i~ runs the
+built-in ~init~ skill from the top-level menu, while ~? s i~ runs the same
+action from the Skills submenu.  The ~init~ skill initializes or refreshes the
+project's root ~AGENTS.md~ and prompts for optional extra instructions such as
+focusing on tests.  Compose buffers no longer parse ~@skill~ or ~@clear~
+control syntax; that text is sent to the model as ordinary prompt text.
 
 * Agent System
 

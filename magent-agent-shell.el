@@ -18,10 +18,13 @@
 (require 'magent-acp)
 (require 'magent-config)
 (require 'magent-runtime)
+(require 'magent-runtime-api)
+(require 'magent-skills)
 
 (defvar gptel-model)
 (defvar agent-shell--state)
 (defvar agent-shell-session-strategy)
+(defvar comint-last-prompt)
 (defvar shell-maker--busy)
 (defvar shell-maker--request-process)
 
@@ -29,19 +32,67 @@
 (declare-function agent-shell--display-buffer "agent-shell")
 (declare-function agent-shell--dwim "agent-shell")
 (declare-function agent-shell--process-pending-request "agent-shell")
+(declare-function agent-shell--send-command "agent-shell")
 (declare-function agent-shell-cwd "agent-shell-project")
 (declare-function agent-shell-status "agent-shell")
 (declare-function agent-shell-interrupt "agent-shell")
 (declare-function agent-shell-queue-request "agent-shell")
 (declare-function agent-shell-start "agent-shell")
 (declare-function shell-maker-busy "shell-maker")
+(declare-function magent-acp--runtime-session-by-id "magent-acp")
 
 (defconst magent-agent-shell--identifier 'magent
   "agent-shell config identifier used by Magent.")
 
+(defvar-local magent-agent-shell--pending-skill-names nil
+  "Instruction skills selected for the next Magent agent-shell prompt.")
+
+(defvar-local magent-agent-shell--prompt-skill-queue nil
+  "Per-prompt instruction skills waiting for `agent-shell--send-command'.")
+
 (defun magent-agent-shell--model-id ()
   "Return the current gptel model id for agent-shell display."
   (format "%s" (or (and (boundp 'gptel-model) gptel-model) "gptel")))
+
+(defun magent-agent-shell--dedupe-string-list (strings)
+  "Return STRINGS without duplicates, preserving order."
+  (let (seen result)
+    (dolist (string strings)
+      (when (and (stringp string)
+                 (not (member string seen)))
+        (push string seen)
+        (push string result)))
+    (nreverse result)))
+
+(defun magent-agent-shell--instruction-skill-names ()
+  "Return sorted instruction skill names."
+  (sort (copy-sequence (magent-skills-list-by-type 'instruction)) #'string<))
+
+(defun magent-agent-shell--command-skill-names ()
+  "Return sorted instruction skill names that have a default prompt."
+  (cl-remove-if-not #'magent-skills-default-prompt
+                    (magent-agent-shell--instruction-skill-names)))
+
+(defun magent-agent-shell--read-instruction-skill (prompt)
+  "Read an instruction skill name with PROMPT."
+  (let ((names (magent-agent-shell--instruction-skill-names)))
+    (unless names
+      (user-error "Magent: no instruction skills are registered"))
+    (completing-read prompt names nil t)))
+
+(defun magent-agent-shell--skill-command-text (skill-name extra-instruction)
+  "Return default prompt text for SKILL-NAME plus EXTRA-INSTRUCTION."
+  (let ((prompt (magent-skills-default-prompt skill-name))
+        (extra (string-trim (or extra-instruction ""))))
+    (unless prompt
+      (user-error "Magent: skill '%s' has no default prompt" skill-name))
+    (if (string-blank-p extra)
+        prompt
+      (concat prompt "\n\nAdditional instruction:\n" extra))))
+
+(defun magent-agent-shell--prepare-skill-context ()
+  "Load project-local skill definitions for the current command context."
+  (magent-runtime-prepare-command-context))
 
 ;;;###autoload
 (defun magent-agent-shell-make-config ()
@@ -98,6 +149,156 @@
               (eq (map-nested-elt agent-shell--state
                                   '(:agent-config :identifier))
                   magent-agent-shell--identifier)))))
+
+(defun magent-agent-shell--runtime-session (&optional shell-buffer)
+  "Return the runtime session for SHELL-BUFFER, or nil."
+  (let ((buffer (or shell-buffer (current-buffer))))
+    (when (magent-agent-shell--magent-buffer-p buffer)
+      (with-current-buffer buffer
+        (when-let* ((session-id (map-nested-elt agent-shell--state
+                                                '(:session :id))))
+          (or (magent-runtime-session-from-id session-id)
+              (magent-acp--runtime-session-by-id session-id)))))))
+
+(defun magent-agent-shell--set-runtime-pending-skills
+    (runtime-session skills)
+  "Set RUNTIME-SESSION pending SKILLS."
+  (setf (magent-runtime-session-pending-skills runtime-session)
+        (magent-agent-shell--dedupe-string-list skills)))
+
+(defun magent-agent-shell--sync-buffer-pending-skills
+    (shell-buffer runtime-session)
+  "Move SHELL-BUFFER pending skills into RUNTIME-SESSION when needed."
+  (with-current-buffer shell-buffer
+    (when magent-agent-shell--pending-skill-names
+      (magent-agent-shell--set-runtime-pending-skills
+       runtime-session
+       (append (magent-runtime-session-pending-skills runtime-session)
+               magent-agent-shell--pending-skill-names))
+      (setq magent-agent-shell--pending-skill-names nil))))
+
+(defun magent-agent-shell--pending-skills (&optional shell-buffer)
+  "Return pending instruction skills for SHELL-BUFFER."
+  (let ((buffer (or shell-buffer (current-buffer))))
+    (if-let* ((runtime-session
+               (magent-agent-shell--runtime-session buffer)))
+        (progn
+          (magent-agent-shell--sync-buffer-pending-skills
+           buffer runtime-session)
+          (magent-runtime-session-pending-skills runtime-session))
+      (with-current-buffer buffer
+        magent-agent-shell--pending-skill-names))))
+
+(defun magent-agent-shell--set-pending-skills (shell-buffer skills)
+  "Set SHELL-BUFFER pending instruction SKILLS."
+  (let ((skills (magent-agent-shell--dedupe-string-list skills)))
+    (if-let* ((runtime-session
+               (magent-agent-shell--runtime-session shell-buffer)))
+        (magent-agent-shell--set-runtime-pending-skills runtime-session skills)
+      (with-current-buffer shell-buffer
+        (setq magent-agent-shell--pending-skill-names skills)))))
+
+(defun magent-agent-shell--clear-pending-skills (&optional shell-buffer)
+  "Clear pending instruction skills for SHELL-BUFFER."
+  (let ((buffer (or shell-buffer (current-buffer))))
+    (if-let* ((runtime-session
+               (magent-agent-shell--runtime-session buffer)))
+        (magent-runtime-session-clear-pending-skills runtime-session)
+      (with-current-buffer buffer
+        (setq magent-agent-shell--pending-skill-names nil)))))
+
+(defun magent-agent-shell--toggle-pending-skill
+    (shell-buffer skill-name)
+  "Toggle SKILL-NAME for SHELL-BUFFER's next prompt.
+Return non-nil when SKILL-NAME is selected after toggling."
+  (let ((skills (magent-agent-shell--pending-skills shell-buffer)))
+    (if (member skill-name skills)
+        (progn
+          (magent-agent-shell--set-pending-skills
+           shell-buffer (remove skill-name skills))
+          nil)
+      (magent-agent-shell--set-pending-skills
+       shell-buffer (append skills (list skill-name)))
+      t)))
+
+(defun magent-agent-shell--queue-prompt-skills
+    (shell-buffer prompt skills)
+  "Queue SKILLS for PROMPT in SHELL-BUFFER."
+  (when skills
+    (with-current-buffer shell-buffer
+      (setq magent-agent-shell--prompt-skill-queue
+            (append magent-agent-shell--prompt-skill-queue
+                    (list (list :prompt prompt
+                                :skills
+                                (magent-agent-shell--dedupe-string-list
+                                 skills))))))))
+
+(defun magent-agent-shell--pop-prompt-skills
+    (shell-buffer prompt)
+  "Return queued skills for PROMPT in SHELL-BUFFER, or nil."
+  (with-current-buffer shell-buffer
+    (let ((entry (car magent-agent-shell--prompt-skill-queue)))
+      (when (and entry
+                 (equal prompt (plist-get entry :prompt)))
+        (setq magent-agent-shell--prompt-skill-queue
+              (cdr magent-agent-shell--prompt-skill-queue))
+        (plist-get entry :skills)))))
+
+(defun magent-agent-shell--prepare-command-skills
+    (prompt shell-buffer)
+  "Prepare runtime pending skills for PROMPT in SHELL-BUFFER."
+  (when (magent-agent-shell--magent-buffer-p shell-buffer)
+    (when-let* ((runtime-session
+                 (magent-agent-shell--runtime-session shell-buffer)))
+      (if-let* ((skills (magent-agent-shell--pop-prompt-skills
+                         shell-buffer prompt)))
+          (magent-agent-shell--set-runtime-pending-skills
+           runtime-session skills)
+        (when-let* ((skills
+                     (with-current-buffer shell-buffer
+                       magent-agent-shell--pending-skill-names)))
+          (magent-agent-shell--set-runtime-pending-skills
+           runtime-session skills)
+          (with-current-buffer shell-buffer
+            (setq magent-agent-shell--pending-skill-names nil)))))))
+
+(defun magent-agent-shell--send-command (orig &rest args)
+  "Attach Magent prompt skills before delegating to ORIG with ARGS."
+  (let ((prompt (plist-get args :prompt))
+        (shell-buffer (plist-get args :shell-buffer)))
+    (when (and prompt shell-buffer)
+      (magent-agent-shell--prepare-command-skills prompt shell-buffer))
+    (apply orig args)))
+
+(unless (advice-member-p #'magent-agent-shell--send-command
+                         'agent-shell--send-command)
+  (advice-add 'agent-shell--send-command :around
+              #'magent-agent-shell--send-command))
+
+(defun magent-agent-shell--trim-trailing-input-whitespace ()
+  "Delete trailing whitespace from the active Magent shell input."
+  (when (and (magent-agent-shell--magent-buffer-p (current-buffer))
+             (boundp 'comint-last-prompt)
+             comint-last-prompt)
+    (let ((start (marker-position (cdr comint-last-prompt)))
+          (end (point-max)))
+      (when (and start (<= start end))
+        (save-excursion
+          (goto-char end)
+          (skip-chars-backward " \t\n\r" start)
+          (when (< (point) end)
+            (let ((inhibit-read-only t))
+              (delete-region (point) end))))))))
+
+(defun magent-agent-shell--shell-maker-submit (orig &rest args)
+  "Trim Magent prompt input before delegating to ORIG with ARGS."
+  (magent-agent-shell--trim-trailing-input-whitespace)
+  (apply orig args))
+
+(unless (advice-member-p #'magent-agent-shell--shell-maker-submit
+                         'shell-maker-submit)
+  (advice-add 'shell-maker-submit :around
+              #'magent-agent-shell--shell-maker-submit))
 
 (defun magent-agent-shell--buffers ()
   "Return live Magent agent-shell buffers without creating side effects."
@@ -178,7 +379,7 @@ after clearing the stale state."
   "Open or reuse the Magent agent-shell UI."
   (interactive)
   (magent-agent-shell--with-config
-    (if-let ((shell-buffer (magent-agent-shell--buffer t)))
+    (if-let* ((shell-buffer (magent-agent-shell--buffer t)))
         (progn
           (with-current-buffer shell-buffer
             (magent-agent-shell--recover-stale-busy t))
@@ -187,13 +388,14 @@ after clearing the stale state."
                          :new-shell t))))
 
 ;;;###autoload
-(cl-defun magent-agent-shell-send-prompt (prompt &key no-focus)
+(cl-defun magent-agent-shell-send-prompt (prompt &key no-focus skills)
   "Send PROMPT through the Magent agent-shell backend."
   (unless (and (stringp prompt)
                (not (string-empty-p (string-trim prompt))))
     (user-error "Empty prompt"))
   (magent-agent-shell--with-config
     (let ((shell-buffer (magent-agent-shell--buffer)))
+      (magent-agent-shell--queue-prompt-skills shell-buffer prompt skills)
       (with-current-buffer shell-buffer
         (magent-agent-shell--recover-stale-busy t))
       (if (with-current-buffer shell-buffer
@@ -204,6 +406,69 @@ after clearing the stale state."
                             :submit t
                             :no-focus no-focus
                             :shell-buffer shell-buffer)))))
+
+;;;###autoload
+(defun magent-agent-shell-toggle-skill-for-next-request (&optional skill-name)
+  "Toggle an instruction skill for the next Magent agent-shell request."
+  (interactive)
+  (magent--ensure-initialized)
+  (magent-agent-shell--with-config
+    (magent-agent-shell--prepare-skill-context)
+    (let* ((shell-buffer (magent-agent-shell--buffer))
+           (name (or skill-name
+                     (magent-agent-shell--read-instruction-skill
+                      "Toggle skill for next request: "))))
+      (unless (member name (magent-agent-shell--instruction-skill-names))
+        (user-error "Magent: '%s' is not an instruction skill" name))
+      (message "Magent: skill %s %s for next request"
+               name
+               (if (magent-agent-shell--toggle-pending-skill
+                    shell-buffer name)
+                   "selected"
+                 "cleared")))))
+
+;;;###autoload
+(defun magent-agent-shell-clear-skills-for-next-request ()
+  "Clear selected instruction skills for the next Magent agent-shell request."
+  (interactive)
+  (magent--ensure-initialized)
+  (magent-agent-shell--with-config
+    (magent-agent-shell--clear-pending-skills
+     (magent-agent-shell--buffer))
+    (message "Magent: selected skills cleared")))
+
+;;;###autoload
+(defun magent-agent-shell-run-skill-command
+    (&optional skill-name extra-instruction)
+  "Run an instruction skill command through Magent agent-shell.
+When EXTRA-INSTRUCTION is non-nil, append it to the skill's default prompt."
+  (interactive)
+  (magent--ensure-initialized)
+  (magent-agent-shell--with-config
+    (magent-agent-shell--prepare-skill-context)
+    (let* ((shell-buffer (magent-agent-shell--buffer))
+           (name (or skill-name
+                     (let ((names (magent-agent-shell--command-skill-names)))
+                       (unless names
+                         (user-error
+                          "Magent: no command-like skills are registered"))
+                       (completing-read "Run skill command: " names nil t))))
+           (extra (if extra-instruction
+                      extra-instruction
+                    (read-string
+                     (format "Extra instruction for %s (optional): " name))))
+           (text (magent-agent-shell--skill-command-text name extra))
+           (skills (magent-agent-shell--dedupe-string-list
+                    (append (magent-agent-shell--pending-skills shell-buffer)
+                            (list name)))))
+      (magent-agent-shell--clear-pending-skills shell-buffer)
+      (magent-agent-shell-send-prompt text :skills skills))))
+
+;;;###autoload
+(defun magent-agent-shell-run-init-command (&optional extra-instruction)
+  "Run the built-in init skill command through Magent agent-shell."
+  (interactive)
+  (magent-agent-shell-run-skill-command "init" extra-instruction))
 
 ;;;###autoload
 (defun magent-agent-shell-prompt-region (begin end)
@@ -227,10 +492,10 @@ after clearing the stale state."
   "Interrupt the current Magent agent-shell request.
 When FORCE is non-nil, skip agent-shell's confirmation prompt."
   (interactive "P")
-  (if-let ((shell-buffer (or (and (magent-agent-shell--magent-buffer-p
+  (if-let* ((shell-buffer (or (and (magent-agent-shell--magent-buffer-p
+                                    (current-buffer))
                                    (current-buffer))
-                                  (current-buffer))
-                             (magent-agent-shell--buffer t))))
+                              (magent-agent-shell--buffer t))))
       (with-current-buffer shell-buffer
         (agent-shell-interrupt (or force t)))
     (user-error "No Magent agent-shell buffer")))

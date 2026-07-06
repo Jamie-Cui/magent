@@ -184,51 +184,72 @@
 
 (defun magent-acp--observer (client session-id)
   "Return runtime observer that converts Magent events to ACP updates."
-  (lambda (event)
-    (pcase (plist-get event :type)
-      ('assistant-delta
-       (magent-acp--session-update
-        client session-id
-        `((sessionUpdate . "agent_message_chunk")
-          (content . ,(magent-acp--content-block
-                       (plist-get event :text))))))
-      ('reasoning-delta
-       (when (eq magent-include-reasoning t)
-         (magent-acp--session-update
-          client session-id
-          `((sessionUpdate . "agent_thought_chunk")
-            (content . ,(magent-acp--content-block
-                         (plist-get event :text)))))))
-      ('tool-call-start
-       (magent-acp--session-update
-        client session-id
-        `((sessionUpdate . "tool_call")
-          (toolCallId . ,(plist-get event :tool-id))
-          (title . ,(or (plist-get event :summary)
-                        (plist-get event :name)
-                        "tool"))
-          (kind . ,(magent-acp--tool-kind (plist-get event :kind)))
-          (status . "in_progress")
-          (rawInput . ,(or (plist-get event :raw-input) [])))))
-      ('tool-call-complete
-       (magent-acp--session-update
-        client session-id
-        `((sessionUpdate . "tool_call_update")
-          (toolCallId . ,(plist-get event :tool-id))
-          (title . ,(or (plist-get event :name) "tool"))
-          (status . ,(if (eq (plist-get event :status) 'failed)
-                         "failed"
-                       "completed"))
-          (content . ,(vector
-                       (magent-acp--tool-content
-                        (or (plist-get event :output-preview) "")))))))
-      ('turn-error
-       (magent-acp--session-update
-        client session-id
-        `((sessionUpdate . "agent_message_chunk")
-          (content . ,(magent-acp--content-block
-                       (format "Error: %s"
-                               (or (plist-get event :message) ""))))))))))
+  (let ((stream-kind nil)
+        (stream-start-p t))
+    (cl-labels
+        ((reset-stream ()
+           (setq stream-kind nil
+                 stream-start-p t))
+         (stream-text (kind text)
+           (unless (eq stream-kind kind)
+             (setq stream-kind kind
+                   stream-start-p t))
+           (let ((text (if (stringp text) text (format "%s" (or text "")))))
+             (if stream-start-p
+                 (let ((trimmed (string-trim-left text)))
+                   (unless (string-empty-p trimmed)
+                     (setq stream-start-p nil)
+                     trimmed))
+               text))))
+      (lambda (event)
+        (pcase (plist-get event :type)
+          ('assistant-delta
+           (when-let ((text (stream-text 'assistant (plist-get event :text))))
+             (magent-acp--session-update
+              client session-id
+              `((sessionUpdate . "agent_message_chunk")
+                (content . ,(magent-acp--content-block text))))))
+          ('reasoning-delta
+           (when (eq magent-include-reasoning t)
+             (when-let ((text (stream-text 'reasoning
+                                           (plist-get event :text))))
+               (magent-acp--session-update
+                client session-id
+                `((sessionUpdate . "agent_thought_chunk")
+                  (content . ,(magent-acp--content-block text)))))))
+          ('tool-call-start
+           (reset-stream)
+           (magent-acp--session-update
+            client session-id
+            `((sessionUpdate . "tool_call")
+              (toolCallId . ,(plist-get event :tool-id))
+              (title . ,(or (plist-get event :summary)
+                            (plist-get event :name)
+                            "tool"))
+              (kind . ,(magent-acp--tool-kind (plist-get event :kind)))
+              (status . "in_progress")
+              (rawInput . ,(or (plist-get event :raw-input) [])))))
+          ('tool-call-complete
+           (reset-stream)
+           (magent-acp--session-update
+            client session-id
+            `((sessionUpdate . "tool_call_update")
+              (toolCallId . ,(plist-get event :tool-id))
+              (title . ,(or (plist-get event :name) "tool"))
+              (status . ,(if (eq (plist-get event :status) 'failed)
+                             "failed"
+                           "completed"))
+              (content . ,(vector
+                           (magent-acp--tool-content
+                            (or (plist-get event :output-preview) "")))))))
+          ('turn-error
+           (reset-stream)
+           (magent-acp--session-update
+            client session-id
+            `((sessionUpdate . "agent_message_chunk")
+              (content . ,(magent-acp--content-block
+                           (format "Error: %s"
+                                   (or (plist-get event :message) ""))))))))))))
 
 (defun magent-acp--permission-options ()
   "Return ACP permission options supported by agent-shell."
@@ -496,12 +517,21 @@ switching semantics."
 
 (cl-defun magent-acp--request-sender
     (&key client request buffer on-success on-failure sync)
-  "Send ACP REQUEST to Magent in-process."
+  "Send ACP REQUEST to Magent in-process.
+Responses are dispatched on the next event loop via `run-at-time', so
+this in-process transport behaves like a real subprocess-backed ACP
+agent whose replies arrive asynchronously.  Callers such as agent-shell
+subscribe to session events immediately after issuing a request and rely
+on the response landing after those subscriptions register; a synchronous
+callback would race that registration (e.g. leaving the \"Loading...\"
+active message running forever)."
   (ignore sync)
-  (magent-acp--handle-request
-   client request
-   (magent-acp--wrap-callback client buffer on-success)
-   (magent-acp--wrap-callback client buffer on-failure)))
+  (run-at-time 0 nil
+               (lambda ()
+                 (magent-acp--handle-request
+                  client request
+                  (magent-acp--wrap-callback client buffer on-success)
+                  (magent-acp--wrap-callback client buffer on-failure)))))
 
 (cl-defun magent-acp--notification-sender (&key client notification sync)
   "Handle ACP NOTIFICATION from agent-shell."
