@@ -7122,6 +7122,38 @@ tolerate leading whitespace."
       (should (equal (map-elt content-block 'type) "text"))
       (should (equal (map-elt content-block 'text) "done")))))
 
+(ert-deftest magent-test-acp-observer-drops-leading-stream-whitespace ()
+  "Test ACP observer does not emit blank blocks at stream start."
+  (require 'magent-acp)
+  (let* ((magent-include-reasoning t)
+         notifications
+         (client `((:notification-handlers
+                    . (,(lambda (notification)
+                          (push notification notifications))))
+                   (:request-handlers . nil)))
+         (observer (magent-acp--observer client "session-1")))
+    (funcall observer '(:type assistant-delta :text "\n\n"))
+    (funcall observer '(:type assistant-delta :text "  hello"))
+    (funcall observer '(:type assistant-delta :text "\n\nworld"))
+    (funcall observer '(:type reasoning-delta :text "\n\n"))
+    (funcall observer '(:type reasoning-delta :text "  thought"))
+    (let ((updates (mapcar (lambda (notification)
+                             (map-nested-elt notification
+                                             '(params update)))
+                           (nreverse notifications))))
+      (should (equal (mapcar (lambda (update)
+                               (map-elt update 'sessionUpdate))
+                             updates)
+                     '("agent_message_chunk"
+                       "agent_message_chunk"
+                       "agent_thought_chunk")))
+      (should (equal (map-nested-elt (nth 0 updates) '(content text))
+                     "hello"))
+      (should (equal (map-nested-elt (nth 1 updates) '(content text))
+                     "\n\nworld"))
+      (should (equal (map-nested-elt (nth 2 updates) '(content text))
+                     "thought")))))
+
 (ert-deftest magent-test-acp-response-sender-resolves-approval ()
   "Test ACP permission responses resolve Magent approval requests."
   (require 'magent-acp)
@@ -7328,6 +7360,25 @@ tolerate leading whitespace."
         (kill-buffer foreign))
       (when (buffer-live-p magent-buffer)
         (kill-buffer magent-buffer)))))
+
+(ert-deftest magent-test-agent-shell-submit-trims-trailing-input-whitespace ()
+  "Test Magent shell submit removes trailing blank input lines."
+  (require 'magent-agent-shell)
+  (let ((buffer (generate-new-buffer "*magent-trim-input*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq major-mode 'agent-shell-mode)
+          (setq-local agent-shell--state
+                      '((:agent-config . ((:identifier . magent)))))
+          (insert "Magent> hi\n\nthere\n\n")
+          (setq-local comint-last-prompt
+                      (cons (copy-marker (point-min))
+                            (copy-marker (+ (point-min) (length "Magent> ")))))
+          (magent-agent-shell--trim-trailing-input-whitespace)
+          (should (equal (buffer-string)
+                         "Magent> hi\n\nthere")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest magent-test-agent-shell-processing-p-is-side-effect-free ()
   "Test processing checks do not initialize runtime or inspect projects."

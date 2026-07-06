@@ -22,6 +22,7 @@
 (defvar gptel-model)
 (defvar agent-shell--state)
 (defvar agent-shell-session-strategy)
+(defvar comint-last-prompt)
 (defvar shell-maker--busy)
 (defvar shell-maker--request-process)
 
@@ -98,6 +99,31 @@
               (eq (map-nested-elt agent-shell--state
                                   '(:agent-config :identifier))
                   magent-agent-shell--identifier)))))
+
+(defun magent-agent-shell--trim-trailing-input-whitespace ()
+  "Delete trailing whitespace from the active Magent shell input."
+  (when (and (magent-agent-shell--magent-buffer-p (current-buffer))
+             (boundp 'comint-last-prompt)
+             comint-last-prompt)
+    (let ((start (marker-position (cdr comint-last-prompt)))
+          (end (point-max)))
+      (when (and start (<= start end))
+        (save-excursion
+          (goto-char end)
+          (skip-chars-backward " \t\n\r" start)
+          (when (< (point) end)
+            (let ((inhibit-read-only t))
+              (delete-region (point) end))))))))
+
+(defun magent-agent-shell--shell-maker-submit (orig &rest args)
+  "Trim Magent prompt input before delegating to ORIG with ARGS."
+  (magent-agent-shell--trim-trailing-input-whitespace)
+  (apply orig args))
+
+(unless (advice-member-p #'magent-agent-shell--shell-maker-submit
+                         'shell-maker-submit)
+  (advice-add 'shell-maker-submit :around
+              #'magent-agent-shell--shell-maker-submit))
 
 (defun magent-agent-shell--buffers ()
   "Return live Magent agent-shell buffers without creating side effects."
