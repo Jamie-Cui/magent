@@ -23,6 +23,7 @@
 
 (defvar evil-mode)
 (defvar evil-mode-hook)
+(defvar evil-input-method)
 (defvar evil-local-mode)
 (defvar evil-move-beyond-eol)
 
@@ -41,13 +42,17 @@
     (evil-define-key* 'normal magent-output-mode-map
       (kbd "?") #'magent-evil--menu)
     (evil-define-key* 'normal magent-output-mode-map
-      (kbd "C-c C-c") #'magent-ui-submit-or-interrupt)))
+      (kbd "C-c C-c") #'magent-ui-submit-or-interrupt)
+    (evil-define-key* 'normal magent-output-mode-map
+      (kbd "i") #'magent-ui-compose-from-output)))
 
 (defun magent-evil--unset-keys ()
   "Remove Evil-specific Magent bindings when possible."
   (when (fboundp 'evil-define-key*)
     (evil-define-key* 'normal magent-output-mode-map
       (kbd "?") nil)
+    (evil-define-key* 'normal magent-output-mode-map
+      (kbd "i") nil)
     (evil-define-key* 'normal magent-output-mode-map
       (kbd "C-g") nil)
     (evil-define-key* '(insert replace visual motion operator emacs)
@@ -68,12 +73,35 @@
   (when magent-evil--enabled
     (setq-local evil-move-beyond-eol t)))
 
+(defun magent-evil--reset-input-method-state ()
+  "Clear Evil's input method state for Magent compose buffers.
+Deactivates any active input method (such as rime) and clears Evil's
+buffer-local `evil-input-method' so it is not restored the next time
+the compose buffer re-enters insert state."
+  (when magent-evil-reset-input-method-after-submit
+    (when current-input-method
+      (deactivate-input-method))
+    (when (boundp 'evil-input-method)
+      (setq evil-input-method nil))))
+
 (defun magent-evil--input-submit ()
   "Return to Evil normal state after Magent input submission."
   (when (and magent-evil--enabled
              (bound-and-true-p evil-local-mode)
              (fboundp 'evil-normal-state))
-    (evil-normal-state)))
+    ;; Reset the input method BEFORE switching state.  `evil-normal-state'
+    ;; runs `evil-insert-state-exit-hook', which saves the live input
+    ;; method into `evil-input-method' for later restore; clearing it
+    ;; afterwards races that logic.  Deactivating first means Evil has no
+    ;; active input method to remember.
+    (magent-evil--reset-input-method-state)
+    (evil-normal-state)
+    ;; Evil may repopulate `evil-input-method' from the pre-exit value
+    ;; while entering normal state; clear the saved copy once more so the
+    ;; next insert state does not restore it.
+    (when (and magent-evil-reset-input-method-after-submit
+               (boundp 'evil-input-method))
+      (setq evil-input-method nil))))
 
 (defun magent-evil--dwim ()
   "Enter Evil insert state after `magent-dwim' opens the input area."

@@ -77,6 +77,9 @@ saved transcript, but should not be fed back into later requests."
 (defconst magent-session-summary-title-max-width 48
   "Maximum display width for saved session summary titles.")
 
+(defvar magent-session--metadata-cache (make-hash-table :test #'equal)
+  "Cached lightweight metadata for saved session files.")
+
 (defun magent-session--clean-summary-title (text)
   "Normalize TEXT into a single-line summary title."
   (when (stringp text)
@@ -440,6 +443,27 @@ Fall back to the file modification time for legacy filenames."
            :project-root nil
            :summary-title nil))))
 
+(defun magent-session--metadata-cache-key (filepath)
+  "Return a cache key for FILEPATH based on current file attributes."
+  (let ((attrs (file-attributes filepath)))
+    (when attrs
+      (list (file-attribute-size attrs)
+            (file-attribute-modification-time attrs)))))
+
+(defun magent-session--read-file-metadata-cached (filepath)
+  "Read lightweight metadata from FILEPATH using an attribute-validated cache."
+  (let ((key (magent-session--metadata-cache-key filepath)))
+    (if key
+        (let ((entry (gethash filepath magent-session--metadata-cache)))
+          (if (equal (plist-get entry :key) key)
+              (plist-get entry :metadata)
+            (let ((metadata (magent-session--read-file-metadata filepath)))
+              (puthash filepath
+                       (list :key key :metadata metadata)
+                       magent-session--metadata-cache)
+              metadata)))
+      (magent-session--read-file-metadata filepath))))
+
 (defun magent-session--project-label (root)
   "Return a human-readable label for ROOT."
   (if root
@@ -448,7 +472,7 @@ Fall back to the file modification time for legacy filenames."
 
 (defun magent-session--file-group (filepath)
   "Return the completion group label for FILEPATH."
-  (let* ((meta (magent-session--read-file-metadata filepath))
+  (let* ((meta (magent-session--read-file-metadata-cached filepath))
          (scope (plist-get meta :scope))
          (project-root (plist-get meta :project-root)))
     (cond
@@ -463,7 +487,7 @@ Fall back to the file modification time for legacy filenames."
 
 (defun magent-session--file-rank (filepath)
   "Return the sort rank for FILEPATH."
-  (let* ((meta (magent-session--read-file-metadata filepath))
+  (let* ((meta (magent-session--read-file-metadata-cached filepath))
          (scope (plist-get meta :scope))
          (project-root (plist-get meta :project-root)))
     (cond
@@ -609,6 +633,7 @@ before calling this function."
             (let ((json-null :null)
                   (json-false :json-false))
               (insert (json-encode data))))
+          (remhash filepath magent-session--metadata-cache)
           (magent-log "INFO session saved to %s (%d messages) scope=%s"
                       id (length messages) scope)))))))
 
@@ -734,7 +759,7 @@ Restores `magent--current-session'.  Returns the session or nil."
 (defun magent-session--format-file (filepath)
   "Return a human-readable label for session FILEPATH.
 Parses the session-YYYYMMDD-HHMMSS filename pattern into a date/time string."
-  (let* ((meta (magent-session--read-file-metadata filepath))
+  (let* ((meta (magent-session--read-file-metadata-cached filepath))
          (scope (plist-get meta :scope))
          (project-root (plist-get meta :project-root))
          (summary-title (plist-get meta :summary-title))

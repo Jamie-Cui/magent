@@ -273,6 +273,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                    (magent-request-context-live-p
                                     request-state))))
                   (streaming-started nil)
+                  (text-delta-seen nil)
                   (reasoning-open nil)
                   (assistant-item nil)
                   (reasoning-item nil)
@@ -501,6 +502,12 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                         'text-delta
                         :context context
                         :text (magent-llm-event-text event))
+                       (unless (string-empty-p
+                                (or (magent-llm-event-text event) ""))
+                         (setq text-delta-seen t))
+                       (magent-request-context-notify
+                        request-state 'assistant-delta
+                        :text (magent-llm-event-text event))
                         (record-text-delta (magent-llm-event-text event))
                         (when (magent-agent--ui-visible-p request-state)
                           (funcall (or ui-callback
@@ -514,12 +521,22 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                             (magent-ui-insert-reasoning-start))
                           (magent-ui-insert-reasoning-text
                            (magent-llm-event-text event)))
+                        (magent-request-context-notify
+                         request-state 'reasoning-delta
+                         :text (magent-llm-event-text event))
                         (record-reasoning-delta
                          (magent-llm-event-text event)))
                        ('reasoning-end
+                        (magent-request-context-notify
+                         request-state 'reasoning-complete)
                         (close-reasoning))
                        ('tool-call
                         (close-reasoning)
+                        (magent-request-context-notify
+                         request-state 'tool-call-detected
+                         :tool-id (magent-llm-event-id event)
+                         :name (magent-llm-event-name event)
+                         :arguments (magent-llm-event-arguments event))
                         (when (and streaming-started
                                    (magent-agent--ui-visible-p request-state))
                           (magent-ui-continue-streaming)))
@@ -548,9 +565,17 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                             (plist-get outcome :result))
                              (continue-turn outcome)))))
                        ('completed
-                        (let ((ui-text
+                        (let ((observer-text
+                               (magent-agent--completion-ui-text
+                                loop event text-delta-seen))
+                              (ui-text
                                (magent-agent--completion-ui-text
                                 loop event streaming-started)))
+                          (when (and (stringp observer-text)
+                                     (not (string-empty-p observer-text)))
+                            (magent-request-context-notify
+                             request-state 'assistant-delta
+                             :text observer-text))
                           (when (and (stringp ui-text)
                                      (not (string-empty-p ui-text)))
                             (start-streaming)
@@ -558,9 +583,16 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                               (funcall (or ui-callback
                                            #'magent-ui-insert-streaming)
                                        ui-text))))
+                        (magent-request-context-notify
+                         request-state 'assistant-complete
+                         :text (magent-agent-loop-result loop))
                         (finish-turn 'completed
                                      (magent-agent-loop-result loop)))
                       ('error
+                        (magent-request-context-notify
+                         request-state 'turn-error
+                         :message (magent-llm-event-message event)
+                         :metadata (magent-llm-event-metadata event))
                         (finish-turn 'failed
                                      (magent-llm-event-message event)
                                      (magent-llm-event-metadata event)))))))
@@ -585,6 +617,50 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                       :sampler #'magent-llm-gptel-sample))
                (sample)
                loop))))))))
+
+(cl-defun magent-agent-run-turn
+    (&key session prompt agent skills context observer request-context
+          approval-provider on-complete request-live-p)
+  "Run one Magent turn for SESSION with PROMPT.
+This is the UI-neutral execution entry point.  OBSERVER receives
+Magent-native request events through REQUEST-CONTEXT.  ON-COMPLETE is
+called with a string on success or a `magent-agent-result' on failure."
+  (unless session
+    (error ":session is required"))
+  (unless prompt
+    (error ":prompt is required"))
+  (let* ((request-context
+          (or request-context
+              (magent-request-context-create
+               :session session
+               :ui-visibility 'none)))
+         (live-p (or request-live-p
+                     (magent-request-context-live-p request-context))))
+    (setf (magent-request-context-session request-context) session
+          (magent-request-context-origin-context request-context)
+          (or (magent-request-context-origin-context request-context)
+              context)
+          (magent-request-context-observer request-context)
+          (or (magent-request-context-observer request-context)
+              observer)
+          (magent-request-context-approval-provider request-context)
+          (or (magent-request-context-approval-provider request-context)
+              approval-provider)
+          (magent-request-context-ui-visibility request-context)
+          (or (magent-request-context-ui-visibility request-context)
+              'none)
+          (magent-request-context-live-p request-context) live-p)
+    (magent-agent-process
+     prompt
+     on-complete
+     agent
+     skills
+     nil
+     context
+     nil
+     nil
+     live-p
+     request-context)))
 
 (provide 'magent-agent)
 ;;; magent-agent.el ends here

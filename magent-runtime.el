@@ -35,17 +35,26 @@
 
 (defconst magent-runtime--overlay-specs
   '((:name agents
+     :static-feature magent-agent-registry
      :static magent-agent-initialize-static
+     :load-project-feature magent-agent-file
      :load-project magent-agent-file-load-project-scope
+     :unload-project-feature magent-agent-registry
      :unload-project magent-agent-registry-remove-project-scope
      :project-enabled magent-load-custom-agents)
     (:name skills
+     :static-feature magent-skills
      :static magent-skills-initialize-static
+     :load-project-feature magent-skills
      :load-project magent-skills-load-project-scope
+     :unload-project-feature magent-skills
      :unload-project magent-skills-remove-project-scope)
     (:name capabilities
+     :static-feature magent-capability
      :static magent-capability-initialize-static
+     :load-project-feature magent-capability
      :load-project magent-capability-load-project-scope
+     :unload-project-feature magent-capability
      :unload-project magent-capability-remove-project-scope))
   "Ordered overlay pipeline for Magent runtime definitions.")
 
@@ -71,6 +80,10 @@
   skill-names
   capability-context
   permission-profile
+  approval-provider
+  observer
+  (observer-seq 0)
+  submission-id
   live-p
   event-context
   abort-controller)
@@ -79,6 +92,36 @@
   "Return non-nil when CONTEXT should render UI details."
   (or (null context)
       (eq (magent-request-context-ui-visibility context) 'full)))
+
+(defun magent-request-context-session-id (context)
+  "Return CONTEXT's session id, if available."
+  (when-let ((session (and context
+                           (magent-request-context-session context))))
+    (magent-session-get-id session)))
+
+(defun magent-request-context-notify (context type &rest props)
+  "Notify CONTEXT's request-local observer of TYPE with PROPS.
+The observer receives a Magent-native plist event.  Observer errors are
+isolated so UI/backend rendering cannot break the active agent turn."
+  (when-let ((observer (and context
+                            (magent-request-context-observer context))))
+    (setf (magent-request-context-observer-seq context)
+          (1+ (or (magent-request-context-observer-seq context) 0)))
+    (let ((event (append
+                  (list :type type
+                        :seq (magent-request-context-observer-seq context)
+                        :time (float-time)
+                        :session-id (magent-request-context-session-id context)
+                        :submission-id
+                        (magent-request-context-submission-id context)
+                        :turn-id (magent-request-context-turn-id context))
+                  props)))
+      (condition-case err
+          (funcall observer event)
+        (error
+         (magent-log "ERROR request observer failed: %s"
+                     (error-message-string err)))))
+    t))
 
 (defvar magent-runtime--active-project-scope nil
   "Current project scope whose overlay definitions are active.
@@ -100,14 +143,25 @@ Nil means only static definitions are loaded.")
 (defun magent-runtime--run-static-initializers ()
   "Run all static definition initializers in dependency order."
   (dolist (spec magent-runtime--overlay-specs)
+    (when-let ((feature (plist-get spec :static-feature)))
+      (require feature))
     (when-let ((fn (plist-get spec :static)))
       (funcall fn))))
+
+(defun magent-runtime--phase-feature-key (phase)
+  "Return the feature key associated with overlay PHASE."
+  (pcase phase
+    (:load-project :load-project-feature)
+    (:unload-project :unload-project-feature)))
 
 (defun magent-runtime--run-project-overlay-phase (phase scope)
   "Run project overlay PHASE for SCOPE across all registered specs."
   (dolist (spec magent-runtime--overlay-specs)
     (when (or (eq phase :unload-project)
               (magent-runtime--project-overlay-enabled-p spec))
+      (when-let* ((feature-key (magent-runtime--phase-feature-key phase))
+                  (feature (plist-get spec feature-key)))
+        (require feature))
       (when-let ((fn (plist-get spec phase)))
         (funcall fn scope)))))
 

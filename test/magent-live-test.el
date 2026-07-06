@@ -53,8 +53,10 @@
   (dolist (pattern '("\\`gptel-[0-9]"
                      "\\`magit-[0-9]"
                      "\\`magit-section-"
-                     "\\`spinner-"
                      "\\`transient-"
+                     "\\`acp-"
+                     "\\`shell-maker-"
+                     "\\`agent-shell-"
                      "\\`cond-let-"
                      "\\`evil-"
                      "\\`yaml-[0-9]"
@@ -79,6 +81,7 @@
     "magent-audit.el"
     "magent-file-loader.el"
     "magent-runtime.el"
+    "magent-runtime-queue.el"
     "magent-permission.el"
     "magent-agent-registry.el"
     "magent-agent-types.el"
@@ -93,6 +96,9 @@
     "magent-context.el"
     "magent-md2org.el"
     "magent-agent.el"
+    "magent-runtime-api.el"
+    "magent-acp.el"
+    "magent-agent-shell.el"
     "magent-skills.el"
     "magent-capability.el"
     "magent-ui.el"
@@ -699,9 +705,13 @@ return that path."
           (magent-turn--active nil)
           (magent-turn--queue nil)
           (magent-turn--current-request-handle nil)
+          (magent-runtime-queue--active nil)
+          (magent-runtime-queue--pending nil)
+          (magent-runtime-api--sessions (make-hash-table :test #'equal))
           (magent-session--current-scope 'global)
           (magent-session--scoped-sessions (make-hash-table :test #'equal))
           (magent-runtime--active-project-scope nil)
+          (magent-ui-backend 'legacy)
           (magent-load-custom-agents nil))
      (unwind-protect
          (progn
@@ -717,6 +727,26 @@ return that path."
          (delete-directory magent-session-directory t))
        (when (file-directory-p magent-audit-directory)
          (delete-directory magent-audit-directory t)))))
+
+(ert-deftest magent-live-test-aa-agent-shell-router-dispatches-without-legacy ()
+  "Dispatch through the default agent-shell backend without loading legacy UI."
+  :tags '(:magent-live-smoke)
+  (require 'magent)
+  (magent-live-test--with-isolated-runtime
+    (let ((magent-ui-backend 'agent-shell)
+          (sent nil)
+          (legacy-loaded nil))
+      (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
+                ((symbol-function 'magent-agent-shell-send-prompt)
+                 (lambda (prompt &rest _args)
+                   (setq sent prompt)))
+                ((symbol-function 'magent-ui--require-legacy)
+                 (lambda ()
+                   (setq legacy-loaded t)
+                   (error "Legacy UI should not load"))))
+        (magent-ui-dispatch-prompt "hello from agent-shell" 'live-test nil nil t)
+        (should (equal sent "hello from agent-shell"))
+        (should-not legacy-loaded)))))
 
 (ert-deftest magent-live-test-buffer-input-submits-through-timer ()
   "Submit editable buffer input through the real live UI dispatch timer."
@@ -753,9 +783,10 @@ return that path."
            5 "Magent live buffer input did not finish")
           (with-current-buffer buffer
             (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-              (should (string-match-p "User\nhello from live buffer" text))
+              (should (string-match-p "  - Prompt" text))
               (should (string-match-p "hello from live buffer" text))
-              (should (string-match-p "Assistant \\[completed\\]\nlive response" text))
+              (should (string-match-p "  - Response" text))
+              (should (string-match-p "live response" text))
               (should-not (string-match-p "^\\* USER" text))
               (should-not (string-match-p "^\\* ASSISTANT" text)))))))))
 
@@ -885,8 +916,8 @@ return that path."
         (should (string-match-p "MAGENT_LIVE_OK" response))
         (with-current-buffer (magent-ui-get-buffer (magent-session-current-scope))
           (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "User\n" text))
-            (should (string-match-p "Assistant \\[completed\\]" text))
+            (should (string-match-p "  - Prompt" text))
+            (should (string-match-p "  - Response" text))
             (should-not (string-match-p "^\\* USER" text))
             (should-not (string-match-p "^\\* ASSISTANT" text))
             (should (string-match-p "MAGENT_LIVE_OK" text))))))))

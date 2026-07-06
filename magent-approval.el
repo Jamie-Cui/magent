@@ -185,8 +185,9 @@ Return the number of dropped requests."
 (defun magent-approval-request (request callback)
   "Request approval for REQUEST and deliver the decision to CALLBACK.
 Returns the assigned request id."
-  (let* ((provider magent-approval-provider-function)
-         (normalized (magent-approval--normalize-request request))
+  (let* ((normalized (magent-approval--normalize-request request))
+         (provider (or (plist-get normalized :provider)
+                       magent-approval-provider-function))
          (request-id (plist-get normalized :request-id)))
     (puthash request-id
              (list :request normalized

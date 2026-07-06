@@ -10,6 +10,7 @@ Welcome to the Magent documentation. Stable user-facing material remains in the 
 
 ### Architecture
 - **[AGENT_JOBS.md](AGENT_JOBS.md)** — Durable child-agent job lifecycle, tool surface, persistence, UI, and boundaries
+- **[UI_BACKENDS.md](UI_BACKENDS.md)** — UI backend boundary, agent-shell + ACP flow, runtime API, and legacy UI isolation
 
 ### Contribution
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — Contribution guidelines, code style, testing, and PR process
@@ -38,6 +39,7 @@ Welcome to the Magent documentation. Stable user-facing material remains in the 
 2. [../AGENTS.md](../AGENTS.md) — Build commands, testing, architecture notes, and development guidance
 3. [ONBOARDING.md](ONBOARDING.md) — Architecture overview and guided code tour
 4. [AGENT_JOBS.md](AGENT_JOBS.md) — Current child-agent job architecture
+5. [UI_BACKENDS.md](UI_BACKENDS.md) — Current UI backend architecture
 
 ### CI And Packaging
 1. [../README.org](../README.org) — Public workflow badges and development commands
