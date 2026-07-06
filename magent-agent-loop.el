@@ -329,6 +329,15 @@ Recognized keys are `:request', `:sampler', `:status', and
                             :summary summary
                             :description summary
                             :args args-plist)
+        (magent-request-context-notify
+         request-context 'tool-call-start
+         :tool-id call-id
+         :name name
+         :kind (magent-tools-permission-key name)
+         :title name
+         :summary summary
+         :input args-plist
+         :raw-input args-plist)
         (when (magent-agent-loop--ui-visible-p request-context)
           (require 'magent-ui)
           (magent-ui-insert-tool-call name summary))
@@ -352,6 +361,17 @@ Recognized keys are `:request', `:sampler', `:status', and
                                     :call-id call-id
                                     :tool-name name
                                     :result result)
+                (magent-request-context-notify
+                 request-context 'tool-call-complete
+                 :tool-id call-id
+                 :name name
+                 :status (if (and (stringp result)
+                                  (string-prefix-p "Error:" result))
+                             'failed
+                           'completed)
+                 :output result
+                 :output-preview
+                 (magent-agent-loop-tool-result-summary result))
                 (funcall callback result)
                 (magent-agent-loop-tool-queue-run queue))))
           (let ((magent-tools--register-cancel

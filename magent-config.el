@@ -96,6 +96,23 @@ Output buffers are named like `*magent:global*' or
   :type 'string
   :group 'magent)
 
+(defcustom magent-ui-backend 'agent-shell
+  "UI backend used by Magent public commands."
+  :type '(choice (const :tag "Agent Shell" agent-shell)
+                 (const :tag "Legacy Magent UI" legacy))
+  :group 'magent)
+
+(defcustom magent-agent-shell-session-strategy 'new
+  "Agent Shell session strategy used by Magent entry points.
+The default starts a fresh session immediately, avoiding agent-shell's global
+session picker on every `magent-dwim'.  Set this to `prompt' or `latest' when
+you want Magent's agent-shell backend to use agent-shell's session selection
+flow."
+  :type '(choice (const :tag "Always start new session" new)
+                 (const :tag "Load latest session" latest)
+                 (const :tag "Prompt for session" prompt))
+  :group 'magent)
+
 (defcustom magent-compose-window-height 0.25
   "Height used when displaying the Magent compose popup.
 If this is an integer, it is interpreted as a number of lines.  If
@@ -385,6 +402,16 @@ Larger blocks are fontified with idle timer to avoid blocking."
 Streaming text chunks are accumulated for this duration before
 rendering to reduce UI updates."
   :type 'float
+  :group 'magent)
+
+(defcustom magent-evil-reset-input-method-after-submit t
+  "Whether Magent clears Evil's input method state after prompt submission.
+
+When non-nil, submitting from a Magent compose buffer clears Evil's
+buffer-local `evil-input-method' after returning to normal state.  This
+prevents Evil from restoring a stale input method, such as rime, when the
+compose buffer later re-enters insert state."
+  :type 'boolean
   :group 'magent)
 
 (defcustom magent-include-reasoning t

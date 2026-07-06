@@ -1,6 +1,6 @@
 # Magent Onboarding Guide
 
-**Updated:** 2026-07-02
+**Updated:** 2026-07-05
 
 ## Project Overview
 
@@ -8,7 +8,7 @@
 
 - **Languages:** Emacs Lisp
 - **Primary Dependency:** [gptel](https://github.com/karthink/gptel) (handles all LLM communication)
-- **Requirements:** Emacs 27.1+, gptel, spinner, transient, compat, yaml, ripgrep
+- **Requirements:** Emacs 29.1+, gptel, transient, compat, yaml, acp, agent-shell, ripgrep
 - **Purpose:** Provide AI-assisted coding capabilities within Emacs with fine-grained control over agent permissions and tool access
 
 ## Current Agent Workflow
@@ -38,9 +38,11 @@ Manages conversation history, scoped overlays, and runtime state.
 - `magent-session.el` — Conversation state with message list, JSON persistence, per-project sessions
 - `magent-agent-job.el` — Durable child-agent job records and JSON shape
 - `magent-runtime.el` — Static initialization plus project-local overlay activation for agents, skills, and capabilities
+- `magent-runtime-api.el` — UI/backend-facing runtime session and prompt API
+- `magent-runtime-queue.el` — Global single-execution runtime queue with session-scoped cancellation
 - `magent-audit.el` — Persistent JSONL audit logging for permissions and sensitive actions
 
-**What it does:** Maintains conversation history scoped by project, persists to `~/.emacs.d/magent-sessions/`, stores raw buffer content for lossless restore, persists child-agent jobs under `agent-jobs`, and activates or unloads project-local overlays as scope changes. Request serialization itself lives in `magent-ui.el` via a single in-flight processing lock.
+**What it does:** Maintains conversation history scoped by project, persists to `~/.emacs.d/magent-sessions/`, stores durable child-agent jobs under `agent-jobs`, and activates or unloads project-local overlays as scope changes. Runtime UI backends submit work through `magent-runtime-api.el`; `magent-runtime-queue.el` owns queued/active turn state and session-scoped cancellation.
 
 ### Layer 3: Agent System
 
@@ -79,24 +81,27 @@ Orchestrates the tool-calling loop and LLM communication.
 
 **What it does:** `magent-agent-loop.el` consumes normalized LLM events, records assistant/tool state into the session, dispatches tools through `magent-tool-orchestrator`, handles visible tool rendering, abort cleanup, and Codex-style continuation. Tool results are fed back to the model rather than being stopped by an `emacs_eval` call-count guard. `magent-llm-gptel.el` still calls `gptel-request`; Magent does not rewrite provider transport.
 
-### Layer 6: User Interface
+### Layer 6: UI Backends
 
-Read-only workspace plus independent compose buffer for interaction and
-output rendering.
+Default agent-shell UI plus an isolated legacy workspace/compose backend.
 
 **Key Files:**
-- `magent-ui.el` — Workspace/compose buffers, ledger projection, streaming summaries, transient menu
+- `magent-ui.el` — Thin public command router, logger, backend switch, and compatibility shims
+- `magent-agent-shell.el` — Magent agent-shell config and prompt routing
+- `magent-acp.el` — In-process ACP adapter for agent-shell
+- `magent-ui-legacy.el` — Legacy workspace/compose buffers, ledger projection, streaming summaries, transient menu
 - `magent-evil.el` — Optional Evil integration loaded explicitly by Evil users
 - `magent-md2org.el` — Legacy markdown → org converter, no longer used by the live workspace path
 - `magent-file-loader.el` — Shared frontmatter parser for agent/skill/capability files
 
-**What it does:** The Magent workspace derives from `special-mode` and
-renders current/recent turns from the ledger. Prompt text is edited in a
-scope-specific `magent-compose-mode` buffer. Tool calls and child-agent
-events render as compact rows; reasoning is stored in the ledger but the
-workspace shows only status and character count. `magent-show-transcript`
-opens the full parent ledger transcript, and `magent-show-agent-transcript`
-(`C-c m j`) opens persisted child job details.
+**What it does:** Plain prompts route to agent-shell by default through
+`magent-agent-shell.el` and the in-process ACP adapter. ACP session/prompt
+requests submit to `magent-runtime-api.el` and remain pending until the
+corresponding Magent turn completes. The legacy UI remains available through
+`magent-ui-legacy.el`; it derives from `special-mode`, renders an oldest-first
+ledger timeline, and keeps prompt text in a scope-specific
+`magent-compose-mode` buffer. See `docs/UI_BACKENDS.md` before changing this
+boundary.
 
 ### Layer 7: Events
 
@@ -139,11 +144,12 @@ Two skill types:
 - **instruction** — Markdown injected into system prompt
 - **tool** — Invoked via `skill_invoke` tool
 
-Instruction skills can be explicitly enabled in the input area with `@skill-name`.
-Skills that define `default-prompt` can be submitted alone; built-in `@init`
-initializes or refreshes the project root `AGENTS.md`, similar to Codex `/init`.
-Submit `@clear` as the whole input to clear the current session context,
-similar to Codex `/clear`, without sending a request to the model.
+Instruction skills are selected from the transient Skills submenu as one-shot
+context for the next request. Skills that define `default-prompt` can also be
+run as command-like transient actions; built-in `init` initializes or refreshes
+the project root `AGENTS.md`, similar to Codex `/init`, and accepts optional
+extra instructions. Compose buffers are plain prompt text and no longer parse
+`@skill` or `@clear` control syntax.
 
 Skills load from: (1) built-in `skills/`, (2) user `~/.emacs.d/magent-skills/`, (3) project `.magent/skills/`.
 
@@ -165,12 +171,12 @@ Mode enable is lightweight (modeline only). Full initialization (registry, skill
 
 Begin at `magent.el` to understand how the mode is activated and what commands are available. The `C-c m` prefix map shows all interactive entry points.
 
-### Step 2: Explore the UI
+### Step 2: Explore the UI Boundary
 
-Read `magent-ui.el` to see how workspace rendering and compose submission
-work. Key insight: the workspace is a ledger projection, not restored
-buffer text. The `magent-ui--with-insert` macro is still critical for
-safe streaming updates into read-only buffers.
+Read `docs/UI_BACKENDS.md`, then `magent-ui.el`, `magent-agent-shell.el`, and
+`magent-acp.el`. Key insight: `magent-ui.el` is a thin router; the default
+interactive experience is agent-shell. Legacy workspace rendering and compose
+submission live in `magent-ui-legacy.el`.
 
 ### Step 3: Follow a Request Lifecycle
 
@@ -179,7 +185,8 @@ Trace a request through these files in order:
 2. `magent-agent-loop.el` — Owns normalized events, tool dispatch, queueing, abort, and continuation
 3. `magent-llm-gptel.el` — Calls `gptel-request` for one sampling request
 4. `magent-tool-orchestrator.el` / `magent-tools.el` — Resolve permissions and execute tool implementations
-5. `magent-ui.el` — Results render in buffer
+5. `magent-runtime-api.el` / `magent-acp.el` — Backend submissions and UI-neutral events for agent-shell
+6. `magent-ui-legacy.el` — Legacy buffer rendering when the legacy backend is active
 
 ### Step 4: Understand Permissions
 
@@ -234,7 +241,12 @@ Look at `test/magent-test.el` to see how the codebase is tested. Tests mock `gpt
 - **magent-llm-gptel.el** — `gptel-request` adapter
 
 ### User Interface
-- **magent-ui.el** — Workspace/compose buffers, streaming summaries, transcript/detail views, transient menu
+- **magent-ui.el** — Thin backend router, logger, and compatibility shims
+- **magent-agent-shell.el** — agent-shell backend config and prompt routing
+- **magent-acp.el** — In-process ACP adapter
+- **magent-runtime-api.el** — UI/backend-facing runtime API
+- **magent-runtime-queue.el** — Runtime queue and session-scoped cancellation
+- **magent-ui-legacy.el** — Legacy workspace/compose buffers, streaming summaries, transcript/detail views, transient menu
 - **magent-md2org.el** — Legacy markdown to org-mode converter outside the live workspace path
 - **magent-file-loader.el** — Shared frontmatter parser
 
@@ -266,10 +278,10 @@ These areas require careful attention when modifying:
 
 **Approach carefully:** Keep provider transport concerns here and loop behavior in `magent-agent-loop.el`. Do not add new main-loop dependencies on gptel private FSM handlers.
 
-### 3. magent-ui.el (High Complexity)
-**Why it's complex:** Org-mode derived buffer with custom insertion logic, async fontification, chunk batching, and read-only region management. The `magent-ui--with-insert` macro suppresses buffer-boundary signals from process filters and active minor modes.
+### 3. UI backend boundary (High Complexity)
+**Why it's complex:** The default UI now spans `magent-ui.el`, `magent-agent-shell.el`, `magent-acp.el`, `magent-runtime-api.el`, and `magent-runtime-queue.el`. The legacy workspace/compose implementation remains in `magent-ui-legacy.el` and still has custom insertion logic, async fontification, chunk batching, and read-only region management.
 
-**Approach carefully:** Insertions must use `inhibit-read-only`. Org fontification can trigger re-entrancy. Request generation counter prevents stale callbacks.
+**Approach carefully:** Keep default agent-shell behavior out of `magent-ui-legacy.el`. Keep backend-neutral behavior in `magent-runtime-api.el`, ACP conversion in `magent-acp.el`, and agent-shell-specific behavior in `magent-agent-shell.el`. In legacy code, insertions must use `inhibit-read-only`.
 
 ### 4. magent-permission.el (Medium Complexity)
 **Why it's complex:** Order-dependent file-pattern matching with glob syntax. Resolution order matters: exact match → file patterns → wildcard → default allow.
@@ -394,8 +406,10 @@ Skill instructions for the agent.
 - **Documentation:** `README.org`, `AGENTS.md` in repo root
 - **Child-agent architecture:** `docs/AGENT_JOBS.md`
 - **Interactive help:** `M-x magent-doctor` for self-diagnostics
-- **Logs:** `C-c m l` to view request/response log
-- **Agent info:** `C-c m v` to list agents, `C-c m i` for current agent
+- **Command menu:** `C-c m ?` from any Magent-enabled buffer, or `?` in `*magent*`
+- **Skills:** transient `s s` to toggle a one-shot instruction skill, `s K` to clear selected skills
+- **Logs:** transient `l l` to view request/response log
+- **Agent info:** transient `A v` to list agents, transient `A m` for current agent
 
 ## Next Steps
 

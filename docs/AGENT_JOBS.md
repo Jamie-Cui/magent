@@ -62,12 +62,12 @@ Child jobs inherit the parent request context where practical:
 
 ## UI And Resume
 
-The parent Magent workspace renders compact child-agent lifecycle rows.
+The parent Magent UI renders compact child-agent lifecycle updates.
 Full child prompt, metadata, result/error, and transcript state remain
 inspectable with:
 
 - `M-x magent-show-agent-transcript`
-- `C-c m j`
+- transient `S j` from `C-c m ?` or `?` in `*magent*`
 
 `magent-resume-session` restores persisted `agent-jobs` with the parent session. Active request handles are not restored after Emacs restart, but saved job metadata, result/error state, and transcripts remain available for inspection.
 
@@ -77,7 +77,7 @@ This lifecycle intentionally preserves Magent's Emacs-native workflow:
 
 - live Emacs buffers
 - `emacs_eval`
-- read-only workspace buffers plus compose buffers
+- agent-shell UI plus the isolated legacy workspace/compose backend
 - project-scoped sessions
 - gptel transport
 

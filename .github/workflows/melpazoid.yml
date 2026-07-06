@@ -18,8 +18,32 @@ jobs:
       run: |
         sudo apt-get install emacs && emacs --version
         git clone https://github.com/riscy/melpazoid.git ~/melpazoid
+        # melpazoid's license check queries the GitHub API unauthenticated,
+        # which hits the 60 req/hr/IP limit on shared Actions runners and
+        # aborts the whole run with "HTTP Error 403: rate limit exceeded".
+        # Authenticate those calls with the auto-provided GITHUB_TOKEN.
+        python3 - <<'PY'
+        import pathlib
+        p = pathlib.Path.home() / "melpazoid" / "melpazoid" / "melpazoid.py"
+        src = p.read_text()
+        needle = "urllib.request.urlopen(url, timeout=30)"
+        repl = (
+            "urllib.request.urlopen(urllib.request.Request(url, headers=("
+            "{'Authorization': 'Bearer ' + __import__('os').environ['GITHUB_TOKEN']}"
+            " if __import__('os').environ.get('GITHUB_TOKEN') and 'api.github.com' in url"
+            " else {})), timeout=30)"
+        )
+        if needle in src:
+            p.write_text(src.replace(needle, repl, 1))
+            print("Patched melpazoid _url_get to authenticate GitHub API calls")
+        else:
+            print("WARNING: melpazoid _url_get shape changed; auth patch skipped")
+        PY
     - name: Run
       env:
+        # Consumed by the _url_get patch above so license-check API calls
+        # are authenticated (5000 req/hr) instead of rate-limited (60 req/hr).
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         LOCAL_REPO: ${{ github.workspace }}
         # RECIPE is your recipe as written for MELPA:
         RECIPE: (magent :fetcher github :repo "Jamie-Cui/magent" :files (:defaults "prompt.org" "skills" "capabilities"))
