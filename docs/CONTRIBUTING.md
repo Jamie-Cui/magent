@@ -11,12 +11,14 @@ The lifecycle surface is `spawn_agent`, `send_agent_message`, `wait_agent`, `lis
 ## Development Setup
 
 ### Prerequisites
-- Emacs 27.1+
+- Emacs 29.1+
 - gptel 0.9.8+
 - spinner 1.7.4+
 - transient 0.7.8+
 - compat 30.1+
 - yaml 1.0+
+- acp 0.12.2+
+- agent-shell 0.57.1+
 - ripgrep (for grep tool)
 
 ### Building

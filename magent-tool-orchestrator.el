@@ -249,6 +249,9 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
              orchestrator arg-values (gptel-tool-args tool-spec))))
       (magent-approval-request
        (list :request-id (magent-events-generate-id)
+             :provider (and request-context
+                            (magent-request-context-approval-provider
+                             request-context))
              :context (and request-context
                            (magent-request-context-event-context request-context))
              :tool-name tool-name
@@ -257,6 +260,13 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
              :args (magent-tool-orchestrator--args-plist
                     orchestrator (gptel-tool-args tool-spec) arg-values))
        (lambda (decision)
+         (magent-request-context-notify
+          request-context 'approval-resolved
+          :tool-name tool-name
+          :perm-key perm-key
+          :decision decision
+          :args (magent-tool-orchestrator--args-plist
+                 orchestrator (gptel-tool-args tool-spec) arg-values))
          (pcase decision
            ('allow-once
             (magent-log "PERM user allowed (once): %s" tool-name)
@@ -316,8 +326,8 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
             (let ((result (format "Error: tool '%s' denied by user" tool-name)))
               (when cb
                 (funcall cb result))
-              (when complete-one
-                (funcall complete-one tool-spec arg-values raw-call result)))))
+               (when complete-one
+                 (funcall complete-one tool-spec arg-values raw-call result)))))
          (magent-tool-orchestrator-prompt-next
           orchestrator rest complete-one))))))
 

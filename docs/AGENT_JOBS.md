@@ -62,7 +62,7 @@ Child jobs inherit the parent request context where practical:
 
 ## UI And Resume
 
-The parent Magent workspace renders compact child-agent lifecycle rows.
+The parent Magent UI renders compact child-agent lifecycle updates.
 Full child prompt, metadata, result/error, and transcript state remain
 inspectable with:
 
@@ -77,7 +77,7 @@ This lifecycle intentionally preserves Magent's Emacs-native workflow:
 
 - live Emacs buffers
 - `emacs_eval`
-- read-only workspace buffers plus compose buffers
+- agent-shell UI plus the isolated legacy workspace/compose backend
 - project-scoped sessions
 - gptel transport
 

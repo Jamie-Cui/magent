@@ -21,20 +21,22 @@ The old one-shot ~delegate~ tool has been replaced by ~spawn_agent~, ~send_agent
 - *LLM integration via gptel* supporting Anthropic Claude, OpenAI GPT, and compatible APIs
 - *14 built-in tools*: file operations, shell, grep, glob, web search, Emacs eval, durable child-agent jobs, skill invocation
 - *Skill system* for extending agent capabilities (built-in Emacs skill + custom skills from files)
-- *Single-request lock* for serializing concurrent requests
+- *Runtime queue* for serializing concurrent requests with session-scoped cancellation
 - *Project-scoped session management* with conversation history and JSON persistence
 - *Streaming responses* with chunk batching and async fontification
-- *Read-only workspace + compose UI* backed by the thread ledger
+- *agent-shell UI backend* via an in-process ACP adapter, plus an isolated legacy workspace/compose UI
 - *Context-aware prompting* via ~magent-dwim~ with automatic buffer context attachment
 
 * Requirements
 
-- Emacs 27.1+
+- Emacs 29.1+
 - [[https://github.com/karthink/gptel][gptel]] 0.9.8+
 - [[https://github.com/Malabarba/spinner.el][spinner]] 1.7.4+
 - [[https://github.com/magit/transient][transient]] 0.7.8+
 - [[https://elpa.gnu.org/packages/compat.html][compat]] 30.1+
 - [[https://elpa.gnu.org/packages/yaml.html][yaml]] 1.0+
+- acp 0.12.2+
+- agent-shell 0.57.1+
 - [[https://github.com/BurntSushi/ripgrep][ripgrep]] (for the ~grep~ tool)
 
 * Installation
@@ -98,6 +100,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-request-timeout~       | ~120~                         | Timeout in seconds for LLM requests                                                   |
 | ~magent-max-sampling-requests~ | ~25~                          | Max model sampling requests in one user turn; 0 disables the lifecycle guard           |
 | ~magent-default-agent~         | ~"build"~                     | Default agent for new sessions                                                        |
+| ~magent-ui-backend~            | ~agent-shell~                  | UI backend: ~agent-shell~ by default, or ~legacy~ for the old workspace/compose UI       |
 | ~magent-load-custom-agents~    | ~t~                           | Load custom agents from ~.magent/agent/*.md~                                            |
 | ~magent-enable-logging~        | ~t~                           | Enable logging to ~*magent-log*~ buffer                                                 |
 | ~magent-log-level~             | ~info~                        | Minimum displayed log level; ~PERM~ and unprefixed messages count as ~info~           |
@@ -126,20 +129,29 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 
 | Command                          | Keybinding | Description                                                              |
 |----------------------------------+------------+--------------------------------------------------------------------------|
-| ~magent-dwim~                      | ~C-c m p~    | Smart prompt: opens output buffer or prompts for input with auto-context |
+| ~magent-dwim~                      | ~C-c m p~    | Open or reuse the Magent agent-shell backend by default                  |
 | ~magent-prompt-region~             | ~C-c m r~    | Send selected region to AI                                               |
 | ~magent-ask-at-point~              | ~C-c m a~    | Ask about symbol at point                                                |
 | ~magent-transient-menu~            | ~C-c m ?~    | Open the Magent command menu                                             |
 | ~magent-toggle-by-pass-permission~ | ~M-x~        | Toggle permission bypass for tool filtering and approval prompts         |
 
-Formal session commands are selected from the transient menu instead of typed
-into compose or bound as a wide set of default ~C-c m~ shortcuts.  Open the menu
-with ~C-c m ?~ from any Magent-enabled buffer or ~?~ from the ~*magent*~
-workspace.  The top-level menu keeps common request actions visible and routes
-agent, skill, capability, session, log, health, and buffer commands through
-small Magit-style submenus.
+Plain prompt interaction uses agent-shell by default through Magent's
+in-process ACP adapter.  Set ~magent-ui-backend~ to ~legacy~ to use the old
+read-only workspace and compose buffers.
 
-In the ~*magent*~ output buffer: ~TAB~ and ~S-TAB~ fold sections, ~?~ opens the transient menu, ~C-c C-o~ opens compose directly, and ~C-c C-c~ opens compose when idle or confirms interrupt while a request is running.  Compose is plain prompt text; session commands and one-shot skill selection live in the transient menu, and the workspace header-line shows the current scope, agent, thread status, request state, queue length, session id, and selected skills for the next request.
+Formal legacy session commands are selected from the transient menu instead of
+typed into compose or bound as a wide set of default ~C-c m~ shortcuts. Open the
+menu with ~C-c m ?~ from any Magent-enabled buffer or ~?~ from the legacy
+~*magent*~ workspace. The top-level menu routes agent, skill, capability,
+session, log, health, and buffer commands through small Magit-style submenus.
+
+In the legacy ~*magent*~ output buffer: ~TAB~ and ~S-TAB~ fold sections, ~?~
+opens the transient menu, ~C-c C-o~ opens compose directly, and ~C-c C-c~ opens
+compose when idle or confirms interrupt while a request is running. Compose is
+plain prompt text; session commands and one-shot skill selection live in the
+transient menu, and the workspace header-line shows the current scope, agent,
+thread status, request state, queue length, session id, and selected skills for
+the next request.
 
 Top-level transient groups:
 
@@ -195,8 +207,8 @@ C-c m p
 Instruction skills are selected from the transient menu as one-shot context for
 the next request.  Use ~? s s~ to toggle an instruction skill, and ~? s K~ to
 clear the selected skills.  Selected skills are scoped to the current Magent
-session scope and are shown in the ~*magent*~ workspace header-line until the
-next prompt is submitted.
+session scope and are shown in the legacy ~*magent*~ workspace header-line until
+the next prompt is submitted.
 
 Skills with a ~default-prompt~ can also be run as command-like transient
 actions.  For example, ~? i~ runs the built-in ~init~ skill from the top-level
@@ -232,7 +244,7 @@ Magent uses a multi-agent architecture where different agents have different cap
 
 Primary agents can coordinate child agents through durable jobs. A root turn can call ~spawn_agent~ to start work under a subagent profile, use ~list_agents~ and ~wait_agent~ to monitor results, send follow-up input with ~send_agent_message~, and close work explicitly with ~close_agent~.
 
-Child jobs are stored in the parent session under ~agent-jobs~ with status, prompt, metadata, result/error, and transcript state. The parent workspace shows compact ~Agent ...~ lifecycle rows, while the full child transcript is available through ~magent-show-agent-transcript~ or ~? S j~ in the transient menu. See [[file:docs/AGENT_JOBS.md][docs/AGENT_JOBS.md]] for the implementation model and boundaries.
+Child jobs are stored in the parent session under ~agent-jobs~ with status, prompt, metadata, result/error, and transcript state. The UI shows compact lifecycle updates, while the full child transcript is available through ~magent-show-agent-transcript~ or ~? S j~ in the legacy transient menu. See [[file:docs/AGENT_JOBS.md][docs/AGENT_JOBS.md]] for the implementation model and boundaries.
 
 ** Permission System
 
@@ -327,7 +339,7 @@ Tool availability is controlled by:
 
 1. *Entry Point* (~magent.el~): Defines ~magent-mode~ minor mode with the ~C-c m~ keybinding prefix. Full initialization (agent registry, skills) is lazy -- triggered on first command via ~magent--ensure-initialized~.
 
-2. *Runtime* (~magent-runtime.el~): Centralizes static initialization and project-local overlay activation for agents, skills, and capabilities.
+2. *Runtime* (~magent-runtime.el~, ~magent-runtime-api.el~, ~magent-runtime-queue.el~): Centralizes static initialization, project-local overlay activation, UI/backend-facing runtime sessions, queued/active turn state, and session-scoped cancellation.
 
 3. *Agent System*: Multi-agent architecture with permission-based tool access:
    - ~magent-agent.el~: Builds gptel prompts, applies per-agent overrides, calls ~gptel-request~
@@ -350,7 +362,7 @@ Tool availability is controlled by:
 
 11. *Audit* (~magent-audit.el~): Persistent JSONL audit logging for permission prompts and decisions plus sensitive actions such as ~bash~, ~emacs_eval~, ~write_file~, ~edit_file~, and child-agent lifecycle tools. Payloads are redacted to metadata and truncated previews.
 
-12. *UI* (~magent-ui.el~): The ~*magent*~ workspace derives from ~special-mode~ and renders a compact read-only oldest-first timeline of retained non-dropped ledger turns. Prompt editing lives in scope-specific ~magent-compose-mode~ buffers; ~C-c C-c~ submits. Compose is plain prompt text, while formal commands and one-shot skills are selected from the Magit-style transient menu. The workspace header-line is the single status surface for scope, agent, thread status, request state, queue length, session id, and pending skills; tool calls, child-agent events, and reasoning render as compact status rows/fragments rather than Org source blocks.
+12. *UI backends* (~magent-ui.el~, ~magent-agent-shell.el~, ~magent-acp.el~, ~magent-ui-legacy.el~): ~magent-ui.el~ is a thin command router and compatibility layer. The default backend is agent-shell through an in-process ACP adapter; ACP prompt requests submit to the runtime API and stay pending until the turn completes. The old special-mode workspace/compose UI lives in ~magent-ui-legacy.el~ and can be selected with ~magent-ui-backend~. See [[file:docs/UI_BACKENDS.md][docs/UI_BACKENDS.md]].
 
 13. *Evil Integration* (~magent-evil.el~): Optional feature for Evil users. It is not loaded by ~magent~ and is enabled explicitly with ~magent-evil-mode~.
 
@@ -369,6 +381,8 @@ magent/
 |-- magent.el                      # Main entry point and mode definition
 |-- magent-config.el               # Configuration (customize group, defcustom vars)
 |-- magent-runtime.el              # Static initialization and project overlay activation
+|-- magent-runtime-api.el          # UI/backend-facing runtime session API
+|-- magent-runtime-queue.el        # Runtime queue and session-scoped cancellation
 |-- magent-session.el              # Session and message history (JSON persistence)
 |-- magent-agent-job.el            # Durable child-agent job state
 |-- magent-llm.el                  # Provider-neutral LLM request/event protocol
@@ -383,10 +397,13 @@ magent/
 |-- magent-agent-registry.el       # Agent struct, built-in definitions, and registry
 |-- magent-agent-file.el           # Custom agent file loader (.magent/agent/*.md)
 |-- magent-permission.el           # Permission system (allow/deny/ask with glob patterns)
+|-- magent-acp.el                  # In-process ACP adapter
+|-- magent-agent-shell.el          # agent-shell backend
 |-- magent-file-loader.el          # Shared definition loader and frontmatter parser
 |-- magent-md2org.el               # Legacy markdown to org-mode compatibility helpers
 |-- magent-skills.el               # Skill registry, built-in skills, file loading, and skill commands
-|-- magent-ui.el                   # Read-only workspace and compose UI
+|-- magent-ui.el                   # UI backend router and compatibility shims
+|-- magent-ui-legacy.el            # Legacy read-only workspace and compose UI
 |-- magent-evil.el                 # Optional Evil integration
 |-- magent-pkg.el                  # Package descriptor
 |-- prompt.org                     # Default system prompt

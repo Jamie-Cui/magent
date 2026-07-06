@@ -176,40 +176,42 @@ queued user submissions from leaking into the active model request.
 
 ## UI Projection
 
-The main Magent buffer is a read-only `special-mode` workspace.  It shows
-an oldest-first timeline of all retained non-dropped ledger turns, not a
-restored copy of old buffer text.  Prompt composition lives in an independent
-`magent-compose-mode` buffer keyed by session scope. Compose is plain user
-prompt text; formal commands and one-shot skills are selected from the
-Magit-style transient menu. The workspace `header-line` is the single status
-surface for scope, agent, thread status, request state, queue length, session
-id, and selected skills.
+The default UI backend is agent-shell.  `magent-ui.el` is a thin public
+command router; plain prompts route to `magent-agent-shell.el`, which creates
+an in-process ACP client implemented by `magent-acp.el`.  ACP session/prompt
+requests submit to `magent-runtime-api.el` and stay pending until the
+corresponding runtime turn completes, fails, or is cancelled.  The runtime
+emits Magent-native observer events; `magent-acp.el` converts those events to
+ACP `session/update` messages.
 
-Reasoning is stored as a ledger item when `magent-include-reasoning` is
-`t` or `ignore`.  The workspace shows only status and character count;
-raw reasoning text is reserved for transcript/detail inspection.  Tool
-items render as compact rows with bounded result previews, approval
-state, file/path buttons, and selected tool-specific output links.  Turn
-fragments preserve fold state across workspace re-renders.  Assistant
-text uses lightweight text properties for markdown-like emphasis and
-inline code; the live streaming path applies those properties only to
-newly flushed chunks and does not convert markdown to org.  A separate
-ledger transcript/detail buffer is available through
-`M-x magent-show-transcript`.
+`magent-runtime-queue.el` owns queued/active turn state.  The first
+implementation uses one global active turn at a time, but submissions are
+tagged by runtime session id so cancellation is session-scoped: cancelling one
+ACP session removes that session's queued work and aborts its active turn
+without dropping other sessions' queued turns.
+
+The legacy workspace/compose UI is isolated in `magent-ui-legacy.el`.  It
+derives from `special-mode`, shows an oldest-first timeline of retained
+non-dropped ledger turns, and uses an independent `magent-compose-mode` buffer
+keyed by session scope.  Reasoning is stored as ledger items; the legacy
+workspace shows status and character count, while transcript/detail commands
+can inspect full content.  See `docs/UI_BACKENDS.md` for the current backend
+boundary.
 
 ## Codex Differences Still Preserved
 
 Magent intentionally still differs from Codex in these loop-adjacent
 areas:
 
-- UI is an Emacs-native workspace/compose pair, not a TUI/app-server
-  client.
+- UI is Emacs-native but now backendized: default interaction is agent-shell
+  through an in-process ACP client, while the old workspace/compose UI is a
+  legacy backend.
 - Provider streaming is normalized behind `magent-llm-gptel.el`, but
   transport remains gptel.
 - Codex core runs a turn as a multi-sampling loop where pending user
   input, mailbox items, auto-compaction, and tool follow-up can all
   extend one active turn. Magent keeps request serialization in the
-  Emacs UI and uses Codex-style continuation for tool results: tool
+  runtime queue and uses Codex-style continuation for tool results: tool
   execution records model-visible output, then the turn layer decides
   whether to continue sampling.  Magent does not implement Codex's
   app-server mailbox or steering queue.
