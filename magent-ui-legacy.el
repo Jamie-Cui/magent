@@ -17,7 +17,6 @@
 
 (require 'button)
 (require 'cl-lib)
-(require 'spinner)
 (require 'subr-x)
 (require 'transient)
 (require 'magent-approval)
@@ -32,7 +31,6 @@
 (require 'magent-protocol)
 (require 'magent-turn)
 
-(defvar magent--spinner)
 (defvar magent-compose-close-after-submit)
 (defvar magent-compose-window-height)
 (defvar magent-enable-logging)
@@ -1294,8 +1292,6 @@ request are discarded."
         (setq magent--current-request-handle nil)))
     (magent-approval-drop-requests)
     (cl-incf magent-ui--request-generation)
-    (when (and (boundp 'magent--spinner) magent--spinner)
-      (spinner-stop magent--spinner))
     (magent-ui-insert-status-line "[Interrupted by user]")
     (magent-log "INFO Request interrupted by user (gen now %d)"
                 magent-ui--request-generation)
@@ -2201,7 +2197,7 @@ inserted into compose as editable text."
   "Send region from BEGIN to END to Magent agent."
   (interactive "r")
   (if (magent-ui--agent-shell-backend-p)
-      (magent-agent-shell-prompt-region)
+      (magent-agent-shell-prompt-region begin end)
     (let ((input (buffer-substring begin end)))
       (magent-ui-dispatch-prompt input 'prompt-region
                                  (format "[Region] %s" input)
@@ -2275,9 +2271,8 @@ AGENT is an optional `magent-agent-info' override for this request."
 (defun magent-ui--run-item (item &optional submission-id)
   "Dispatch ITEM (a `magent-ui--request') to the agent.
 Called exclusively by `magent-ui--dispatch' after the lock is held.
-Inserts the user message into the output buffer, starts the spinner,
-and creates the agent loop.  Captures the current request generation so
-stale callbacks are discarded."
+Inserts the user message into the output buffer and creates the agent loop.
+Captures the current request generation so stale callbacks are discarded."
   (let* ((input (magent-ui--request-prompt item))
          (gen (cl-incf magent-ui--request-generation))
          (scope (magent-session-current-scope))
@@ -2288,8 +2283,6 @@ stale callbacks are discarded."
          request-state)
     (magent-ui-display-buffer)
     (magent-ui-render-history t scope)
-    (when (and (boundp 'magent--spinner) magent--spinner)
-      (spinner-start magent--spinner))
     (magent-log "INFO processing [%s] gen=%d: %s"
                 (magent-ui--request-source item) gen input)
     (when-let ((summary
@@ -2346,8 +2339,6 @@ stale callbacks are discarded."
        (setq magent--current-request-handle nil)
        (when submission-id
          (magent-turn-finish 'failed (error-message-string err)))
-       (when (and (boundp 'magent--spinner) magent--spinner)
-         (spinner-stop magent--spinner))
        (magent-ui--clear-processing)
        (magent-ui-render-history t scope)
        (magent-ui--maybe-show-input-prompt scope)))))
@@ -2359,8 +2350,6 @@ Handles both streaming and non-streaming completion."
         (content (magent-agent-result-content-string response))
         (scope (magent-session-current-scope)))
     (setq magent--current-request-handle nil)
-    (when (and (boundp 'magent--spinner) magent--spinner)
-      (spinner-stop magent--spinner))
     (if success
         (magent-log "INFO done")
       (magent-log "ERROR request failed or aborted: %s" content)

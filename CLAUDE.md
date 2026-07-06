@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Magent is an Emacs Lisp AI coding agent (~31 `magent-*.el` files) with a multi-agent
 architecture, permission-based tool access, and a durable child-agent/job lifecycle.
 All LLM communication is delegated to **gptel** — the only external runtime dependency
-beyond Emacs 27.1+, `spinner`, `transient`, `compat`, and `yaml`. Do not rewrite gptel
+beyond Emacs 29.1+, `transient`, `compat`, `yaml`, `acp`, and `agent-shell`. Do not rewrite gptel
 provider/HTTP/SSE integration; the Magent loop consumes only normalized events.
 
 ## Build, test, lint

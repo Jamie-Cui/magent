@@ -31,7 +31,6 @@ The old one-shot ~delegate~ tool has been replaced by ~spawn_agent~, ~send_agent
 
 - Emacs 29.1+
 - [[https://github.com/karthink/gptel][gptel]] 0.9.8+
-- [[https://github.com/Malabarba/spinner.el][spinner]] 1.7.4+
 - [[https://github.com/magit/transient][transient]] 0.7.8+
 - [[https://elpa.gnu.org/packages/compat.html][compat]] 30.1+
 - [[https://elpa.gnu.org/packages/yaml.html][yaml]] 1.0+

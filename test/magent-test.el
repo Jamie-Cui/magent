@@ -81,6 +81,19 @@
     (should (equal captured "hello"))
     (should-not (featurep 'magent-ui-legacy))))
 
+(ert-deftest magent-test-aa-ui-router-region-submits-agent-shell-prompt ()
+  "Test region prompts submit selected text through Magent's agent-shell path."
+  (require 'magent-ui)
+  (let ((magent-ui-backend 'agent-shell)
+        captured)
+    (cl-letf (((symbol-function 'magent-agent-shell-send-prompt)
+               (lambda (prompt &rest _args)
+                 (setq captured prompt))))
+      (with-temp-buffer
+        (insert "zero selected tail")
+        (magent-prompt-region 6 14)))
+    (should (equal captured "selected"))))
+
 (ert-deftest magent-test-ab-ui-router-legacy-shim-loads-legacy ()
   "Test legacy-only functions load the isolated legacy UI module lazily."
   (skip-unless (not (featurep 'magent-ui-legacy)))
@@ -3048,9 +3061,12 @@
 (ert-deftest magent-test-mode-line-lighter-renders-from-processing-state ()
   "Test the mode-line lighter depends only on processing-state APIs."
   (require 'magent)
-  (let ((magent--spinner (spinner-create 'progress-bar-filled)))
-    (cl-letf (((symbol-function 'magent-ui-processing-p) (lambda () nil)))
-      (should (string-match-p "\\[M/" (eval (cadr magent--lighter)))))))
+  (cl-letf (((symbol-function 'magent-ui-processing-p) (lambda () nil)))
+    (let ((lighter (eval (cadr magent--lighter))))
+      (should (string-match-p "\\[M/" lighter))
+      (should-not (string-match-p "\\[busy\\]" lighter))))
+  (cl-letf (((symbol-function 'magent-ui-processing-p) (lambda () t)))
+    (should (string-match-p "\\[busy\\]" (eval (cadr magent--lighter))))))
 
 (ert-deftest magent-test-tools-gptel-to-magent-tool ()
   "Test conversion from gptel-tool to magent tool plist."
@@ -3315,7 +3331,6 @@
         (erase-buffer)))
     (cl-letf (((symbol-function 'magent-agent-loop-abort) #'ignore)
               ((symbol-function 'magent-approval-drop-requests) #'ignore)
-              ((symbol-function 'spinner-stop) #'ignore)
               ((symbol-function 'magent-ui--clear-processing) #'ignore)
               ((symbol-function 'magent-ui--maybe-show-input-prompt) #'ignore))
       (magent-interrupt))
@@ -3347,7 +3362,6 @@
     (cl-letf (((symbol-function 'magent-agent-loop-abort)
                (lambda (value) (push value aborted)))
               ((symbol-function 'magent-approval-drop-requests) #'ignore)
-              ((symbol-function 'spinner-stop) #'ignore)
               ((symbol-function 'magent-ui--clear-processing) #'ignore)
               ((symbol-function 'magent-ui--maybe-show-input-prompt) #'ignore))
       (magent-interrupt))
@@ -4788,7 +4802,6 @@
     (cl-letf (((symbol-function 'magent-agent-loop-abort)
                (lambda (value) (setq aborted value)))
               ((symbol-function 'magent-approval-drop-requests) #'ignore)
-              ((symbol-function 'spinner-stop) #'ignore)
               ((symbol-function 'magent-ui--clear-processing) #'ignore)
               ((symbol-function 'magent-ui--maybe-show-input-prompt) #'ignore))
     (magent-interrupt))
@@ -6969,6 +6982,34 @@ tolerate leading whitespace."
     (should (equal (map-nested-elt response '(modes currentModeId))
                    magent-default-agent))))
 
+(ert-deftest magent-test-acp-models-use-model-id ()
+  "Test ACP available model entries expose modelId for agent-shell."
+  (require 'magent-acp)
+  (let* ((gptel-model 'test-model)
+         (models (magent-acp--models))
+         (available (map-elt models 'availableModels))
+         (entry (aref available 0)))
+    (should (equal (map-elt entry 'modelId) "test-model"))
+    (should-not (assq 'id entry))))
+
+(ert-deftest magent-test-acp-prompt-text-preserves-embedded-resource ()
+  "Test ACP embedded resource blocks keep nested file text in prompts."
+  (require 'magent-acp)
+  (let ((text (magent-acp--prompt-text
+               '[((type . "text")
+                  (text . "Review this file"))
+                 ((type . "resource")
+                  (resource . ((uri . "file:///tmp/example.txt")
+                               (text . "line 1\nline 2"))))])))
+    (should (string-match-p (regexp-quote "Review this file") text))
+    (should (string-match-p
+             (regexp-quote "[Context resource: file:///tmp/example.txt]")
+             text))
+    (should (string-match-p (regexp-quote "line 1\nline 2") text))
+    (should-not (string-match-p
+                 (regexp-quote "[Context resource: resource]")
+                 text))))
+
 (ert-deftest magent-test-acp-call-failure-supports-rest-wrapper ()
   "Test ACP failures preserve two-argument callbacks through wrapper layers."
   (require 'magent-acp)
@@ -7446,7 +7487,6 @@ tolerate leading whitespace."
                 :capability-resolution resolution)))
     (magent-ui-clear-buffer)
     (cl-letf (((symbol-function 'magent-ui-display-buffer) #'ignore)
-              ((symbol-function 'spinner-start) #'ignore)
               ((symbol-function 'magent-agent-process)
                (lambda (&rest _args) 'fsm)))
       (magent-ui--run-item item))
@@ -7470,8 +7510,7 @@ tolerate leading whitespace."
         (progn
           (magent-session-activate 'global)
           (setq buffer (magent-ui-get-buffer 'global))
-          (cl-letf (((symbol-function 'spinner-stop) #'ignore)
-                   ((symbol-function 'magent-session-save-deferred)
+          (cl-letf (((symbol-function 'magent-session-save-deferred)
                      (lambda ()
                        (setq prompt-visible-at-save
                              (buffer-live-p
@@ -7498,8 +7537,7 @@ tolerate leading whitespace."
         (progn
           (magent-session-activate 'global)
           (setq buffer (magent-ui-get-buffer 'global))
-          (cl-letf (((symbol-function 'spinner-stop) #'ignore)
-                    ((symbol-function 'magent-session-save-deferred) #'ignore))
+          (cl-letf (((symbol-function 'magent-session-save-deferred) #'ignore))
             (magent-ui--finish-processing
              (magent-agent-result-failed "Request timed out after 5 seconds")))
           (should-not magent-ui--processing)

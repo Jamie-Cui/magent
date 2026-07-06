@@ -7,7 +7,7 @@
 ;; Maintainer: Jamie Cui <jamie.cui@outlook.com>
 ;; Keywords: tools, ai, copilot
 ;; Package-Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (gptel "0.9.8") (spinner "1.7.4") (transient "0.7.8") (yaml "1.0.0") (compat "30.1.0.0") (acp "0.12.2") (agent-shell "0.57.1"))
+;; Package-Requires: ((emacs "29.1") (gptel "0.9.8") (transient "0.7.8") (yaml "1.0.0") (compat "30.1.0.0") (acp "0.12.2") (agent-shell "0.57.1"))
 ;; URL: https://github.com/jamie-cui/magent
 
 ;; This file is not part of GNU Emacs.
@@ -73,7 +73,6 @@
 ;;; Code:
 
 ;; Required modules
-(require 'spinner)
 (require 'transient)
 (require 'magent-config)
 (require 'magent-audit)
@@ -108,8 +107,14 @@
 (declare-function magent-toggle-capability-locally "magent-capability")
 (declare-function magent-runtime-ensure-initialized "magent-runtime")
 
-(defvar magent--spinner (spinner-create 'rotating-line)
-  "Global spinner displayed in the modeline while magent is processing.")
+;; If Magent is reloaded in a live Emacs that still has the old mode-line
+;; animation timer running, stop it once and discard the legacy variable.
+(let ((legacy-spinner (and (boundp 'magent--spinner)
+                           (symbol-value 'magent--spinner))))
+  (when legacy-spinner
+    (when (fboundp 'spinner-stop)
+      (funcall (symbol-function 'spinner-stop) legacy-spinner))
+    (makunbound 'magent--spinner)))
 
 (defun magent--get-current-agent-name ()
   "Return the name of the current agent as a string.
@@ -123,27 +128,27 @@ Falls back to `magent-default-agent' if no session agent is set."
     (concat " [M/" (magent--get-current-agent-name) "] "
             (when (magent-ui-processing-p)
               (propertize "[busy]" 'face 'warning
-                          'help-echo "Magent: request in progress"))
-            (spinner-print magent--spinner)))
+                          'help-echo "Magent: request in progress"))))
   "Modeline lighter for `magent-mode'.
-Shows \" [M/agent] \", a busy marker while a request is in flight,
-and an animated spinner while processing.")
+Shows \" [M/agent] \" and a busy marker while a request is in flight.")
 (put 'magent--lighter 'risky-local-variable t)
 
 (defun magent--get-mode-line-string ()
   "Return the magent mode-line string for `mode-line-misc-info'.
 Only renders in `magent-output-mode' buffers.  Shows \"[M/agent]\"
-and a spinner while processing."
+and a busy marker while processing."
   (when (derived-mode-p 'magent-output-mode)
     (concat " [M/" (magent--get-current-agent-name) "] "
-            (spinner-print magent--spinner))))
+            (when (magent-ui-processing-p)
+              (propertize "[busy]" 'face 'warning
+                          'help-echo "Magent: request in progress")))))
 
-(defconst magent--mode-line-spinner-construct
+(defconst magent--mode-line-status-construct
   '(:eval (magent--get-mode-line-string))
   "Mode-line construct added to `global-mode-string'.
 Delegates to `magent--get-mode-line-string' so the function can be
 redefined on reload without needing to update `global-mode-string'.")
-(put 'magent--mode-line-spinner-construct 'risky-local-variable t)
+(put 'magent--mode-line-status-construct 'risky-local-variable t)
 
 (defconst magent--mode-bindings
   '(("C-c m p" . magent-dwim)
@@ -177,8 +182,8 @@ When enabled, Magent commands are available.
   :keymap (magent--populate-mode-map (make-sparse-keymap))
   (when magent-mode
     ;; Minimal initialization on mode enable
-    (unless (member magent--mode-line-spinner-construct global-mode-string)
-      (push magent--mode-line-spinner-construct global-mode-string)
+    (unless (member magent--mode-line-status-construct global-mode-string)
+      (push magent--mode-line-status-construct global-mode-string)
       (magent-log "INFO magent mode enabled (lazy init)"))))
 
 ;; `define-minor-mode' does not replace an already defined keymap on reload.

@@ -33,7 +33,6 @@
 (declare-function agent-shell-status "agent-shell")
 (declare-function agent-shell-interrupt "agent-shell")
 (declare-function agent-shell-queue-request "agent-shell")
-(declare-function agent-shell-send-region "agent-shell")
 (declare-function agent-shell-start "agent-shell")
 (declare-function shell-maker-busy "shell-maker")
 
@@ -207,12 +206,11 @@ after clearing the stale state."
                             :shell-buffer shell-buffer)))))
 
 ;;;###autoload
-(defun magent-agent-shell-prompt-region (&optional pick-shell)
-  "Send the active region through agent-shell.
-When PICK-SHELL is non-nil, prompt for the target shell."
-  (interactive)
-  (magent-agent-shell--with-config
-    (agent-shell-send-region pick-shell)))
+(defun magent-agent-shell-prompt-region (begin end)
+  "Send region from BEGIN to END through the Magent agent-shell backend."
+  (interactive "r")
+  (magent-agent-shell-send-prompt
+   (buffer-substring-no-properties begin end)))
 
 ;;;###autoload
 (defun magent-agent-shell-ask-at-point ()

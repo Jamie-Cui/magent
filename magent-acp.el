@@ -66,7 +66,7 @@
   (let ((model-id (format "%s" (or (and (boundp 'gptel-model) gptel-model)
                                    "gptel"))))
     `((currentModelId . ,model-id)
-      (availableModels . [((id . ,model-id)
+      (availableModels . [((modelId . ,model-id)
                            (name . ,model-id)
                            (description . "Current gptel model"))]))))
 
@@ -109,6 +109,31 @@
    ((stringp prompt) (list (magent-acp--content-block prompt)))
    (t nil)))
 
+(defun magent-acp--resource-text (block)
+  "Return embedded text content from ACP resource BLOCK, or nil."
+  (let ((resource (magent-acp--alist-plist-get block 'resource)))
+    (or (magent-acp--alist-plist-get block 'text)
+        (and resource
+             (magent-acp--alist-plist-get resource 'text)))))
+
+(defun magent-acp--resource-label (block type)
+  "Return display label for ACP resource BLOCK of TYPE."
+  (let ((resource (magent-acp--alist-plist-get block 'resource)))
+    (or (magent-acp--alist-plist-get block 'uri)
+        (magent-acp--alist-plist-get block 'name)
+        (and resource
+             (or (magent-acp--alist-plist-get resource 'uri)
+                 (magent-acp--alist-plist-get resource 'name)))
+        type)))
+
+(defun magent-acp--resource-prompt-text (block type)
+  "Return prompt text preserving ACP resource BLOCK contents."
+  (let ((label (magent-acp--resource-label block type))
+        (text (magent-acp--resource-text block)))
+    (if (and (stringp text) (not (string-empty-p text)))
+        (format "[Context resource: %s]\n%s" label text)
+      (format "[Context resource: %s]" label))))
+
 (defun magent-acp--prompt-text (prompt)
   "Return plain text extracted from ACP PROMPT content blocks."
   (let (parts unsupported)
@@ -119,11 +144,7 @@
           (push (or (magent-acp--alist-plist-get block 'text) "")
                 parts))
          ((member type '("resource_link" "resource" "file"))
-          (push (format "\n\n[Context resource: %s]"
-                        (or (magent-acp--alist-plist-get block 'uri)
-                            (magent-acp--alist-plist-get block 'name)
-                            type))
-                parts))
+          (push (magent-acp--resource-prompt-text block type) parts))
          (t
           (push type unsupported)))))
     (when unsupported

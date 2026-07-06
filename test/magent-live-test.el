@@ -53,7 +53,6 @@
   (dolist (pattern '("\\`gptel-[0-9]"
                      "\\`magit-[0-9]"
                      "\\`magit-section-"
-                     "\\`spinner-"
                      "\\`transient-"
                      "\\`acp-"
                      "\\`shell-maker-"

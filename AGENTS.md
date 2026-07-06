@@ -21,7 +21,7 @@ make coverage   # Run ERT under testcover and write coverage/testcover-summary.t
 make clean      # Remove compiled .elc files
 ```
 
-The Makefile auto-detects dependency paths (`gptel`, `spinner`, `transient`, `cond-let`, `compat`, `evil`, `yaml`, `llama`, `with-editor`) by scanning `~/.emacs.d/elpa/`. Override any with e.g. `GPTEL_DIR=/path/to/gptel`.
+The Makefile auto-detects dependency paths (`gptel`, `transient`, `acp`, `shell-maker`, `agent-shell`, `cond-let`, `compat`, `evil`, `yaml`, `llama`, `with-editor`) by scanning `~/.emacs.d/elpa/`. Override any with e.g. `GPTEL_DIR=/path/to/gptel`.
 
 Single-file compilation:
 ```bash

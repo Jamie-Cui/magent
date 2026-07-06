@@ -282,7 +282,7 @@ magent-session-directory  ; Default: ~/.emacs.d/magent-sessions/
 **Problem:** Streaming appears stuck.
 
 **Diagnosis:**
-1. Check if request is active: Look for spinner in modeline
+1. Check if request is active: Look for `[busy]` in the modeline
 2. Check `*Messages*` buffer for errors
 3. Press `C-c C-c` in the output buffer and confirm the interrupt
 

@@ -16,7 +16,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'spinner)
 (require 'subr-x)
 (require 'magent-agent-shell)
 (require 'magent-config)
@@ -25,7 +24,6 @@
 (require 'magent-session)
 (require 'magent-turn)
 
-(defvar magent--spinner)
 (defvar magent-enable-logging)
 (defvar magent-log-level)
 
@@ -248,7 +246,7 @@ SCOPE is ignored.  This remains as a cheap compatibility hook for core code."
   "Send region from BEGIN to END to Magent agent."
   (interactive "r")
   (if (magent-ui--agent-shell-backend-p)
-      (magent-agent-shell-prompt-region)
+      (magent-agent-shell-prompt-region begin end)
     (magent-ui--legacy-call 'magent-prompt-region begin end)))
 
 ;;;###autoload
