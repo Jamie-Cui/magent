@@ -496,12 +496,21 @@ switching semantics."
 
 (cl-defun magent-acp--request-sender
     (&key client request buffer on-success on-failure sync)
-  "Send ACP REQUEST to Magent in-process."
+  "Send ACP REQUEST to Magent in-process.
+Responses are dispatched on the next event loop via `run-at-time', so
+this in-process transport behaves like a real subprocess-backed ACP
+agent whose replies arrive asynchronously.  Callers such as agent-shell
+subscribe to session events immediately after issuing a request and rely
+on the response landing after those subscriptions register; a synchronous
+callback would race that registration (e.g. leaving the \"Loading...\"
+active message running forever)."
   (ignore sync)
-  (magent-acp--handle-request
-   client request
-   (magent-acp--wrap-callback client buffer on-success)
-   (magent-acp--wrap-callback client buffer on-failure)))
+  (run-at-time 0 nil
+               (lambda ()
+                 (magent-acp--handle-request
+                  client request
+                  (magent-acp--wrap-callback client buffer on-success)
+                  (magent-acp--wrap-callback client buffer on-failure)))))
 
 (cl-defun magent-acp--notification-sender (&key client notification sync)
   "Handle ACP NOTIFICATION from agent-shell."

@@ -6964,7 +6964,10 @@ tolerate leading whitespace."
   "Test in-process ACP request sender handles initialize."
   (require 'magent-acp)
   (let (response failure)
-    (cl-letf (((symbol-function 'magent-agent-registry-primary-agents)
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_secs _repeat fn &rest args)
+                 (apply fn args)))
+              ((symbol-function 'magent-agent-registry-primary-agents)
                (lambda ()
                  (list (magent-agent-info-create
                         :name "build"
@@ -7030,7 +7033,10 @@ tolerate leading whitespace."
          (client '((:notification-handlers . nil)
                    (:request-handlers . nil)))
          success failure submitted-prompt complete)
-    (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_secs _repeat fn &rest args)
+                 (apply fn args)))
+              ((symbol-function 'magent-acp--runtime-session-by-id)
                (lambda (session-id)
                  (and (equal session-id "session-1")
                       runtime-session)))
@@ -7064,7 +7070,10 @@ tolerate leading whitespace."
                    (:request-handlers . nil)))
          complete callback-buffer)
     (unwind-protect
-        (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (_secs _repeat fn &rest args)
+                     (apply fn args)))
+                  ((symbol-function 'magent-acp--runtime-session-by-id)
                    (lambda (session-id)
                      (and (equal session-id "session-1")
                           runtime-session)))
