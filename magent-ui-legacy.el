@@ -125,10 +125,11 @@ active runtime state is owned by `magent-turn'.")
 
 (defun magent-ui--agent-shell-dispatch-p (&optional skills agent)
   "Return non-nil when a prompt should dispatch through agent-shell.
-Per-request legacy SKILLS and AGENT overrides still require the legacy
+SKILLS can be routed through the agent-shell backend as request-local
+instruction skills.  Per-request AGENT overrides still require the legacy
 dispatcher until the agent-shell ACP path grows equivalent controls."
+  (ignore skills)
   (and (magent-ui--agent-shell-backend-p)
-       (not skills)
        (not agent)))
 
 (defun magent-ui-processing-p ()
@@ -2244,7 +2245,7 @@ AGENT is an optional `magent-agent-info' override for this request."
   (magent--ensure-initialized)
   (when (not (string-blank-p prompt))
     (if (magent-ui--agent-shell-dispatch-p skills agent)
-        (magent-agent-shell-send-prompt prompt)
+        (magent-agent-shell-send-prompt prompt :skills skills)
       (if activate-context
           (magent-ui--activate-context-session)
         (progn

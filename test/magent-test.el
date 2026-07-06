@@ -6960,6 +6960,39 @@ tolerate leading whitespace."
       (magent-ui-dispatch-prompt "hello" 'prompt nil nil t))
     (should (equal captured "hello"))))
 
+(ert-deftest magent-test-ui-dispatch-prompt-with-skills-uses-agent-shell ()
+  "Test skill-bearing prompts stay on the agent-shell backend."
+  (require 'magent-ui)
+  (let ((magent-ui-backend 'agent-shell)
+        captured)
+    (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
+              ((symbol-function 'magent-agent-shell-send-prompt)
+               (lambda (prompt &rest args)
+                 (setq captured (list prompt (plist-get args :skills)))))
+              ((symbol-function 'magent-ui--legacy-call)
+               (lambda (&rest _args)
+                 (error "legacy dispatch should not be called"))))
+      (magent-ui-dispatch-prompt
+       "hello with skill" 'prompt nil '("init") t))
+    (should (equal captured '("hello with skill" ("init"))))))
+
+(ert-deftest magent-test-ui-dispatch-prompt-with-skills-after-legacy-load-uses-agent-shell ()
+  "Test skill-bearing prompts keep agent-shell routing after legacy UI loads."
+  (require 'magent-ui)
+  (require 'magent-ui-legacy)
+  (let ((magent-ui-backend 'agent-shell)
+        captured)
+    (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
+              ((symbol-function 'magent-agent-shell-send-prompt)
+               (lambda (prompt &rest args)
+                 (setq captured (list prompt (plist-get args :skills)))))
+              ((symbol-function 'magent-ui-process)
+               (lambda (&rest _args)
+                 (error "legacy process should not be called"))))
+      (magent-ui-dispatch-prompt
+       "hello after legacy" 'prompt nil '("init") t))
+    (should (equal captured '("hello after legacy" ("init"))))))
+
 (ert-deftest magent-test-acp-request-sender-initialize ()
   "Test in-process ACP request sender handles initialize."
   (require 'magent-acp)
@@ -7226,6 +7259,113 @@ tolerate leading whitespace."
                  'shell-buffer)))
       (should (eq (magent-agent-shell-start) 'shell-buffer))
       (should (eq captured 'new)))))
+
+(ert-deftest magent-test-agent-shell-send-prompt-queues-skills ()
+  "Test agent-shell prompt submission records request-local skills."
+  (require 'magent-agent-shell)
+  (let ((buffer (generate-new-buffer "*magent-skill-queue*"))
+        queued)
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (setq major-mode 'agent-shell-mode)
+            (setq-local shell-maker--busy t)
+            (setq-local agent-shell--state
+                        '((:agent-config . ((:identifier . magent))))))
+          (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
+                     #'ignore)
+                    ((symbol-function 'magent-agent-shell--buffer)
+                     (lambda (&optional _no-create) buffer))
+                    ((symbol-function 'magent-agent-shell--recover-stale-busy)
+                     #'ignore)
+                    ((symbol-function 'shell-maker-busy)
+                     (lambda () t))
+                    ((symbol-function 'agent-shell-queue-request)
+                     (lambda (prompt)
+                       (setq queued prompt))))
+            (magent-agent-shell-send-prompt
+             "hello" :skills '("init") :no-focus t))
+          (should (equal queued "hello"))
+          (with-current-buffer buffer
+            (should (equal magent-agent-shell--prompt-skill-queue
+                           '((:prompt "hello" :skills ("init")))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-agent-shell-prepares-prompt-skills-for-runtime ()
+  "Test queued prompt skills are applied to the runtime session."
+  (require 'magent-agent-shell)
+  (let ((buffer (generate-new-buffer "*magent-skill-runtime*"))
+        (runtime-session (magent-runtime-session-create :id "session-1")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (setq major-mode 'agent-shell-mode)
+            (setq-local agent-shell--state
+                        '((:agent-config . ((:identifier . magent)))
+                          (:session . ((:id . "session-1")))))
+            (setq-local magent-agent-shell--prompt-skill-queue
+                        '((:prompt "hello" :skills ("init")))))
+          (cl-letf (((symbol-function 'magent-runtime-session-from-id)
+                     (lambda (session-id)
+                       (and (equal session-id "session-1")
+                            runtime-session))))
+            (magent-agent-shell--prepare-command-skills "hello" buffer))
+          (should (equal (magent-runtime-session-pending-skills
+                          runtime-session)
+                         '("init")))
+          (with-current-buffer buffer
+            (should-not magent-agent-shell--prompt-skill-queue)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-agent-shell-keeps-prompt-skills-without-runtime ()
+  "Test queued prompt skills are not consumed before runtime session exists."
+  (require 'magent-agent-shell)
+  (let ((buffer (generate-new-buffer "*magent-skill-no-runtime*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (setq major-mode 'agent-shell-mode)
+            (setq-local agent-shell--state
+                        '((:agent-config . ((:identifier . magent)))))
+            (setq-local magent-agent-shell--prompt-skill-queue
+                        '((:prompt "hello" :skills ("init")))))
+          (magent-agent-shell--prepare-command-skills "hello" buffer)
+          (with-current-buffer buffer
+            (should (equal magent-agent-shell--prompt-skill-queue
+                           '((:prompt "hello" :skills ("init")))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-agent-shell-run-skill-command-submits-skills ()
+  "Test command-like skills submit their default prompt through agent-shell."
+  (require 'magent-agent-shell)
+  (let (sent cleared)
+    (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
+              ((symbol-function 'magent-runtime-ensure-initialized) #'ignore)
+              ((symbol-function 'magent-agent-shell--prepare-skill-context)
+               #'ignore)
+              ((symbol-function 'magent-agent-shell--buffer)
+               (lambda (&optional _no-create) 'shell-buffer))
+              ((symbol-function 'magent-agent-shell--pending-skills)
+               (lambda (&optional _shell-buffer)
+                 '("existing-skill")))
+              ((symbol-function 'magent-agent-shell--clear-pending-skills)
+               (lambda (&optional _shell-buffer)
+                 (setq cleared t)))
+              ((symbol-function 'magent-skills-default-prompt)
+               (lambda (skill-name)
+                 (and (equal skill-name "init")
+                      "Initialize this project.")))
+              ((symbol-function 'magent-agent-shell-send-prompt)
+               (lambda (prompt &rest args)
+                 (setq sent (list prompt (plist-get args :skills))))))
+      (magent-agent-shell-run-skill-command "init" "focus on tests"))
+    (should cleared)
+    (should (equal (nth 0 sent)
+                   "Initialize this project.\n\nAdditional instruction:\nfocus on tests"))
+    (should (equal (nth 1 sent) '("existing-skill" "init")))))
 
 (ert-deftest magent-test-runtime-cancel-is-session-scoped ()
   "Test runtime cancellation removes only the requested session's work."

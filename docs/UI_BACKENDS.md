@@ -24,7 +24,7 @@ removed later without breaking the agent-shell + ACP + runtime path.
 1. Public commands such as `magent-dwim` and plain `magent-ui-dispatch-prompt`
    enter `magent-ui.el`.
 2. When `magent-ui-backend` is `agent-shell` and no legacy-only per-request
-   agent/skill override is present, the command routes to
+   agent override is present, the command routes to
    `magent-agent-shell.el`.
 3. `agent-shell` calls the Magent in-process ACP client from `magent-acp.el`.
 4. ACP session/prompt submits to `magent-runtime-api.el`.
@@ -40,8 +40,8 @@ removed later without breaking the agent-shell + ACP + runtime path.
 
 `magent-ui-legacy.el` is loaded lazily.  Plain agent-shell usage should not load
 it.  Legacy-only commands still load it on demand, including the old
-workspace/compose buffer, legacy transient menu, one-shot skill UI, and commands
-that depend on per-request agent or skill overrides.
+workspace/compose buffer, legacy transient menu variants, and commands that
+depend on per-request agent overrides.
 
 The core runtime path must not depend on `magent-ui-legacy.el`.  Keep new
 backend-facing behavior in `magent-runtime-api.el` or `magent-acp.el`, and keep
@@ -54,6 +54,7 @@ agent-shell-specific behavior in `magent-agent-shell.el`.
 - Cancellation is session-scoped: ACP cancellation for one session cancels that
   session's active and queued submissions without removing other sessions'
   queued work.
-- Per-request agent/skill overrides still use the legacy dispatch path until
-  agent-shell exposes equivalent UI controls.
+- Per-request instruction skill overrides and skill commands are supported by
+  the agent-shell backend.  Per-request agent overrides still use the legacy
+  dispatch path until agent-shell exposes equivalent controls.
 - `magent-ui-backend` can be set to `legacy`, but the default is `agent-shell`.

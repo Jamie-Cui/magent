@@ -144,12 +144,15 @@ Two skill types:
 - **instruction** — Markdown injected into system prompt
 - **tool** — Invoked via `skill_invoke` tool
 
-Instruction skills are selected from the transient Skills submenu as one-shot
-context for the next request. Skills that define `default-prompt` can also be
-run as command-like transient actions; built-in `init` initializes or refreshes
-the project root `AGENTS.md`, similar to Codex `/init`, and accepts optional
-extra instructions. Compose buffers are plain prompt text and no longer parse
-`@skill` or `@clear` control syntax.
+Instruction skills can be selected as one-shot context for the next request.
+The agent-shell backend exposes native commands such as
+`magent-agent-shell-toggle-skill-for-next-request` and
+`magent-agent-shell-run-skill-command`; the legacy transient Skills submenu
+continues to expose the same workflow for the legacy workspace. Skills that
+define `default-prompt` can also be run as command-like actions; built-in
+`init` initializes or refreshes the project root `AGENTS.md`, similar to Codex
+`/init`, and accepts optional extra instructions. Compose buffers are plain
+prompt text and no longer parse `@skill` or `@clear` control syntax.
 
 Skills load from: (1) built-in `skills/`, (2) user `~/.emacs.d/magent-skills/`, (3) project `.magent/skills/`.
 

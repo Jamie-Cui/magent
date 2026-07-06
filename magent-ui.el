@@ -152,10 +152,11 @@ FORMAT-STRING and ARGS are passed to `format'."
 
 (defun magent-ui--agent-shell-dispatch-p (&optional skills agent)
   "Return non-nil when a prompt should dispatch through agent-shell.
-Per-request legacy SKILLS and AGENT overrides still require the legacy
+SKILLS can be routed through the agent-shell backend as request-local
+instruction skills.  Per-request AGENT overrides still require the legacy
 dispatcher until the agent-shell ACP path grows equivalent controls."
+  (ignore skills)
   (and (magent-ui--agent-shell-backend-p)
-       (not skills)
        (not agent)))
 
 (defun magent-ui-processing-p ()
@@ -282,12 +283,12 @@ SCOPE is ignored.  This remains as a cheap compatibility hook for core code."
     (prompt &optional source display skills activate-context agent)
   "Dispatch PROMPT through the configured Magent UI backend.
 SOURCE, DISPLAY, SKILLS, ACTIVATE-CONTEXT, and AGENT are the legacy dispatch
-arguments used by `magent-ui-legacy'.  SKILLS or AGENT force the legacy path
-until agent-shell exposes equivalent per-request controls."
+arguments used by `magent-ui-legacy'.  AGENT still forces the legacy path until
+agent-shell exposes an equivalent per-request agent override."
   (magent--ensure-initialized)
   (unless (string-blank-p prompt)
     (if (magent-ui--agent-shell-dispatch-p skills agent)
-        (magent-agent-shell-send-prompt prompt)
+        (magent-agent-shell-send-prompt prompt :skills skills)
       (magent-ui--legacy-call
        'magent-ui-dispatch-prompt
        prompt source display skills activate-context agent))))

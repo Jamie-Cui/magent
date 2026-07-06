@@ -9,6 +9,7 @@ Welcome to the Magent documentation. Stable user-facing material remains in the 
 - **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** — Common issues and solutions
 
 ### Architecture
+- **[AGENT_WORKFLOW.md](AGENT_WORKFLOW.md)** — Thread/turn/item state machine, loop flow, persistence (snapshot + journal), UI projection, and Codex alignment
 - **[AGENT_JOBS.md](AGENT_JOBS.md)** — Durable child-agent job lifecycle, tool surface, persistence, UI, and boundaries
 - **[UI_BACKENDS.md](UI_BACKENDS.md)** — UI backend boundary, agent-shell + ACP flow, runtime API, and legacy UI isolation
 
