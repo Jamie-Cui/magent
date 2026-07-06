@@ -3,11 +3,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Magent is an Emacs Lisp AI coding agent (~31 `magent-*.el` files) with a multi-agent
+Magent is an Emacs Lisp AI coding agent (~35 `magent-*.el` files) with a multi-agent
 architecture, permission-based tool access, and a durable child-agent/job lifecycle.
-All LLM communication is delegated to **gptel** — the only external runtime dependency
-beyond Emacs 29.1+, `transient`, `compat`, `yaml`, `acp`, and `agent-shell`. Do not rewrite gptel
-provider/HTTP/SSE integration; the Magent loop consumes only normalized events.
+All LLM communication is delegated to **gptel** — the only external LLM-transport dependency.
+Runtime deps beyond Emacs 29.1+ are `transient`, `compat`, `yaml`, `acp`, and `agent-shell`
+(the default UI backend). Do not rewrite gptel provider/HTTP/SSE integration; the Magent
+loop consumes only normalized events.
 
 ## Build, test, lint
 
@@ -52,10 +53,11 @@ matters more than any single file:
    are derived projections kept for gptel prompt reuse — the UI renders from the ledger.
 
 3. **Agent processing + loop** (`magent-agent.el` → `magent-agent-loop.el`, with
-   `magent-llm.el` / `magent-llm-gptel.el`): `magent-agent-process` builds the gptel prompt,
-   applies per-agent overrides (model/temperature via `default-value`, intentionally avoiding
-   buffer-local gptel state), exposes permission-filtered tools, then starts the Magent-owned
-   loop. The loop owns tool dispatch (through `magent-tool-orchestrator`), serial tool queueing,
+   `magent-llm.el` / `magent-llm-gptel.el`): `magent-agent-run-turn` is the UI-neutral low-level
+   entry for runtime backends; `magent-agent-process` is the compatibility wrapper. It builds the
+   gptel prompt, applies per-agent overrides (model/temperature via `default-value`, intentionally
+   avoiding buffer-local gptel state), exposes permission-filtered tools, then starts the
+   Magent-owned loop. The loop owns tool dispatch (through `magent-tool-orchestrator`), serial tool queueing,
    permission/audit hooks, visible tool rendering, abort cleanup, and continuation policy.
    `magent-llm-gptel.el` may touch gptel's private FSM internally for one sampling request, but
    nothing above it sees gptel details.
@@ -66,10 +68,17 @@ matters more than any single file:
    wildcard `*` → **default allow**. Capabilities score request context and attach matching
    instruction skills.
 
-5. **UI** (`magent-ui.el`): The `*magent*` workspace derives from `special-mode`
-   (`magent-output-mode`) and is read-only + ledger-rendered. Prompt editing lives in a separate
-   `magent-compose-mode` buffer (`C-c C-c` submits). Tool calls, reasoning, and child-agent
-   events render as compact rows — do not reintroduce org folding or markdown-to-org in the live path.
+5. **UI backend boundary** (`magent-ui.el`, `magent-agent-shell.el`, `magent-acp.el`,
+   `magent-runtime-api.el`, `magent-runtime-queue.el`): `magent-ui.el` is a thin backend router.
+   The default `magent-ui-backend` is **agent-shell**: plain prompts route through
+   `magent-agent-shell.el`, which drives an in-process ACP client (`magent-acp.el`) that submits
+   prompts via `magent-runtime-api.el` and converts runtime observer events into ACP
+   `session/update` messages. `magent-runtime-queue.el` owns the global single-execution turn
+   queue and session-scoped cancellation. The legacy `special-mode` workspace (`*magent*`,
+   `magent-output-mode`) — read-only, ledger-rendered Magit-style timeline with a separate
+   `magent-compose-mode` prompt buffer (`C-c C-c` submits) — now lives in `magent-ui-legacy.el`
+   and loads lazily; do not add new default UI behavior there or reintroduce org folding /
+   markdown-to-org in the live path. See `docs/UI_BACKENDS.md` for the boundary contract.
 
 **Agents** (`magent-agent-registry.el`): 7 built-ins — `build` (default), `plan`, `explore`,
 `general`, `compaction`, `title`, `summary` — via `cl-defstruct magent-agent-info`. Modes:
