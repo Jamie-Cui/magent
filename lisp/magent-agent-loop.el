@@ -362,8 +362,6 @@ Recognized keys are `:request', `:sampler', `:status', and
                                     :call-id call-id
                                     :tool-name name
                                     :result result)
-                (message "MAGENT-DEBUG loop complete: emitting tool-call-complete call-id=%S name=%S"
-                         call-id name)
                 (magent-request-context-notify
                  request-context 'tool-call-complete
                  :tool-id call-id
