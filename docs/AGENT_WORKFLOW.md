@@ -44,7 +44,7 @@ The closest Codex references are:
 
 ## State Objects
 
-`magent-thread.el` defines the canonical ledger:
+`magent-ledger.el` defines the canonical ledger:
 
 - `magent-thread`
   - statuses: `not-loaded`, `idle`, `active`, `system-error`, `closed`
@@ -147,10 +147,10 @@ append-only record. The two are not interchangeable.
 
 ## Loop Flow
 
-1. UI submission enters `magent-turn`.
-2. `magent-turn` creates a queued ledger turn and records the completed
+1. UI submission enters `magent-runtime-api.el`.
+2. `magent-runtime-api.el` creates a queued ledger turn and records the completed
    user message item immediately.
-3. When the submission actually starts, `magent-turn` transitions the
+3. When the submission actually starts, `magent-runtime-api.el` transitions the
    turn to `in-progress`.
 4. `magent-agent-process` reuses that turn/user item idempotently instead
    of duplicating the user message.

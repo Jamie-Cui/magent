@@ -16,7 +16,7 @@
 (require 'cl-lib)
 (require 'magent-session)
 
-(defvar magent-by-pass-permission)  ; from magent-config.el
+(defvar magent-bypass-permission)  ; from magent-config.el
 
 ;;; Permission structure
 
@@ -45,24 +45,29 @@ Examples:
 (defconst magent-permission-ask 'ask)
 
 ;;;###autoload
-(defun magent-toggle-by-pass-permission (&optional arg)
+(defun magent-toggle-bypass-permission (&optional arg)
   "Toggle Magent permission bypass mode.
 With prefix ARG, enable bypass when ARG is positive and disable it
 otherwise.  When bypass is enabled, Magent ignores per-agent
 allow/deny/ask rules, session overrides, and file-specific
 permission rules."
   (interactive "P")
-  (setq magent-by-pass-permission
+  (setq magent-bypass-permission
         (if arg
             (> (prefix-numeric-value arg) 0)
-          (not magent-by-pass-permission)))
+          (not magent-bypass-permission)))
   (message "Magent permission bypass %s"
-           (if magent-by-pass-permission "enabled" "disabled"))
-  magent-by-pass-permission)
+           (if magent-bypass-permission "enabled" "disabled"))
+  magent-bypass-permission)
+
+(define-obsolete-function-alias
+  'magent-toggle-by-pass-permission
+  #'magent-toggle-bypass-permission
+  "0.1.0")
 
 (defun magent-permission-bypass-p ()
   "Return non-nil when Magent should bypass permission checks."
-  magent-by-pass-permission)
+  magent-bypass-permission)
 
 ;;; Default permissions
 

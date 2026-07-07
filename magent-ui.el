@@ -22,7 +22,7 @@
 (require 'magent-runtime)
 (require 'magent-runtime-api)
 (require 'magent-session)
-(require 'magent-turn)
+(require 'magent-legacy-queue)
 
 (defvar magent-enable-logging)
 (defvar magent-log-level)
@@ -145,10 +145,10 @@ FORMAT-STRING and ARGS are passed to `format'."
   "Return non-nil when the legacy UI/turn path owns active work."
   (or magent-ui--processing
       magent--current-request-handle
-      (and (fboundp 'magent-turn-processing-p)
-           (magent-turn-processing-p))
-      (and (fboundp 'magent-turn-pending-p)
-           (magent-turn-pending-p))))
+      (and (fboundp 'magent-legacy-queue-processing-p)
+           (magent-legacy-queue-processing-p))
+      (and (fboundp 'magent-legacy-queue-pending-p)
+           (magent-legacy-queue-pending-p))))
 
 (defun magent-ui--agent-shell-dispatch-p (&optional skills agent)
   "Return non-nil when a prompt should dispatch through agent-shell.

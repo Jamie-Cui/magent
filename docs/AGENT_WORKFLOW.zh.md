@@ -30,7 +30,7 @@ Codex 中最接近的参考点是 SDK event names、core sampling loop、app-ser
 
 ## 状态对象
 
-`magent-thread.el` 定义 canonical ledger：
+`magent-ledger.el` 定义 canonical ledger：
 
 - `magent-thread`
   - 状态：`not-loaded`、`idle`、`active`、`system-error`、`closed`
@@ -112,9 +112,9 @@ Replay 语义：
 
 ## Loop Flow
 
-1. UI submission 进入 `magent-turn`。
-2. `magent-turn` 创建 queued ledger turn，并立即记录 completed user message item。
-3. submission 真正开始时，`magent-turn` 把 turn 转成 `in-progress`。
+1. UI submission 进入 `magent-runtime-api.el`。
+2. `magent-runtime-api.el` 创建 queued ledger turn，并立即记录 completed user message item。
+3. submission 真正开始时，`magent-runtime-api.el` 把 turn 转成 `in-progress`。
 4. `magent-agent-process` 幂等复用该 turn/user item，不重复写用户消息。
 5. `magent-agent-loop` 消费 normalized LLM events。
 6. Text 和 reasoning deltas 更新 snapshot 中 materialized in-progress items，但不会为每个 chunk 追加 journal event；terminal item event 携带最终内容。

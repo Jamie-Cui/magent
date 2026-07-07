@@ -1,61 +1,28 @@
-;;; magent-tool-registry.el --- Tool registry facade for Magent  -*- lexical-binding: t; -*-
+;;; magent-tool-registry.el --- Compatibility shim for magent-tool-runtime  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;;; Commentary:
 
-;; A small registry facade over existing Magent tools.  This gives the
-;; runtime a Codex-like tool abstraction while preserving the current
-;; gptel-tool definitions.
+;; Runtime tool adaptation now lives in `magent-tool-runtime.el'.
 
 ;;; Code:
 
-(require 'cl-lib)
-(require 'gptel)
-(require 'magent-tools)
+(require 'magent-tool-runtime)
 
-(cl-defstruct (magent-tool-runtime
-               (:constructor magent-tool-runtime-create)
-               (:copier nil))
-  name
-  description
-  args
-  function
-  async
-  perm-key
-  exposure
-  supports-parallel)
-
-(defun magent-tool-registry-from-gptel-tool (tool)
-  "Create a `magent-tool-runtime' from gptel TOOL."
-  (let ((name (gptel-tool-name tool)))
-    (magent-tool-runtime-create
-     :name name
-     :description (gptel-tool-description tool)
-     :args (gptel-tool-args tool)
-     :function (gptel-tool-function tool)
-     :async (gptel-tool-async tool)
-     :perm-key (magent-tools-permission-key name)
-     :exposure 'direct
-     :supports-parallel nil)))
-
-(defun magent-tool-registry-for-agent (agent-info)
-  "Return tool runtimes available to AGENT-INFO."
-  (mapcar #'magent-tool-registry-from-gptel-tool
-          (magent-tools-get-gptel-tools agent-info)))
-
-(defun magent-tool-registry-runtime-to-plist (runtime)
-  "Convert RUNTIME to the existing Magent tool plist shape."
-  (list :name (magent-tool-runtime-name runtime)
-        :description (magent-tool-runtime-description runtime)
-        :args (magent-tool-runtime-args runtime)
-        :function (magent-tool-runtime-function runtime)
-        :async (magent-tool-runtime-async runtime)
-        :perm-key (magent-tool-runtime-perm-key runtime)
-        :exposure (magent-tool-runtime-exposure runtime)
-        :supports-parallel
-        (magent-tool-runtime-supports-parallel runtime)))
+(define-obsolete-function-alias
+  'magent-tool-registry-from-gptel-tool
+  #'magent-tool-runtime-from-gptel-tool
+  "0.1.0")
+(define-obsolete-function-alias
+  'magent-tool-registry-for-agent
+  #'magent-tool-runtime-for-agent
+  "0.1.0")
+(define-obsolete-function-alias
+  'magent-tool-registry-runtime-to-plist
+  #'magent-tool-runtime-to-plist
+  "0.1.0")
 
 (provide 'magent-tool-registry)
 ;;; magent-tool-registry.el ends here

@@ -20,7 +20,7 @@
 (require 'magent-config)
 (require 'magent-agent-job)
 (require 'magent-agent-registry)
-(require 'magent-events)
+(require 'magent-lifecycle-events)
 (require 'magent-permission)
 (require 'magent-protocol)
 (require 'magent-runtime)
@@ -30,8 +30,8 @@
 (declare-function magent-skills-list "magent-skills")
 (declare-function magent-skills-invoke "magent-skills")
 (declare-function magent-agent-process "magent-agent")
-(declare-function magent-events-create-subagent-context "magent-events")
-(declare-function magent-events-stop-subagent "magent-events")
+(declare-function magent-lifecycle-events-create-subagent-context "magent-lifecycle-events")
+(declare-function magent-lifecycle-events-stop-subagent "magent-lifecycle-events")
 (declare-function magent-agent-loop-abort "magent-agent-loop")
 (declare-function magent-agent-loop-p "magent-agent-loop")
 (declare-function magent-ui-insert-agent-job-event "magent-ui")
@@ -656,7 +656,7 @@ Return the child loop handle when startup succeeds."
                     (format "Agent %s: %s" agent-name task-name)
                   (format "Agent %s" agent-name)))
          (subagent-context
-          (magent-events-create-subagent-context
+          (magent-lifecycle-events-create-subagent-context
            title
            (and parent-context
                 (magent-request-context-event-context parent-context))))
@@ -664,7 +664,7 @@ Return the child loop handle when startup succeeds."
           (magent-tools--effective-child-permission parent-context agent))
          (child-request-context
           (magent-request-context-create
-           :id (magent-events-generate-id)
+           :id (magent-lifecycle-events-generate-id)
            :scope (and parent-context
                        (magent-request-context-scope parent-context))
            :session child-session
@@ -720,7 +720,7 @@ Return the child loop handle when startup succeeds."
                 (magent-agent-process
                  prompt
                  (lambda (response)
-                   (magent-events-stop-subagent subagent-context)
+                   (magent-lifecycle-events-stop-subagent subagent-context)
                    (let* ((success (magent-agent-result-success-p response))
                           (text (magent-agent-result-content-string response))
                           (failed (not success)))
@@ -754,7 +754,7 @@ Return the child loop handle when startup succeeds."
           (magent-tools--register-cancel-cleanup
            (lambda ()
              (unless (magent-tools--agent-job-terminal-p job)
-               (magent-events-stop-subagent subagent-context)
+               (magent-lifecycle-events-stop-subagent subagent-context)
                (setf (magent-agent-job-transcript job)
                      (magent-tools--agent-job-transcript child-session))
                (magent-agent-job-set-status
@@ -771,7 +771,7 @@ Return the child loop handle when startup succeeds."
                 (magent-agent-job-id job)))))
           child-loop)
       (error
-       (magent-events-stop-subagent subagent-context)
+       (magent-lifecycle-events-stop-subagent subagent-context)
        (magent-tools--agent-job-update-from-child
         job child-session 'failed nil
         (format "Error: child-agent request failed: %s"

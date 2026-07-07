@@ -30,7 +30,7 @@ magent-ui.el -> magent-agent-shell.el -> magent-acp.el
 magent-runtime-api.el -> magent-runtime-queue.el
   |
   v
-thread/turn/item ledger in magent-thread.el and magent-session.el
+thread/turn/item ledger in magent-ledger.el and magent-session.el
   |
   v
 magent-agent.el -> magent-agent-loop.el
@@ -61,7 +61,7 @@ The old workspace/compose UI lives in `magent-ui-legacy.el`. It is loaded lazily
 
 ### Ledger And Persistence
 
-The durable source of truth is a `thread -> turn -> item` ledger. `magent-thread.el` defines the state objects and transitions. `magent-turn.el` creates and advances turns. `magent-session.el` stores a materialized `snapshot` plus an append-only `journal`.
+The durable source of truth is a `thread -> turn -> item` ledger. `magent-ledger.el` defines the state objects, transitions, and journal events. `magent-runtime-api.el` creates user submissions, while `magent-runtime-queue.el` schedules active execution. `magent-session.el` stores a materialized `snapshot` plus an append-only `journal`.
 
 Legacy `messages`, `context-items`, and `buffer-content` are projections or migration data. They are not the canonical UI source of truth.
 
@@ -81,7 +81,7 @@ Legacy `messages`, `context-items`, and `buffer-content` are projections or migr
 
 1. A user prompt enters through agent-shell or the legacy UI.
 2. The UI backend submits to `magent-runtime-api.el`.
-3. `magent-turn` records a queued turn and a completed user item.
+3. `magent-runtime-api.el` records a queued turn and a completed user item.
 4. `magent-runtime-queue.el` starts the turn when the global execution slot is free.
 5. `magent-agent.el` chooses the session agent, active skills, capability instructions, and allowed tools.
 6. `magent-llm-gptel.el` calls `gptel-request` for one sampling request.

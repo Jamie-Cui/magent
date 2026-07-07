@@ -12,7 +12,7 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'magent-config)
+(require 'magent-json)
 
 (defun magent-protocol-generate-id (&optional prefix)
   "Return a lowercase identifier with optional PREFIX."

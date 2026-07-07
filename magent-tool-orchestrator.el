@@ -15,7 +15,7 @@
 (require 'gptel)
 (require 'magent-approval)
 (require 'magent-config)
-(require 'magent-events)
+(require 'magent-lifecycle-events)
 (require 'magent-permission)
 (require 'magent-protocol)
 (require 'magent-tools)
@@ -142,7 +142,7 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
                  (override (when perm-key
                              (magent-permission-session-override
                               perm-key approval-session))))
-            (magent-events-emit
+            (magent-lifecycle-events-emit
              'tool-approval-evaluated
              :context (and request-context
                            (magent-request-context-event-context request-context))
@@ -248,7 +248,7 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
             (magent-tool-orchestrator--summary
              orchestrator arg-values (gptel-tool-args tool-spec))))
       (magent-approval-request
-       (list :request-id (magent-events-generate-id)
+       (list :request-id (magent-lifecycle-events-generate-id)
              :provider (and request-context
                             (magent-request-context-approval-provider
                              request-context))

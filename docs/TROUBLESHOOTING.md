@@ -263,8 +263,8 @@ Expected final status files include `:status passed`, `:repo-source` paths under
 Check agent permissions: `M-x magent-show-current-agent`
 
 **Solution:**
-- Temporarily bypass: `M-x magent-toggle-by-pass-permission`
-- Or customize: `(setq magent-by-pass-permission t)`
+- Temporarily bypass: `M-x magent-toggle-bypass-permission`
+- Or customize: `(setq magent-bypass-permission t)`
 - Or switch agent from the transient menu with `A A` and select one with appropriate permissions
 
 #### Session not saving

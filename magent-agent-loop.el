@@ -17,11 +17,12 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'magent-config)
-(require 'magent-events)
+(require 'magent-json)
+(require 'magent-lifecycle-events)
 (require 'magent-llm)
 (require 'magent-runtime)
 (require 'magent-session)
-(require 'magent-thread)
+(require 'magent-ledger)
 (require 'magent-tool-orchestrator)
 (require 'magent-tools)
 
@@ -320,7 +321,7 @@ Recognized keys are `:request', `:sampler', `:status', and
             (async-p (plist-get item :async))
             (fn-args (plist-get item :args))
             (callback (plist-get item :callback)))
-        (magent-events-emit 'tool-call-start
+        (magent-lifecycle-events-emit 'tool-call-start
                             :context
                             (magent-agent-loop--event-context request-context)
                             :call-id call-id
@@ -354,7 +355,7 @@ Recognized keys are `:request', `:sampler', `:status', and
                   (magent-ui-insert-tool-result
                    name
                    (magent-agent-loop-tool-result-summary result)))
-                (magent-events-emit 'tool-call-end
+                (magent-lifecycle-events-emit 'tool-call-end
                                     :context
                                     (magent-agent-loop--event-context
                                      request-context)
@@ -410,7 +411,7 @@ Recognized keys are `:request', `:sampler', `:status', and
                          (gptel-tool-args tool-spec)))
          (name (magent-agent-loop--tool-name tool-spec nil))
          (args-plist (magent-agent-loop-args-to-plist args-spec arg-values))
-         (call-id (magent-events-generate-id))
+         (call-id (magent-lifecycle-events-generate-id))
          (summary (magent-agent-loop-tool-call-summary name args-plist))
          (fn-args (magent-agent-loop-filter-display-args
                    args-spec arg-values))
@@ -571,8 +572,8 @@ carry provider-specific ids and names."
            (turn-id (magent-agent-loop--ensure-turn-id loop thread))
            (call-id (or (plist-get raw-call :id)
                         (plist-get raw-call :call-id)
-                        (and (fboundp 'magent-events-generate-id)
-                             (magent-events-generate-id))
+                        (and (fboundp 'magent-lifecycle-events-generate-id)
+                             (magent-lifecycle-events-generate-id))
                         "tool-call")))
       (magent-thread-record-tool-result
        thread
@@ -647,7 +648,7 @@ available in LOOP's request tools."
       (let ((raw-call (magent-agent-loop--tool-raw-call event)))
         (unless (or (plist-get raw-call :id)
                     (plist-get raw-call :call-id))
-          (plist-put raw-call :id (magent-events-generate-id)))
+          (plist-put raw-call :id (magent-lifecycle-events-generate-id)))
         (list tool-spec
               (magent-agent-loop--tool-arg-values
                tool-spec
@@ -855,7 +856,7 @@ provider request exceeds `magent-request-timeout'."
       (unless already-aborted
         (when-let ((context (magent-agent-loop--event-context
                              (magent-agent-loop-request-context loop))))
-          (magent-events-end-turn context 'cancelled "User aborted")))))
+          (magent-lifecycle-events-end-turn context 'cancelled "User aborted")))))
   loop)
 
 (defun magent-agent-loop-start (loop)

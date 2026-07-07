@@ -30,7 +30,7 @@ magent-ui.el -> magent-agent-shell.el -> magent-acp.el
 magent-runtime-api.el -> magent-runtime-queue.el
   |
   v
-magent-thread.el / magent-session.el 的 thread/turn/item ledger
+magent-ledger.el / magent-session.el 的 thread/turn/item ledger
   |
   v
 magent-agent.el -> magent-agent-loop.el
@@ -61,7 +61,7 @@ Emacs 不只是宿主进程。Magent 依赖活的编辑器状态：buffer、majo
 
 ### Ledger 与持久化
 
-持久化真相源是 `thread -> turn -> item` ledger。`magent-thread.el` 定义状态对象和转移，`magent-turn.el` 创建和推进 turn，`magent-session.el` 保存 materialized `snapshot` 和 append-only `journal`。
+持久化真相源是 `thread -> turn -> item` ledger。`magent-ledger.el` 定义状态对象、状态转移和 journal events，`magent-runtime-api.el` 创建用户 submission，`magent-runtime-queue.el` 调度实际执行，`magent-session.el` 保存 materialized `snapshot` 和 append-only `journal`。
 
 旧的 `messages`、`context-items` 和 `buffer-content` 只是 projection 或迁移数据，不是 UI 的 canonical source of truth。
 
@@ -81,7 +81,7 @@ Emacs 不只是宿主进程。Magent 依赖活的编辑器状态：buffer、majo
 
 1. 用户 prompt 从 agent-shell 或 legacy UI 进入。
 2. UI backend 提交到 `magent-runtime-api.el`。
-3. `magent-turn` 记录 queued turn 和 completed user item。
+3. `magent-runtime-api.el` 记录 queued turn 和 completed user item。
 4. `magent-runtime-queue.el` 在全局执行槽空闲时启动 turn。
 5. `magent-agent.el` 选择 session agent、active skills、capability instructions 和允许的工具。
 6. `magent-llm-gptel.el` 调用 `gptel-request` 发起一次 sampling。

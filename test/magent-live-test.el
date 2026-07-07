@@ -72,9 +72,12 @@
 
 (defconst magent-live-test--source-files
   '("magent-config.el"
+    "magent-json.el"
     "magent-approval.el"
+    "magent-lifecycle-events.el"
     "magent-events.el"
     "magent-protocol.el"
+    "magent-ledger.el"
     "magent-thread.el"
     "magent-agent-job.el"
     "magent-session.el"
@@ -83,17 +86,23 @@
     "magent-runtime.el"
     "magent-runtime-queue.el"
     "magent-permission.el"
+    "magent-agent-info.el"
+    "magent-agent-builtins.el"
     "magent-agent-registry.el"
     "magent-agent-types.el"
     "magent-agent-file.el"
     "magent-llm.el"
     "magent-llm-gptel.el"
     "magent-tools.el"
+    "magent-tool-runtime.el"
     "magent-tool-registry.el"
     "magent-tool-orchestrator.el"
     "magent-agent-loop.el"
+    "magent-legacy-queue.el"
     "magent-turn.el"
+    "magent-transcript-context.el"
     "magent-context.el"
+    "magent-markdown-to-org.el"
     "magent-md2org.el"
     "magent-agent.el"
     "magent-runtime-api.el"
@@ -130,16 +139,16 @@
 
 (defun magent-live-test--dispatch-active-turn-now ()
   "Dispatch the active Magent turn immediately when tests block timer dispatch.
-`magent-turn--start' normally defers dispatch with a zero-delay timer.  When a
+`magent-legacy-queue--start' normally defers dispatch with a zero-delay timer.  When a
 live smoke test itself is running synchronously under `emacsclient --eval', the
 test can end up waiting for the turn before that timer is serviced.  This
 helper cancels the pending dispatcher timer for the active submission and runs
 the same dispatcher directly."
-  (when-let* ((submission (and (boundp 'magent-turn--active)
-                               magent-turn--active))
-              (dispatcher (magent-turn-submission-dispatcher submission)))
-    (when (and (eq (magent-turn-submission-status submission) 'running)
-               (null (magent-turn-current-request-handle)))
+  (when-let* ((submission (and (boundp 'magent-legacy-queue--active)
+                               magent-legacy-queue--active))
+              (dispatcher (magent-legacy-queue-submission-dispatcher submission)))
+    (when (and (eq (magent-legacy-queue-submission-status submission) 'running)
+               (null (magent-legacy-queue-current-request-handle)))
       (dolist (timer (copy-sequence timer-list))
         (when (memq submission (timer--args timer))
           (cancel-timer timer)))
@@ -223,11 +232,11 @@ the same dispatcher directly."
                (magent-ui-processing-p))
           (and (fboundp 'magent-session-current-scope)
                (magent-session-current-scope))
-          (and (boundp 'magent-turn--active)
-               magent-turn--active
-               (magent-turn-submission-status magent-turn--active))
-          (and (fboundp 'magent-turn-queue-length)
-               (magent-turn-queue-length))
+          (and (boundp 'magent-legacy-queue--active)
+               magent-legacy-queue--active
+               (magent-legacy-queue-submission-status magent-legacy-queue--active))
+          (and (fboundp 'magent-legacy-queue-length)
+               (magent-legacy-queue-length))
           (and (boundp 'magent-session--scoped-sessions)
                (hash-table-p magent-session--scoped-sessions)
                (let (scopes)
@@ -473,14 +482,14 @@ the same dispatcher directly."
          (tool-msg (magent-live-test--latest-tool-message messages))
          (loop (or (and (boundp 'magent--current-request-handle)
                         magent--current-request-handle)
-                   (and (fboundp 'magent-turn-current-request-handle)
-                        (magent-turn-current-request-handle)))))
+                   (and (fboundp 'magent-legacy-queue-current-request-handle)
+                        (magent-legacy-queue-current-request-handle)))))
     (list :processing (and (fboundp 'magent-ui-processing-p)
                            (magent-ui-processing-p))
-          :turn-active (and (fboundp 'magent-turn-processing-p)
-                            (magent-turn-processing-p))
-          :turn-pending (and (fboundp 'magent-turn-pending-p)
-                             (magent-turn-pending-p))
+          :turn-active (and (fboundp 'magent-legacy-queue-processing-p)
+                            (magent-legacy-queue-processing-p))
+          :turn-pending (and (fboundp 'magent-legacy-queue-pending-p)
+                             (magent-legacy-queue-pending-p))
           :loop-status (and (fboundp 'magent-agent-loop-p)
                             (magent-agent-loop-p loop)
                             (magent-agent-loop-status loop))
@@ -515,15 +524,15 @@ the same dispatcher directly."
         magent-enable-capabilities nil
         magent-auto-context nil
         magent-auto-scroll nil
-        magent-by-pass-permission nil
+        magent-bypass-permission nil
         magent-ui-batch-insert-delay 0.01
         magent-ui--processing nil
         magent-ui--request-generation 0
         magent--current-request-handle nil
         magent--current-session nil
-        magent-turn--active nil
-        magent-turn--queue nil
-        magent-turn--current-request-handle nil
+        magent-legacy-queue--active nil
+        magent-legacy-queue--pending nil
+        magent-legacy-queue--current-request-handle nil
         magent-session--current-scope 'global
         magent-session--scoped-sessions (make-hash-table :test #'equal)
         magent-runtime--active-project-scope nil
@@ -563,7 +572,7 @@ return that path."
               'live-test nil nil t))
             ('emacs-eval-tool
              (setq magent-enable-tools '(emacs_eval)
-                   magent-by-pass-permission t
+                   magent-bypass-permission t
                    magent-include-reasoning 'ignore)
              (magent-ui-dispatch-prompt
               (concat
@@ -696,15 +705,15 @@ return that path."
           (magent-enable-capabilities nil)
           (magent-auto-context nil)
           (magent-auto-scroll nil)
-          (magent-by-pass-permission nil)
+          (magent-bypass-permission nil)
           (magent-ui-batch-insert-delay 0.01)
           (magent-ui--processing nil)
           (magent-ui--request-generation 0)
           (magent--current-request-handle nil)
           (magent--current-session nil)
-          (magent-turn--active nil)
-          (magent-turn--queue nil)
-          (magent-turn--current-request-handle nil)
+          (magent-legacy-queue--active nil)
+          (magent-legacy-queue--pending nil)
+          (magent-legacy-queue--current-request-handle nil)
           (magent-runtime-queue--active nil)
           (magent-runtime-queue--pending nil)
           (magent-runtime-api--sessions (make-hash-table :test #'equal))
@@ -802,7 +811,7 @@ return that path."
           (gptel-backend (gptel-make-openai "magent-live-stub"
                                            :key "test-key"))
           (gptel-model 'gpt-4o-mini)
-          (magent-by-pass-permission t)
+          (magent-bypass-permission t)
           (magent-enable-tools '(emacs_eval)))
       (cl-letf (((symbol-function 'magent-capability-capture-context) (lambda () nil))
                 ((symbol-function 'magent-capability-resolve-for-turn) (lambda (&rest _) nil))
@@ -929,7 +938,7 @@ return that path."
   (magent-live-test--require-real-gptel)
   (magent-live-test--with-isolated-runtime
     (let ((magent-enable-tools '(emacs_eval))
-          (magent-by-pass-permission t)
+          (magent-bypass-permission t)
           (magent-include-reasoning 'ignore)
           (prompt (concat
                    "Use the emacs_eval tool exactly once to evaluate this "

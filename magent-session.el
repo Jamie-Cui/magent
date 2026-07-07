@@ -16,8 +16,9 @@
 (require 'json)
 (require 'subr-x)
 (require 'magent-config)
+(require 'magent-json)
 (require 'magent-protocol)
-(require 'magent-thread)
+(require 'magent-ledger)
 (require 'magent-agent-job)
 
 (declare-function magent-agent-info-name "magent-agent-registry")

@@ -292,8 +292,8 @@ make EMACSCLIENT="emacsclient -s magent-live-test" test-live-smoke
 
 **解决：**
 
-- 临时 bypass：`M-x magent-toggle-by-pass-permission`。
-- 或 customize：`(setq magent-by-pass-permission t)`。
+- 临时 bypass：`M-x magent-toggle-bypass-permission`。
+- 或 customize：`(setq magent-bypass-permission t)`。
 - 或通过 transient menu `A A` 切换到合适权限的 agent。
 
 #### Session not saving

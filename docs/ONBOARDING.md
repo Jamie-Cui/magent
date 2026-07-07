@@ -31,7 +31,7 @@ The foundation layer that initializes the system and manages settings.
 
 **Key Files:**
 - `magent.el` — Main entry point, defines `magent-mode` minor mode with `C-c m` prefix
-- `magent-config.el` — All `defcustom` variables, `defface` definitions, shared utilities
+- `magent-config.el` — All `defcustom` variables and `defface` definitions
 - `magent-pkg.el` — Package metadata
 
 **What it does:** Lazy initialization triggered on first command via `magent--ensure-initialized`. Mode enable only adds modeline construct; full setup (agent registry, skills) happens on demand.
@@ -41,8 +41,7 @@ The foundation layer that initializes the system and manages settings.
 Manages conversation history, scoped overlays, and runtime state.
 
 **Key Files:**
-- `magent-thread.el` — Thread/turn/item ledger, status transitions, snapshot shape
-- `magent-turn.el` — Turn creation, queue/start/finish state transitions, dropped-turn handling
+- `magent-ledger.el` — Thread/turn/item ledger, status transitions, snapshot shape
 - `magent-session.el` — Conversation projections, JSON persistence, per-project sessions
 - `magent-agent-job.el` — Durable child-agent job records and JSON shape
 - `magent-runtime.el` — Static initialization plus project-local overlay activation for agents, skills, and capabilities
@@ -58,7 +57,9 @@ Multi-agent architecture with specialized agents for different tasks.
 
 **Key Files:**
 - `magent-agent.el` — Core agent processing: builds gptel prompts, applies overrides, calls `gptel-request`
-- `magent-agent-registry.el` — Agent struct definitions, 7 built-in agents, hash-table registry
+- `magent-agent-info.el` — Agent metadata struct and helpers
+- `magent-agent-builtins.el` — 7 built-in agent definitions
+- `magent-agent-registry.el` — Hash-table registry and project overlays
 - `magent-agent-file.el` — Loads custom agents from `.magent/agent/*.md` files
 - `magent-permission.el` — Rule-based tool access control (allow/deny/ask with glob patterns)
 
@@ -99,7 +100,7 @@ Default agent-shell UI plus an isolated legacy workspace/compose backend.
 - `magent-acp.el` — In-process ACP adapter for agent-shell
 - `magent-ui-legacy.el` — Legacy workspace/compose buffers, ledger projection, streaming summaries, transient menu
 - `magent-evil.el` — Optional Evil integration loaded explicitly by Evil users
-- `magent-md2org.el` — Legacy markdown → org converter, no longer used by the live workspace path
+- `magent-markdown-to-org.el` — Legacy markdown → org converter, no longer used by the live workspace path
 - `magent-file-loader.el` — Shared frontmatter parser for agent/skill/capability files
 
 **What it does:** Plain prompts route to agent-shell by default through
@@ -114,7 +115,7 @@ boundary.
 ### Layer 7: Events
 
 **Key Files:**
-- `magent-events.el` — Event system for extensibility
+- `magent-lifecycle-events.el` — Structured lifecycle hooks for turns, subagents, and tool calls
 
 **What it does:** Provides structured lifecycle hooks for turns, subagents, and tool calls.
 
@@ -205,7 +206,7 @@ Trace a request through these files in order:
 
 ### Step 4: Understand Permissions
 
-Read `magent-permission.el` to see how tool access is controlled. The `magent-permission-resolve` function shows the resolution order. Then look at `magent-agent-registry.el` to see how built-in agents define their permissions.
+Read `magent-permission.el` to see how tool access is controlled. The `magent-permission-resolve` function shows the resolution order. Then look at `magent-agent-builtins.el` to see how built-in agents define their permissions.
 
 ### Step 5: Explore Extensibility
 
@@ -231,7 +232,8 @@ Look at `test/magent-test.el` to see how the codebase is tested. Tests mock `gpt
 
 ### Core Entry & Configuration
 - **magent.el** — Mode definition, keybindings, lazy initialization
-- **magent-config.el** — All customization variables, faces, shared utilities, logging stub
+- **magent-config.el** — All customization variables, faces, logging stub
+- **magent-json.el** — JSON-safe serialization helpers
 
 ### State Management
 - **magent-session.el** — Conversation history, per-project sessions, JSON persistence
@@ -240,7 +242,9 @@ Look at `test/magent-test.el` to see how the codebase is tested. Tests mock `gpt
 
 ### Agent System
 - **magent-agent.el** — Core processing: builds prompts, filters tools, calls gptel
-- **magent-agent-registry.el** — Agent struct, 7 built-in agents, registry
+- **magent-agent-info.el** — Agent metadata struct and helpers
+- **magent-agent-builtins.el** — 7 built-in agent definitions
+- **magent-agent-registry.el** — Agent registry and project overlays
 - **magent-agent-file.el** — Custom agent loader from `.magent/agent/*.md`
 - **magent-permission.el** — Tool access control with glob patterns
 
@@ -262,11 +266,11 @@ Look at `test/magent-test.el` to see how the codebase is tested. Tests mock `gpt
 - **magent-runtime-api.el** — UI/backend-facing runtime API
 - **magent-runtime-queue.el** — Runtime queue and session-scoped cancellation
 - **magent-ui-legacy.el** — Legacy workspace/compose buffers, streaming summaries, transcript/detail views, transient menu
-- **magent-md2org.el** — Legacy markdown to org-mode converter outside the live workspace path
+- **magent-markdown-to-org.el** — Legacy markdown to org-mode converter outside the live workspace path
 - **magent-file-loader.el** — Shared frontmatter parser
 
 ### Events
-- **magent-events.el** — Event system for extensibility
+- **magent-lifecycle-events.el** — Structured lifecycle hooks for turns, subagents, and tool calls
 
 ### CI And Package Data
 - **.github/workflows/test.yml** — Byte-compilation, unit tests, and deterministic live smoke tests
@@ -379,7 +383,7 @@ Check `*magent*`, `*magent-log*`, and `*Messages*` buffers for errors.
    ```
 
 2. Add to `magent-enable-tools` default in `magent-config.el`
-3. Update agent permissions in `magent-agent-registry.el`
+3. Update built-in agent permissions in `magent-agent-builtins.el`
 
 For agent lifecycle tools such as `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, or `close_agent`, update `docs/AGENT_JOBS.md` and related tests. These tools should remain one coherent job lifecycle rather than unrelated standalone tools.
 

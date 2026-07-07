@@ -85,14 +85,15 @@ Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and perm
 
 ```
 magent.el (entry point: magent-mode, global-magent-mode)
-  ├─ magent-config.el            (defcustoms, deffaces, shared utilities, magent-log stub)
+  ├─ magent-config.el            (defcustoms, deffaces, magent-log stub)
+  ├─ magent-json.el              (JSON-safe serialization helpers)
   ├─ magent-runtime.el           (static init + project overlay activation)
   ├─ magent-protocol.el          (wire protocol types and event normalization)
-  ├─ magent-events.el            (event construction helpers)
-  ├─ magent-thread.el            (thread/turn/item state machine, journal, snapshot)
-  ├─ magent-turn.el              (request serialization, turn lifecycle)
+  ├─ magent-lifecycle-events.el  (lifecycle event sinks and context helpers)
+  ├─ magent-ledger.el            (thread/turn/item state machine, journal, snapshot)
+  ├─ magent-legacy-queue.el      (legacy UI submission queue compatibility)
   ├─ magent-session.el           (thread ledger projections, JSON persistence)
-  ├─ magent-context.el           (context-item collection and prompt assembly helpers)
+  ├─ magent-transcript-context.el (structured transcript context helpers)
   ├─ magent-agent-job.el         (durable child-agent job state and JSON shape)
   ├─ magent-runtime-queue.el     (UI-neutral global turn queue and session-scoped cancellation)
   ├─ magent-runtime-api.el       (UI/backend-facing runtime session and prompt API)
@@ -100,13 +101,15 @@ magent.el (entry point: magent-mode, global-magent-mode)
   ├─ magent-llm-gptel.el         (gptel-request sampling adapter; hides gptel callback/FSM details)
   ├─ magent-agent-loop.el        (Magent-owned normalized event loop, tool dispatch, queueing, abort)
   ├─ magent-tool-orchestrator.el (permission, approval, audit, and tool-call orchestration)
-  ├─ magent-tool-registry.el     (tool registration helpers)
+  ├─ magent-tool-runtime.el      (runtime-facing tool metadata adapter)
   ├─ magent-approval.el          (user approval prompts for permission=ask)
   ├─ magent-audit.el             (audit trail for tool invocations and decisions)
   ├─ magent-capability.el        (capability registry and prompt-time resolution)
   ├─ magent-tools.el             (14 gptel-tool structs)
   ├─ magent-agent.el             (magent-agent-process: builds gptel prompt, calls gptel-request)
-  ├─ magent-agent-registry.el    (cl-defstruct, 7 built-in agents, hash-table registry)
+  ├─ magent-agent-info.el        (agent metadata struct and helpers)
+  ├─ magent-agent-builtins.el    (7 built-in agent definitions)
+  ├─ magent-agent-registry.el    (hash-table registry and project overlays)
   ├─ magent-agent-types.el       (legacy feature-name compatibility shim)
   ├─ magent-agent-file.el        (loads custom agents from .magent/agent/*.md)
   ├─ magent-permission.el        (rule-based tool access control per agent)
@@ -115,7 +118,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
   ├─ magent-ui.el                (thin UI backend router, logger, compatibility shims)
   ├─ magent-ui-legacy.el         (legacy special-mode workspace, compose buffer, ledger projection)
   ├─ magent-file-loader.el       (shared file-backed definition loader and frontmatter parser)
-  ├─ magent-md2org.el            (legacy markdown → org-mode compatibility helpers)
+  ├─ magent-markdown-to-org.el   (legacy markdown → org-mode compatibility helpers)
   ├─ magent-evil.el              (optional Evil integration; not loaded by magent by default)
   └─ magent-skills.el            (skill registry, built-in skill definitions, file loading, and interactive commands)
 ```
@@ -140,7 +143,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
    - The workspace `header-line` is the single status surface for scope, agent, thread status, request state, queue length, session id, and selected one-shot skills
    - Compose buffers are plain prompt text and do not parse `@clear`, `@init`, `@skill`, `$command`, or slash-style control syntax
    - Streaming uses chunk batching (`magent-ui-batch-insert-delay`) and does not convert markdown to org in the live path
-   - Request serialization is owned by `magent-turn`; `magent-ui--processing` remains a compatibility flag
+   - Request serialization is owned by `magent-legacy-queue`; `magent-ui--processing` remains a compatibility flag
 
 5. **Agent processing** (`magent-agent.el`): `magent-agent-run-turn` is the UI-neutral low-level entry point for runtime backends. `magent-agent-process` builds a gptel prompt list from the session, applies per-agent overrides (model, temperature via `default-value` — intentionally avoids buffer-local gptel settings), exposes filtered tools to the provider, then starts `magent-agent-loop`.
 
@@ -152,7 +155,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
 
 9. **Capabilities** (`magent-capability.el`): File-backed capability definitions score the current request context and attach matching instruction skills. Bundled, user, and project-local capability overlays all feed the same resolver.
 
-10. **Session and workflow ledger** (`magent-thread.el`, `magent-session.el`): The canonical agent workflow state is an explicit thread/turn/item ledger. Thread statuses are `not-loaded`, `idle`, `active`, `system-error`, and `closed`; turn statuses are `queued`, `in-progress`, `completed`, `interrupted`, `failed`, and `dropped`; item statuses are `pending`, `in-progress`, `completed`, `failed`, and `cancelled`. Tool call/result is one `tool` item lifecycle keyed by call id. Session JSON persists both an append-only `journal` and a materialized `snapshot`; snapshot restores materialized state, while journal remains the audit log and only events after `snapshot.last-event-seq` are replayed. Legacy `messages` and `context-items` are derived projections used for gptel prompt reuse and migration. `buffer-content` remains only legacy data; UI restore comes from the ledger. `agent-jobs` stores durable child-agent metadata.
+10. **Session and workflow ledger** (`magent-ledger.el`, `magent-session.el`): The canonical agent workflow state is an explicit thread/turn/item ledger. Thread statuses are `not-loaded`, `idle`, `active`, `system-error`, and `closed`; turn statuses are `queued`, `in-progress`, `completed`, `interrupted`, `failed`, and `dropped`; item statuses are `pending`, `in-progress`, `completed`, `failed`, and `cancelled`. Tool call/result is one `tool` item lifecycle keyed by call id. Session JSON persists both an append-only `journal` and a materialized `snapshot`; snapshot restores materialized state, while journal remains the audit log and only events after `snapshot.last-event-seq` are replayed. Legacy `messages` and `context-items` are derived projections used for gptel prompt reuse and migration. `buffer-content` remains only legacy data; UI restore comes from the ledger. `agent-jobs` stores durable child-agent metadata.
 
 11. **Skills** (`magent-skills.el`): Two types — `instruction` (markdown injected into system prompt) and `tool` (invoked via `skill_invoke`). The module now contains the registry, built-in `skill-creator`, file-based skill loading, and interactive inspection commands. Skills load in priority order from (1) built-in `skills/`, (2) user directory `~/.emacs.d/magent-skills/<name>/SKILL.md`, and (3) project-local `.magent/skills/<name>/SKILL.md`.
 
@@ -171,7 +174,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
 
 ### Agent Definitions
 
-Built-in agents: `build` (default), `plan`, `explore`, `general`, `compaction`, `title`, `summary`. Defined in `magent-agent-registry.el` with `cl-defstruct magent-agent-info` (fields: name, description, mode, native, hidden, temperature, top-p, color, model, prompt, options, steps, permission). `magent-agent-types.el` is a compatibility shim for older `require` forms. Agent modes: `primary` (user-facing), `subagent` (internal), `all` (either).
+Built-in agents: `build` (default), `plan`, `explore`, `general`, `compaction`, `title`, `summary`. Defined in `magent-agent-builtins.el` with `cl-defstruct magent-agent-info` in `magent-agent-info.el` (fields: name, description, mode, native, hidden, temperature, top-p, color, model, prompt, options, steps, permission). `magent-agent-types.el` is a compatibility shim for older `require` forms. Agent modes: `primary` (user-facing), `subagent` (internal), `all` (either).
 
 Custom agents: `.magent/agent/*.md` files with YAML frontmatter + markdown body (system prompt). Frontmatter is parsed by `magent-file-loader.el` (supports booleans, numbers, quoted strings, comma-separated lists; converts underscores to hyphens in keys).
 

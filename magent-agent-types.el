@@ -5,7 +5,7 @@
 
 ;;; Commentary:
 
-;; Built-in agent definitions now live in `magent-agent-registry.el'.  This
+;; Built-in agent definitions now live in `magent-agent-builtins.el'.  This
 ;; file preserves the old feature entry point for callers that still evaluate
 ;; `(require 'magent-agent-types)'.
 

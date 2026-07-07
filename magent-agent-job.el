@@ -16,6 +16,7 @@
 
 (require 'cl-lib)
 (require 'magent-config)
+(require 'magent-json)
 
 (defconst magent-agent-job-statuses
   '(queued running waiting completed failed closed cancelled)

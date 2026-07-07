@@ -20,7 +20,7 @@
 (require 'subr-x)
 (require 'magent-config)
 (require 'magent-approval)
-(require 'magent-events)
+(require 'magent-lifecycle-events)
 (require 'magent-session)
 
 (declare-function magent-agent-info-name "magent-agent-registry")
@@ -88,7 +88,7 @@ Each entry is a cons cell of the form (FILE . JSONL-LINE).")
 (defun magent-audit-enable ()
   "Enable persistent audit logging hooks."
   (unless magent-audit--enabled
-    (magent-events-add-sink #'magent-audit--event-sink)
+    (magent-lifecycle-events-add-sink #'magent-audit--event-sink)
     (add-hook 'magent-approval-state-change-functions
               #'magent-audit--approval-state-changed)
     (setq magent-audit--enabled t))
@@ -97,7 +97,7 @@ Each entry is a cons cell of the form (FILE . JSONL-LINE).")
 (defun magent-audit-disable ()
   "Disable persistent audit logging hooks."
   (when magent-audit--enabled
-    (magent-events-remove-sink #'magent-audit--event-sink)
+    (magent-lifecycle-events-remove-sink #'magent-audit--event-sink)
     (remove-hook 'magent-approval-state-change-functions
                  #'magent-audit--approval-state-changed)
     (magent-audit--flush-pending)
@@ -282,7 +282,7 @@ refresh.  The first two arguments follow `revert-buffer'."
   "Build one audit record for EVENT from PROPS."
   (let* ((context (or (plist-get props :context)
                       (plist-get props :event-context)
-                      (magent-events-current-context)))
+                      (magent-lifecycle-events-current-context)))
          (scope (magent-session-current-scope))
          (project-root (unless (eq scope 'global) scope))
          (session (and (boundp 'magent--current-session) magent--current-session))
@@ -293,9 +293,9 @@ refresh.  The first two arguments follow `revert-buffer'."
       (event . ,(magent-audit--stringify event))
       (agent . ,(magent-audit--current-agent-name session))
       (turn_id . ,(or (plist-get props :turn-id)
-                      (and context (magent-events-context-turn-id context))))
+                      (and context (magent-lifecycle-events-context-turn-id context))))
       (subagent_id . ,(or (plist-get props :subagent-id)
-                          (and context (magent-events-context-subagent-id context))))
+                          (and context (magent-lifecycle-events-context-subagent-id context))))
       (session_id . ,session-id)
       (scope . ,(magent-audit--scope-name scope))
       (project_root . ,project-root)

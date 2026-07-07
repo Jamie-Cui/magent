@@ -21,7 +21,7 @@
 (require 'magent-config)
 (require 'magent-runtime-api)
 (require 'magent-session)
-(require 'magent-thread)
+(require 'magent-ledger)
 
 (defvar gptel-model)
 

@@ -20,6 +20,7 @@
 (require 'gptel)
 (require 'gptel-request)
 (require 'magent-config)
+(require 'magent-json)
 (require 'magent-llm)
 
 (declare-function gptel--error-p "gptel-request")

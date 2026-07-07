@@ -168,7 +168,7 @@
                  (let ((callback (plist-get kwargs :callback)))
                    (funcall callback "Checking buffers. " '(:stream t))
                    (funcall callback t '(:content "Done.")))))
-              ((symbol-function 'magent-tool-registry-for-agent)
+              ((symbol-function 'magent-tool-runtime-for-agent)
                (lambda (_agent) nil))
               ((symbol-function 'magent-ui-start-streaming) #'ignore)
               ((symbol-function 'magent-ui-finish-streaming-fontify)
@@ -196,7 +196,7 @@
                  (let ((callback (plist-get kwargs :callback)))
                    (funcall callback "MAGENT_HELLO" '(:stream t))
                    (funcall callback t '(:content "MAGENT_HELLO")))))
-              ((symbol-function 'magent-tool-registry-for-agent)
+              ((symbol-function 'magent-tool-runtime-for-agent)
                (lambda (_agent) nil)))
       (magent-session-reset)
       (let* ((session (magent-session-get))
@@ -237,7 +237,7 @@
                  (let ((callback (plist-get kwargs :callback)))
                    (funcall callback '(reasoning . "thinking") '(:stream t))
                    (funcall callback t '(:content "Hello from AI")))))
-              ((symbol-function 'magent-tool-registry-for-agent)
+              ((symbol-function 'magent-tool-runtime-for-agent)
                (lambda (_agent) nil)))
       (magent-agent-process
        "Hello"
@@ -265,7 +265,7 @@
                  (funcall (plist-get kwargs :callback)
                           nil
                           '(:status "Request timed out after 5 seconds"))))
-              ((symbol-function 'magent-tool-registry-for-agent)
+              ((symbol-function 'magent-tool-runtime-for-agent)
                (lambda (_agent) nil))
               ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
       (magent-session-reset)
@@ -295,7 +295,7 @@
                (lambda (loop)
                  (setq captured loop)
                  loop))
-              ((symbol-function 'magent-tool-registry-for-agent)
+              ((symbol-function 'magent-tool-runtime-for-agent)
                (lambda (_agent) nil)))
       (magent-session-reset)
       (magent-agent-process "Hello" nil agent))
@@ -327,7 +327,7 @@
            :async nil)))
     (cl-letf (((symbol-function 'magent-session-get)
                (lambda () session))
-              ((symbol-function 'magent-tool-registry-for-agent)
+              ((symbol-function 'magent-tool-runtime-for-agent)
                (lambda (_agent) (list tool-runtime)))
               ((symbol-function 'gptel-request)
                (lambda (prompt &rest kwargs)
@@ -354,10 +354,10 @@
                      (_
                       (error "unexpected sampling request %d" call-count))))))
               ((symbol-function 'magent-log) #'ignore)
-              ((symbol-function 'magent-events-emit) #'ignore)
-              ((symbol-function 'magent-events-begin-turn)
+              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-begin-turn)
                (lambda (_title) 'turn))
-              ((symbol-function 'magent-events-end-turn) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
               ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
       (magent-agent-process
        "Run eval"
@@ -400,7 +400,7 @@
            :async nil)))
     (cl-letf (((symbol-function 'magent-session-get)
                (lambda () session))
-              ((symbol-function 'magent-tool-registry-for-agent)
+              ((symbol-function 'magent-tool-runtime-for-agent)
                (lambda (_agent) (list tool-runtime)))
               ((symbol-function 'gptel-request)
                (lambda (prompt &rest kwargs)
@@ -424,10 +424,10 @@
                      (_
                       (error "unexpected sampling request %d" call-count))))))
               ((symbol-function 'magent-log) #'ignore)
-              ((symbol-function 'magent-events-emit) #'ignore)
-              ((symbol-function 'magent-events-begin-turn)
+              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-begin-turn)
                (lambda (_title) 'turn))
-              ((symbol-function 'magent-events-end-turn) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
               ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
       (magent-agent-process
        "Run eval"
@@ -591,8 +591,8 @@
 
 (ert-deftest magent-test-md2org-convert-inline-restores-bold-markers ()
   "Test inline markdown conversion restores Org bold markers."
-  (require 'magent-md2org)
-  (let ((converted (magent-md2org-convert-string "Plain **foo** and *bar* with `baz`.")))
+  (require 'magent-markdown-to-org)
+  (let ((converted (magent-markdown-to-org-convert-string "Plain **foo** and *bar* with `baz`.")))
     (should (equal converted "Plain *foo* and /bar/ with ~baz~."))
     (should-not (string-match-p (regexp-quote (string 1)) converted))
     (should-not (string-match-p (regexp-quote (string 2)) converted))))
@@ -712,40 +712,40 @@
 (ert-deftest magent-test-permission-bypass-makes-tools-available ()
   "Test bypass config exposes tools even when permissions deny them."
   (require 'magent-permission)
-  (let ((magent-by-pass-permission t)
+  (let ((magent-bypass-permission t)
         (rules '((bash . deny)
                  (* . deny))))
     (should (magent-permission-tool-available-p rules 'bash))
     (should (magent-permission-tool-available-p rules 'write))))
 
-(ert-deftest magent-test-toggle-by-pass-permission-command ()
+(ert-deftest magent-test-toggle-bypass-permission-command ()
   "Test the interactive permission bypass toggle command."
   (require 'magent-permission)
-  (let ((magent-by-pass-permission nil)
+  (let ((magent-bypass-permission nil)
         (messages nil))
     (cl-letf (((symbol-function 'message)
                (lambda (fmt &rest args)
                  (push (apply #'format fmt args) messages))))
-      (should (eq (magent-toggle-by-pass-permission) t))
-      (should magent-by-pass-permission)
+      (should (eq (magent-toggle-bypass-permission) t))
+      (should magent-bypass-permission)
       (should (equal (car messages) "Magent permission bypass enabled"))
-      (should (eq (magent-toggle-by-pass-permission 0) nil))
-      (should-not magent-by-pass-permission)
+      (should (eq (magent-toggle-bypass-permission 0) nil))
+      (should-not magent-bypass-permission)
       (should (equal (car messages) "Magent permission bypass disabled")))))
 
-(ert-deftest magent-test-toggle-by-pass-permission-command-clears-obsolete-alias-state ()
+(ert-deftest magent-test-toggle-bypass-permission-command-clears-obsolete-alias-state ()
   "Test the toggle command clears bypass enabled through the obsolete alias."
   (require 'magent-permission)
-  (let ((magent-by-pass-permission nil)
+  (let ((magent-bypass-permission nil)
         (messages nil))
     (cl-letf (((symbol-function 'message)
                (lambda (fmt &rest args)
                  (push (apply #'format fmt args) messages))))
       (setq magent-always-bypass-permission t)
-      (should magent-by-pass-permission)
+      (should magent-bypass-permission)
       (should (magent-permission-bypass-p))
-      (should (eq (magent-toggle-by-pass-permission 0) nil))
-      (should-not magent-by-pass-permission)
+      (should (eq (magent-toggle-bypass-permission 0) nil))
+      (should-not magent-bypass-permission)
       (should-not (magent-permission-bypass-p))
       (should (equal (car messages) "Magent permission bypass disabled")))))
 
@@ -1104,7 +1104,8 @@
   "Test old agent-types feature name loads through its explicit shim file."
   (require 'magent-agent-types)
   (should (featurep 'magent-agent-types))
-  (should (featurep 'magent-agent-registry)))
+  (should (featurep 'magent-agent-registry))
+  (should (functionp #'magent-agent-types-initialize)))
 
 (ert-deftest magent-test-agent-registry-register-and-get ()
   "Test agent registration and retrieval."
@@ -1285,13 +1286,13 @@
                (lambda (loop)
                  (setq captured-loop loop)
                  'started))
-              ((symbol-function 'magent-tool-registry-for-agent)
+              ((symbol-function 'magent-tool-runtime-for-agent)
                (lambda (_agent) nil))
               ((symbol-function 'magent-log) #'ignore)
-              ((symbol-function 'magent-events-emit) #'ignore)
-              ((symbol-function 'magent-events-begin-turn)
+              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-begin-turn)
                (lambda (_title) 'turn))
-              ((symbol-function 'magent-events-end-turn) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
               ((symbol-function 'magent-skills-get-instruction-prompts)
                (lambda (_skills) nil)))
       (magent-agent-process
@@ -1344,13 +1345,13 @@
                (lambda (loop)
                  (setq captured-loop loop)
                  'started))
-              ((symbol-function 'magent-tool-registry-for-agent)
+              ((symbol-function 'magent-tool-runtime-for-agent)
                (lambda (_agent) (list tool-runtime)))
               ((symbol-function 'magent-log) #'ignore)
-              ((symbol-function 'magent-events-emit) #'ignore)
-              ((symbol-function 'magent-events-begin-turn)
+              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-begin-turn)
                (lambda (_title) 'turn))
-              ((symbol-function 'magent-events-end-turn) #'ignore))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
       (magent-session-reset)
       (magent-agent-process "use a tool" nil agent))
     (let ((request (magent-agent-loop-request captured-loop)))
@@ -1381,8 +1382,8 @@
 
 (ert-deftest magent-test-builtin-agents-count ()
   "Test that all 7 built-in agents are created."
-  (require 'magent-agent-registry)
-  (let ((agents (magent-agent-types-initialize)))
+  (require 'magent-agent-builtins)
+  (let ((agents (magent-agent-builtins-list)))
     (should (= (length agents) 7))
     (let ((names (mapcar #'magent-agent-info-name agents)))
       (should (member "build" names))
@@ -1395,8 +1396,8 @@
 
 (ert-deftest magent-test-builtin-agents-valid ()
   "Test that all built-in agents pass validation."
-  (require 'magent-agent-registry)
-  (dolist (agent (magent-agent-types-initialize))
+  (require 'magent-agent-builtins)
+  (dolist (agent (magent-agent-builtins-list))
     (should (magent-agent-info-valid-p agent))
     (should (magent-agent-info-native agent))))
 
@@ -2535,10 +2536,10 @@
           (magent-tools--agent-job-runtimes (make-hash-table :test #'equal)))
       (cl-letf (((symbol-function 'magent-agent-registry-get)
                  (lambda (_name) agent))
-                ((symbol-function 'magent-events-create-subagent-context)
+                ((symbol-function 'magent-lifecycle-events-create-subagent-context)
                  (lambda (title parent)
                    (list :title title :parent parent)))
-                ((symbol-function 'magent-events-stop-subagent)
+                ((symbol-function 'magent-lifecycle-events-stop-subagent)
                  (lambda (context)
                    (setq stopped context)))
                 ((symbol-function 'magent-agent-process)
@@ -2693,10 +2694,10 @@
           (magent-tools--agent-job-runtimes (make-hash-table :test #'equal)))
       (cl-letf (((symbol-function 'magent-agent-registry-get)
                  (lambda (_name) agent))
-                ((symbol-function 'magent-events-create-subagent-context)
+                ((symbol-function 'magent-lifecycle-events-create-subagent-context)
                  (lambda (title parent)
                    (list :title title :parent parent)))
-                ((symbol-function 'magent-events-stop-subagent) #'ignore)
+                ((symbol-function 'magent-lifecycle-events-stop-subagent) #'ignore)
                 ((symbol-function 'magent-agent-process)
                  (lambda (_prompt callback _agent-info _skill-names
                                   _event-context _request-context
@@ -2779,10 +2780,10 @@
               :session parent-session
               :approval-session parent-session))
             (magent-tools--agent-job-runtimes runtime-table))
-        (cl-letf (((symbol-function 'magent-events-create-subagent-context)
+        (cl-letf (((symbol-function 'magent-lifecycle-events-create-subagent-context)
                    (lambda (title parent)
                      (list :title title :parent parent)))
-                  ((symbol-function 'magent-events-stop-subagent) #'ignore)
+                  ((symbol-function 'magent-lifecycle-events-stop-subagent) #'ignore)
                   ((symbol-function 'magent-agent-process)
                    (lambda (prompt callback _agent-info _skill-names
                                    _event-context _request-context
@@ -2898,7 +2899,7 @@
   "Test bypass config ignores per-agent permission filtering."
   (require 'magent-tools)
   (require 'magent-agent-registry)
-  (let* ((magent-by-pass-permission t)
+  (let* ((magent-bypass-permission t)
          (magent-enable-tools magent-tools--permission-keys)
          (agent (magent-agent-info-create
                  :name "no-tools"
@@ -3256,7 +3257,7 @@
   (require 'magent-tool-orchestrator)
   (require 'magent-permission)
   (magent-permission-clear-session-overrides)
-  (let ((magent-by-pass-permission t)
+  (let ((magent-bypass-permission t)
         (result nil)
         (tool-ran nil)
         (tool (gptel-make-tool
@@ -3344,17 +3345,17 @@
 (ert-deftest magent-test-ui-interrupt-does-not-double-abort-turn-loop ()
   "Test interrupt aborts the active turn loop only once."
   (require 'magent-agent-loop)
-  (require 'magent-turn)
+  (require 'magent-legacy-queue)
   (let* ((buffer (magent-ui-get-buffer))
          (loop (magent-agent-loop-create))
          (magent--current-request-handle loop)
-         (magent-turn--current-request-handle loop)
-         (magent-turn--active
-          (magent-turn-submission-create
+         (magent-legacy-queue--current-request-handle loop)
+         (magent-legacy-queue--active
+          (magent-legacy-queue-submission-create
            :id "sub-interrupt"
            :op (magent-protocol-interrupt-op)
            :status 'running))
-         (magent-turn--queue nil)
+         (magent-legacy-queue--pending nil)
          aborted)
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
@@ -3487,17 +3488,17 @@
          (magent-session--scoped-sessions (make-hash-table :test #'equal))
          (magent-session--current-scope 'global)
          (magent--current-session (magent-session-create))
-         (context (magent-events-context-create :turn-id "turn-audit")))
+         (context (magent-lifecycle-events-context-create :turn-id "turn-audit")))
     (unwind-protect
         (progn
           (magent-audit-enable)
-          (magent-events-emit 'tool-call-start
+          (magent-lifecycle-events-emit 'tool-call-start
                               :context context
                               :call-id "call-write"
                               :tool-name "write_file"
                               :summary "secret.txt"
                               :args '(:path "secret.txt" :content "super secret body"))
-          (magent-events-emit 'tool-call-start
+          (magent-lifecycle-events-emit 'tool-call-start
                               :context context
                               :call-id "call-edit"
                               :tool-name "edit_file"
@@ -3539,7 +3540,7 @@
          (magent-approval--pending-requests (make-hash-table :test 'equal))
          (magent-approval--completed-requests (make-hash-table :test 'equal))
          (magent-approval-state-change-functions nil)
-         (context (magent-events-context-create :turn-id "turn-approval")))
+         (context (magent-lifecycle-events-context-create :turn-id "turn-approval")))
     (unwind-protect
         (progn
           (magent-audit-enable)
@@ -4042,9 +4043,9 @@
           (magent-session-add-message parent-session 'user "spawn child")
           (cl-letf (((symbol-function 'magent-agent-registry-get)
                      (lambda (_name) agent))
-                    ((symbol-function 'magent-events-create-subagent-context)
+                    ((symbol-function 'magent-lifecycle-events-create-subagent-context)
                      (lambda (_title _parent) 'child-context))
-                    ((symbol-function 'magent-events-stop-subagent) #'ignore)
+                    ((symbol-function 'magent-lifecycle-events-stop-subagent) #'ignore)
                     ((symbol-function 'magent-agent-process)
                      (lambda (prompt callback _agent-info _skill-names
                                      _event-context _request-context
@@ -4670,7 +4671,7 @@
                    :ui-visibility 'full
                    :event-context 'ctx))
          (loop (magent-agent-loop-create)))
-    (cl-letf (((symbol-function 'magent-events-emit)
+    (cl-letf (((symbol-function 'magent-lifecycle-events-emit)
                (lambda (type &rest props)
                  (push (cons type props) events)))
               ((symbol-function 'magent-ui-insert-tool-call)
@@ -4779,7 +4780,7 @@
          (loop (magent-agent-loop-create :request-context context)))
     (setf (magent-request-context-abort-controller context)
           (magent-agent-loop-abort-controller loop))
-    (cl-letf (((symbol-function 'magent-events-end-turn) #'ignore))
+    (cl-letf (((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
       (magent-agent-loop-abort loop))
     (should (eq (magent-agent-loop-status loop) 'cancelled))
     (should-not (magent-request-context-abort-controller context))))
@@ -4787,12 +4788,12 @@
 (ert-deftest magent-test-ui-interrupt-aborts-agent-loop ()
   "Test UI interrupt aborts the active Magent-owned loop."
   (require 'magent-ui)
-  (require 'magent-turn)
+  (require 'magent-legacy-queue)
   (let ((buffer (magent-ui-get-buffer))
         (loop (magent-agent-loop-create))
-        (magent-turn--current-request-handle nil)
-        (magent-turn--active nil)
-        (magent-turn--queue nil)
+        (magent-legacy-queue--current-request-handle nil)
+        (magent-legacy-queue--active nil)
+        (magent-legacy-queue--pending nil)
         (magent-ui--request-generation 0)
         aborted)
     (setq magent--current-request-handle loop)
@@ -4827,7 +4828,7 @@
                (lambda (&rest args) (push args ui-events)))
               ((symbol-function 'magent-ui-insert-tool-result)
                (lambda (&rest args) (push args ui-events)))
-              ((symbol-function 'magent-events-emit) #'ignore))
+              ((symbol-function 'magent-lifecycle-events-emit) #'ignore))
       (magent-agent-loop-run-tool
        loop context tool (lambda (value) (setq result value))
        (list "README.org")))
@@ -4858,7 +4859,7 @@
                                  "second-result")
                      :async nil))
          (loop (magent-agent-loop-create)))
-    (cl-letf (((symbol-function 'magent-events-emit) #'ignore))
+    (cl-letf (((symbol-function 'magent-lifecycle-events-emit) #'ignore))
       (magent-agent-loop-run-tool
        loop nil async-tool (lambda (value) (push value results)) nil)
       (magent-agent-loop-run-tool
@@ -4890,7 +4891,7 @@
                             (setq tool-callback callback))
                 :async t))
          (loop (magent-agent-loop-create)))
-    (cl-letf (((symbol-function 'magent-events-emit) #'ignore)
+    (cl-letf (((symbol-function 'magent-lifecycle-events-emit) #'ignore)
               ((symbol-function 'magent-ui-insert-tool-call)
                (lambda (&rest _args) (push 'tool-call ui-events)))
               ((symbol-function 'magent-ui-insert-tool-result)
@@ -6712,7 +6713,7 @@ tolerate leading whitespace."
 
 (ert-deftest magent-test-agent-process-emits-turn-events ()
   "Test `magent-agent-process' emits turn lifecycle and text events."
-  (require 'magent-events)
+  (require 'magent-lifecycle-events)
   (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
         (gptel-model 'gpt-4o-mini)
         (captured nil))
@@ -6726,9 +6727,9 @@ tolerate leading whitespace."
               ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
       (unwind-protect
         (progn
-            (magent-events-add-sink (lambda (event) (push event captured)))
+            (magent-lifecycle-events-add-sink (lambda (event) (push event captured)))
             (magent-agent-process "Hello" #'ignore))
-        (magent-events-clear-sinks)))
+        (magent-lifecycle-events-clear-sinks)))
     (should (cl-find-if (lambda (event)
                           (eq (plist-get event :type) 'turn-start))
                         captured))
@@ -6817,7 +6818,7 @@ tolerate leading whitespace."
 (ert-deftest magent-test-agent-process-emits-capability-resolution-event ()
   "Test `magent-agent-process' emits capability resolution metadata."
   (require 'magent-capability)
-  (require 'magent-events)
+  (require 'magent-lifecycle-events)
   (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
         (gptel-model 'gpt-4o-mini)
         (magent-capability--registry nil)
@@ -6845,13 +6846,13 @@ tolerate leading whitespace."
               ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
       (unwind-protect
           (progn
-            (magent-events-add-sink (lambda (event) (push event captured)))
+            (magent-lifecycle-events-add-sink (lambda (event) (push event captured)))
             (magent-agent-process
              "Please reorganize this heading"
              #'ignore
              nil nil nil
              '(:major-mode org-mode :features (org))))
-        (magent-events-clear-sinks)))
+        (magent-lifecycle-events-clear-sinks)))
     (let* ((event (cl-find-if (lambda (item)
                                 (eq (plist-get item :type)
                                     'capability-resolution))
@@ -7398,7 +7399,7 @@ tolerate leading whitespace."
         (magent-runtime-queue-submit active-a #'ignore)
         (magent-runtime-queue-submit queued-a #'ignore)
         (magent-runtime-queue-submit queued-b #'ignore)
-        (cl-letf (((symbol-function 'magent-runtime--start-submission)
+        (cl-letf (((symbol-function 'magent-runtime-api--start-submission)
                    (lambda (submission)
                      (push (magent-runtime-submission-id submission)
                            started)
@@ -7438,7 +7439,7 @@ tolerate leading whitespace."
              (should-not (magent-runtime-queue-active-submission))
              (error "backend callback failed")))))
     (magent-runtime-queue-submit submission #'ignore)
-    (magent-runtime--finish-submission submission 'completed "ok")
+    (magent-runtime-api--finish-submission submission 'completed "ok")
     (should-not (magent-runtime-queue-active-submission))
     (should (equal events '(turn-complete)))))
 
@@ -7702,8 +7703,8 @@ tolerate leading whitespace."
          (magent-session--current-scope 'global)
          (magent--current-session nil)
          (magent-ui--processing t)
-         (magent-turn--active nil)
-         (magent-turn--queue nil)
+         (magent-legacy-queue--active nil)
+         (magent-legacy-queue--pending nil)
          (buffer nil)
          (prompt-visible-at-save nil))
     (unwind-protect
@@ -7730,8 +7731,8 @@ tolerate leading whitespace."
          (magent-session--current-scope 'global)
          (magent--current-session nil)
          (magent-ui--processing t)
-         (magent-turn--active nil)
-         (magent-turn--queue nil)
+         (magent-legacy-queue--active nil)
+         (magent-legacy-queue--pending nil)
          (buffer nil))
     (unwind-protect
         (progn
@@ -8096,32 +8097,32 @@ tolerate leading whitespace."
 
 (ert-deftest magent-test-turn-runtime-queues-submissions ()
   "Test turn runtime queues submissions and starts the next one on finish."
-  (require 'magent-turn)
-  (let ((magent-turn--active nil)
-        (magent-turn--queue nil)
-        (magent-turn--current-request-handle nil)
+  (require 'magent-legacy-queue)
+  (let ((magent-legacy-queue--active nil)
+        (magent-legacy-queue--pending nil)
+        (magent-legacy-queue--current-request-handle nil)
         started)
     (cl-letf (((symbol-function 'run-at-time)
                (lambda (_secs _repeat fn &rest args)
                  (apply fn args)
                  'timer)))
-      (magent-turn-submit
+      (magent-legacy-queue-submit
        (magent-protocol-user-input-op "one")
        "one"
        (lambda (submission)
-         (push (magent-turn-submission-payload submission) started)))
-      (magent-turn-submit
+         (push (magent-legacy-queue-submission-payload submission) started)))
+      (magent-legacy-queue-submit
        (magent-protocol-user-input-op "two")
        "two"
        (lambda (submission)
-         (push (magent-turn-submission-payload submission) started)))
+         (push (magent-legacy-queue-submission-payload submission) started)))
       (should (equal (nreverse started) '("one")))
-      (should (magent-turn-processing-p))
-      (should (magent-turn-pending-p))
-      (magent-turn-finish 'completed)
+      (should (magent-legacy-queue-processing-p))
+      (should (magent-legacy-queue-pending-p))
+      (magent-legacy-queue-finish 'completed)
       (should (equal (nreverse started) '("one" "two")))
-      (should (magent-turn-processing-p))
-      (should-not (magent-turn-pending-p)))))
+      (should (magent-legacy-queue-processing-p))
+      (should-not (magent-legacy-queue-pending-p)))))
 
 (ert-deftest magent-test-session-records-structured-context-items ()
   "Test session messages also populate Codex-like context items."
@@ -8171,7 +8172,7 @@ tolerate leading whitespace."
 
 (ert-deftest magent-test-thread-ledger-turn-and-item-state-machine ()
   "Test explicit thread/turn/item state transitions."
-  (require 'magent-thread)
+  (require 'magent-ledger)
   (let* ((thread (magent-thread-create :id "thread-1"))
          (turn (magent-thread-create-turn thread "hello"))
          (item (magent-thread-start-item
@@ -8192,7 +8193,7 @@ tolerate leading whitespace."
 
 (ert-deftest magent-test-thread-journal-start-events-are-immutable ()
   "Test early journal events do not grow later item output."
-  (require 'magent-thread)
+  (require 'magent-ledger)
   (let* ((thread (magent-thread-create :id "thread-immutable"))
          (turn (magent-thread-create-turn thread "hello"))
          (item (magent-thread-start-item
@@ -8215,7 +8216,7 @@ tolerate leading whitespace."
 
 (ert-deftest magent-test-thread-ledger-replays-journal-from-snapshot ()
   "Test snapshot plus journal replay materializes latest state."
-  (require 'magent-thread)
+  (require 'magent-ledger)
   (let* ((thread (magent-thread-create :id "thread-replay"))
          (turn (magent-thread-create-turn thread "hello"))
          (item (magent-thread-start-item
@@ -8306,7 +8307,7 @@ tolerate leading whitespace."
 (ert-deftest magent-test-session-save-load-sanitizes-structured-context ()
   "Test structured context items persist with JSON-safe metadata."
   (require 'magent-protocol)
-  (require 'magent-thread)
+  (require 'magent-ledger)
   (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
          (magent-session--scoped-sessions (make-hash-table :test #'equal))
          (magent-session--current-scope 'global)

@@ -132,7 +132,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-prompt-region~             | ~C-c m r~    | Send selected region to AI                                               |
 | ~magent-ask-at-point~              | ~C-c m a~    | Ask about symbol at point                                                |
 | ~magent-transient-menu~            | ~C-c m ?~    | Open the Magent command menu                                             |
-| ~magent-toggle-by-pass-permission~ | ~M-x~        | Toggle permission bypass for tool filtering and approval prompts         |
+| ~magent-toggle-bypass-permission~ | ~M-x~        | Toggle permission bypass for tool filtering and approval prompts         |
 
 Plain prompt interaction uses agent-shell by default through Magent's
 in-process ACP adapter.  Set ~magent-ui-backend~ to ~legacy~ to use the old
@@ -178,7 +178,7 @@ clears selected skills, ~? A A~ selects an agent, ~? A v~ lists agents,
 ~? S j~ opens a child-agent transcript, and ~? l l~ shows the log.
 
 The same bypass state is also exposed as the customize option
-~magent-by-pass-permission~ under ~M-x customize-group RET magent RET~.
+~magent-bypass-permission~ under ~M-x customize-group RET magent RET~.
 
 ** Session Scope
 
@@ -332,7 +332,7 @@ The AI agent has access to these tools (can be customized per agent):
 | ~skill_invoke~ | no          | Invoke tool-type skills                               |
 | ~web_search~   | no          | Search the web via DuckDuckGo                         |
 
-Tools with side effects prompt the user for confirmation before execution unless permission bypass is enabled with ~M-x magent-toggle-by-pass-permission~ or by customizing ~magent-by-pass-permission~.
+Tools with side effects prompt the user for confirmation before execution unless permission bypass is enabled with ~M-x magent-toggle-bypass-permission~ or by customizing ~magent-bypass-permission~.
 
 Tool availability is controlled by:
 
@@ -349,7 +349,9 @@ Tool availability is controlled by:
 
 3. *Agent System*: Multi-agent architecture with permission-based tool access:
    - ~magent-agent.el~: Builds gptel prompts, applies per-agent overrides, calls ~gptel-request~
-   - ~magent-agent-registry.el~: Agent info struct, built-in agent definitions, and central registry
+   - ~magent-agent-info.el~: Agent metadata struct and display/validation helpers
+   - ~magent-agent-builtins.el~: Built-in agent definitions
+   - ~magent-agent-registry.el~: Central agent registry and project overlay activation
    - ~magent-agent-file.el~: Custom agent loader (~.magent/agent/*.md~)
 
 4. *Permission System* (~magent-permission.el~): Rule-based tool access control per agent with file-pattern matching (glob syntax).
@@ -364,7 +366,7 @@ Tool availability is controlled by:
 
 9. *Skills* (~magent-skills.el~): Two skill types -- ~instruction~ (markdown injected into the system prompt) and ~tool~ (invoked via ~skill_invoke~). Instruction skills can be selected from the transient menu as one-shot request context, and skills that declare ~default-prompt~ can be run as command-like transient actions such as ~init~ for project instruction initialization. The module contains the registry, built-in ~skill-creator~ definition, file-based skill loading, and interactive inspection commands. Skills load in priority order from: (1) built-in ~skills/~ directory bundled with magent, (2) user directory =~/.emacs.d/magent-skills/<name>/SKILL.md=, (3) project-local ~.magent/skills/<name>/SKILL.md~.
 
-10. *Session* (~magent-session.el~): Thread-ledger backed conversation history with per-project active sessions, global fallback outside projects, and JSON persistence. ~buffer-content~ is legacy data only; workspace restore renders from the ledger.
+10. *Session* (~magent-ledger.el~, ~magent-session.el~): Thread-ledger backed conversation history with per-project active sessions, global fallback outside projects, and JSON persistence. ~buffer-content~ is legacy data only; workspace restore renders from the ledger.
 
 11. *Audit* (~magent-audit.el~): Persistent JSONL audit logging for permission prompts and decisions plus sensitive actions such as ~bash~, ~emacs_eval~, ~write_file~, ~edit_file~, and child-agent lifecycle tools. Payloads are redacted to metadata and truncated previews.
 
@@ -372,7 +374,7 @@ Tool availability is controlled by:
 
 13. *Evil Integration* (~magent-evil.el~): Optional feature for Evil users. It is not loaded by ~magent~ and is enabled explicitly with ~magent-evil-mode~.
 
-14. *Markdown-to-Org* (~magent-md2org.el~): Legacy markdown-to-org conversion helper kept outside the live workspace path.
+14. *Markdown-to-Org* (~magent-markdown-to-org.el~): Legacy markdown-to-org conversion helper kept outside the live workspace path.
 
 15. *File Loader* (~magent-file-loader.el~): Shared definition loader for agent, skill, and capability files. It includes frontmatter parsing and supports booleans, numbers, quoted strings, and comma-separated lists.
 
@@ -385,11 +387,16 @@ magent/
 |   |-- coverage.yml
 |   `-- melpazoid.yml
 |-- magent.el                      # Main entry point and mode definition
-|-- magent-config.el               # Configuration (customize group, defcustom vars)
+|-- magent-config.el               # Configuration (customize group, defcustom vars, faces)
+|-- magent-json.el                 # JSON-safe serialization helpers
+|-- magent-lifecycle-events.el     # Structured lifecycle event hooks
+|-- magent-ledger.el               # Thread/turn/item ledger and transitions
 |-- magent-runtime.el              # Static initialization and project overlay activation
 |-- magent-runtime-api.el          # UI/backend-facing runtime session API
 |-- magent-runtime-queue.el        # Runtime queue and session-scoped cancellation
+|-- magent-legacy-queue.el         # Legacy UI submission queue compatibility layer
 |-- magent-session.el              # Session and message history (JSON persistence)
+|-- magent-transcript-context.el   # Transcript context projection helpers
 |-- magent-agent-job.el            # Durable child-agent job state
 |-- magent-llm.el                  # Provider-neutral LLM request/event protocol
 |-- magent-llm-gptel.el            # gptel-request sampling adapter
@@ -397,16 +404,19 @@ magent/
 |-- magent-capability.el           # Capability registry and prompt-time resolution
 |-- magent-audit.el                # Audit logging and JSONL persistence
 |-- magent-tools.el                # Tool implementations (14 gptel-tool structs)
+|-- magent-tool-runtime.el         # Runtime-facing tool metadata adapter
 |-- magent-tool-orchestrator.el    # Permission, approval, audit, and tool-call orchestration
 |-- magent-agent.el                # Agent logic (gptel integration)
 |-- magent-agent-types.el          # Compatibility shim for legacy agent-types feature
-|-- magent-agent-registry.el       # Agent struct, built-in definitions, and registry
+|-- magent-agent-info.el           # Agent metadata struct and helpers
+|-- magent-agent-builtins.el       # Built-in agent definitions
+|-- magent-agent-registry.el       # Agent registry and custom overlays
 |-- magent-agent-file.el           # Custom agent file loader (.magent/agent/*.md)
 |-- magent-permission.el           # Permission system (allow/deny/ask with glob patterns)
 |-- magent-acp.el                  # In-process ACP adapter
 |-- magent-agent-shell.el          # agent-shell backend
 |-- magent-file-loader.el          # Shared definition loader and frontmatter parser
-|-- magent-md2org.el               # Legacy markdown to org-mode compatibility helpers
+|-- magent-markdown-to-org.el      # Legacy markdown to org-mode compatibility helpers
 |-- magent-skills.el               # Skill registry, built-in skills, file loading, and skill commands
 |-- magent-ui.el                   # UI backend router and compatibility shims
 |-- magent-ui-legacy.el            # Legacy read-only workspace and compose UI

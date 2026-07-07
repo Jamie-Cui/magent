@@ -35,8 +35,11 @@ BYTE_COMPILE_FLAGS = --eval "(setq byte-compile-error-on-warn nil)" \
 	--eval "(setq byte-compile-warnings '(not cl-functions obsolete))"
 
 SRCS = magent-config.el \
+       magent-json.el \
+       magent-lifecycle-events.el \
        magent-audit.el \
        magent-protocol.el \
+       magent-ledger.el \
        magent-agent-job.el \
        magent-thread.el \
        magent-llm.el \
@@ -46,13 +49,18 @@ SRCS = magent-config.el \
        magent-approval.el \
        magent-file-loader.el \
        magent-session.el \
+       magent-transcript-context.el \
        magent-context.el \
        magent-runtime.el \
        magent-runtime-queue.el \
        magent-tools.el \
+       magent-tool-runtime.el \
        magent-tool-registry.el \
        magent-tool-orchestrator.el \
+       magent-legacy-queue.el \
        magent-turn.el \
+       magent-agent-info.el \
+       magent-agent-builtins.el \
        magent-agent.el \
        magent-runtime-api.el \
        magent-acp.el \
@@ -61,6 +69,7 @@ SRCS = magent-config.el \
        magent-agent-registry.el \
        magent-agent-file.el \
        magent-permission.el \
+       magent-markdown-to-org.el \
        magent-md2org.el \
        magent-ui.el \
        magent-ui-legacy.el \

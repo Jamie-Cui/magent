@@ -16,15 +16,15 @@
 (require 'cl-lib)
 (require 'gptel)
 (require 'magent-agent-loop)
-(require 'magent-events)
+(require 'magent-lifecycle-events)
 (require 'magent-llm)
 (require 'magent-llm-gptel)
 (require 'magent-protocol)
 (require 'magent-runtime)
 (require 'magent-tools)
-(require 'magent-tool-registry)
+(require 'magent-tool-runtime)
 (require 'magent-session)
-(require 'magent-thread)
+(require 'magent-ledger)
 (require 'magent-agent-registry)
 (require 'magent-permission)
 
@@ -140,7 +140,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
          (context (or event-context
                       (and request-state
                            (magent-request-context-event-context request-state))
-                      (magent-events-begin-turn
+                      (magent-lifecycle-events-begin-turn
                        (format "Agent %s" (magent-agent-info-name agent))))))
     (when request-state
       (setf (magent-request-context-session request-state) session
@@ -195,10 +195,10 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                    "\n\n# Active Skills\n\n"
                                    (mapconcat #'identity skill-prompts "\n\n"))
                          base-system-msg))
-           (tools (mapcar #'magent-tool-registry-runtime-to-plist
-                          (magent-tool-registry-for-agent agent))))
+           (tools (mapcar #'magent-tool-runtime-to-plist
+                          (magent-tool-runtime-for-agent agent))))
       (when capability-resolution
-        (magent-events-emit
+        (magent-lifecycle-events-emit
          'capability-resolution
          :context context
          :resolution
@@ -398,7 +398,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                           session 'assistant text)))))
                   (emit-request-start
                    ()
-                   (magent-events-emit
+                   (magent-lifecycle-events-emit
                     'llm-request-start
                     :context context
                     :backend (and backend (gptel-backend-name backend))
@@ -470,14 +470,14 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                   (finish-turn
                    (status response &optional metadata)
                    (finish-streaming)
-                   (magent-events-emit
+                   (magent-lifecycle-events-emit
                     'llm-request-end
                     :context context
                     :status status
                     :backend (and backend (gptel-backend-name backend))
                     :model (format "%s" model))
                    (unless event-context
-                     (magent-events-end-turn context status))
+                     (magent-lifecycle-events-end-turn context status))
                    (record-assistant-terminal status response)
                    (when callback
                      (funcall callback
@@ -498,7 +498,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                      (pcase (magent-llm-event-type event)
                        ('text-delta
                         (start-streaming)
-                       (magent-events-emit
+                       (magent-lifecycle-events-emit
                         'text-delta
                         :context context
                         :text (magent-llm-event-text event))
@@ -545,7 +545,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                         (when (and streaming-started
                                    (magent-agent--ui-visible-p request-state))
                           (magent-ui-continue-streaming))
-                        (magent-events-emit
+                        (magent-lifecycle-events-emit
                          'llm-request-end
                          :context context
                          :status 'tool-calls

@@ -19,7 +19,7 @@
 (require 'magent-runtime)
 (require 'magent-runtime-queue)
 (require 'magent-session)
-(require 'magent-thread)
+(require 'magent-ledger)
 
 (cl-defstruct (magent-runtime-session
                (:constructor magent-runtime-session-create)
@@ -111,7 +111,7 @@
   "Clear one-shot skills for RUNTIME-SESSION."
   (setf (magent-runtime-session-pending-skills runtime-session) nil))
 
-(defun magent-runtime--notify-submission (submission type &rest props)
+(defun magent-runtime-api--notify-submission (submission type &rest props)
   "Notify SUBMISSION's observer of TYPE with PROPS."
   (when-let ((observer (magent-runtime-submission-observer submission)))
     (let ((event (append
@@ -130,7 +130,7 @@
          (magent-log "ERROR runtime observer failed: %s"
                      (error-message-string err)))))))
 
-(defun magent-runtime--prepare-turn (runtime-session prompt)
+(defun magent-runtime-api--prepare-turn (runtime-session prompt)
   "Create a queued ledger turn for PROMPT in RUNTIME-SESSION."
   (let* ((session (magent-runtime-session-magent-session runtime-session))
          (thread (magent-session-thread-ledger session))
@@ -142,15 +142,15 @@
     (magent-session-refresh-projections session)
     (magent-thread-turn-id turn)))
 
-(defun magent-runtime--submission-live-p (submission)
+(defun magent-runtime-api--submission-live-p (submission)
   "Return non-nil while SUBMISSION should still accept callbacks."
   (memq (magent-runtime-submission-status submission) '(running queued)))
 
-(defun magent-runtime--finish-submission (submission status result)
+(defun magent-runtime-api--finish-submission (submission status result)
   "Finish SUBMISSION with STATUS and RESULT."
   (setf (magent-runtime-submission-status submission) status
         (magent-runtime-submission-detail submission) result)
-  (magent-runtime--notify-submission
+  (magent-runtime-api--notify-submission
    submission
    (pcase status
      ('completed 'turn-complete)
@@ -163,7 +163,7 @@
                     (magent-runtime-submission-id
                      (magent-runtime-queue-active-submission))))
     (magent-runtime-queue-finish-active
-     status result #'magent-runtime--start-submission))
+     status result #'magent-runtime-api--start-submission))
   (when-let ((fn (magent-runtime-submission-on-complete submission)))
     (condition-case err
         (funcall fn status result)
@@ -171,18 +171,18 @@
        (magent-log "ERROR runtime completion callback failed: %s"
                    (error-message-string err))))))
 
-(defun magent-runtime--activate-submission-session (submission)
+(defun magent-runtime-api--activate-submission-session (submission)
   "Make SUBMISSION's session active in the legacy session layer."
   (let ((runtime-session (magent-runtime-submission-session submission)))
     (magent-session-install
      (magent-runtime-session-scope runtime-session)
      (magent-runtime-session-magent-session runtime-session))))
 
-(defun magent-runtime--start-submission (submission)
+(defun magent-runtime-api--start-submission (submission)
   "Start executing SUBMISSION."
-  (magent-runtime--activate-submission-session submission)
-  (magent-runtime--notify-submission submission 'turn-start)
-  (magent-runtime--notify-submission
+  (magent-runtime-api--activate-submission-session submission)
+  (magent-runtime-api--notify-submission submission 'turn-start)
+  (magent-runtime-api--notify-submission
    submission 'user-message
    :text (magent-runtime-submission-prompt submission))
   (let* ((runtime-session (magent-runtime-submission-session submission))
@@ -202,7 +202,7 @@
            :observer (magent-runtime-submission-observer submission)
            :submission-id (magent-runtime-submission-id submission)
            :live-p (lambda ()
-                     (magent-runtime--submission-live-p submission)))))
+                     (magent-runtime-api--submission-live-p submission)))))
     (setf (magent-runtime-submission-handle submission)
           (magent-agent-run-turn
            :session session
@@ -216,7 +216,7 @@
              (let ((status (if (magent-agent-result-success-p result)
                                'completed
                              'failed)))
-               (magent-runtime--finish-submission submission status result)))))))
+               (magent-runtime-api--finish-submission submission status result)))))))
 
 (cl-defun magent-runtime-submit
     (runtime-session prompt &key context skills agent observer approval-provider
@@ -230,7 +230,7 @@ OBSERVER receives request-local Magent-native events."
     (error "Prompt is empty"))
   (let* ((effective-skills
           (or skills (magent-runtime-session-pending-skills runtime-session)))
-         (turn-id (magent-runtime--prepare-turn runtime-session prompt))
+         (turn-id (magent-runtime-api--prepare-turn runtime-session prompt))
          (submission
           (magent-runtime-submission-create
            :id (magent-protocol-generate-id "submission")
@@ -245,7 +245,7 @@ OBSERVER receives request-local Magent-native events."
            :on-complete on-complete
            :turn-id turn-id)))
     (magent-runtime-session-clear-pending-skills runtime-session)
-    (magent-runtime-queue-submit submission #'magent-runtime--start-submission)))
+    (magent-runtime-queue-submit submission #'magent-runtime-api--start-submission)))
 
 (defun magent-runtime-processing-p ()
   "Return non-nil when any runtime turn is active."
@@ -263,7 +263,7 @@ OBSERVER receives request-local Magent-native events."
          (removed (magent-runtime-queue-remove-session session-id))
          (active (magent-runtime-queue-active-submission)))
     (dolist (submission removed)
-      (magent-runtime--notify-submission submission 'turn-cancelled
+      (magent-runtime-api--notify-submission submission 'turn-cancelled
                                         :status 'cancelled
                                         :result "Queued turn cancelled")
       (when-let ((fn (magent-runtime-submission-on-complete submission)))
@@ -275,7 +275,7 @@ OBSERVER receives request-local Magent-native events."
       (when-let ((handle (magent-runtime-submission-handle active)))
         (when (magent-agent-loop-p handle)
           (magent-agent-loop-abort handle)))
-      (magent-runtime--finish-submission
+      (magent-runtime-api--finish-submission
        active 'cancelled "Active turn cancelled"))
     (+ (length removed)
        (if (and active
@@ -284,7 +284,7 @@ OBSERVER receives request-local Magent-native events."
            1
          0))))
 
-(defun magent-runtime--session-id-from-file (file)
+(defun magent-runtime-api--session-id-from-file (file)
   "Return persisted session id for FILE."
   (file-name-sans-extension (file-name-nondirectory file)))
 
@@ -296,7 +296,7 @@ OBSERVER receives request-local Magent-native events."
             (scope (if (eq (plist-get metadata :scope) 'global)
                        'global
                      (plist-get metadata :project-root))))
-       (list :id (magent-runtime--session-id-from-file file)
+       (list :id (magent-runtime-api--session-id-from-file file)
              :file file
              :scope scope
              :project-root (plist-get metadata :project-root)

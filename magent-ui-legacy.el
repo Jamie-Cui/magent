@@ -20,7 +20,7 @@
 (require 'subr-x)
 (require 'transient)
 (require 'magent-approval)
-(require 'magent-events)
+(require 'magent-lifecycle-events)
 (require 'magent-runtime)
 (require 'magent-session)
 (require 'magent-agent-job)
@@ -28,8 +28,9 @@
 (require 'magent-agent-shell)
 (require 'magent-agent-registry)
 (require 'magent-agent-loop)
+(require 'magent-json)
 (require 'magent-protocol)
-(require 'magent-turn)
+(require 'magent-legacy-queue)
 
 (defvar magent-compose-close-after-submit)
 (defvar magent-compose-window-height)
@@ -80,7 +81,7 @@ are valid for the current buffer.")
 (declare-function magent-skill-description "magent-skills")
 (declare-function magent-show-audit "magent-audit")
 (declare-function magent-session--session-for-scope "magent-session")
-(declare-function magent-toggle-by-pass-permission "magent-permission")
+(declare-function magent-toggle-bypass-permission "magent-permission")
 
 ;; Forward declaration for magent entry point (magent.el loaded first)
 (declare-function magent--ensure-initialized "magent")
@@ -108,7 +109,7 @@ are valid for the current buffer.")
 (defvar magent-ui--processing nil
   "Legacy UI processing flag.
 Kept for compatibility with older tests and external callers.  The
-active runtime state is owned by `magent-turn'.")
+active runtime state is owned by `magent-legacy-queue'.")
 
 (defvar magent-ui--pending-skills-by-scope (make-hash-table :test #'equal)
   "One-shot instruction skills selected for the next request by scope.")
@@ -120,8 +121,8 @@ active runtime state is owned by `magent-turn'.")
 (defun magent-ui--legacy-active-p ()
   "Return non-nil when the legacy UI/turn path owns active work."
   (or magent-ui--processing
-      (magent-turn-processing-p)
-      (magent-turn-pending-p)))
+      (magent-legacy-queue-processing-p)
+      (magent-legacy-queue-pending-p)))
 
 (defun magent-ui--agent-shell-dispatch-p (&optional skills agent)
   "Return non-nil when a prompt should dispatch through agent-shell.
@@ -161,7 +162,7 @@ Returns the submitted operation id."
                :request-context request-context
                :capability-resolution capability-resolution
                :timestamp (float-time))))
-    (magent-turn-submit
+    (magent-legacy-queue-submit
      (magent-protocol-user-input-op item)
      item
      #'magent-ui--dispatch-submission)))
@@ -185,8 +186,8 @@ stack frame before UI mutations happen."
   "Dispatch a queued runtime SUBMISSION to the UI runner."
   (setq magent-ui--processing t)
   (magent-ui--refresh-header-line (magent-session-current-scope))
-  (magent-ui--run-item (magent-turn-submission-payload submission)
-                       (magent-turn-submission-id submission)))
+  (magent-ui--run-item (magent-legacy-queue-submission-payload submission)
+                       (magent-legacy-queue-submission-id submission)))
 
 (defvar magent-ui--request-generation 0
   "Monotonically increasing counter for request dispatch cycles.
@@ -535,8 +536,8 @@ renders history into it on first use.  Returns the active session."
 (defun magent-ui--request-state-text ()
   "Return compact text for the current request queue state."
   (cond
-   ((magent-turn-processing-p) "active")
-   ((magent-turn-pending-p) "queued")
+   ((magent-legacy-queue-processing-p) "active")
+   ((magent-legacy-queue-pending-p) "queued")
    (t "idle")))
 
 (defun magent-ui--header-line ()
@@ -565,7 +566,7 @@ renders history into it on first use.  Returns the active session."
                  (format "agent: %s" agent-name)
                  (format "thread: %s" thread-state)
                  (format "request: %s" request-state)
-                 (format "queue: %s" (magent-turn-queue-length))
+                 (format "queue: %s" (magent-legacy-queue-length))
                  (format "session: %s" (magent-ui--one-line thread-id 36))
                  skills-text))
      "  ")))
@@ -1285,8 +1286,8 @@ request are discarded."
            (not (magent-ui--legacy-active-p))
            (not magent--current-request-handle))
       (magent-agent-shell-interrupt t)
-    (let ((turn-request-handle (magent-turn-current-request-handle)))
-      (magent-turn-interrupt #'magent-ui--abort-active-request)
+    (let ((turn-request-handle (magent-legacy-queue-current-request-handle)))
+      (magent-legacy-queue-interrupt #'magent-ui--abort-active-request)
       (when magent--current-request-handle
         (unless (eq magent--current-request-handle turn-request-handle)
           (magent-ui--abort-active-request magent--current-request-handle))
@@ -1529,7 +1530,7 @@ Skips keys already reserved by `magent-transient-agent-menu'."
   "Magent buffer menu."
   ["Buffer"
    [("r" "toggle read-only" magent-toggle-read-only)
-    ("P" "permission bypass" magent-toggle-by-pass-permission)]])
+    ("P" "permission bypass" magent-toggle-bypass-permission)]])
 
 (transient-define-prefix magent-transient-menu ()
   "Magent command menu."
@@ -2280,7 +2281,7 @@ Captures the current request generation so stale callbacks are discarded."
          (session (magent-session-get))
          (submission
           (and submission-id
-               (magent-turn-active-submission)))
+               (magent-legacy-queue-active-submission)))
          request-state)
     (magent-ui-display-buffer)
     (magent-ui-render-history t scope)
@@ -2297,14 +2298,14 @@ Captures the current request generation so stale callbacks are discarded."
                (lambda ()
                  (and (= gen magent-ui--request-generation)
                       (or (null submission-id)
-                          (magent-turn-active-id-p submission-id))))))
+                          (magent-legacy-queue-active-id-p submission-id))))))
           (setq request-state
                 (magent-request-context-create
-                 :id (magent-events-generate-id)
+                 :id (magent-lifecycle-events-generate-id)
                  :scope scope
                  :session session
                  :turn-id (and submission
-                               (magent-turn-submission-turn-id submission))
+                               (magent-legacy-queue-submission-turn-id submission))
                  :approval-session session
                  :origin-buffer-name
                  (or (plist-get (magent-ui--request-request-context item) :buffer-name)
@@ -2319,7 +2320,7 @@ Captures the current request generation so stale callbacks are discarded."
                  (lambda (response)
                    (if (and (= gen magent-ui--request-generation)
                             (or (null submission-id)
-                                (magent-turn-active-id-p submission-id)))
+                                (magent-legacy-queue-active-id-p submission-id)))
                        (magent-ui--finish-processing response submission-id)
                      (magent-log "DEBUG discarding stale callback gen=%d (current=%d)"
                                  gen magent-ui--request-generation)))
@@ -2332,14 +2333,14 @@ Captures the current request generation so stale callbacks are discarded."
                  request-live-p
                  request-state))
           (when submission-id
-            (magent-turn-set-current-request-handle
+            (magent-legacy-queue-set-current-request-handle
              magent--current-request-handle)))
       (error
       (magent-log "ERROR in run-item: %s" (error-message-string err))
       (magent-ui-insert-error (error-message-string err))
        (setq magent--current-request-handle nil)
        (when submission-id
-         (magent-turn-finish 'failed (error-message-string err)))
+         (magent-legacy-queue-finish 'failed (error-message-string err)))
        (magent-ui--clear-processing)
        (magent-ui-render-history t scope)
        (magent-ui--maybe-show-input-prompt scope)))))
@@ -2360,7 +2361,7 @@ Handles both streaming and non-streaming completion."
          content)))
     (magent-ui--clear-processing)
     (when submission-id
-      (magent-turn-finish (if success 'completed 'failed) content))
+      (magent-legacy-queue-finish (if success 'completed 'failed) content))
     (magent-ui-render-history t scope)
     (magent-ui--maybe-show-input-prompt scope)
     (condition-case err

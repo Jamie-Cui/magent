@@ -32,7 +32,7 @@ Magent 拥有 Magent-owned agent loop 和 durable child-agent lifecycle。Root a
 **关键文件：**
 
 - `magent.el`：主入口，定义带 `C-c m` 前缀的 `magent-mode` minor mode。
-- `magent-config.el`：全部 `defcustom`、`defface` 和共享工具。
+- `magent-config.el`：全部 `defcustom` 和 `defface`。
 - `magent-pkg.el`：package metadata。
 
 **职责：** `magent--ensure-initialized` 在第一次命令调用时触发 lazy initialization。启用 mode 只添加 modeline construct，agent registry、skills 等完整初始化按需执行。
@@ -43,8 +43,7 @@ Magent 拥有 Magent-owned agent loop 和 durable child-agent lifecycle。Root a
 
 **关键文件：**
 
-- `magent-thread.el`：thread/turn/item ledger、状态转移和 snapshot shape。
-- `magent-turn.el`：turn 创建、queue/start/finish state transitions 和 dropped-turn handling。
+- `magent-ledger.el`：thread/turn/item ledger、状态转移和 snapshot shape。
 - `magent-session.el`：conversation projections、JSON persistence、per-project sessions。
 - `magent-agent-job.el`：durable child-agent job records 和 JSON shape。
 - `magent-runtime.el`：静态初始化，以及 agents、skills、capabilities 的 project-local overlay activation。
@@ -61,7 +60,9 @@ Magent 拥有 Magent-owned agent loop 和 durable child-agent lifecycle。Root a
 **关键文件：**
 
 - `magent-agent.el`：核心 agent processing，构造 gptel prompt、应用 overrides、调用 `gptel-request`。
-- `magent-agent-registry.el`：agent struct、7 个内置 agents、hash-table registry。
+- `magent-agent-info.el`：agent metadata struct 和 helpers。
+- `magent-agent-builtins.el`：7 个内置 agent definitions。
+- `magent-agent-registry.el`：hash-table registry 和 project overlays。
 - `magent-agent-file.el`：从 `.magent/agent/*.md` 加载 custom agents。
 - `magent-permission.el`：rule-based tool access control，支持 allow/deny/ask 和 glob patterns。
 
@@ -107,7 +108,7 @@ Magent 拥有 Magent-owned agent loop 和 durable child-agent lifecycle。Root a
 - `magent-runtime-queue.el`：runtime queue 和 session-scoped cancellation。
 - `magent-ui-legacy.el`：legacy workspace/compose buffers、ledger projection、streaming summaries、transient menu。
 - `magent-evil.el`：Evil 用户显式加载的可选 integration。
-- `magent-md2org.el`：legacy markdown -> org converter，不再用于 live workspace path。
+- `magent-markdown-to-org.el`：legacy markdown -> org converter，不再用于 live workspace path。
 - `magent-file-loader.el`：agent/skill/capability 共享 frontmatter parser。
 
 **职责：** 普通 prompt 默认走 agent-shell 和进程内 ACP adapter。ACP session/prompt request 提交到 `magent-runtime-api.el`，直到对应 Magent turn 完成才返回。Legacy UI 仍可用，但已隔离在 `magent-ui-legacy.el`。
@@ -116,7 +117,7 @@ Magent 拥有 Magent-owned agent loop 和 durable child-agent lifecycle。Root a
 
 **关键文件：**
 
-- `magent-events.el`：turn、subagent 和 tool call 的 structured lifecycle hooks。
+- `magent-lifecycle-events.el`：turn、subagent 和 tool call 的 structured lifecycle hooks。
 
 ## 核心概念
 
@@ -201,7 +202,7 @@ Sessions 是 project-aware：
 
 ### Step 4：权限
 
-读 `magent-permission.el`，看 `magent-permission-resolve` 的解析顺序。再读 `magent-agent-registry.el`，理解内置 agents 如何定义 permissions。
+读 `magent-permission.el`，看 `magent-permission-resolve` 的解析顺序。再读 `magent-agent-builtins.el`，理解内置 agents 如何定义 permissions。
 
 ### Step 5：扩展点
 
@@ -313,7 +314,7 @@ emacsclient --eval '(with-current-buffer "*magent-log*" (buffer-string))'
    ```
 
 2. 加入 `magent-config.el` 的 `magent-enable-tools` default。
-3. 更新 `magent-agent-registry.el` 中的 agent permissions。
+3. 更新 `magent-agent-builtins.el` 中的内置 agent permissions。
 
 如果是 `spawn_agent`、`send_agent_message`、`wait_agent`、`list_agents` 或 `close_agent` 这类 agent lifecycle tools，要同步更新 `docs/AGENT_JOBS.md` 和相关测试。
 
