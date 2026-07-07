@@ -153,19 +153,35 @@
     (string-trim (mapconcat #'identity (nreverse parts) "\n"))))
 
 (defun magent-acp--notify (client method params)
-  "Deliver incoming ACP notification METHOD PARAMS to CLIENT subscribers."
+  "Deliver incoming ACP notification METHOD PARAMS to CLIENT subscribers.
+
+Each handler runs inside the CLIENT's context buffer (via
+`magent-acp--callback-buffer'), so that async callbacks from
+process sentinels or timers don't strand the handler in a wrong
+buffer where agent-shell's buffer-local state is inaccessible."
   (let ((notification `((method . ,method)
-                        (params . ,params))))
+                        (params . ,params)))
+        (buffer (magent-acp--callback-buffer client nil)))
     (dolist (handler (map-elt client :notification-handlers))
-      (funcall handler notification))))
+      (if buffer
+          (with-current-buffer buffer
+            (funcall handler notification))
+        (funcall handler notification)))))
 
 (defun magent-acp--request (client id method params)
-  "Deliver incoming ACP request METHOD PARAMS with ID to CLIENT subscribers."
+  "Deliver incoming ACP request METHOD PARAMS with ID to CLIENT subscribers.
+
+Each handler runs inside the CLIENT's context buffer (via
+`magent-acp--callback-buffer')."
   (let ((request `((id . ,id)
                    (method . ,method)
-                   (params . ,params))))
+                   (params . ,params)))
+        (buffer (magent-acp--callback-buffer client nil)))
     (dolist (handler (map-elt client :request-handlers))
-      (funcall handler request))))
+      (if buffer
+          (with-current-buffer buffer
+            (funcall handler request))
+        (funcall handler request)))))
 
 (defun magent-acp--session-update (client session-id update)
   "Send ACP session/update UPDATE for SESSION-ID through CLIENT."
