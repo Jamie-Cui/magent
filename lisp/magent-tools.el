@@ -15,6 +15,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'dom)
 (require 'json)
 (require 'subr-x)
 (require 'magent-config)
@@ -40,11 +41,6 @@
 
 (defvar magent--current-session)
 (defvar magent-session--current-scope)
-
-;; dom.el functions used for web search result parsing (requires --with-xml2 build)
-(declare-function dom-by-class "dom")
-(declare-function dom-text "dom")
-(declare-function dom-attr "dom")
 
 ;;; Tool implementations
 

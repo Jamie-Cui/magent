@@ -227,12 +227,10 @@ that put the final answer only in a reasoning field."
 (defun magent-llm-gptel--final-text (state info)
   "Return final response text from STATE and gptel INFO."
   (let ((content (and (listp info) (plist-get info :content)))
-        (streamed (magent-llm-gptel--streamed-text state))
-        (reasoning (magent-llm-gptel--reasoning-text state)))
+        (streamed (magent-llm-gptel--streamed-text state)))
     (cond
      ((and (stringp content) (not (string-empty-p content))) content)
      ((not (string-empty-p streamed)) streamed)
-     ((not (string-empty-p reasoning)) reasoning)
      (t ""))))
 
 (defun magent-llm-gptel--metadata (info)

@@ -373,6 +373,76 @@
                              :args (:sexp "(+ 1 2)")
                              :result "eval:(+ 1 2)")))))))
 
+(ert-deftest magent-test-agent-process-retries-empty-final-after-tool-output ()
+  "Test empty completion after tool output gets one no-tool final retry."
+  (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+         (gptel-model 'gpt-4o-mini)
+         (magent-max-sampling-requests 25)
+         (call-count 0)
+         (sampled-prompts nil)
+         (sampled-tool-use nil)
+         (response nil)
+         (session (magent-session-create :id "session-1"))
+         (request-state (magent-request-context-create
+                         :session session
+                         :ui-visibility 'summary-only))
+         (agent (magent-agent-info-create
+                 :name "build"
+                 :mode 'primary
+                 :permission '((emacs_eval . allow)
+                               (* . allow))))
+         (tool-runtime
+          (magent-tool-runtime-create
+           :name "emacs_eval"
+           :description "Eval"
+           :args (list '(:name "sexp" :type string))
+           :function (lambda (_sexp) "eval:3")
+           :async nil)))
+    (cl-letf (((symbol-function 'magent-session-get)
+               (lambda () session))
+              ((symbol-function 'magent-tool-runtime-for-agent)
+               (lambda (_agent) (list tool-runtime)))
+              ((symbol-function 'gptel-request)
+               (lambda (prompt &rest kwargs)
+                 (cl-incf call-count)
+                 (push prompt sampled-prompts)
+                 (push gptel-use-tools sampled-tool-use)
+                 (let ((callback (plist-get kwargs :callback)))
+                   (pcase call-count
+                     (1
+                      (funcall
+                       callback
+                       '(tool-call . ((nil ("(+ 1 2)") nil
+                                           (:id "call-1"
+                                            :name "emacs_eval"
+                                            :args (:sexp "(+ 1 2)")))))
+                       '(:tool-use t)))
+                     (2
+                      (funcall callback t '(:content "")))
+                     (3
+                      (funcall callback "The result is 3."
+                               '(:content "The result is 3.")))
+                     (_
+                      (error "unexpected sampling request %d" call-count))))))
+              ((symbol-function 'magent-log) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-begin-turn)
+               (lambda (_title) 'turn))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
+              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+      (magent-agent-process
+       "Run eval"
+       (lambda (result) (setq response result))
+       agent nil nil nil nil nil nil request-state))
+    (should (= call-count 3))
+    (should (equal response "The result is 3."))
+    (should (equal (nreverse sampled-tool-use) '(t t nil)))
+    (let ((final-prompt (car sampled-prompts)))
+      (should (equal (caar (last final-prompt)) 'prompt))
+      (should (string-match-p
+               "previous tool calls have completed"
+               (cdar (last final-prompt)))))))
+
 (ert-deftest magent-test-agent-process-forces-final-at-sampling-budget ()
   "Test per-turn sampling budget forces a final no-tool response."
   (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
@@ -3059,6 +3129,25 @@
       (when (buffer-live-p buf)
         (kill-buffer buf)))))
 
+(ert-deftest magent-test-tools-parse-ddg-results ()
+  "Test web_search result parsing from a DuckDuckGo-style DOM."
+  (require 'magent-tools)
+  (let* ((dom '(html nil
+                     (body nil
+                           (a ((class . "result__a")
+                               (href . "https://example.com/1"))
+                              " Result 1 ")
+                           (a ((class . "other")
+                               (href . "https://example.com/ignored"))
+                              "Ignored")
+                           (a ((class . "result__a")
+                               (href . "https://example.com/2"))
+                              "Result 2"))))
+         (results (magent-tools--parse-ddg-results dom 1)))
+    (should (equal results
+                   (list (list :title "Result 1"
+                               :url "https://example.com/1"))))))
+
 (ert-deftest magent-test-mode-line-lighter-renders-from-processing-state ()
   "Test the mode-line lighter depends only on processing-state APIs."
   (require 'magent)
@@ -4234,8 +4323,8 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest magent-test-llm-gptel-reasoning-only-done-completes ()
-  "Test reasoning-only provider responses still produce completion events."
+(ert-deftest magent-test-llm-gptel-reasoning-only-done-completes-empty ()
+  "Test reasoning-only provider responses complete without leaking reasoning."
   (require 'magent-llm-gptel)
   (let* ((events nil)
          (request (magent-llm-request-create
@@ -4256,7 +4345,7 @@
           (should (= (length events) 1))
           (let ((completed (car events)))
             (should (eq (magent-llm-event-type completed) 'completed))
-            (should (equal (magent-llm-event-text completed) "你好！"))
+            (should (equal (magent-llm-event-text completed) ""))
             (should (equal (magent-llm-event-usage completed) '(:total 3)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -4444,8 +4533,8 @@
     (should (equal (magent-agent-loop-result loop)
                    "Checking buffers. Done."))))
 
-(ert-deftest magent-test-agent-loop-completion-falls-back-to-reasoning ()
-  "Test empty final content can recover provider reasoning text."
+(ert-deftest magent-test-agent-loop-completion-does-not-use-reasoning ()
+  "Test empty final content does not leak reasoning as assistant text."
   (require 'magent-agent-loop)
   (let ((loop (magent-agent-loop-create)))
     (magent-agent-loop-apply-event
@@ -4453,7 +4542,7 @@
     (magent-agent-loop-apply-event
      loop (magent-llm-completed-event ""))
     (should (equal (magent-agent-loop-result loop)
-                   "MAGENT_TOOL_OK=42"))))
+                   ""))))
 
 (ert-deftest magent-test-agent-loop-start-wraps-request-callback ()
   "Test loop start wraps request callback and invokes the sampler."

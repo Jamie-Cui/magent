@@ -88,21 +88,41 @@ was not already emitted as text deltas."
 (defconst magent-agent--sampling-limit-final-prompt
   "Magent has reached the per-turn tool budget. Stop using tools and answer the original user request now using only the tool results already available. Be concise.")
 
-(defun magent-agent--sampling-limit-final-request (loop)
-  "Return a no-tool final response request for LOOP's current session."
+(defconst magent-agent--empty-tool-final-prompt
+  "The previous tool calls have completed. Stop using tools and answer the original user request now using only the tool results already available. If the tool results are insufficient, say so briefly.")
+
+(defun magent-agent--final-response-request (loop prompt)
+  "Return a no-tool final response request for LOOP with appended PROMPT."
   (let* ((request (magent-agent-loop-request-for-current-session loop))
          (metadata (magent-llm-request-metadata request)))
     (magent-llm-request-create
      :prompt (append (magent-llm-request-prompt request)
-                     (list (cons 'prompt
-                                 magent-agent--sampling-limit-final-prompt)))
+                     (list (cons 'prompt prompt)))
      :system (magent-llm-request-system request)
      :tools nil
      :model (magent-llm-request-model request)
      :backend (magent-llm-request-backend request)
      :stream t
      :callback (magent-llm-request-callback request)
-     :metadata (append metadata '(:sampling-limit-final t)))))
+     :metadata metadata)))
+
+(defun magent-agent--sampling-limit-final-request (loop)
+  "Return a no-tool final response request for LOOP's current session."
+  (let* ((request (magent-agent--final-response-request
+                   loop magent-agent--sampling-limit-final-prompt))
+         (metadata (magent-llm-request-metadata request)))
+    (setf (magent-llm-request-metadata request)
+          (append metadata '(:sampling-limit-final t)))
+    request))
+
+(defun magent-agent--empty-tool-final-request (loop)
+  "Return a no-tool final response request after empty tool follow-up."
+  (let* ((request (magent-agent--final-response-request
+                   loop magent-agent--empty-tool-final-prompt))
+         (metadata (magent-llm-request-metadata request)))
+    (setf (magent-llm-request-metadata request)
+          (append metadata '(:empty-tool-final t)))
+    request))
 
 (defun magent-agent-process
     (user-prompt &optional callback agent-info skill-names event-context
@@ -279,6 +299,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                   (reasoning-item nil)
                   (sampling-count 0)
                   (sampling-limit-final-attempted nil)
+                  (tool-output-seen nil)
+                  (empty-tool-final-attempted nil)
                   loop)
              (cl-labels
                  ((current-turn-id
@@ -558,6 +580,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                           (magent-agent-info-permission agent)
                           request-state)
                          (lambda (outcome)
+                           (setq tool-output-seen t)
                            (if (and (eq (magent-agent-loop-status loop)
                                         'failed)
                                     (stringp (plist-get outcome :result)))
@@ -583,11 +606,24 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                               (funcall (or ui-callback
                                            #'magent-ui-insert-streaming)
                                        ui-text))))
-                        (magent-request-context-notify
-                         request-state 'assistant-complete
-                         :text (magent-agent-loop-result loop))
-                        (finish-turn 'completed
-                                     (magent-agent-loop-result loop)))
+                        (if (and tool-output-seen
+                                 (not empty-tool-final-attempted)
+                                 (string-empty-p
+                                  (or (magent-agent-loop-result loop) "")))
+                            (progn
+                              (setq empty-tool-final-attempted t)
+                              (finish-streaming)
+                              (setf (magent-agent-loop-request loop)
+                                    (magent-agent--empty-tool-final-request
+                                     loop))
+                              (magent-log
+                               "WARN retrying empty final response after tool output")
+                              (sample))
+                          (magent-request-context-notify
+                           request-state 'assistant-complete
+                           :text (magent-agent-loop-result loop))
+                          (finish-turn 'completed
+                                       (magent-agent-loop-result loop))))
                       ('error
                         (magent-request-context-notify
                          request-state 'turn-error
