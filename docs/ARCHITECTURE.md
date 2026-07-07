@@ -114,7 +114,3 @@ The practical consequence is that new work should preserve these boundaries:
 - Keep durable workflow state in the ledger.
 - Keep child-agent behavior aligned with `docs/AGENT_JOBS.md`.
 - Treat permissions as confirmation/audit workflow, not as sandbox security.
-
-## Source Note
-
-This overview incorporates the project architecture note from `/home/jamie/opt/org-root/roam/2026-03-24t1544.org` and updates it against the current checkout.
