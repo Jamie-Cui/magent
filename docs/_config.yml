@@ -1,0 +1,15 @@
+title: Magent Documentation
+description: Emacs-native AI coding agent documentation
+lang: en
+markdown: kramdown
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+
+exclude:
+  - vendor
+  - Gemfile
+  - Gemfile.lock

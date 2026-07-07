@@ -1,3 +1,9 @@
+---
+title: Troubleshooting Guide
+lang: en
+alt_url: /TROUBLESHOOTING.zh.html
+---
+
 # Troubleshooting Guide
 
 ## Active Workflow Notes
@@ -267,7 +273,7 @@ Check agent permissions: `M-x magent-show-current-agent`
 **Diagnosis:**
 Check session directory exists and is writable:
 ```elisp
-magent-session-directory  ; Default: ~/.emacs.d/magent-sessions/
+magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
 ```
 
 **Solution:**

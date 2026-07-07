@@ -1,3 +1,9 @@
+---
+title: Contributing to Magent
+lang: en
+alt_url: /CONTRIBUTING.zh.html
+---
+
 # Contributing to Magent
 
 Thank you for your interest in contributing to magent! This guide will help you get started.
@@ -38,11 +44,11 @@ checkouts.
 ## Code Style
 
 ### Naming Conventions
-- Custom functions/variables: `+module/name` prefix
-- Advice functions: `-a` suffix (e.g., `+evil-join-a`)
-- Hook functions: `-h` suffix (e.g., `+enable-delete-trailing-whitespace-h`)
-- Internal functions: `magent-module--function` (double dash)
-- Public API: `magent-module-function` (single dash)
+- Internal functions and variables use `magent-module--name` with a double dash.
+- Public functions, commands, and variables use `magent-module-name` with a single dash.
+- Tool implementations follow `magent-tools--<name>` for the internal function and `magent-tools--<name>-tool` for the `gptel-tool` variable.
+- Optional integration code stays in its own module, for example Evil-specific behavior belongs in `magent-evil.el`.
+- Do not use personal-config prefixes such as `+module/name` in Magent source files.
 
 ### File Headers
 All files must include:

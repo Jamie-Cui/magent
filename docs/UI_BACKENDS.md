@@ -1,3 +1,9 @@
+---
+title: Magent UI Backends
+lang: en
+alt_url: /UI_BACKENDS.zh.html
+---
+
 # Magent UI Backends
 
 Magent now treats UI as a backend boundary.  The default backend is

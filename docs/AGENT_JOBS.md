@@ -1,3 +1,9 @@
+---
+title: Child-Agent Jobs
+lang: en
+alt_url: /AGENT_JOBS.zh.html
+---
+
 # Child-Agent Jobs
 
 Magent uses durable child-agent jobs for collaborative agent work. This replaces the old one-shot `delegate` tool with a small lifecycle that the root agent can coordinate explicitly.

@@ -1,3 +1,9 @@
+---
+title: Agent Workflow State Machine
+lang: en
+alt_url: /AGENT_WORKFLOW.zh.html
+---
+
 # Agent Workflow State Machine
 
 Magent now models the agent loop as an explicit `thread -> turn -> item`

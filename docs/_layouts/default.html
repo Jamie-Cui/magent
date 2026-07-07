@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="{{ page.lang | default: site.lang | default: 'en' }}">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% if page.title %}{{ page.title }} | {% endif %}{{ site.title }}</title>
+    <meta name="description" content="{{ page.description | default: site.description }}">
+    <link rel="stylesheet" href="{{ '/assets/css/site.css' | relative_url }}">
+  </head>
+  <body>
+    <a class="skip-link" href="#content">Skip to content</a>
+    <header class="topbar">
+      <a class="brand" href="{% if page.lang == 'zh' %}{{ '/zh/' | relative_url }}{% else %}{{ '/' | relative_url }}{% endif %}">
+        <span class="brand-mark">M</span>
+        <span>
+          <strong>Magent</strong>
+          <small>eMacs-native LLM AGENT</small>
+        </span>
+      </a>
+      <nav class="top-actions" aria-label="Language">
+        {% if page.alt_url %}
+          <a class="language-switch" href="{{ page.alt_url | relative_url }}">
+            {% if page.lang == "zh" %}English{% else %}中文{% endif %}
+          </a>
+        {% elsif page.lang == "zh" %}
+          <a class="language-switch" href="{{ '/' | relative_url }}">English</a>
+        {% else %}
+          <a class="language-switch" href="{{ '/zh/' | relative_url }}">中文</a>
+        {% endif %}
+      </nav>
+    </header>
+
+    {% if page.lang == "zh" %}
+      {% assign nav_items = site.data.navigation.zh %}
+    {% else %}
+      {% assign nav_items = site.data.navigation.en %}
+    {% endif %}
+    <div class="page-shell">
+      <aside class="sidebar" aria-label="Documentation">
+        <nav>
+          {% for item in nav_items %}
+            <a href="{{ item.url | relative_url }}"
+               {% if page.url == item.url %}aria-current="page"{% endif %}>
+              {{ item.title }}
+            </a>
+          {% endfor %}
+        </nav>
+      </aside>
+      <main id="content" class="content">
+        <article class="doc-card">
+          {{ content }}
+        </article>
+      </main>
+    </div>
+  </body>
+</html>

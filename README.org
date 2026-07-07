@@ -109,7 +109,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-tool-call-prompt~      | ~"tool"~                      | Tag text in tool call lines                                                           |
 | ~magent-error-prompt~          | ~"error"~                     | Tag text in error section headers                                                     |
 | ~magent-agent-directory~       | ~".magent/agent"~             | Relative path to custom agent dir                                                     |
-| ~magent-session-directory~     | =~/.emacs.d/magent-sessions/= | Base directory for global sessions and per-project session subdirectories             |
+| ~magent-session-directory~     | =~/.emacs.d/magent/sessions/= | Base directory for global sessions and per-project session subdirectories             |
 | ~magent-audit-directory~       | ~nil~                         | Override directory for audit JSONL files; defaults to ~magent-session-directory/audit/~ |
 | ~magent-grep-program~          | ~"rg"~                        | Path to ripgrep binary                                                                |
 | ~magent-grep-max-matches~      | ~100~                         | Max matches from grep searches                                                        |
@@ -448,6 +448,15 @@ magent/
 
 * Development
 
+** Documentation Preview
+
+#+begin_src bash
+scripts/serve-docs-local.sh
+#+end_src
+
+By default this serves the GitHub Pages docs at =http://127.0.0.1:8099/=.
+Set =HOST= or =PORT= to override the bind address or preferred port.
+
 ** Build Commands
 
 #+begin_src bash
@@ -489,7 +498,7 @@ emacs -Q --batch -L . -L ~/path/to/gptel -f batch-byte-compile magent-foo.el
 
 * Session Persistence
 
-Sessions are automatically saved to =~/.emacs.d/magent-sessions/= (configurable). Each session maintains:
+Sessions are automatically saved to =~/.emacs.d/magent/sessions/= (configurable). Each session maintains:
 
 - Conversation history
 - Assigned agent

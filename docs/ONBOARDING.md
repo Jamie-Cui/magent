@@ -1,15 +1,21 @@
+---
+title: Magent Onboarding Guide
+lang: en
+alt_url: /ONBOARDING.zh.html
+---
+
 # Magent Onboarding Guide
 
-**Updated:** 2026-07-05
+**Updated:** 2026-07-07
 
 ## Project Overview
 
-**Magent** is an Emacs Lisp AI coding agent with multi-agent architecture and permission-based tool access.
+**Magent** is an Emacs Lisp AI coding agent with multi-agent architecture, a durable turn ledger, and permission-based tool access.
 
 - **Languages:** Emacs Lisp
 - **Primary Dependency:** [gptel](https://github.com/karthink/gptel) (handles all LLM communication)
 - **Requirements:** Emacs 29.1+, gptel, transient, compat, yaml, acp, agent-shell, ripgrep
-- **Purpose:** Provide AI-assisted coding capabilities within Emacs with fine-grained control over agent permissions and tool access
+- **Purpose:** Provide AI-assisted coding capabilities inside the live Emacs runtime, while keeping provider transport in gptel and keeping tool access explicit and auditable
 
 ## Current Agent Workflow
 
@@ -35,14 +41,16 @@ The foundation layer that initializes the system and manages settings.
 Manages conversation history, scoped overlays, and runtime state.
 
 **Key Files:**
-- `magent-session.el` — Conversation state with message list, JSON persistence, per-project sessions
+- `magent-thread.el` — Thread/turn/item ledger, status transitions, snapshot shape
+- `magent-turn.el` — Turn creation, queue/start/finish state transitions, dropped-turn handling
+- `magent-session.el` — Conversation projections, JSON persistence, per-project sessions
 - `magent-agent-job.el` — Durable child-agent job records and JSON shape
 - `magent-runtime.el` — Static initialization plus project-local overlay activation for agents, skills, and capabilities
 - `magent-runtime-api.el` — UI/backend-facing runtime session and prompt API
 - `magent-runtime-queue.el` — Global single-execution runtime queue with session-scoped cancellation
 - `magent-audit.el` — Persistent JSONL audit logging for permissions and sensitive actions
 
-**What it does:** Maintains conversation history scoped by project, persists to `~/.emacs.d/magent-sessions/`, stores durable child-agent jobs under `agent-jobs`, and activates or unloads project-local overlays as scope changes. Runtime UI backends submit work through `magent-runtime-api.el`; `magent-runtime-queue.el` owns queued/active turn state and session-scoped cancellation.
+**What it does:** Maintains ledger-backed conversation history scoped by project, persists to `~/.emacs.d/magent/sessions/` by default, stores durable child-agent jobs under `agent-jobs`, and activates or unloads project-local overlays as scope changes. Runtime UI backends submit work through `magent-runtime-api.el`; `magent-runtime-queue.el` owns queued/active turn state and session-scoped cancellation.
 
 ### Layer 3: Agent System
 
@@ -54,7 +62,7 @@ Multi-agent architecture with specialized agents for different tasks.
 - `magent-agent-file.el` — Loads custom agents from `.magent/agent/*.md` files
 - `magent-permission.el` — Rule-based tool access control (allow/deny/ask with glob patterns)
 
-**What it does:** Provides specialized agents (build, plan, explore, general, etc.) with different capabilities. Permission system filters tools per agent. Custom agents extend functionality via markdown files with YAML frontmatter.
+**What it does:** Provides specialized agents (`build`, `plan`, `explore`, `general`, and hidden utility agents) with different capabilities. Permission system filters tools per agent. Custom agents extend functionality via markdown files with YAML frontmatter.
 
 **Current behavior:** Magent replaced the old one-shot `delegate` surface with durable child-agent jobs that have stable ids, status, transcript/result storage, and parent/child session relationships.
 
@@ -161,7 +169,7 @@ Skills load from: (1) built-in `skills/`, (2) user `~/.emacs.d/magent-skills/`, 
 Sessions are project-aware:
 - In a project: state scoped to that project
 - Outside projects: global session fallback
-- Persists to `~/.emacs.d/magent-sessions/projects/<sha1>/`
+- Persists to `~/.emacs.d/magent/sessions/projects/<sha1>/`
 - Stores durable child-agent job metadata, result/error state, and transcripts in `agent-jobs`
 
 ### Lazy Initialization
@@ -169,6 +177,10 @@ Sessions are project-aware:
 Mode enable is lightweight (modeline only). Full initialization (registry, skills) happens on first command via `magent--ensure-initialized`.
 
 ## Guided Tour
+
+### Step 0: Read the Architecture Boundary
+
+Start with `docs/ARCHITECTURE.md` for the product boundary: Magent keeps provider plumbing in gptel, runs the agent loop in Emacs Lisp, exposes Emacs runtime context through tools, and does not implement Codex-style OS sandboxing.
 
 ### Step 1: Start with the Entry Point
 

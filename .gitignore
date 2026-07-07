@@ -25,6 +25,7 @@ Thumbs.db
 # Test artifacts
 test-output/
 coverage/
+docs/_site/
 
 # Session files
 .emacs.desktop

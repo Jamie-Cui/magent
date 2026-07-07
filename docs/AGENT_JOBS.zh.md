@@ -1,0 +1,88 @@
+---
+title: Child-Agent Jobs
+lang: zh
+alt_url: /AGENT_JOBS.html
+---
+
+# Child-Agent Jobs
+
+Magent 使用 durable child-agent jobs 来支持协作式 agent 工作。它替代了旧的一次性 `delegate` 工具，让 root agent 能显式协调子任务生命周期。
+
+## 工具面
+
+公开的 child-agent 工具面如下：
+
+| 工具 | 作用 |
+| --- | --- |
+| `spawn_agent` | 启动一个 child-agent job，并返回稳定 job id。 |
+| `send_agent_message` | 向已有 child job 发送 follow-up 输入。 |
+| `wait_agent` | 等待一个或多个 job，并返回状态/结果。 |
+| `list_agents` | 列出当前 parent session 下的 child jobs。 |
+| `close_agent` | 关闭 job，并在存在 live request 时 abort。 |
+
+这些工具共用 `agent` permission key。旧的 `delegate` 工具不保留 compatibility wrapper。
+
+## 数据模型
+
+`magent-agent-job.el` 定义 `magent-agent-job`，这是 child job 的 durable record。每个 job 保存：
+
+- `id`
+- `parent-session-id`
+- `agent-name`
+- `task-name`
+- `status`
+- `prompt`
+- `created-at`
+- `updated-at`
+- `transcript`
+- `result`
+- `error`
+- `metadata`
+
+合法状态包括 `queued`、`running`、`waiting`、`completed`、`failed`、`closed` 和 `cancelled`。
+
+Parent `magent-session` 会在 `agent-jobs` slot 中持久化 child jobs。active loop 的 runtime-only state 存在 `magent-tools--agent-job-runtimes`，以 job id 为 key。这样 parent session JSON 足够恢复和检查 job 元数据，同时不会尝试序列化 live request handle。
+
+## 运行流程
+
+1. `spawn_agent` 在 parent session 中创建 `magent-agent-job`。
+2. child request 通过 `magent-agent-loop.el` 中的 Magent-owned loop 启动。
+3. child 使用 summary-only UI，不把完整 transcript 写进 parent conversation body。
+4. completion、failure、close 和 wait event 会更新 durable job record。
+5. tool result 向 root agent 返回 model-visible JSON summary。
+
+Provider 边界仍然是 `magent-llm-gptel.el` 里的 `gptel-request`。Magent 自己负责 orchestration、tool dispatch、persistence、abort 和 child-job coordination。
+
+## 继承
+
+Child jobs 会在合理范围内继承 parent request context：
+
+- project root 和 session scope
+- backend/model names
+- temperature 和 top-p
+- active skill names 和 capability context
+- 受 parent 与 child agent 双方约束后的 effective permission profile
+- request depth，用于递归 spawn guard
+
+`magent-child-agent-max-depth` 控制递归 spawn。默认允许 root 创建直接 children，但阻止 child 再继续创建 child。
+
+## UI 与恢复
+
+Parent Magent UI 会渲染紧凑的 child-agent 生命周期更新。完整 child prompt、metadata、result/error 和 transcript 可以通过以下入口检查：
+
+- `M-x magent-show-agent-transcript`
+- `C-c m ?` 或 legacy `*magent*` 中的 `?`，再按 transient 路径 `S j`
+
+`magent-resume-session` 会随 parent session 恢复持久化的 `agent-jobs`。Emacs 重启后不会恢复 active request handle，但保存的 job metadata、result/error 和 transcripts 仍可检查。
+
+## 边界
+
+这个生命周期刻意保留 Magent 的 Emacs-native 工作流：
+
+- live Emacs buffers
+- `emacs_eval`
+- agent-shell UI 和隔离的 legacy workspace/compose backend
+- project-scoped sessions
+- gptel transport
+
+Codex sandbox、seatbelt、bubblewrap 和 shell-isolation parity 不在范围内。

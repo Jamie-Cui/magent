@@ -1,0 +1,205 @@
+---
+title: 贡献 Magent
+lang: zh
+alt_url: /CONTRIBUTING.html
+---
+
+# 贡献 Magent
+
+感谢你愿意贡献 magent。本指南说明开发环境、代码风格、测试方式和 PR 流程。
+
+## 当前重点
+
+Magent 的 Codex-style agent workflow alignment 已实现为 durable child-agent/job lifecycle。修改 agent lifecycle 行为前，请先阅读并更新 `docs/AGENT_JOBS.md`。
+
+当前 lifecycle surface 是 `spawn_agent`、`send_agent_message`、`wait_agent`、`list_agents`、`close_agent`，以及用于检查 transcript 的 `magent-show-agent-transcript`。Codex sandboxing、seatbelt、bubblewrap 和 shell isolation parity 不在范围内。
+
+## 开发环境
+
+### 前置依赖
+
+- Emacs 29.1+
+- gptel 0.9.8+
+- transient 0.7.8+
+- compat 30.1+
+- yaml 1.0+
+- acp 0.12.2+
+- agent-shell 0.57.1+
+- ripgrep，用于 `grep` tool
+
+### 构建
+
+```bash
+make compile    # Byte-compile all files
+make test-unit  # Run batch ERT unit tests
+make test       # Run unit tests plus deterministic live smoke tests
+make coverage   # Run ERT under built-in testcover
+make clean      # Remove compiled files
+```
+
+Makefile 会自动探测 `~/.emacs.d/elpa/` 下的 ELPA dependency directories。若要使用非标准 checkout，可显式传入 `GPTEL_DIR`、`TRANSIENT_DIR`、`COMPAT_DIR` 或 `YAML_DIR` 等变量。
+
+## 代码风格
+
+### 命名约定
+
+- 内部函数和变量使用 `magent-module--name`，双横线。
+- 公共函数、命令和变量使用 `magent-module-name`，单横线。
+- Tool implementation 使用 `magent-tools--<name>` 作为内部函数，`magent-tools--<name>-tool` 作为 `gptel-tool` 变量。
+- 可选 integration 放在独立模块中，例如 Evil-specific 行为属于 `magent-evil.el`。
+- 不要在 Magent source files 中使用个人配置风格前缀，如 `+module/name`。
+
+### 文件头
+
+所有 Elisp 文件必须包含：
+
+```elisp
+;;; filename.el --- Brief description  -*- lexical-binding: t; -*-
+```
+
+每个 Elisp source file 也应保留 SPDX license identifier，方便 melpazoid/package-lint 检测。
+
+### 文档
+
+- 公共函数需要 docstring。
+- 用 `;;;` 做 section headers。
+- 用 `;;` 做 inline comments。
+- 用户可见变化更新 `README.org`。
+- 面向开发者的变化更新 `AGENTS.md` 或 `docs/` 中对应文档。
+- child-agent lifecycle 变化更新 `docs/AGENT_JOBS.md`。
+- plan-driven 工作中断前，更新相关 plan 或 task note。
+
+## 测试
+
+### 运行测试
+
+```bash
+# Full suite
+make test
+
+# Unit tests only
+make test-unit
+
+# Coverage summary
+make coverage
+
+# Single test by regexp
+emacs -Q --batch -L . -L ~/.emacs.d/elpa/gptel-* \
+  -l ert -l test/magent-test.el \
+  --eval '(ert-run-tests-batch "test-name-regexp")'
+```
+
+### 编写测试
+
+- 用 `cl-letf` mock `gptel-request`。
+- 把 registries 绑定到 fresh state。
+- 调用 `magent-session-reset` 清空 global state。
+- 同时测试 success 和 error paths。
+
+### Live Testing
+
+```bash
+# Reload changed file
+emacsclient --eval '(load "/path/to/file.el" nil t)'
+
+# Clear session
+emacsclient --eval '(magent-clear-session)'
+
+# Test prompts:
+# - Non-tool: "你好"
+# - Tool-use: "帮我看下 emacs 里面有多少 buffer"
+# - Multi-step: "帮我在 emacs 里面打开 magent 的 magit buffer"
+```
+
+对真实配置的 gptel provider 跑 live tests 前，先在 running Emacs 中开启 `debug-on-error`：
+
+```bash
+emacsclient --eval '(setq debug-on-error t)'
+```
+
+运行期间和结束后检查 `*Messages*`、`*Backtrace*`、`*magent-log*` 或 `*magent-live-test-log*`，以及 `*gptel-log*`。不要把未检查的原始 `*gptel-log*` 贴进 issue 或 commit；其中可能包含 provider headers、request bodies 或 API key material。
+
+### 持续集成
+
+GitHub Actions 运行：
+
+- `test.yml`：安装 Emacs 29.4、安装依赖、byte-compile、unit tests、在临时 daemon 中跑 deterministic live smoke tests。
+- `coverage.yml`：运行 `make coverage` 并上传 `coverage/testcover-summary.tsv`。
+- `melpazoid.yml`：运行 MELPA-style package checks。
+
+melpazoid recipe 包含 `prompt.org`、`skills/` 和 `capabilities/`。这些是 bundled runtime data；只要 `magent-config.el`、`magent-skills.el` 或 `magent-capability.el` 继续依赖这些路径，就必须保留在 package recipe 里。
+
+Package metadata 保持集中在 `magent.el` 和 `magent-pkg.el`。不要在 secondary modules 中添加 `Package-Requires` headers；package-lint 会把 main file 之外的这些 headers 视为 ineffective。每个 Elisp 文件都应包含 SPDX license identifier。
+
+## Pull Request 流程
+
+1. **Fork and branch**：从 `dev` 创建 feature branch。
+2. **Make changes**：遵循代码风格并添加测试。
+3. **Test**：运行 `make test` 并做必要手动验证。
+4. **Document**：更新相关文档；构建元数据变化要同步更新 CI/package docs。
+5. **Commit**：使用 Conventional Commits，例如 `feat:`、`fix:`、`docs:`、`test:`。
+6. **Submit PR**：目标分支为 `dev`。
+
+## 可贡献方向
+
+### 高优先级
+
+- child-agent lifecycle polish 和 reliability，但不包含 sandbox parity。
+- 新增 tool implementations。
+- 性能优化。
+- 测试覆盖率提升。
+- 文档改进。
+
+### 中优先级
+
+- 新的 built-in agents。
+- Skill system 扩展。
+- UI 改进。
+- Error handling 优化。
+
+### 低优先级
+
+- 代码清理。
+- 重构。
+- 风格改进。
+
+## 架构指导
+
+### 新增 Tool
+
+1. 在 `magent-tools.el` 实现。
+2. 加入 `magent-enable-tools` default。
+3. 更新 agent permissions。
+4. 添加测试。
+5. 在 `README.org` 记录。
+
+Agent lifecycle tools 是特殊情况。如果工具参与 spawn、message、wait、list、resume、inspect 或 close child agents，需要保持实现和 `docs/AGENT_JOBS.md` 对齐，并更新相关测试。
+
+### 新增 Module
+
+1. 遵守 dependency graph，参考 `AGENTS.md`。
+2. 使用 `;;; -*- lexical-binding: t; -*-`。
+3. 显式 require dependencies。
+4. 必要时加入 `magent.el`。
+5. 在 `test/magent-test.el` 写测试。
+
+如果是新的 child-agent/job module，优先保持聚焦，例如使用 `magent-agent-job.el`，不要过早把生命周期逻辑塞进 `magent-tools.el`。
+
+### 修改 Agent Loop
+
+- Active request/tool-loop behavior 属于 `magent-agent-loop.el`。
+- Provider transport 继续使用 `magent-llm-gptel.el` 和 `gptel-request`。
+- 为 normalized events、tool queueing、permission decisions、abort behavior 和 session recording 加 focused tests。
+- 当 callback 可能在 interruption 后到达时，更新 request generation 和 live-request checks。
+- 不要重新引入已移除的 agent-loop modules；provider-specific transport handling 只放在 `magent-llm-gptel.el`。
+
+## 获取帮助
+
+- **Questions:** 开 GitHub discussion。
+- **Bugs:** 开 issue，并附 reproduction steps。
+- **Features:** 实现前先开 issue 讨论。
+- **Chat:** 在 issues/PRs 中讨论。
+
+## License
+
+提交贡献即表示你同意贡献内容以 GPL-3.0 许可发布。
