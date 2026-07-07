@@ -37,3 +37,4 @@ auto-save-list
 /.codex
 /magent-autoloads.el
 /magent-pkg.el
+/lisp/magent-autoloads.el
