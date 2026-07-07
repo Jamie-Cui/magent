@@ -84,7 +84,7 @@ make test-unit
 make coverage
 
 # Single test by regexp
-emacs -Q --batch -L . -L ~/.emacs.d/elpa/gptel-* \
+emacs -Q --batch -L lisp -L ~/.emacs.d/elpa/gptel-* \
   -l ert -l test/magent-test.el \
   --eval '(ert-run-tests-batch "test-name-regexp")'
 ```

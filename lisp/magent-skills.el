@@ -296,7 +296,15 @@ If SKILL-NAMES is a list, only include those skills."
 ;;; File-backed skills
 
 (defconst magent-skills--builtin-dir
-  (expand-file-name "skills" (file-name-directory (or load-file-name buffer-file-name)))
+  (let ((dir (file-name-directory (or load-file-name buffer-file-name))))
+    ;; In the git repo sources are under lisp/ and skills/ is at the
+    ;; root (one level up); after MELPA install lisp/*.el is flattened
+    ;; to the top level.  Try sibling first, then parent.
+    (or (let ((d (expand-file-name "skills" dir)))
+          (and (file-directory-p d) d))
+        (let ((d (expand-file-name "skills" (expand-file-name ".." dir))))
+          (and (file-directory-p d) d))
+        (expand-file-name "skills" dir)))
   "Directory containing built-in skills bundled with magent.")
 
 (defcustom magent-skill-directories

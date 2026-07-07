@@ -27,7 +27,7 @@ live/batch verification if any may be stale.
 Run a **single test** by regexp:
 
 ```bash
-emacs -Q --batch -L . -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'gptel-*' -type d | head -1) \
+emacs -Q --batch -L lisp -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'gptel-*' -type d | head -1) \
   -l ert -l test/magent-test.el --eval '(ert-run-tests-batch "test-name-regexp")'
 ```
 

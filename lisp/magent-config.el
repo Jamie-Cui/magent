@@ -76,8 +76,17 @@
   :group 'magent)
 
 (defvar magent--prompt-file
-  (expand-file-name "prompt.org"
-                    (file-name-directory (or load-file-name buffer-file-name)))
+  (let ((dir (file-name-directory (or load-file-name buffer-file-name))))
+    ;; prompt.org lives at the package root.  In the git repo sources are
+    ;; under lisp/ (one level down); after MELPA install lisp/*.el files
+    ;; are flattened to the top level.  Try sibling first, then parent.
+    (or (let ((f (expand-file-name "prompt.org" dir)))
+          (and (file-exists-p f) f))
+        (let ((f (expand-file-name "prompt.org"
+                                   (expand-file-name ".." dir))))
+          (and (file-exists-p f) f))
+        ;; Fallback: original location (lets the error surface if missing).
+        (expand-file-name "prompt.org" dir)))
   "Path to the system prompt file.")
 
 (defcustom magent-system-prompt

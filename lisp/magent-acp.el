@@ -169,10 +169,15 @@
 
 (defun magent-acp--session-update (client session-id update)
   "Send ACP session/update UPDATE for SESSION-ID through CLIENT."
-  (magent-acp--notify
-   client "session/update"
-   `((sessionId . ,session-id)
-     (update . ,update))))
+  (message "MAGENT-DEBUG session-update entry: session-id=%S update-keys=%S"
+           session-id (mapcar (lambda (c) (car c)) update))
+  (let ((notification `((sessionId . ,session-id)
+                        (update . ,update))))
+    (message "MAGENT-DEBUG session-update notify: notification-keys=%S"
+             (mapcar (lambda (c) (car c)) notification))
+    (magent-acp--notify
+     client "session/update"
+     notification)))
 
 (defun magent-acp--tool-kind (kind)
   "Return ACP tool kind string for Magent KIND."
@@ -219,6 +224,10 @@
                   (content . ,(magent-acp--content-block text)))))))
           ('tool-call-start
            (reset-stream)
+           (message "MAGENT-DEBUG acp tool-call-start: tool-id=%S name=%S kind=%S"
+                    (plist-get event :tool-id)
+                    (plist-get event :name)
+                    (plist-get event :kind))
            (magent-acp--session-update
             client session-id
             `((sessionUpdate . "tool_call")
@@ -231,6 +240,11 @@
               (rawInput . ,(or (plist-get event :raw-input) [])))))
           ('tool-call-complete
            (reset-stream)
+           (message "MAGENT-DEBUG acp tool-call-complete: tool-id=%S name=%S status=%S preview-len=%d"
+                    (plist-get event :tool-id)
+                    (plist-get event :name)
+                    (plist-get event :status)
+                    (length (or (plist-get event :output-preview) "")))
            (magent-acp--session-update
             client session-id
             `((sessionUpdate . "tool_call_update")

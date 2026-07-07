@@ -119,6 +119,10 @@ isolated so UI/backend rendering cannot break the active agent turn."
       (condition-case err
           (funcall observer event)
         (error
+         (message "MAGENT-DEBUG runtime observer ERROR: type=%S err=%s"
+                  type (error-message-string err))
+         (let ((bt (with-output-to-string (backtrace))))
+           (message "MAGENT-DEBUG backtrace:\n%s" bt))
          (magent-log "ERROR request observer failed: %s"
                      (error-message-string err)))))
     t))

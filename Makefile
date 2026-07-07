@@ -17,7 +17,7 @@ YAML_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'yaml-[0-9]*' -
 LLAMA_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'llama-*' -type d 2>/dev/null | head -1)
 WITH_EDITOR_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'with-editor-*' -type d 2>/dev/null | head -1)
 
-LOADPATH = -L . \
+LOADPATH = -L lisp \
 	$(if $(GPTEL_DIR),-L $(GPTEL_DIR)) \
 	$(if $(TRANSIENT_DIR),-L $(TRANSIENT_DIR)) \
 	$(if $(ACP_DIR),-L $(ACP_DIR)) \
@@ -34,49 +34,49 @@ LOADPATH = -L . \
 BYTE_COMPILE_FLAGS = --eval "(setq byte-compile-error-on-warn nil)" \
 	--eval "(setq byte-compile-warnings '(not cl-functions obsolete))"
 
-SRCS = magent-config.el \
-       magent-json.el \
-       magent-lifecycle-events.el \
-       magent-audit.el \
-       magent-protocol.el \
-       magent-ledger.el \
-       magent-agent-job.el \
-       magent-thread.el \
-       magent-llm.el \
-       magent-llm-gptel.el \
-       magent-agent-loop.el \
-       magent-events.el \
-       magent-approval.el \
-       magent-file-loader.el \
-       magent-session.el \
-       magent-transcript-context.el \
-       magent-context.el \
-       magent-runtime.el \
-       magent-runtime-queue.el \
-       magent-tools.el \
-       magent-tool-runtime.el \
-       magent-tool-registry.el \
-       magent-tool-orchestrator.el \
-       magent-legacy-queue.el \
-       magent-turn.el \
-       magent-agent-info.el \
-       magent-agent-builtins.el \
-       magent-agent.el \
-       magent-runtime-api.el \
-       magent-acp.el \
-       magent-agent-shell.el \
-       magent-agent-types.el \
-       magent-agent-registry.el \
-       magent-agent-file.el \
-       magent-permission.el \
-       magent-markdown-to-org.el \
-       magent-md2org.el \
-       magent-ui.el \
-       magent-ui-legacy.el \
-       magent-evil.el \
-       magent-skills.el \
-       magent-capability.el \
-       magent.el
+SRCS = lisp/magent-config.el \
+       lisp/magent-json.el \
+       lisp/magent-lifecycle-events.el \
+       lisp/magent-audit.el \
+       lisp/magent-protocol.el \
+       lisp/magent-ledger.el \
+       lisp/magent-agent-job.el \
+       lisp/magent-thread.el \
+       lisp/magent-llm.el \
+       lisp/magent-llm-gptel.el \
+       lisp/magent-agent-loop.el \
+       lisp/magent-events.el \
+       lisp/magent-approval.el \
+       lisp/magent-file-loader.el \
+       lisp/magent-session.el \
+       lisp/magent-transcript-context.el \
+       lisp/magent-context.el \
+       lisp/magent-runtime.el \
+       lisp/magent-runtime-queue.el \
+       lisp/magent-tools.el \
+       lisp/magent-tool-runtime.el \
+       lisp/magent-tool-registry.el \
+       lisp/magent-tool-orchestrator.el \
+       lisp/magent-legacy-queue.el \
+       lisp/magent-turn.el \
+       lisp/magent-agent-info.el \
+       lisp/magent-agent-builtins.el \
+       lisp/magent-agent.el \
+       lisp/magent-runtime-api.el \
+       lisp/magent-acp.el \
+       lisp/magent-agent-shell.el \
+       lisp/magent-agent-types.el \
+       lisp/magent-agent-registry.el \
+       lisp/magent-agent-file.el \
+       lisp/magent-permission.el \
+       lisp/magent-markdown-to-org.el \
+       lisp/magent-md2org.el \
+       lisp/magent-ui.el \
+       lisp/magent-ui-legacy.el \
+       lisp/magent-evil.el \
+       lisp/magent-skills.el \
+       lisp/magent-capability.el \
+       lisp/magent.el
 
 COMPILED = $(SRCS:.el=.elc)
 
@@ -100,7 +100,7 @@ help:
 compile: $(COMPILED)
 	@echo "Compilation complete: $(words $(COMPILED)) files"
 
-%.elc: %.el
+lisp/%.elc: lisp/%.el
 	@echo "Compiling $<..."
 	@out=$$($(EMACS_BATCH) $(LOADPATH) $(BYTE_COMPILE_FLAGS) -f batch-byte-compile $< 2>&1); \
 	status=$$?; \

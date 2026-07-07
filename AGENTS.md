@@ -25,12 +25,12 @@ The Makefile auto-detects dependency paths (`gptel`, `transient`, `acp`, `shell-
 
 Single-file compilation:
 ```bash
-emacs -Q --batch -L . -L ~/path/to/gptel -f batch-byte-compile magent-foo.el
+emacs -Q --batch -L lisp -L ~/path/to/gptel -f batch-byte-compile lisp/magent-foo.el
 ```
 
 Run a single test by regexp:
 ```bash
-emacs -Q --batch -L . -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'gptel-*' -type d | head -1) \
+emacs -Q --batch -L lisp -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'gptel-*' -type d | head -1) \
   -l ert -l test/magent-test.el --eval '(ert-run-tests-batch "test-name-regexp")'
 ```
 

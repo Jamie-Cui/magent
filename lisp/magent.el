@@ -72,6 +72,14 @@
 
 ;;; Code:
 
+;; Ensure the lisp/ directory is on load-path so sibling modules are
+;; found.  When installed via package.el (MELPA flattens lisp/*.el to
+;; the top level), this is a harmless no-op since the package root is
+;; already on load-path.
+(eval-and-compile
+  (when load-file-name
+    (add-to-list 'load-path (file-name-directory load-file-name))))
+
 ;; Required modules
 (require 'transient)
 (require 'magent-config)

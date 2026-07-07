@@ -5875,7 +5875,7 @@ active, so an activated input method (e.g. rime) stayed on after submit."
 (ert-deftest magent-test-config-reload-preserves-ui-logger ()
   "Test reloading config does not clobber the UI log implementation."
   (require 'magent-ui)
-  (let* ((config-file (expand-file-name "magent-config.el"
+  (let* ((config-file (expand-file-name "lisp/magent-config.el"
                                         magent-test--root-directory))
          (buffer (magent-ui-get-log-buffer))
          (before-file (symbol-file 'magent-log 'defun))
