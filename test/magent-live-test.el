@@ -64,7 +64,9 @@
                      "\\`with-editor-"))
     (magent-live-test--add-load-path
      (magent-live-test--first-elpa-directory pattern)))
-  (magent-live-test--add-load-path magent-live-test--root-directory))
+  (magent-live-test--add-load-path magent-live-test--root-directory)
+  (magent-live-test--add-load-path
+   (expand-file-name "lisp" magent-live-test--root-directory)))
 
 (defun magent-live-test--load-source-file (file)
   "Load FILE from the repository root, bypassing stale .elc files."
@@ -107,8 +109,8 @@
     "lisp/magent-agent.el"
     "lisp/magent-runtime-api.el"
     "lisp/magent-acp.el"
-    "lisp/magent-agent-shell.el"
     "lisp/magent-skills.el"
+    "lisp/magent-agent-shell.el"
     "lisp/magent-capability.el"
     "lisp/magent-ui.el"
     "lisp/magent.el")
