@@ -7060,6 +7060,42 @@ tolerate leading whitespace."
      'test-error)
     (should (equal received '(test-error nil)))))
 
+(ert-deftest magent-test-acp-notify-runs-in-client-context-buffer ()
+  "Test ACP notifications run in the agent-shell client buffer."
+  (require 'magent-acp)
+  (let ((buffer (generate-new-buffer "*magent-acp-notify-test*"))
+        observed-buffer)
+    (unwind-protect
+        (let ((client `((:context-buffer . ,buffer)
+                        (:notification-handlers
+                         . (,(lambda (_notification)
+                               (setq observed-buffer (current-buffer)))))
+                        (:request-handlers . nil))))
+          (with-temp-buffer
+            (magent-acp--notify client "session/update" nil))
+          (should (eq observed-buffer buffer)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-acp-raw-input-object-normalizes-tool-args ()
+  "Test ACP rawInput is an alist object, not a Magent plist."
+  (require 'magent-acp)
+  (let ((raw-input (magent-acp--raw-input-object
+                    '(:command "pwd"
+                      :timeout nil
+                      :count 2
+                      :flag t
+                      :nested (:path "/tmp")))))
+    (should (equal raw-input
+                   '((command . "pwd")
+                     (count . 2)
+                     (flag . t)
+                     (nested . ((path . "/tmp"))))))
+    (should (equal (mapcar #'car raw-input)
+                   '(command count flag nested)))
+    (should (equal (map-elt raw-input 'command) "pwd"))
+    (should-not (assq 'timeout raw-input))))
+
 (ert-deftest magent-test-acp-session-prompt-responds-after-runtime-completes ()
   "Test ACP prompt requests remain pending until the runtime turn completes."
   (require 'magent-acp)
@@ -7187,6 +7223,77 @@ tolerate leading whitespace."
                      "\n\nworld"))
       (should (equal (map-nested-elt (nth 2 updates) '(content text))
                      "thought")))))
+
+(ert-deftest magent-test-acp-observer-normalizes-tool-call-raw-input ()
+  "Test tool_call updates send agent-shell-compatible rawInput."
+  (require 'magent-acp)
+  (let* (notifications
+         (client `((:notification-handlers
+                    . (,(lambda (notification)
+                          (push notification notifications))))
+                   (:request-handlers . nil)))
+         (observer (magent-acp--observer client "session-1")))
+    (funcall observer
+             '(:type tool-call-start
+               :tool-id "tool-1"
+               :name "bash"
+               :kind bash
+               :summary "pwd"
+               :raw-input (:command "pwd"
+                           :timeout nil
+                           :reason "Print current directory")))
+    (let* ((update (map-nested-elt (car notifications) '(params update)))
+           (raw-input (map-elt update 'rawInput)))
+      (should (equal (map-elt update 'sessionUpdate) "tool_call"))
+      (should (equal raw-input
+                     '((command . "pwd")
+                       (reason . "Print current directory"))))
+      (should (equal (map-elt raw-input 'command) "pwd"))
+      (should (equal (mapcar #'car raw-input) '(command reason))))))
+
+(ert-deftest magent-test-acp-approval-provider-normalizes-raw-input ()
+  "Test permission requests expose rawInput as an ACP object."
+  (require 'magent-acp)
+  (let* (requests
+         (client `((:notification-handlers . nil)
+                   (:request-handlers
+                    . (,(lambda (request)
+                          (push request requests)))))))
+    (funcall (magent-acp--approval-provider client "session-1")
+             '(:request-id "request-1"
+               :tool-name "bash"
+               :summary "pwd"
+               :perm-key bash
+               :args (:command "pwd" :timeout nil)))
+    (let ((raw-input (map-nested-elt (car requests)
+                                     '(params toolCall rawInput))))
+      (should (equal raw-input '((command . "pwd"))))
+      (should (equal (map-elt raw-input 'command) "pwd")))))
+
+(ert-deftest magent-test-acp-session-replay-normalizes-tool-raw-input ()
+  "Test replayed tool calls expose rawInput as an ACP object."
+  (require 'magent-acp)
+  (let* (notifications
+         (client `((:notification-handlers
+                    . (,(lambda (notification)
+                          (push notification notifications))))
+                   (:request-handlers . nil)))
+         (item (magent-thread-item-create
+                :id "item-1"
+                :call-id "tool-1"
+                :type 'tool
+                :status 'completed
+                :name "bash"
+                :input '(:command "pwd" :timeout nil)
+                :output "/home/jamie")))
+    (magent-acp--emit-item-replay client "session-1" item)
+    (let* ((updates (mapcar (lambda (notification)
+                              (map-nested-elt notification '(params update)))
+                            (nreverse notifications)))
+           (tool-call (car updates))
+           (raw-input (map-elt tool-call 'rawInput)))
+      (should (equal (map-elt tool-call 'sessionUpdate) "tool_call"))
+      (should (equal raw-input '((command . "pwd")))))))
 
 (ert-deftest magent-test-acp-response-sender-resolves-approval ()
   "Test ACP permission responses resolve Magent approval requests."

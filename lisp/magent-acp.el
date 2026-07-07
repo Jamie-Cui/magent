@@ -19,6 +19,7 @@
 (require 'magent-approval)
 (require 'magent-agent-registry)
 (require 'magent-config)
+(require 'magent-json)
 (require 'magent-runtime-api)
 (require 'magent-session)
 (require 'magent-ledger)
@@ -100,6 +101,80 @@
            (map-elt value (intern (substring (symbol-name key) 1))))
       (and (symbolp key)
            (map-elt value (intern (concat ":" (symbol-name key)))))))
+
+(defun magent-acp--raw-input-key (key)
+  "Return KEY as an ACP object key symbol."
+  (cond
+   ((keywordp key) (intern (substring (symbol-name key) 1)))
+   ((symbolp key) key)
+   ((stringp key) (intern key))
+   (t (intern (format "%s" key)))))
+
+(defun magent-acp--raw-input-value (value)
+  "Return VALUE converted for an ACP `rawInput' object."
+  (cond
+   ((null value) :null)
+   ((or (stringp value) (numberp value)
+        (eq value t)
+        (eq value :json-false)
+        (eq value :null))
+    value)
+   ((symbolp value)
+    (magent-json-safe-name value))
+   ((magent-json--plist-p value)
+    (magent-acp--raw-input-object value))
+   ((magent-json--alist-p value)
+    (magent-acp--raw-input-object value))
+   ((hash-table-p value)
+    (magent-acp--raw-input-object value))
+   ((vectorp value)
+    (vconcat (mapcar #'magent-acp--raw-input-value (append value nil))))
+   ((consp value)
+    (vconcat (mapcar #'magent-acp--raw-input-value value)))
+   (t
+    (format "%S" value))))
+
+(defun magent-acp--raw-input-object (value)
+  "Return VALUE as an agent-shell-compatible ACP `rawInput' object.
+
+Magent stores tool arguments internally as keyword plists, while
+agent-shell treats ACP `rawInput' as a JSON object represented by
+an alist.  Normalize at the ACP boundary so agent-shell can read,
+format, and transcript tool parameters without tripping over plist
+keywords."
+  (cond
+   ((null value) [])
+   ((and (vectorp value) (= (length value) 0)) [])
+   ((magent-json--plist-p value)
+    (let (out)
+      (while value
+        (let ((key (pop value))
+              (val (pop value)))
+          (unless (null val)
+            (push (cons (magent-acp--raw-input-key key)
+                        (magent-acp--raw-input-value val))
+                  out))))
+      (nreverse out)))
+   ((magent-json--alist-p value)
+    (delq nil
+          (mapcar (lambda (entry)
+                    (unless (null (cdr entry))
+                      (cons (magent-acp--raw-input-key (car entry))
+                            (magent-acp--raw-input-value (cdr entry)))))
+                  value)))
+   ((hash-table-p value)
+    (let (out)
+      (maphash (lambda (key val)
+                 (unless (null val)
+                   (push (cons (magent-acp--raw-input-key key)
+                               (magent-acp--raw-input-value val))
+                         out)))
+               value)
+      (sort out (lambda (a b)
+                  (string< (symbol-name (car a))
+                           (symbol-name (car b)))))))
+   (t
+    `((value . ,(magent-acp--raw-input-value value))))))
 
 (defun magent-acp--prompt-blocks (prompt)
   "Return PROMPT content blocks as a list."
@@ -244,7 +319,8 @@ Each handler runs inside the CLIENT's context buffer (via
                             "tool"))
               (kind . ,(magent-acp--tool-kind (plist-get event :kind)))
               (status . "in_progress")
-              (rawInput . ,(or (plist-get event :raw-input) [])))))
+              (rawInput . ,(magent-acp--raw-input-object
+                             (plist-get event :raw-input))))))
           ('tool-call-complete
            (reset-stream)
            (condition-case err
@@ -312,7 +388,7 @@ Each handler runs inside the CLIENT's context buffer (via
                       (kind . ,(magent-acp--tool-kind
                                 (plist-get request :perm-key)))
                       (status . "pending")
-                      (rawInput . ,args)))
+                      (rawInput . ,(magent-acp--raw-input-object args))))
          (options . ,(magent-acp--permission-options)))))))
 
 (defun magent-acp--permission-decision (response)
@@ -434,7 +510,8 @@ Each handler runs inside the CLIENT's context buffer (via
           (title . ,(or (magent-thread-item-name item) "tool"))
           (kind . "other")
           (status . "completed")
-          (rawInput . ,(or (magent-thread-item-input item) []))))
+          (rawInput . ,(magent-acp--raw-input-object
+                         (magent-thread-item-input item)))))
        (magent-acp--session-update
         client session-id
         `((sessionUpdate . "tool_call_update")
