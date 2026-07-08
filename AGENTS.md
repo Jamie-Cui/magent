@@ -9,7 +9,7 @@ Guidance for agentic coding tools working with Magent.
 - **Child-agent tools**: `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, `close_agent` replaced the old `delegate` tool. Do not reintroduce a compatibility wrapper unless explicitly requested.
 - **Interrupted work**: Update relevant docs or task notes before stopping so progress is recoverable from git.
 
-See `docs/AGENT_JOBS.md` and `docs/AGENT_WORKFLOW.md` for child-agent lifecycle details.
+See `docs/AGENT_JOBS.org` and `docs/AGENT_WORKFLOW.org` for child-agent lifecycle details.
 
 ## Build Commands
 
@@ -70,7 +70,7 @@ After elisp code changes, test in the running Emacs via `emacsclient --eval`:
 4. Check `*magent*`, `*magent-log*`, and `*Messages*` for errors
 
 For real gptel/tool debugging, prefer an isolated server and the playbook in
-`docs/TROUBLESHOOTING.md#live-emacs-tests-fail-or-hang`. Key rules:
+`docs/TROUBLESHOOTING.org#live-emacs-tests-fail-or-hang`. Key rules:
 - Use `emacs --daemon=magent-live-test`; do not risk hanging or killing the main Emacs.
 - Invoke make targets with `EMACSCLIENT="emacsclient -s magent-live-test"` when testing against that daemon.
 - Load `test/magent-live-test.el`, run `magent-live-test-reload-source`, and verify `magent-live-test--repo-source-summary` points at this checkout rather than `~/.emacs.d/elpa/magent`.
@@ -136,7 +136,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
    - `magent-ui-legacy.el` contains the old special-mode workspace, compose buffer, timeline rendering, transient menu, and legacy prompt dispatch
    - Plain agent-shell usage must not load `magent-ui-legacy.el`; legacy-only commands load it lazily
    - Per-request legacy skill/agent overrides still use the legacy dispatch path until agent-shell has equivalent UI controls
-   - See `docs/UI_BACKENDS.md` for the boundary contract
+   - See `docs/UI_BACKENDS.org` for the boundary contract
 
 4. **Legacy UI** (`magent-ui-legacy.el`): The retained workspace derives from `special-mode` (`magent-output-mode`) and renders a read-only **Magit-style chronological timeline** from the ledger. Prompt composition lives in a scope-specific `magent-compose-mode` buffer.
    - Workspace restore is ledger-driven; `buffer-content` is legacy fallback data and is no longer the UI source of truth

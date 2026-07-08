@@ -1,0 +1,63 @@
+#+title: Magent UI Backends
+#+magent_lang: en
+#+magent_alt_url: /UI_BACKENDS.zh.html
+#+options: toc:nil num:nil
+
+Magent now treats UI as a backend boundary.  The default backend is
+~agent-shell~, connected through an in-process ACP adapter.  The old
+workspace/compose UI is retained as a legacy backend in one file so it can be
+removed later without breaking the agent-shell + ACP + runtime path.
+
+* Modules
+
+- ~magent-ui.el~ is the thin public command router, logger, compatibility shim,
+  and ~magent-ui-backend~ switch point.
+- ~magent-agent-shell.el~ registers the Magent ~agent-shell~ config and creates
+  an in-process ACP client.
+- ~magent-acp.el~ implements the in-process ACP request, notification, response,
+  permission, and session/update adapter.
+- ~magent-runtime-api.el~ is the UI-neutral runtime/session API for UI backends.
+- ~magent-runtime-queue.el~ owns the global single-execution queue and
+  session-scoped cancellation.
+- ~magent-ui-legacy.el~ contains the old special-mode workspace, compose buffer,
+  timeline rendering, transient menu, and legacy prompt dispatch.
+
+* Default Flow
+
+1. Public commands such as ~magent-dwim~ and plain ~magent-ui-dispatch-prompt~
+   enter ~magent-ui.el~.
+2. When ~magent-ui-backend~ is ~agent-shell~ and no legacy-only per-request
+   agent override is present, the command routes to
+   ~magent-agent-shell.el~.
+3. ~agent-shell~ calls the Magent in-process ACP client from ~magent-acp.el~.
+4. ACP session/prompt submits to ~magent-runtime-api.el~.
+5. The runtime queue starts exactly one active turn at a time, builds a
+   ~magent-request-context~ with ~:ui-visibility 'none~, and calls
+   ~magent-agent-run-turn~.
+6. The agent loop emits Magent-native observer events; ~magent-acp.el~ converts
+   them to ACP ~session/update~ messages for agent-shell.
+7. ACP prompt requests remain pending until the corresponding Magent turn
+   completes, fails, or is cancelled.
+
+* Legacy Boundary
+
+~magent-ui-legacy.el~ is loaded lazily.  Plain agent-shell usage should not load
+it.  Legacy-only commands still load it on demand, including the old
+workspace/compose buffer, legacy transient menu variants, and commands that
+depend on per-request agent overrides.
+
+The core runtime path must not depend on ~magent-ui-legacy.el~.  Keep new
+backend-facing behavior in ~magent-runtime-api.el~ or ~magent-acp.el~, and keep
+agent-shell-specific behavior in ~magent-agent-shell.el~.
+
+* Current Limitations
+
+- The first implementation uses a hard dependency on ~agent-shell~ and ~acp~.
+- Runtime execution is a global single-execution queue.
+- Cancellation is session-scoped: ACP cancellation for one session cancels that
+  session's active and queued submissions without removing other sessions'
+  queued work.
+- Per-request instruction skill overrides and skill commands are supported by
+  the agent-shell backend.  Per-request agent overrides still use the legacy
+  dispatch path until agent-shell exposes equivalent controls.
+- ~magent-ui-backend~ can be set to ~legacy~, but the default is ~agent-shell~.

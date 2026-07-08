@@ -26,6 +26,7 @@ Thumbs.db
 test-output/
 coverage/
 docs/_site/
+/_site/
 
 # Session files
 .emacs.desktop

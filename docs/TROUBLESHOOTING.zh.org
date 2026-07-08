@@ -1,0 +1,404 @@
+#+title: 故障排查指南
+#+magent_lang: zh
+#+magent_alt_url: /TROUBLESHOOTING.html
+#+options: toc:nil num:nil
+
+* 当前工作流提示
+
+如果你在调试 agent lifecycle 或 subagent 行为，先看 ~docs/AGENT_JOBS.org~ 。Magent 当前通过 ~spawn_agent~ 、 ~send_agent_message~ 、 ~wait_agent~ 、 ~list_agents~ 和 ~close_agent~ 使用 durable child-agent jobs；旧的一次性 ~delegate~ tool 不属于当前 surface。不要把缺少 sandbox parity 诊断成 Magent bug；Codex sandbox behavior 是有意排除的范围。
+
+* 常见问题
+
+** GitHub Actions 失败
+:PROPERTIES:
+:CUSTOM_ID: github-actions-失败
+:END:
+
+*** melpazoid 找不到 ~prompt.org~
+
+*问题：* melpazoid job 失败，错误类似：
+
+#+begin_src text
+Opening input file: No such file or directory, /workspace/pkg/prompt.org
+#+end_src
+
+*原因：* MELPA-style packaging 只复制 recipe 匹配的文件。Magent 打包后仍然需要 bundled runtime data： ~prompt.org~ 、 ~skills/~ 和 ~capabilities/~ 。
+
+*解决：* 保持 ~.github/workflows/melpazoid.yml~ 的 recipe 形状类似：
+
+#+begin_src elisp
+(magent :fetcher github :repo "Jamie-Cui/magent"
+        :files (:defaults "prompt.org" "skills" "capabilities"))
+#+end_src
+
+*** package-lint 报告 ineffective ~Package-Requires~
+
+*问题：* melpazoid 报告：
+
+#+begin_src text
+Package-Requires outside the main file have no effect.
+#+end_src
+
+*解决：* ~Package-Requires~ 只放在 ~magent.el~ ，并在 ~magent-pkg.el~ 中保持一致。Secondary modules 只在代码中写普通 ~(require ...)~ dependencies，不写 package headers。
+
+*** package license unknown
+
+*问题：* melpazoid 对模块文件报告 ~license unknown~ 。
+
+*解决：* 每个 Elisp source 都应有 formal license header 或 SPDX line，例如：
+
+#+begin_src elisp
+;; SPDX-License-Identifier: GPL-3.0-or-later
+#+end_src
+
+*** Live smoke test 在 GitHub Actions 超时
+
+*问题：* ~test.yml~ 的 ~Run live smoke tests~ 失败：
+
+#+begin_src text
+Magent live loop tool turn did not finish
+#+end_src
+
+*原因：* CI runner 可能比本地 daemon 慢，timer、tool callback 和 UI rendering 都在同一个 live Emacs process 中运行。
+
+*解决：* deterministic live smoke waits 要足够适配 CI，不要硬编码本机时间假设。本地复现：
+
+#+begin_src bash
+emacs --daemon=magent-ci
+EMACSCLIENT="emacsclient -s magent-ci" make test-live-smoke
+emacsclient -s magent-ci --eval '(kill-emacs)'
+#+end_src
+
+** 安装问题
+
+*** "Cannot find gptel"
+
+*问题：* Magent 需要 gptel 作为依赖。
+
+*解决：*
+
+#+begin_src elisp
+(package-install 'gptel)
+#+end_src
+
+*** Byte-compilation warnings
+
+*问题：* 编译时出现 undefined functions 等 warnings。
+
+*解决：* 确认依赖已安装且在 ~load-path~ 中：
+
+#+begin_src bash
+make compile
+#+end_src
+
+如果依赖不在 ~~/.emacs.d/elpa/~ ，显式传入 Makefile 变量，例如 ~GPTEL_DIR~ 、 ~TRANSIENT_DIR~ 、 ~COMPAT_DIR~ 或 ~YAML_DIR~ 。
+
+** Runtime 问题
+
+*** Live Emacs tests 失败或 hang
+
+*问题：* ~make test-live~ 使用真实 gptel provider 时失败、超时，或报告 async timer error。
+
+*Live debugging playbook：*
+
+1. 使用 isolated Emacs server。可能 hang 时不要在主编辑 Emacs 上调试。
+
+   #+begin_src bash
+   emacs --daemon=magent-live-test
+   #+end_src
+
+2. 始终把 ~emacsclient~ 或 ~make~ 指向 isolated server：
+
+   #+begin_src bash
+   emacsclient -s magent-live-test --eval '(emacs-pid)'
+   make EMACSCLIENT="emacsclient -s magent-live-test" test-live-smoke
+   #+end_src
+
+3. 每次 live run 前强制加载当前 checkout 的 source，并确认没有用到 ELPA Magent：
+
+   #+begin_src bash
+   emacsclient -s magent-live-test --eval \
+     '(progn
+        (setq debug-on-error t)
+        (load-file "/path/to/magent/test/magent-live-test.el")
+        (magent-live-test-reload-source)
+        (list :repo-source (magent-live-test--repo-source-summary)))'
+   #+end_src
+
+   ~:repo-source~ 中每个路径都必须在当前 checkout 下，而不是 ~~/.emacs.d/elpa/magent/~ 的旧版本。
+
+4. Batch 或 live verification 前清理 stale bytecode：
+
+   #+begin_src bash
+   make clean
+   #+end_src
+
+   如果看到 ~Source file ... newer than byte-compiled file; using older file~ ，说明 Emacs 正在测试旧代码。
+
+5. 真实 provider run 优先使用 async status files，避免 ~emacsclient~ 阻塞，并保留紧凑状态快照：
+
+   #+begin_src bash
+   emacsclient -s magent-live-test --eval \
+     '(progn
+        (setq debug-on-error t)
+        (load-file "/path/to/magent/test/magent-live-test.el")
+        (magent-live-test-reload-source)
+        (magent-live-test-install-trace "/tmp/magent-live-trace.el")
+        (magent-live-test-run-async
+         (quote magent-live-test-real-emacs-eval-tool)
+         "/tmp/magent-live-tool-final.el"))'
+
+   cat /tmp/magent-live-tool-final.el
+   tail -n 80 /tmp/magent-live-trace.el
+   #+end_src
+
+6. 测试运行中和结束后检查 isolated server 中的诊断 buffers：
+
+   - ~*Messages*~
+   - ~*Backtrace*~
+   - ~*magent-live-test-log*~
+   - ~*gptel-log*~
+
+   ~*gptel-log*~ 是敏感材料。分享或提交任何片段前，先移除 API keys、bearer tokens、request headers 和 provider-specific secrets。
+
+7. 如果 isolated Emacs server 无响应，只中断或 kill 该 server，不要 kill 主 Emacs：
+
+   #+begin_src bash
+   emacsclient -s magent-live-test --eval '(kill-emacs 0)'
+   #+end_src
+
+   如果 client 无法连接，找到 ~emacs --daemon=magent-live-test~ PID 并只 kill 该 PID。
+
+*诊断：*
+
+1. 复现前开启 backtrace：
+
+   #+begin_src elisp
+   (setq debug-on-error t)
+   #+end_src
+
+2. 从 ~emacsclient~ 或 ~make test-live~ 重跑失败测试。
+3. 运行中和结束后检查：
+   - ~*Messages*~ ：timer、process filter、byte-code errors
+   - ~*Backtrace*~ ： ~debug-on-error~ 打开的 backtrace
+   - ~*magent-log*~ 或 test-local ~*magent-live-test-log*~
+   - ~*gptel-log*~ ：provider/request failures，分享前必须 redacted
+
+4. 单个 real tool test 可这样运行：
+
+   #+begin_src elisp
+   (progn
+     (load-file "/path/to/magent/test/magent-live-test.el")
+     (setq debug-on-error t)
+     (magent-live-test-run 'magent-live-test-real-emacs-eval-tool))
+   #+end_src
+
+*解决：*
+
+- 先修 ~*Backtrace*~ 或 ~*Messages*~ 中第一个具体错误，再重跑单个 failing live test，最后跑完整 live suite。
+- 对 ~*gptel-log*~ 只分享 summary 或 redacted snippets。
+
+*既往 failure signatures：*
+
+- 如果第一个 tool result 后 continuation hang，检查 ~/tmp/magent-live-trace.el~ 。出现 ~gptel-curl-get-args :event enter~ 但没有对应 ~:event leave~ ，通常意味着 gptel 在 curl 启动前遇到 serialization error。检查 tool-call names、tool args 和 assistant ~tool_calls~ history 中是否有 Lisp symbols 或非 JSON-safe values。
+- 如果第一个 provider request 发出 tool call，但第二个 request 没有开始，确认 Magent 是否把 tool result 记录进 session，并通过 ~magent-agent-loop-request-for-current-session~ 重建 continuation prompt。
+- 如果 continuation 已开始，但 tool output 后 UI 仍收到空 final answer，检查是否出现 ~retrying empty final response after tool output~ log。Magent 应该只尝试一次 no-tool final-response retry；reasoning-only completion 应保持为空 assistant text，而不是显示成最终回答。
+- 如果第二个 request 完成但 UI 漏掉 final assistant text，记住 tool-enabled requests 可能是 non-streaming。Non-streaming string callback 可能就是 final completion，而不是 text delta。
+- 如果 direct ~emacsclient~ 通过但 ~make test-live-smoke~ 失败，确认设置了 ~EMACSCLIENT="emacsclient -s magent-live-test"~ 。
+- 如果测试意外加载旧 Magent，检查 ~load-history~ 、 ~load-path~ order 和 ~.elc~ 文件。 ~test/magent-live-test.el~ 使用 source loading with ~nosuffix~ ；添加文件到 live reload list 时保持这个行为。
+
+*修复 live gptel/tool bugs 后的 known-good verification sequence：*
+
+#+begin_src bash
+make clean
+make test-unit
+make compile
+make clean
+make EMACSCLIENT="emacsclient -s magent-live-test" test-live-smoke
+#+end_src
+
+然后在 isolated daemon 中运行两个真实 async diagnostics：
+
+#+begin_src elisp
+(magent-live-test-run-async 'magent-live-test-real-simple-prompt
+                            "/tmp/magent-live-simple-final.el")
+(magent-live-test-run-async 'magent-live-test-real-emacs-eval-tool
+                            "/tmp/magent-live-tool-final.el")
+#+end_src
+
+预期 final status files 包含 ~:status passed~ ， ~:repo-source~ 路径都在当前 checkout 下。Tool test 应包含类似 ~(:name "emacs_eval" :result "42")~ 的 tool state，以及 final assistant text ~MAGENT_TOOL_OK=42~ 。
+
+*** "No response from LLM"
+
+*问题：* Request hang 或 timeout。
+
+*诊断：*
+
+1. 检查 ~*magent-log*~ ：打开 transient menu ~C-c m ?~ 或 ~?~ ，再按 ~l l~ 。
+2. 检查 gptel 配置：
+
+   #+begin_src elisp
+   gptel-model
+   gptel-api-key
+   #+end_src
+
+3. 直接测试 gptel： ~M-x gptel~ 。
+
+*解决：*
+
+- 增加 timeout： ~(setq magent-request-timeout 300)~ 。
+- 检查网络或代理。
+- 确认 API key 有效。
+
+*** "Tool execution failed"
+
+*问题：* Tool calls 返回错误。
+
+*诊断：*
+
+1. 检查 ~*magent-log*~ 的错误细节。
+2. 确认 tool 已启用： ~magent-enable-tools~ 。
+3. 检查权限： ~M-x magent-show-current-agent~ 。
+
+*解决：*
+
+- bash：确认命令在 shell 中有效。
+- emacs_eval：检查 Lisp 语法错误。
+- grep：确认 ripgrep 已安装： ~which rg~ 。
+
+*** Child-agent 行为不符合预期
+
+*问题：* child-agent task 不能像 durable job 一样 message、wait、list 或 close。
+
+*诊断：*
+
+1. 检查代码路径是否使用 ~spawn_agent~ 、 ~send_agent_message~ 、 ~wait_agent~ 、 ~list_agents~ 和 ~close_agent~ 。
+2. 复读 ~docs/AGENT_JOBS.org~ 中的 job lifecycle contract。
+3. 在 ~*magent*~ 中查看紧凑 ~Agent ...~ 行，或运行 ~M-x magent-show-agent-transcript~ / transient ~S j~ 查看持久化 child transcript。
+4. 检查 ~*magent-log*~ 中的 nested request 或 tool-call errors。
+5. Resume 后确认 parent session 仍有预期 ~agent-jobs~ metadata。
+
+*解决：*
+
+- 围绕 job status、transcript/result storage、parent/child session links 和 resume restoration 添加或更新测试。
+- 不要为了该 workflow fix 添加 sandbox-specific checks。
+
+*** "Permission denied" errors
+
+*问题：* Tool execution 被 permissions 阻止。
+
+*诊断：*
+
+运行 ~M-x magent-show-current-agent~ 检查当前 agent permissions。
+
+*解决：*
+
+- 临时 bypass： ~M-x magent-toggle-bypass-permission~ 。
+- 或 customize： ~(setq magent-bypass-permission t)~ 。
+- 或通过 transient menu ~A A~ 切换到合适权限的 agent。
+
+*** Session not saving
+
+*问题：* Emacs 重启后 session state 丢失。
+
+*诊断：*
+
+检查 session directory 是否存在且可写：
+
+#+begin_src elisp
+magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
+#+end_src
+
+*解决：*
+
+#+begin_src elisp
+(make-directory magent-session-directory t)
+#+end_src
+
+** UI 问题
+
+*** Output buffer 不更新
+
+*问题：* Streaming 看起来卡住。
+
+*诊断：*
+
+1. 看 modeline 是否有 ~[busy]~ 。
+2. 检查 ~*Messages*~ 。
+3. 在 output buffer 中按 ~C-c C-c~ 并确认 interrupt。
+
+*解决：*
+
+- 从 transient menu 按 ~c~ clear，再用 ~C-c m p~ 重试。
+- 如果仍然存在，重启 Emacs。
+
+*** Org-mode folding 问题
+
+*问题：* Sections 不能 fold/unfold。
+
+*解决：*
+
+- 在 section headers 上按 ~TAB~ 。
+- 用 ~S-TAB~ toggle all sections。
+- 确认当前在 output buffer，而不是 code buffer。
+
+** 性能问题
+
+*** Streaming 太慢
+
+*问题：* Response 像逐字显示。
+
+*解决：*
+
+#+begin_src elisp
+(setq magent-ui-batch-insert-delay 0.1)
+(setq magent-ui-fontify-threshold 200)
+#+end_src
+
+*** 内存占用高
+
+*问题：* Emacs memory 随时间增长。
+
+*解决：*
+
+#+begin_src elisp
+(setq magent-max-history 50)
+
+;; Clear old sessions periodically
+(magent-clear-session)
+#+end_src
+
+* Diagnostic Commands
+
+** Self-Check
+
+#+begin_src elisp
+M-x magent-doctor
+#+end_src
+
+运行 Magent-specific diagnosis request 并报告问题。
+
+** View Logs
+
+#+begin_src elisp
+M-x magent-show-log  ; or open transient with C-c m ? / ? and press l l
+#+end_src
+
+显示 request/response log。
+
+** Check Configuration
+
+#+begin_src elisp
+M-x describe-variable RET magent-enable-tools
+M-x describe-variable RET gptel-model
+M-x describe-variable RET gptel-api-key
+#+end_src
+
+* 获取帮助
+
+如果问题仍然存在：
+
+1. 运行 ~M-x magent-doctor~ 并保存输出。
+2. 检查 ~*magent-log*~ 和 ~*Messages*~ 。
+3. 开 GitHub issue，并提供 reproduction steps。
+4. 附上 Emacs version： ~M-x emacs-version~ 。

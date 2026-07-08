@@ -11,7 +11,7 @@ An Emacs Lisp AI coding agent with multi-agent architecture, permission-based to
 
 Magent now uses a durable child-agent lifecycle for collaborative agent work: spawn, message, wait, list, resume/inspect, and close. The lifecycle is implemented on top of the Magent-owned agent loop while provider integration stays with ~gptel-request~.
 
-The old one-shot ~delegate~ tool has been replaced by ~spawn_agent~, ~send_agent_message~, ~wait_agent~, ~list_agents~, and ~close_agent~. Codex sandbox behavior is intentionally out of scope. The final architecture is documented in [[file:docs/AGENT_JOBS.md][docs/AGENT_JOBS.md]].
+The old one-shot ~delegate~ tool has been replaced by ~spawn_agent~, ~send_agent_message~, ~wait_agent~, ~list_agents~, and ~close_agent~. Codex sandbox behavior is intentionally out of scope. The final architecture is documented in [[file:docs/AGENT_JOBS.org][docs/AGENT_JOBS.org]].
 
 * Features
 
@@ -250,7 +250,7 @@ Magent uses a multi-agent architecture where different agents have different cap
 
 Primary agents can coordinate child agents through durable jobs. A root turn can call ~spawn_agent~ to start work under a subagent profile, use ~list_agents~ and ~wait_agent~ to monitor results, send follow-up input with ~send_agent_message~, and close work explicitly with ~close_agent~.
 
-Child jobs are stored in the parent session under ~agent-jobs~ with status, prompt, metadata, result/error, and transcript state. The UI shows compact lifecycle updates, while the full child transcript is available through ~magent-show-agent-transcript~ or ~? S j~ in the legacy transient menu. See [[file:docs/AGENT_JOBS.md][docs/AGENT_JOBS.md]] for the implementation model and boundaries.
+Child jobs are stored in the parent session under ~agent-jobs~ with status, prompt, metadata, result/error, and transcript state. The UI shows compact lifecycle updates, while the full child transcript is available through ~magent-show-agent-transcript~ or ~? S j~ in the legacy transient menu. See [[file:docs/AGENT_JOBS.org][docs/AGENT_JOBS.org]] for the implementation model and boundaries.
 
 ** Permission System
 
@@ -370,7 +370,7 @@ Tool availability is controlled by:
 
 11. *Audit* (~magent-audit.el~): Persistent JSONL audit logging for permission prompts and decisions plus sensitive actions such as ~bash~, ~emacs_eval~, ~write_file~, ~edit_file~, and child-agent lifecycle tools. Payloads are redacted to metadata and truncated previews.
 
-12. *UI backends* (~magent-ui.el~, ~magent-agent-shell.el~, ~magent-acp.el~, ~magent-ui-legacy.el~): ~magent-ui.el~ is a thin command router and compatibility layer. The default backend is agent-shell through an in-process ACP adapter; ACP prompt requests submit to the runtime API and stay pending until the turn completes. The old special-mode workspace/compose UI lives in ~magent-ui-legacy.el~ and can be selected with ~magent-ui-backend~. See [[file:docs/UI_BACKENDS.md][docs/UI_BACKENDS.md]].
+12. *UI backends* (~magent-ui.el~, ~magent-agent-shell.el~, ~magent-acp.el~, ~magent-ui-legacy.el~): ~magent-ui.el~ is a thin command router and compatibility layer. The default backend is agent-shell through an in-process ACP adapter; ACP prompt requests submit to the runtime API and stay pending until the turn completes. The old special-mode workspace/compose UI lives in ~magent-ui-legacy.el~ and can be selected with ~magent-ui-backend~. See [[file:docs/UI_BACKENDS.org][docs/UI_BACKENDS.org]].
 
 13. *Evil Integration* (~magent-evil.el~): Optional feature for Evil users. It is not loaded by ~magent~ and is enabled explicitly with ~magent-evil-mode~.
 

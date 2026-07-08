@@ -1,0 +1,170 @@
+#+title: Magent Architecture Diagrams
+#+options: toc:nil num:nil
+
+* Architecture Boundary
+
+#+begin_src plantuml :file ../assets/img/diagrams/architecture-boundary.svg :exports results :results file
+@startuml
+title Magent architecture boundary
+skinparam monochrome true
+skinparam shadowing false
+skinparam componentStyle rectangle
+
+actor User
+
+package "Emacs runtime" {
+  [buffers / modes / project]
+  [Magit / org / xref / LSP]
+  [agent-shell]
+}
+
+package "Magent" {
+  [magent-ui.el\nbackend router]
+  [magent-acp.el\nin-process ACP]
+  [runtime API / queue]
+  [thread ledger\nsnapshot + journal]
+  [agent loop]
+  [tool orchestrator\npermission + approval]
+  [agents / skills / capabilities]
+}
+
+package "Provider plumbing" {
+  [gptel-request]
+  cloud "LLM provider" as Provider
+}
+
+package "Project / local system" {
+  [source tree]
+  [shell / rg]
+  [.magent overlays]
+}
+
+User --> [agent-shell]
+[agent-shell] --> [magent-acp.el\nin-process ACP]
+[magent-acp.el\nin-process ACP] --> [runtime API / queue]
+[runtime API / queue] --> [thread ledger\nsnapshot + journal]
+[runtime API / queue] --> [agent loop]
+[agent loop] --> [gptel-request]
+[gptel-request] --> Provider
+[agent loop] --> [tool orchestrator\npermission + approval]
+[tool orchestrator\npermission + approval] --> [source tree]
+[tool orchestrator\npermission + approval] --> [shell / rg]
+[tool orchestrator\npermission + approval] --> [buffers / modes / project]
+[agents / skills / capabilities] --> [agent loop]
+[.magent overlays] --> [agents / skills / capabilities]
+[thread ledger\nsnapshot + journal] --> [magent-ui.el\nbackend router]
+@enduml
+#+end_src
+
+#+RESULTS:
+[[file:../assets/img/diagrams/architecture-boundary.svg]]
+
+* One Magent Turn
+
+#+begin_src plantuml :file ../assets/img/diagrams/one-magent-turn.svg :exports results :results file
+@startuml
+title One Magent turn
+skinparam monochrome true
+skinparam shadowing false
+
+actor User
+participant "agent-shell / legacy UI" as UI
+participant "magent-runtime-api.el" as Runtime
+participant "magent-runtime-queue.el" as Queue
+participant "magent-ledger.el" as Ledger
+participant "magent-agent.el" as Agent
+participant "magent-llm-gptel.el" as Adapter
+participant "gptel-request" as Gptel
+participant "magent-agent-loop.el" as Loop
+participant "magent-tool-orchestrator.el" as Orchestrator
+participant "magent-tools.el" as Tools
+
+User -> UI : prompt
+UI -> Runtime : submit(prompt, session, observer)
+Runtime -> Ledger : queue turn + user item
+Runtime -> Queue : enqueue submission
+Queue -> Runtime : start when active slot free
+Runtime -> Agent : run turn
+Agent -> Ledger : build prompt from completed turns + current turn
+Agent -> Adapter : sample normalized request
+Adapter -> Gptel : gptel-request
+Gptel --> Adapter : text / reasoning / tool-use / done
+Adapter --> Loop : normalized events
+
+alt tool-call-batch-end
+  Loop -> Orchestrator : dispatch tool calls
+  Orchestrator -> Orchestrator : resolve permission / approval / audit
+  Orchestrator -> Tools : execute serially
+  Tools --> Orchestrator : result
+  Orchestrator --> Loop : tool output
+  Loop -> Ledger : update tool item
+  Loop -> Agent : needs follow-up sampling
+  Agent -> Ledger : rebuild prompt with tool output
+  Agent -> Adapter : continue sampling
+else completed
+  Loop -> Ledger : complete assistant item + turn
+  Loop --> Runtime : final result
+  Runtime --> UI : session/update
+end
+@enduml
+#+end_src
+
+#+RESULTS:
+[[file:../assets/img/diagrams/one-magent-turn.svg]]
+
+* Functional Layers
+
+#+begin_src plantuml :file ../assets/img/diagrams/functional-layers.svg :exports results :results file
+@startuml
+title Magent functional layers
+skinparam monochrome true
+skinparam shadowing false
+
+left to right direction
+
+actor User
+
+rectangle "Entry points" as Entry {
+  usecase "plain prompt" as Plain
+  usecase "region prompt" as Region
+  usecase "ask at point" as Point
+  usecase "skill command" as SkillCommand
+}
+
+rectangle "User-facing workflows" as Workflows {
+  usecase "coding assistant" as Coding
+  usecase "Emacs runtime assistant" as RuntimeAssistant
+  usecase "agent workflow" as AgentWorkflow
+}
+
+rectangle "Magent mechanisms" as Mechanisms {
+  usecase "files / grep / glob / bash" as CodeTools
+  usecase "emacs_eval" as Eval
+  usecase "skills + capabilities" as Skills
+  usecase "child-agent jobs" as Jobs
+  usecase "ledger + audit" as LedgerAudit
+}
+
+User --> Plain
+User --> Region
+User --> Point
+User --> SkillCommand
+
+Plain --> Coding
+Region --> Coding
+Point --> RuntimeAssistant
+SkillCommand --> AgentWorkflow
+
+Coding --> CodeTools
+RuntimeAssistant --> Eval
+AgentWorkflow --> Skills
+AgentWorkflow --> Jobs
+CodeTools --> LedgerAudit
+Eval --> LedgerAudit
+Skills --> LedgerAudit
+Jobs --> LedgerAudit
+@enduml
+#+end_src
+
+#+RESULTS:
+[[file:../assets/img/diagrams/functional-layers.svg]]

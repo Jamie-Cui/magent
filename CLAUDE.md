@@ -34,7 +34,7 @@ emacs -Q --batch -L lisp -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'gptel-*' -
 `make test-live` / `test-live-smoke` need an Emacs server (`EMACSCLIENT`); `test-live`
 uses the real provider and consumes tokens. For real provider debugging use an isolated
 daemon (`emacs --daemon=magent-live-test`) — never risk the user's main Emacs. See
-`docs/TROUBLESHOOTING.md#live-emacs-tests-fail-or-hang`.
+`docs/TROUBLESHOOTING.org#live-emacs-tests-fail-or-hang`.
 
 ## Architecture (big picture)
 
@@ -78,7 +78,7 @@ matters more than any single file:
    `magent-output-mode`) — read-only, ledger-rendered Magit-style timeline with a separate
    `magent-compose-mode` prompt buffer (`C-c C-c` submits) — now lives in `magent-ui-legacy.el`
    and loads lazily; do not add new default UI behavior there or reintroduce org folding /
-   markdown-to-org in the live path. See `docs/UI_BACKENDS.md` for the boundary contract.
+   markdown-to-org in the live path. See `docs/UI_BACKENDS.org` for the boundary contract.
 
 **Agents** (`magent-agent-registry.el`): 7 built-ins — `build` (default), `plan`, `explore`,
 `general`, `compaction`, `title`, `summary` — via `cl-defstruct magent-agent-info`. Modes:
@@ -88,7 +88,7 @@ matters more than any single file:
 **Child-agent jobs** (`magent-agent-job.el`): Primary agents coordinate durable child jobs via
 `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, `close_agent` (these replaced the
 old `delegate` tool — do not reintroduce a wrapper). Stored under session `agent-jobs`. See
-`docs/AGENT_JOBS.md`.
+`docs/AGENT_JOBS.org`.
 
 ## Conventions and gotchas
 
@@ -103,7 +103,7 @@ old `delegate` tool — do not reintroduce a wrapper). Stored under session `age
 ## Deeper reference
 
 `AGENTS.md` is the authoritative, detailed agent guide (full module dependency graph, testing
-patterns, keybindings). Also see `README.org`, `docs/AGENT_JOBS.md`, `docs/AGENT_WORKFLOW.md`,
-and `docs/TROUBLESHOOTING.md`.
+patterns, keybindings). Also see `README.org`, `docs/AGENT_JOBS.org`, `docs/AGENT_WORKFLOW.org`,
+and `docs/TROUBLESHOOTING.org`.
 
 @AGENTS.md
