@@ -77,6 +77,7 @@
   backend
   temperature
   top-p
+  effort
   skill-names
   capability-context
   permission-profile

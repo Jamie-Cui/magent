@@ -29,6 +29,7 @@ Fields:
 - HIDDEN: Whether this agent should be hidden from listings
 - TEMPERATURE: Optional temperature override for this agent
 - TOP-P: Optional top-p override for this agent
+- EFFORT: Optional reasoning effort override for this agent
 - COLOR: Optional display color for UI
 - MODEL: Optional model specification (providerID . modelID)
 - PROMPT: Optional custom system prompt
@@ -46,6 +47,7 @@ Fields:
   (hidden nil)
   temperature
   top-p
+  effort
   color
   model
   prompt

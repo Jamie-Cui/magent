@@ -30,6 +30,8 @@
 (declare-function gptel-fsm-info "gptel-request")
 (declare-function gptel-make-fsm "gptel-request")
 (declare-function gptel-tool-name "gptel-request")
+(declare-function gptel-openai-p "gptel-openai")
+(declare-function gptel-openai-responses-p "gptel-openai")
 (defvar gptel-backend)
 (defvar gptel-model)
 (defvar gptel-tools)
@@ -37,6 +39,7 @@
 (defvar gptel-confirm-tool-calls)
 (defvar gptel-include-reasoning)
 (defvar gptel-temperature)
+(defvar gptel--request-params)
 (defvar magent-include-reasoning)
 
 (defun magent-llm-gptel--managed-context-p (context)
@@ -430,6 +433,68 @@ executing tools or continuing the tool loop."
     (when (buffer-live-p buffer)
       (kill-buffer buffer)))))
 
+(defun magent-llm-gptel--backend-openai-responses-p (backend)
+  "Return non-nil when BACKEND uses OpenAI Responses wire format."
+  (and backend
+       (fboundp 'gptel-openai-responses-p)
+       (gptel-openai-responses-p backend)))
+
+(defun magent-llm-gptel--backend-openai-chat-p (backend)
+  "Return non-nil when BACKEND uses OpenAI-compatible chat wire format."
+  (and backend
+       (not (magent-llm-gptel--backend-openai-responses-p backend))
+       (fboundp 'gptel-openai-p)
+       (gptel-openai-p backend)))
+
+(defun magent-llm-gptel--unsupported-effort
+    (effort reason &optional fallback)
+  "Handle unsupported EFFORT for REASON, optionally returning FALLBACK."
+  (pcase magent-effort-unsupported-policy
+    ('error
+     (error "Magent effort %s is unsupported: %s" effort reason))
+    ('warn-and-downgrade
+     (magent-log
+      "WARN effort=%s unsupported (%s)%s"
+      effort reason
+      (if fallback
+          (format ", using %s" fallback)
+        ", ignoring"))
+     fallback)
+    (_ nil)))
+
+(defun magent-llm-gptel--chat-effort (effort)
+  "Return OpenAI-compatible chat EFFORT, applying xhigh policy."
+  (if (eq effort 'xhigh)
+      (magent-llm-gptel--unsupported-effort
+       effort
+       "OpenAI-compatible chat requests do not advertise xhigh"
+       'high)
+    effort))
+
+(defun magent-llm-gptel--effort-request-params (backend effort)
+  "Return provider request params for BACKEND and EFFORT, or nil."
+  (let ((normalized (magent-effort-effective effort)))
+    (when normalized
+      (cond
+       ((magent-llm-gptel--backend-openai-responses-p backend)
+        `(:reasoning (:effort ,(symbol-name normalized))))
+       ((magent-llm-gptel--backend-openai-chat-p backend)
+        (when-let ((chat-effort
+                    (magent-llm-gptel--chat-effort normalized)))
+          `(:reasoning_effort ,(symbol-name chat-effort))))
+       (t
+        (magent-llm-gptel--unsupported-effort
+         normalized
+         "backend does not advertise a Magent effort mapping")
+        nil)))))
+
+(defun magent-llm-gptel--merge-request-params (base extra)
+  "Return BASE request params with EXTRA taking precedence."
+  (let ((merged (copy-sequence base)))
+    (cl-loop for (key value) on extra by #'cddr
+             do (setq merged (plist-put merged key value)))
+    merged))
+
 (defun magent-llm-gptel-sample (request)
   "Start one gptel sampling request for REQUEST.
 Return the request buffer as the abort handle.  REQUEST must be a
@@ -448,6 +513,14 @@ Return the request buffer as the abort handle.  REQUEST must be a
       (when (and (plist-member metadata :temperature)
                  (boundp 'gptel-temperature))
         (setq-local gptel-temperature (plist-get metadata :temperature)))
+      (when-let ((effort-params
+                  (magent-llm-gptel--effort-request-params
+                   gptel-backend
+                   (plist-get metadata :effort))))
+        (setq-local gptel--request-params
+                    (magent-llm-gptel--merge-request-params
+                     gptel--request-params
+                     effort-params)))
       (setq-local gptel-tools (magent-llm-request-tools request))
       (setq-local gptel-use-tools (and gptel-tools t))
       (setq-local gptel-confirm-tool-calls t)

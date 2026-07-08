@@ -539,6 +539,9 @@ This is the single source of truth for all tool names in the permission system."
                            (magent-request-context-temperature child-context)))
       (top-p . ,(and child-context
                      (magent-request-context-top-p child-context)))
+      (effort . ,(and child-context
+                     (magent-effort-option-string
+                      (magent-request-context-effort child-context))))
       (skill-names . ,(vconcat
                        (or (and child-context
                                 (magent-request-context-skill-names
@@ -686,6 +689,8 @@ Return the child loop handle when startup succeeds."
                              (magent-request-context-temperature parent-context))
            :top-p (and parent-context
                        (magent-request-context-top-p parent-context))
+           :effort (and parent-context
+                        (magent-request-context-effort parent-context))
            :skill-names (and parent-context
                              (copy-sequence
                               (magent-request-context-skill-names

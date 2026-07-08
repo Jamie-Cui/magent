@@ -61,6 +61,13 @@ TOOLS-CONFIG is a plist like (:bash t :read nil)."
                       (push (cons tool-name 'deny) rules)))))
     (nreverse rules)))
 
+(defun magent-agent-file--frontmatter-effort (frontmatter)
+  "Return normalized effort option from agent FRONTMATTER."
+  (magent-effort-normalize-option
+   (or (plist-get frontmatter :effort)
+       (plist-get frontmatter :reasoning-effort)
+       (plist-get frontmatter :model-reasoning-effort))))
+
 (defun magent-agent-file-load (filepath)
   "Load an agent from FILEPATH.
 Returns the agent info if successful, nil otherwise."
@@ -83,6 +90,8 @@ Returns the agent info if successful, nil otherwise."
                               :hidden (plist-get frontmatter :hidden)
                               :temperature (plist-get frontmatter :temperature)
                               :top-p (plist-get frontmatter :top-p)
+                              :effort (magent-agent-file--frontmatter-effort
+                                       frontmatter)
                               :color (plist-get frontmatter :color)
                               :prompt (when (> (length body) 0) body)
                               :permission permission
@@ -135,6 +144,10 @@ Returns the filepath if successful."
       (when (magent-agent-info-top-p agent-info)
         (insert (format "top-p: %s\n"
                         (magent-agent-info-top-p agent-info))))
+      (when (magent-agent-info-effort agent-info)
+        (insert (format "effort: %s\n"
+                        (magent-effort-option-string
+                         (magent-agent-info-effort agent-info)))))
       (when (magent-agent-info-color agent-info)
         (insert (format "color: %s\n"
                         (magent-agent-info-color agent-info))))

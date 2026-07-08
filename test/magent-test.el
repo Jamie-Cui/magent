@@ -1335,6 +1335,7 @@
                  :name "build"
                  :mode 'primary
                  :top-p 0.88
+                 :effort 'xhigh
                  :permission (magent-permission-from-config
                               '((agent . ask)
                                 (bash . deny)
@@ -1382,16 +1383,76 @@
       (should (eq (magent-request-context-backend request-state) backend))
       (should (= (magent-request-context-temperature request-state) 0.42))
       (should (= (magent-request-context-top-p request-state) 0.88))
+      (should (eq (magent-request-context-effort request-state) 'xhigh))
       (should (equal (magent-request-context-project-root request-state)
                      "/tmp/project"))
       (should (equal (magent-request-context-skill-names request-state)
                      '("cap-skill")))
       (should (equal (plist-get metadata :temperature) 0.42))
       (should (equal (plist-get metadata :top-p) 0.88))
+      (should (equal (plist-get metadata :effort) 'xhigh))
       (should (equal (magent-permission-resolve
                       (magent-request-context-permission-profile request-state)
                       'agent)
                      'ask)))))
+
+(ert-deftest magent-test-agent-process-system-prompt-includes-scope-root ()
+  "Test project-scoped runtime turns tell the model the current repo root."
+  (require 'magent-agent)
+  (require 'magent-capability)
+  (let* ((backend (gptel-make-openai "scope-root" :key "key"))
+         (gptel-backend backend)
+         (gptel-model 'scope-model)
+         (agent (magent-agent-info-create
+                 :name "build"
+                 :mode 'primary
+                 :prompt "Base system."))
+         (session (magent-session-create :id "scope-root"))
+         (request-state (magent-request-context-create
+                         :id "req"
+                         :scope "/tmp/project"
+                         :session session))
+         (capability-resolution
+          (magent-capability-resolution-create
+           :prompt "summarize this repo"
+           :context '(:project-root "/tmp/project")))
+         captured-loop)
+    (cl-letf (((symbol-function 'magent-session-get)
+               (lambda () session))
+              ((symbol-function 'magent-agent-loop-start)
+               (lambda (loop)
+                 (setq captured-loop loop)
+                 'started))
+              ((symbol-function 'magent-tool-runtime-for-agent)
+               (lambda (_agent) nil))
+              ((symbol-function 'magent-log) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-begin-turn)
+               (lambda (_title) 'turn))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
+              ((symbol-function 'magent-skills-get-instruction-prompts)
+               (lambda (_skills) nil)))
+      (magent-agent-process
+       "summarize this repo"
+       nil
+       agent
+       nil
+       nil
+       nil
+       capability-resolution
+       nil
+       nil
+       request-state))
+    (let* ((request (magent-agent-loop-request captured-loop))
+           (system (magent-llm-request-system request)))
+      (should (string-match-p
+               (regexp-quote "Current project root: /tmp/project")
+               system))
+      (should (string-match-p
+               (regexp-quote "do not invent unrelated absolute paths")
+               system))
+      (should (equal (magent-request-context-project-root request-state)
+                     "/tmp/project")))))
 
 (ert-deftest magent-test-agent-process-keeps-streaming-for-tool-requests ()
   "Test tool-enabled requests still use streaming provider sampling."
@@ -1449,6 +1510,56 @@
         :metadata '(:temperature 0.25)
         :callback #'ignore)))
     (should (= captured-temperature 0.25))))
+
+(ert-deftest magent-test-llm-gptel-applies-effort-metadata-openai-responses ()
+  "Test the gptel adapter maps effort to OpenAI Responses request params."
+  (require 'magent-llm-gptel)
+  (require 'gptel-openai-responses)
+  (let ((backend (gptel-make-openai-responses "responses" :key "key"))
+        captured-params)
+    (cl-letf (((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (setq captured-params gptel--request-params)
+                 (funcall (plist-get kwargs :callback)
+                          t
+                          (list :content "ok")))))
+      (magent-llm-gptel-sample
+       (magent-llm-request-create
+        :prompt '("hello")
+        :system "sys"
+        :backend backend
+        :model 'gpt-5
+        :stream t
+        :metadata '(:effort xhigh)
+        :callback #'ignore)))
+    (should (equal captured-params '(:reasoning (:effort "xhigh"))))))
+
+(ert-deftest magent-test-llm-gptel-downgrades-xhigh-for-openai-chat ()
+  "Test OpenAI-compatible chat effort maps xhigh according to policy."
+  (require 'magent-llm-gptel)
+  (let ((backend (gptel-make-openai
+                     "chat"
+                   :host "openai-compatible.local"
+                   :key "key"))
+        (magent-effort-unsupported-policy 'warn-and-downgrade)
+        captured-params)
+    (cl-letf (((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (setq captured-params gptel--request-params)
+                 (funcall (plist-get kwargs :callback)
+                          t
+                          (list :content "ok"))))
+              ((symbol-function 'magent-log) #'ignore))
+      (magent-llm-gptel-sample
+       (magent-llm-request-create
+        :prompt '("hello")
+        :system "sys"
+        :backend backend
+        :model 'o3
+        :stream t
+        :metadata '(:effort xhigh)
+        :callback #'ignore)))
+    (should (equal captured-params '(:reasoning_effort "high")))))
 
 (ert-deftest magent-test-builtin-agents-count ()
   "Test that all 7 built-in agents are created."
@@ -1524,6 +1635,7 @@
                        :description "Roundtrip test"
                        :mode 'subagent
                        :temperature 0.5
+                       :effort 'xhigh
                        :prompt "System prompt here."))
                (filepath (magent-agent-file-save agent tmpdir)))
           (should (file-exists-p filepath))
@@ -1533,6 +1645,7 @@
             (should (equal (magent-agent-info-description loaded) "Roundtrip test"))
             (should (eq (magent-agent-info-mode loaded) 'subagent))
             (should (= (magent-agent-info-temperature loaded) 0.5))
+            (should (eq (magent-agent-info-effort loaded) 'xhigh))
             (should (string-match-p "System prompt here"
                                     (magent-agent-info-prompt loaded)))))
       (delete-directory tmpdir t))))
@@ -2574,6 +2687,7 @@
                           :model 'parent-model
                           :temperature 0.2
                           :top-p 0.9
+                          :effort 'xhigh
                           :skill-names '("parent-skill")
                           :capability-context
                           '(:skill-names ("parent-skill")
@@ -2671,6 +2785,7 @@
       (should (eq (magent-request-context-model child-state) 'parent-model))
       (should (= (magent-request-context-temperature child-state) 0.2))
       (should (= (magent-request-context-top-p child-state) 0.9))
+      (should (eq (magent-request-context-effort child-state) 'xhigh))
       (should (equal (magent-request-context-skill-names child-state)
                      '("parent-skill")))
       (should (equal (magent-request-context-capability-context child-state)
@@ -2698,6 +2813,7 @@
       (should (equal (cdr (assq 'model metadata)) "parent-model"))
       (should (= (cdr (assq 'temperature metadata)) 0.2))
       (should (= (cdr (assq 'top-p metadata)) 0.9))
+      (should (equal (cdr (assq 'effort metadata)) "xhigh"))
       (should (equal (append (cdr (assq 'skill-names metadata)) nil)
                      '("parent-skill")))
       (should (equal (cdr (assq 'agent permission-profile)) "deny"))
@@ -5961,6 +6077,50 @@ active, so an activated input method (e.g. rime) stayed on after submit."
                       'magent-ui-compose-from-output)))
       (magent-evil-mode -1))))
 
+(ert-deftest magent-test-evil-agent-shell-tab-toggles-magent-fragment ()
+  "Test Evil TAB toggles fragments in Magent agent-shell buffers."
+  (require 'magent-evil)
+  (let ((magent-evil--enabled t)
+        toggled
+        next-called)
+    (cl-letf (((symbol-function 'agent-shell-ui-toggle-fragment)
+               (lambda ()
+                 (interactive)
+                 (setq toggled t)))
+              ((symbol-function 'agent-shell-next-item)
+               (lambda ()
+                 (interactive)
+                 (setq next-called t))))
+      (with-temp-buffer
+        (setq major-mode 'agent-shell-mode)
+        (setq-local agent-shell--state
+                    '((:agent-config . ((:identifier . magent)))))
+        (magent-evil--agent-shell-tab)))
+    (should toggled)
+    (should-not next-called)))
+
+(ert-deftest magent-test-evil-agent-shell-tab-preserves-other-shells ()
+  "Test Evil TAB keeps next-item behavior for non-Magent agent-shell buffers."
+  (require 'magent-evil)
+  (let ((magent-evil--enabled t)
+        toggled
+        next-called)
+    (cl-letf (((symbol-function 'agent-shell-ui-toggle-fragment)
+               (lambda ()
+                 (interactive)
+                 (setq toggled t)))
+              ((symbol-function 'agent-shell-next-item)
+               (lambda ()
+                 (interactive)
+                 (setq next-called t))))
+      (with-temp-buffer
+        (setq major-mode 'agent-shell-mode)
+        (setq-local agent-shell--state
+                    '((:agent-config . ((:identifier . codex)))))
+        (magent-evil--agent-shell-tab)))
+    (should-not toggled)
+    (should next-called)))
+
 (ert-deftest magent-test-config-reload-preserves-ui-logger ()
   "Test reloading config does not clobber the UI log implementation."
   (require 'magent-ui)
@@ -7118,6 +7278,31 @@ tolerate leading whitespace."
     (should (equal (map-elt entry 'modelId) "test-model"))
     (should-not (assq 'id entry))))
 
+(ert-deftest magent-test-acp-session-response-advertises-effort-config ()
+  "Test ACP session responses advertise thought level options."
+  (require 'magent-acp)
+  (let* ((runtime-session (magent-runtime-session-create
+                           :id "session-1"
+                           :magent-session (magent-session-create)
+                           :effort 'xhigh))
+         response option values)
+    (cl-letf (((symbol-function 'magent-runtime-session-agent-name)
+               (lambda (_session) "build"))
+              ((symbol-function 'magent-agent-registry-primary-agents)
+               (lambda ()
+                 (list (magent-agent-info-create
+                        :name "build"
+                        :description "Build")))))
+      (setq response (magent-acp--session-response runtime-session)))
+    (setq option (aref (map-elt response 'configOptions) 0)
+          values (append (map-elt option 'options) nil))
+    (should (equal (map-elt option 'id) "effort"))
+    (should (equal (map-elt option 'category) "thought_level"))
+    (should (equal (map-elt option 'currentValue) "xhigh"))
+    (should (member "xhigh"
+                    (mapcar (lambda (entry) (map-elt entry 'value))
+                            values)))))
+
 (ert-deftest magent-test-acp-prompt-text-preserves-embedded-resource ()
   "Test ACP embedded resource blocks keep nested file text in prompts."
   (require 'magent-acp)
@@ -7425,6 +7610,32 @@ tolerate leading whitespace."
                      "test-model"))
       (should (equal (map-elt response 'sessionId) "session-1")))))
 
+(ert-deftest magent-test-acp-set-config-option-updates-effort ()
+  "Test ACP session/set_config_option updates Magent effort."
+  (require 'magent-acp)
+  (let* ((runtime-session (magent-runtime-session-create :id "session-1"))
+         response)
+    (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
+               (lambda (session-id)
+                 (and (equal session-id "session-1")
+                      runtime-session)))
+              ((symbol-function 'magent-runtime-session-agent-name)
+               (lambda (_session) "build"))
+              ((symbol-function 'magent-agent-registry-primary-agents)
+               (lambda ()
+                 (list (magent-agent-info-create
+                        :name "build"
+                        :description "Build")))))
+      (setq response
+            (magent-acp--handle-set-config-option
+             '((sessionId . "session-1")
+               (configId . "effort")
+               (value . "xhigh"))))
+      (should (eq (magent-runtime-session-effort runtime-session) 'xhigh))
+      (should (equal (map-elt (aref (map-elt response 'configOptions) 0)
+                              'currentValue)
+                     "xhigh")))))
+
 (ert-deftest magent-test-agent-shell-config-creates-in-process-client ()
   "Test Magent agent-shell config creates an in-process ACP client."
   (require 'magent-agent-shell)
@@ -7617,6 +7828,52 @@ tolerate leading whitespace."
         (should-not (assoc "queued-b" callbacks))
         (should (assoc "active-a" notifications))
         (should (assoc "queued-a" notifications))))))
+
+(ert-deftest magent-test-runtime-submit-carries-session-effort ()
+  "Test runtime submissions copy session effort into request context."
+  (require 'magent-runtime-api)
+  (let* ((magent-runtime-queue--active nil)
+         (magent-runtime-queue--pending nil)
+         (session (magent-session-create :id "session-1"))
+         (runtime-session
+          (magent-runtime-session-create
+           :id "session-1"
+           :scope "/tmp/project"
+           :magent-session session
+           :effort 'xhigh))
+         captured-context)
+    (cl-letf (((symbol-function 'magent-agent-run-turn)
+               (lambda (&rest args)
+                 (setq captured-context (plist-get args :request-context))
+                 'loop))
+              ((symbol-function 'magent-runtime-api--finish-submission)
+               #'ignore))
+      (magent-runtime-submit runtime-session "hello"))
+    (should (magent-request-context-p captured-context))
+    (should (eq (magent-request-context-effort captured-context) 'xhigh))))
+
+(ert-deftest magent-test-runtime-submit-omits-unset-session-effort ()
+  "Test unset runtime session effort leaves agent/default effort available."
+  (require 'magent-runtime-api)
+  (let* ((magent-runtime-queue--active nil)
+         (magent-runtime-queue--pending nil)
+         (magent-default-effort nil)
+         (session (magent-session-create :id "session-1"))
+         (runtime-session
+          (magent-runtime-session-create
+           :id "session-1"
+           :scope "/tmp/project"
+           :magent-session session))
+         captured-context)
+    (cl-letf (((symbol-function 'magent-agent-run-turn)
+               (lambda (&rest args)
+                 (setq captured-context (plist-get args :request-context))
+                 'loop))
+              ((symbol-function 'magent-runtime-api--finish-submission)
+               #'ignore))
+      (magent-runtime-submit runtime-session "hello"))
+    (should (magent-request-context-p captured-context))
+    (should-not (magent-request-context-effort captured-context))))
 
 (ert-deftest magent-test-runtime-finish-clears-active-before-completion-callback ()
   "Test backend completion callback failures cannot leave runtime busy."

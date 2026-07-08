@@ -71,12 +71,43 @@
                            (name . ,model-id)
                            (description . "Current gptel model"))]))))
 
+(defun magent-acp--effort-option-entry (effort)
+  "Return ACP config option value entry for EFFORT."
+  (let* ((option (magent-effort-option-or-auto effort))
+         (value (symbol-name option))
+         (name (pcase option
+                 ('auto "Auto")
+                 ('minimal "Minimal")
+                 ('low "Low")
+                 ('medium "Medium")
+                 ('high "High")
+                 ('xhigh "Extra high"))))
+    `((value . ,value)
+      (name . ,name)
+      (description . ,(if (eq option 'auto)
+                          "Use the provider or model default reasoning effort."
+                        (format "Use %s reasoning effort." name))))))
+
+(defun magent-acp--config-options (runtime-session)
+  "Return ACP config options for RUNTIME-SESSION."
+  (vector
+   `((id . "effort")
+     (name . "Thought level")
+     (description . "Reasoning effort for future Magent turns in this session.")
+     (category . "thought_level")
+     (type . "select")
+     (currentValue
+      . ,(magent-effort-option-string
+          (magent-runtime-session-effort-option runtime-session)))
+     (options . ,(vconcat (mapcar #'magent-acp--effort-option-entry
+                                  magent-effort-option-values))))))
+
 (defun magent-acp--session-response (runtime-session)
   "Return common ACP session response for RUNTIME-SESSION."
   `((sessionId . ,(magent-runtime-session-id runtime-session))
     (modes . ,(magent-acp--modes runtime-session))
     (models . ,(magent-acp--models))
-    (configOptions . [])))
+    (configOptions . ,(magent-acp--config-options runtime-session))))
 
 (defun magent-acp--initialize-response ()
   "Return ACP initialize response."
@@ -563,6 +594,19 @@ switching semantics."
       (error "Unknown Magent model: %s" model-id))
     (magent-acp--session-response runtime-session)))
 
+(defun magent-acp--handle-set-config-option (params)
+  "Handle ACP session/set_config_option PARAMS."
+  (let* ((session-id (map-elt params 'sessionId))
+         (config-id (map-elt params 'configId))
+         (value (map-elt params 'value))
+         (runtime-session (magent-acp--runtime-session-by-id session-id)))
+    (unless runtime-session
+      (error "Unknown session: %s" session-id))
+    (unless (equal config-id "effort")
+      (error "Unknown Magent config option: %s" config-id))
+    (magent-runtime-session-set-effort runtime-session value)
+    (magent-acp--session-response runtime-session)))
+
 (defun magent-acp--handle-request (client request on-success on-failure)
   "Handle ACP REQUEST from CLIENT."
   (condition-case err
@@ -593,6 +637,8 @@ switching semantics."
            (funcall on-success (magent-acp--handle-set-mode params)))
           ("session/set_model"
            (funcall on-success (magent-acp--handle-set-model params)))
+          ("session/set_config_option"
+           (funcall on-success (magent-acp--handle-set-config-option params)))
           ("session/prompt"
            (let* ((session-id (map-elt params 'sessionId))
                   (runtime-session

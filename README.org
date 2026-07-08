@@ -7,11 +7,11 @@
 
 An Emacs Lisp AI coding agent with multi-agent architecture, permission-based tool access, and LLM integration via [[https://github.com/karthink/gptel][gptel]].
 
+homepage: https://jamie-cui.github.io/magent/
+
 * Agent Workflow
 
 Magent now uses a durable child-agent lifecycle for collaborative agent work: spawn, message, wait, list, resume/inspect, and close. The lifecycle is implemented on top of the Magent-owned agent loop while provider integration stays with ~gptel-request~.
-
-The old one-shot ~delegate~ tool has been replaced by ~spawn_agent~, ~send_agent_message~, ~wait_agent~, ~list_agents~, and ~close_agent~. Codex sandbox behavior is intentionally out of scope. The final architecture is documented in [[file:docs/AGENT_JOBS.org][docs/AGENT_JOBS.org]].
 
 * Features
 
@@ -99,6 +99,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-request-timeout~       | ~120~                         | Timeout in seconds for LLM requests                                                   |
 | ~magent-max-sampling-requests~ | ~25~                          | Max model sampling requests in one user turn; 0 disables the lifecycle guard           |
 | ~magent-default-agent~         | ~"build"~                     | Default agent for new sessions                                                        |
+| ~magent-default-effort~        | ~nil~                         | Default reasoning effort; nil/auto uses provider default                              |
 | ~magent-ui-backend~            | ~agent-shell~                  | UI backend: ~agent-shell~ by default, or ~legacy~ for the old workspace/compose UI       |
 | ~magent-load-custom-agents~    | ~t~                           | Load custom agents from ~.magent/agent/*.md~                                            |
 | ~magent-enable-logging~        | ~t~                           | Enable logging to ~*magent-log*~ buffer                                                 |
@@ -147,7 +148,10 @@ submenus. Agent-shell also has native instruction skill commands for the common
 request path: ~magent-agent-shell-toggle-skill-for-next-request~,
 ~magent-agent-shell-clear-skills-for-next-request~,
 ~magent-agent-shell-run-skill-command~, and
-~magent-agent-shell-run-init-command~.
+~magent-agent-shell-run-init-command~.  Reasoning effort is exposed as
+agent-shell's thought level session option; use
+~agent-shell-set-session-thought-level~ to choose ~auto~, ~minimal~, ~low~,
+~medium~, ~high~, or ~xhigh~ for future turns in the current session.
 
 In the legacy ~*magent*~ output buffer: ~TAB~ and ~S-TAB~ fold sections, ~?~
 opens the transient menu, ~C-c C-o~ opens compose directly, and ~C-c C-c~ opens
@@ -285,6 +289,7 @@ description: Code review specialist
 mode: primary
 hidden: false
 temperature: 0.3
+effort: high
 permissions:
   - (read_file . allow)
   - (write_file . deny)
@@ -308,6 +313,7 @@ The YAML frontmatter supports:
 - ~mode~: ~primary~, ~subagent~, or ~all~
 - ~hidden~: Hide from agent selection UI
 - ~temperature~: Override default temperature
+- ~effort~: Override reasoning effort: ~auto~, ~minimal~, ~low~, ~medium~, ~high~, or ~xhigh~
 - ~model~: Override default model
 - ~permissions~: List of permission rules
 
@@ -450,7 +456,7 @@ magent/
 
 ** Key Data Structures
 
-- ~magent-agent-info~: Agent configuration struct (name, description, mode, permissions, prompt, temperature, model, and related settings)
+- ~magent-agent-info~: Agent configuration struct (name, description, mode, permissions, prompt, temperature, effort, model, and related settings)
 - ~magent-session~: Conversation state with message list, assigned agent, history trimming, raw buffer content, and durable child-agent jobs
 - ~magent-agent-job~: Child-agent job state with stable id, status, prompt, transcript, result/error, and inheritance metadata
 - ~magent-agent-loop~: Active turn state for normalized LLM events, reasoning, tool queueing, guards, aborts, and continuation
@@ -546,19 +552,3 @@ gptel-api-key  ; Should return your API key
 * License
 
 This project is licensed under the GNU General Public License v3.0. See [[file:LICENSE][LICENSE]] for details.
-
-* Credits
-
-- *Inspired by*: [[https://github.com/anomalyco/opencode][OpenCode]]
-
-* Contributing
-
-Contributions are welcome. Please ensure:
-
-- Code follows existing style conventions
-- All files byte-compile without warnings
-- Documentation is updated for new features
-
-* Links
-
-- *Project Repository*: [[https://github.com/jamie-cui/magent][https://github.com/jamie-cui/magent]]

@@ -16,6 +16,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'subr-x)
 
 (defgroup magent nil
   "Magent AI coding agent for Emacs."
@@ -185,6 +186,77 @@ The initial request counts as one.  Tool output continuations count as
 additional requests.  Set to 0 to disable this lifecycle guard."
   :type 'integer
   :group 'magent)
+
+(defconst magent-effort-values '(minimal low medium high xhigh)
+  "Canonical Magent reasoning effort values sent to providers.")
+
+(defconst magent-effort-option-values
+  (cons 'auto magent-effort-values)
+  "Reasoning effort values exposed to user-facing selectors.
+`auto' means provider or model default and is not sent as a request
+parameter.")
+
+(defcustom magent-default-effort nil
+  "Default reasoning effort for Magent requests.
+Nil means provider or model default.  Per-session agent-shell settings,
+request context, and agent definitions can override this value."
+  :type '(choice (const :tag "Provider default" nil)
+                 (const :tag "Minimal" minimal)
+                 (const :tag "Low" low)
+                 (const :tag "Medium" medium)
+                 (const :tag "High" high)
+                 (const :tag "Extra high" xhigh))
+  :group 'magent)
+
+(defcustom magent-effort-unsupported-policy 'warn-and-downgrade
+  "How Magent handles an effort level unsupported by a provider adapter.
+`warn-and-downgrade' downgrades `xhigh' to `high' when a known request
+shape supports effort but not `xhigh', and otherwise logs and ignores
+unsupported effort settings.  `ignore' silently omits unsupported effort
+parameters.  `error' signals an error before sending the request."
+  :type '(choice (const :tag "Warn and downgrade when possible" warn-and-downgrade)
+                 (const :tag "Ignore" ignore)
+                 (const :tag "Error" error))
+  :group 'magent)
+
+(defun magent-effort-normalize-option (effort)
+  "Return EFFORT as a canonical option symbol, or nil when absent.
+Recognized option symbols are `auto', `minimal', `low', `medium',
+`high', and `xhigh'.  String values are accepted for file-backed and
+wire-protocol configuration."
+  (let* ((raw (cond
+               ((null effort) nil)
+               ((symbolp effort) (symbol-name effort))
+               ((stringp effort) effort)
+               (t (format "%s" effort))))
+         (key (and raw
+                   (downcase
+                    (replace-regexp-in-string
+                     "[_[:space:]]+" "-"
+                     (string-trim raw))))))
+    (pcase key
+      ((or 'nil "") nil)
+      ((or "auto" "default" "provider-default") 'auto)
+      ("minimal" 'minimal)
+      ("low" 'low)
+      ("medium" 'medium)
+      ("high" 'high)
+      ((or "xhigh" "x-high" "extra-high" "extra-highest") 'xhigh)
+      (_ (error "Invalid Magent effort value: %S" effort)))))
+
+(defun magent-effort-option-or-auto (effort)
+  "Return normalized EFFORT option, defaulting nil to `auto'."
+  (or (magent-effort-normalize-option effort) 'auto))
+
+(defun magent-effort-effective (effort)
+  "Return provider-facing EFFORT symbol, or nil for `auto'/absent."
+  (let ((option (magent-effort-normalize-option effort)))
+    (unless (eq option 'auto)
+      option)))
+
+(defun magent-effort-option-string (effort)
+  "Return EFFORT option as an ACP/frontmatter string."
+  (symbol-name (magent-effort-option-or-auto effort)))
 
 (defvaralias 'magent-always-bypass-permission 'magent-bypass-permission)
 (make-obsolete-variable 'magent-always-bypass-permission

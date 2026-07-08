@@ -24,6 +24,7 @@
   context
   skills
   agent
+  effort
   observer
   approval-provider
   on-complete

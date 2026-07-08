@@ -15,6 +15,7 @@
 (require 'magent-agent)
 (require 'magent-agent-loop)
 (require 'magent-agent-registry)
+(require 'magent-config)
 (require 'magent-protocol)
 (require 'magent-runtime)
 (require 'magent-runtime-queue)
@@ -27,6 +28,7 @@
   id
   scope
   magent-session
+  effort
   pending-skills
   metadata)
 
@@ -98,6 +100,23 @@
          (agent (or (magent-session-agent session)
                     (magent-agent-registry-get-default))))
     (and agent (magent-agent-info-name agent))))
+
+(defun magent-runtime-session-effort-option (runtime-session)
+  "Return RUNTIME-SESSION's current effort option."
+  (magent-effort-option-or-auto
+   (or (magent-runtime-session-effort runtime-session)
+       magent-default-effort)))
+
+(defun magent-runtime-session-effective-effort (runtime-session)
+  "Return RUNTIME-SESSION's provider-facing effort, or nil for auto."
+  (magent-effort-effective
+   (magent-runtime-session-effort-option runtime-session)))
+
+(defun magent-runtime-session-set-effort (runtime-session effort)
+  "Set RUNTIME-SESSION effort option to EFFORT and return it."
+  (let ((option (magent-effort-option-or-auto effort)))
+    (setf (magent-runtime-session-effort runtime-session) option)
+    option))
 
 (defun magent-runtime-session-toggle-pending-skill (runtime-session skill-name)
   "Toggle one-shot SKILL-NAME for RUNTIME-SESSION."
@@ -196,6 +215,7 @@
            :approval-session session
            :ui-visibility 'none
            :origin-context (magent-runtime-submission-context submission)
+           :effort (magent-runtime-submission-effort submission)
            :skill-names (magent-runtime-submission-skills submission)
            :approval-provider
            (magent-runtime-submission-approval-provider submission)
@@ -220,7 +240,7 @@
 
 (cl-defun magent-runtime-submit
     (runtime-session prompt &key context skills agent observer approval-provider
-                     on-complete)
+                     effort on-complete)
   "Submit PROMPT to RUNTIME-SESSION.
 OBSERVER receives request-local Magent-native events."
   (unless (magent-runtime-session-p runtime-session)
@@ -240,6 +260,9 @@ OBSERVER receives request-local Magent-native events."
            :context context
            :skills effective-skills
            :agent agent
+           :effort (or (magent-effort-normalize-option effort)
+                       (magent-effort-normalize-option
+                        (magent-runtime-session-effort runtime-session)))
            :observer observer
            :approval-provider approval-provider
            :on-complete on-complete

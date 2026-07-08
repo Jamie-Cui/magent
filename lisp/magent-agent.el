@@ -124,6 +124,41 @@ was not already emitted as text deltas."
           (append metadata '(:empty-tool-final t)))
     request))
 
+(defun magent-agent--request-project-root (request-context request-state)
+  "Return the project root associated with REQUEST-CONTEXT or REQUEST-STATE."
+  (or (and request-state
+           (magent-request-context-project-root request-state))
+      (and request-context
+           (plist-get request-context :project-root))
+      (and request-state
+           (let ((scope (magent-request-context-scope request-state)))
+             (and (stringp scope) scope)))
+      (ignore-errors (magent-project-root nil t))))
+
+(defun magent-agent--context-system-message (project-root)
+  "Return prompt context for PROJECT-ROOT."
+  (when (and (stringp project-root)
+             (not (string-empty-p project-root)))
+    (format
+     "Current project root: %s\nUse this as the current repository/workspace. When the user says \"this repo\", \"this repository\", or \"this project\", inspect this path. Resolve relative file tool paths against this root and do not invent unrelated absolute paths."
+     project-root)))
+
+(defun magent-agent--compose-system-message
+    (base-system-message project-root skill-prompts)
+  "Return system prompt from BASE-SYSTEM-MESSAGE, PROJECT-ROOT, and SKILL-PROMPTS."
+  (let ((context-message
+         (magent-agent--context-system-message project-root))
+        (skills-message
+         (when skill-prompts
+           (concat "# Active Skills\n\n"
+                   (mapconcat #'identity skill-prompts "\n\n")))))
+    (mapconcat #'identity
+               (delq nil
+                     (list base-system-message
+                           context-message
+                           skills-message))
+               "\n\n")))
+
 (defun magent-agent-process
     (user-prompt &optional callback agent-info skill-names event-context
                  request-context capability-resolution ui-callback request-live-p
@@ -195,6 +230,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                          session current-turn-id))
            (base-system-msg (or (magent-agent-info-prompt agent)
                                 magent-system-prompt))
+           (request-project-root
+            (magent-agent--request-project-root request-context request-state))
            (capability-resolution
             (or capability-resolution
                 (when (require 'magent-capability nil t)
@@ -210,11 +247,9 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                      resolved-skill-names)
                             (magent-skills-get-instruction-prompts
                              resolved-skill-names)))
-           (system-msg (if skill-prompts
-                           (concat base-system-msg
-                                   "\n\n# Active Skills\n\n"
-                                   (mapconcat #'identity skill-prompts "\n\n"))
-                         base-system-msg))
+           (system-msg
+            (magent-agent--compose-system-message
+             base-system-msg request-project-root skill-prompts))
            (tools (mapcar #'magent-tool-runtime-to-plist
                           (magent-tool-runtime-for-agent agent))))
       (when capability-resolution
@@ -238,21 +273,25 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                 (inherited-top-p
                  (and request-state
                       (magent-request-context-top-p request-state)))
+                (inherited-effort
+                 (and request-state
+                      (magent-request-context-effort request-state)))
                 (backend (or inherited-backend gptel-backend))
                 (model (or inherited-model gptel-model))
                 (temperature (or inherited-temperature
                                  (and (boundp 'gptel-temperature)
                                       gptel-temperature)))
                 (top-p (or inherited-top-p
-                           (magent-agent-info-top-p agent))))
+                           (magent-agent-info-top-p agent)))
+                (effort-option (or inherited-effort
+                                   (magent-agent-info-effort agent)
+                                   (magent-effort-option-or-auto
+                                    magent-default-effort)))
+                (effort (magent-effort-effective effort-option)))
            (when request-state
              (setf (magent-request-context-project-root request-state)
                    (or (magent-request-context-project-root request-state)
-                       (and request-context
-                            (plist-get request-context :project-root))
-                       (let ((scope (magent-request-context-scope request-state)))
-                         (and (stringp scope) scope))
-                       (ignore-errors (magent-project-root nil t)))
+                       request-project-root)
                    (magent-request-context-model request-state)
                    (or (magent-request-context-model request-state) model)
                    (magent-request-context-backend request-state)
@@ -263,6 +302,9 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                    (magent-request-context-top-p request-state)
                    (or (magent-request-context-top-p request-state)
                        top-p)
+                   (magent-request-context-effort request-state)
+                   (or (magent-request-context-effort request-state)
+                       effort-option)
                    (magent-request-context-skill-names request-state)
                    (or (magent-request-context-skill-names request-state)
                        resolved-skill-names)
@@ -643,8 +685,11 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                       :model model
                       :backend backend
                       :stream t
-                      :metadata (list :temperature temperature
-                                      :top-p top-p)
+                      :metadata (append
+                                 (list :temperature temperature
+                                       :top-p top-p)
+                                 (when effort
+                                   (list :effort effort)))
                       :callback #'handle-event)
                       :request-context request-state
                       :turn-id (and request-state
