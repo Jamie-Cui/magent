@@ -52,6 +52,41 @@
            ("故障排查" . "/TROUBLESHOOTING.zh.html")
            ("贡献" . "/CONTRIBUTING.zh.html")))))
 
+(defun magent-docs--external-url-p (url)
+  "Return non-nil if URL should not be made site-relative."
+  (or (string-prefix-p "#" url)
+      (string-match-p "\\`[[:alpha:]][[:alnum:]+.-]*:" url)))
+
+(defun magent-docs--url-file (url)
+  "Return the site output file for public URL without its fragment."
+  (let ((path (car (split-string url "#" t))))
+    (cond
+     ((or (null path) (string-empty-p path) (string= path "/"))
+      "index.html")
+     ((string-suffix-p "/" path)
+      (concat (string-remove-prefix "/" path) "index.html"))
+     ((string-prefix-p "/" path)
+      (string-remove-prefix "/" path))
+     (t
+      path))))
+
+(defun magent-docs--url-fragment (url)
+  "Return URL fragment for URL, including the leading #."
+  (when (string-match "#.*\\'" url)
+    (match-string 0 url)))
+
+(defun magent-docs--relative-url (current-url target-url)
+  "Return TARGET-URL relative to CURRENT-URL's output location."
+  (if (magent-docs--external-url-p target-url)
+      target-url
+    (let* ((current-file (magent-docs--url-file current-url))
+           (current-dir (or (file-name-directory current-file) ""))
+           (target-file (magent-docs--url-file target-url))
+           (fragment (or (magent-docs--url-fragment target-url) ""))
+           (from (expand-file-name current-dir magent-docs--site-root))
+           (to (expand-file-name target-file magent-docs--site-root)))
+      (concat (file-relative-name to from) fragment))))
+
 (defun magent-docs--read-file (path)
   "Return the full contents of PATH."
   (with-temp-buffer
@@ -147,7 +182,8 @@ REPLACEMENTS is an alist of string placeholders to string values."
      (let ((title (car item))
            (url (cdr item)))
        (format "<a href=\"%s\"%s>%s</a>"
-               (magent-docs--html-escape url)
+               (magent-docs--html-escape
+                (magent-docs--relative-url current-url url))
                (if (string= url current-url) " aria-current=\"page\"" "")
                (magent-docs--html-escape title))))
    (cdr (assq lang magent-docs--navigation))
@@ -247,8 +283,11 @@ REPLACEMENTS is an alist of string placeholders to string values."
              ("{{title}}" . ,(magent-docs--html-escape title))
              ("{{site_title}}" . ,(magent-docs--html-escape magent-docs--site-title))
              ("{{description}}" . ,(magent-docs--html-escape description))
-             ("{{brand_href}}" . ,(if (eq lang 'zh) "/zh/" "/"))
-             ("{{language_url}}" . ,alt-url)
+             ("{{stylesheet_href}}" . ,(magent-docs--relative-url
+                                         url "/assets/css/site.css"))
+             ("{{brand_href}}" . ,(magent-docs--relative-url
+                                    url (if (eq lang 'zh) "/zh/" "/")))
+             ("{{language_url}}" . ,(magent-docs--relative-url url alt-url))
              ("{{language_label}}" . ,(if (eq lang 'zh) "English" "中文"))
              ("{{nav}}" . ,(magent-docs--nav-html lang url))
              ("{{content}}" . ,body)))))

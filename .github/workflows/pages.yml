@@ -8,14 +8,12 @@ on:
       - docs/**
       - scripts/build-docs.el
       - scripts/build-docs.sh
-      - scripts/serve-docs-local.sh
       - .github/workflows/pages.yml
   pull_request:
     paths:
       - docs/**
       - scripts/build-docs.el
       - scripts/build-docs.sh
-      - scripts/serve-docs-local.sh
       - .github/workflows/pages.yml
   workflow_dispatch:
 
