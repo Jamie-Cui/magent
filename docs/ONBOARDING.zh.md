@@ -89,11 +89,11 @@ Magent 拥有 Magent-owned agent loop 和 durable child-agent lifecycle。Root a
 
 **关键文件：**
 
-- `magent-agent-loop.el`：Magent-owned loop、tool dispatch、serial queueing、abort helpers、continuation。
+- `magent-agent-loop.el`：Magent-owned loop、tool dispatch、serial queueing、abort helpers、continuation outcomes。
 - `magent-llm.el`：provider-neutral request/event protocol。
 - `magent-llm-gptel.el`：薄的 `gptel-request` sampling adapter。
 
-**职责：** `magent-agent-loop.el` 消费 normalized LLM events，记录 assistant/tool state，经过 `magent-tool-orchestrator` 分发工具，处理 visible tool rendering、abort cleanup 和 Codex-style continuation。`magent-llm-gptel.el` 仍然调用 `gptel-request`；Magent 不重写 provider transport。
+**职责：** `magent-agent-loop.el` 消费 normalized LLM events，记录 assistant/tool state，经过 `magent-tool-orchestrator` 分发工具，并在 model-visible tool output 记录完成后返回 continuation outcome。`magent-agent-process` 决定继续 sampling、在 sampling budget 用 no-tool final response 收尾，或在 post-tool assistant completion 为空时只重试一次。Reasoning 与 assistant text 分开保存。`magent-llm-gptel.el` 仍然调用 `gptel-request`；Magent 不重写 provider transport。
 
 ### 第 6 层：UI Backends
 
@@ -194,7 +194,7 @@ Sessions 是 project-aware：
 按顺序跟踪一次请求：
 
 1. `magent-agent.el`：`magent-agent-process` 构造 prompt。
-2. `magent-agent-loop.el`：normalized events、tool dispatch、queueing、abort 和 continuation。
+2. `magent-agent-loop.el`：normalized events、tool dispatch、queueing、abort 和 continuation outcomes。
 3. `magent-llm-gptel.el`：为一次 sampling 调用 `gptel-request`。
 4. `magent-tool-orchestrator.el` / `magent-tools.el`：解析权限并执行 tool implementations。
 5. `magent-runtime-api.el` / `magent-acp.el`：backend submissions 和 agent-shell 的 UI-neutral events。
@@ -230,7 +230,7 @@ Sessions 是 project-aware：
 
 ### 1. `magent-agent-loop.el`
 
-**复杂原因：** 它拥有 active request/tool loop：normalized event accumulation、tool-call batch completion、serial execution、permission orchestration、UI tool rendering、abort cleanup、tool-result session recording 和 continuation。
+**复杂原因：** 它拥有 active request/tool loop：normalized event accumulation、tool-call batch completion、serial execution、permission orchestration、UI tool rendering、abort cleanup、tool-result session recording、reasoning separation 和 continuation outcomes。
 
 **修改建议：** 任何 loop state、tool callback ordering 或 abort handling 的改动都可能导致 turn hang 或 session history 损坏。先加 ERT，再在 Emacs 可用时用 tool-use prompts 做 live 验证。
 

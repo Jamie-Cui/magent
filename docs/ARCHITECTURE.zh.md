@@ -51,7 +51,7 @@ Emacs 不只是宿主进程。Magent 依赖活的编辑器状态：buffer、majo
 
 ### Provider Plumbing
 
-`magent-llm.el` 定义 provider-neutral request/event。`magent-llm-gptel.el` 负责一次 sampling request：调用 `gptel-request`，再把 gptel callback 转成 Magent normalized events。这个 adapter 可以隐藏 gptel callback/FSM 细节，但主 loop 只消费 normalized events。
+`magent-llm.el` 定义 provider-neutral request/event。`magent-llm-gptel.el` 负责一次 sampling request：调用 `gptel-request`，再把 gptel callback 转成 Magent normalized events。这个 adapter 可以隐藏 gptel callback/FSM 细节，但主 loop 只消费 normalized events。Reasoning event 与 assistant text 分开保存；reasoning-only completion 可以产生空 assistant content，不会把 chain text 泄漏成最终回答。
 
 ### UI 与 Runtime API
 
@@ -89,7 +89,8 @@ Emacs 不只是宿主进程。Magent 依赖活的编辑器状态：buffer、majo
 8. tool call 累积到 `tool-call-batch-end` 后，通过 orchestrator 串行执行。
 9. tool result 更新同一个 tool item，而不是创建一条独立的持久记录。
 10. 如果 tool output 需要返回给模型，`magent-agent.el` 从 ledger 重建 prompt 并开始下一次 sampling。
-11. completion、failure、abort 或 queued drop 会把 turn 转到 terminal state，并通知 UI backend。
+11. 如果这次 post-tool continuation 返回空 assistant text，`magent-agent.el` 会基于已记录 tool results 发起一次 no-tool final-response retry。
+12. completion、failure、abort 或 queued drop 会把 turn 转到 terminal state，并通知 UI backend。
 
 这个 continuation 模型接近 Codex：工具结果会触发后续采样；但实现仍然是 Emacs-native 且由 gptel 承担 provider transport。
 

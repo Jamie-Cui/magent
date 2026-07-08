@@ -117,7 +117,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-child-agent-max-depth~ | ~1~                           | Max recursive child-agent depth; direct children are allowed by default               |
 | ~magent-emacs-eval-timeout~    | ~10~                          | Timeout in seconds for ~emacs_eval~                                                     |
 | ~magent-audit-preview-length~  | ~120~                         | Max width for persisted audit summaries and previews                                  |
-| ~magent-include-reasoning~     | ~t~                           | Display (~t~), keep out of the UI (~ignore~), or discard (~nil~) reasoning blocks           |
+| ~magent-include-reasoning~     | ~t~                           | Display (~t~), hide but retain (~ignore~), or discard (~nil~) reasoning; never final-answer fallback |
 | ~magent-auto-context~          | ~t~                           | Auto-attach buffer context in ~magent-dwim~                                             |
 | ~magent-ui-batch-insert-delay~ | ~0.05~                        | Delay in seconds for batching streaming chunks                                        |
 | ~magent-ui-fontify-threshold~  | ~500~                         | Character threshold for async fontification                                           |
@@ -358,7 +358,7 @@ Tool availability is controlled by:
 
 5. *Capability System* (~magent-capability.el~): File-backed capability definitions score each request context and attach matching instruction skills.
 
-6. *Agent Loop*: ~magent-agent.el~ starts the Magent-owned loop in ~magent-agent-loop.el~. ~magent-llm.el~ defines normalized request/events, and ~magent-llm-gptel.el~ calls ~gptel-request~ for one sampling request while hiding gptel callback/FSM details. The loop owns tool dispatch, serial queueing, visible tool rendering, abort cleanup, permission audit hooks, and tool-result session recording; ~magent-agent-process~ owns continuation policy across sampling requests.
+6. *Agent Loop*: ~magent-agent.el~ starts the Magent-owned loop in ~magent-agent-loop.el~. ~magent-llm.el~ defines normalized request/events, and ~magent-llm-gptel.el~ calls ~gptel-request~ for one sampling request while hiding gptel callback/FSM details. The loop owns tool dispatch, serial queueing, visible tool rendering, abort cleanup, permission audit hooks, and tool-result session recording; ~magent-agent-process~ owns continuation policy across sampling requests. Reasoning is recorded separately from assistant text, and a tool-output continuation that completes with empty assistant text gets one no-tool final-response retry.
 
 7. *LLM Integration* (via gptel): All LLM communication is handled by [[https://github.com/karthink/gptel][gptel]]. Provider, model, and API key configuration is managed entirely by gptel.
 
@@ -453,7 +453,7 @@ magent/
 - ~magent-agent-info~: Agent configuration struct (name, description, mode, permissions, prompt, temperature, model, and related settings)
 - ~magent-session~: Conversation state with message list, assigned agent, history trimming, raw buffer content, and durable child-agent jobs
 - ~magent-agent-job~: Child-agent job state with stable id, status, prompt, transcript, result/error, and inheritance metadata
-- ~magent-agent-loop~: Active turn state for normalized LLM events, tool queueing, guards, aborts, and continuation
+- ~magent-agent-loop~: Active turn state for normalized LLM events, reasoning, tool queueing, guards, aborts, and continuation
 - ~magent-skill~: Loaded skill definition (name, description, tools, body, dir)
 
 * Development

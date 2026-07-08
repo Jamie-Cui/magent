@@ -202,6 +202,7 @@ make compile
 
 - 如果第一个 tool result 后 continuation hang，检查 `/tmp/magent-live-trace.el`。出现 `gptel-curl-get-args :event enter` 但没有对应 `:event leave`，通常意味着 gptel 在 curl 启动前遇到 serialization error。检查 tool-call names、tool args 和 assistant `tool_calls` history 中是否有 Lisp symbols 或非 JSON-safe values。
 - 如果第一个 provider request 发出 tool call，但第二个 request 没有开始，确认 Magent 是否把 tool result 记录进 session，并通过 `magent-agent-loop-request-for-current-session` 重建 continuation prompt。
+- 如果 continuation 已开始，但 tool output 后 UI 仍收到空 final answer，检查是否出现 `retrying empty final response after tool output` log。Magent 应该只尝试一次 no-tool final-response retry；reasoning-only completion 应保持为空 assistant text，而不是显示成最终回答。
 - 如果第二个 request 完成但 UI 漏掉 final assistant text，记住 tool-enabled requests 可能是 non-streaming。Non-streaming string callback 可能就是 final completion，而不是 text delta。
 - 如果 direct `emacsclient` 通过但 `make test-live-smoke` 失败，确认设置了 `EMACSCLIENT="emacsclient -s magent-live-test"`。
 - 如果测试意外加载旧 Magent，检查 `load-history`、`load-path` order 和 `.elc` 文件。`test/magent-live-test.el` 使用 source loading with `nosuffix`；添加文件到 live reload list 时保持这个行为。

@@ -23,7 +23,7 @@ Codex 在 SDK/app-server 边界暴露 thread event stream：
 Magent 保留同类工作流边界，但适配 Emacs：
 
 - Provider transport 仍然走 `gptel-request`。
-- Magent loop 自己负责 tool dispatch、continuation、abort 和 Emacs UI rendering。
+- Magent loop 自己负责 tool dispatch、continuation outcome、abort 和 Emacs UI rendering；turn layer 负责 final-response policy，包括 post-tool continuation 产生空 assistant text 时的一次 no-tool retry。
 - 不引入 Codex sandbox、seatbelt、bubblewrap 或 shell isolation parity。
 
 Codex 中最接近的参考点是 SDK event names、core sampling loop、app-server event conversion 和 thread status shape。Magent 借鉴的是事件边界和 turn/item 生命周期，不复制 Codex 的隔离和 app-server runtime。
@@ -39,7 +39,7 @@ Codex 中最接近的参考点是 SDK event names、core sampling loop、app-ser
 - `magent-thread-item`
   - 状态：`pending`、`in-progress`、`completed`、`failed`、`cancelled`
 
-每个用户 prompt 创建一个 turn。Assistant message、reasoning block、tool invocation 和 tool output 都是这个 turn 下的 item。
+每个用户 prompt 创建一个 turn。Assistant message、reasoning block、tool invocation 和 tool output 都是这个 turn 下的 item。Reasoning item 永远不会提升成 assistant message text，即使 provider 没有返回可见 content。
 
 | 对象 | 运行态 | 终态 |
 | --- | --- | --- |
@@ -121,9 +121,10 @@ Replay 语义：
 7. Tool-call events 累积到 provider-neutral `tool-call-batch-end`。
 8. Tool dispatch 启动 `tool` items，记录 approval metadata，并把同一 item 更新为 `completed` 或 `failed`。
 9. Tool output 返回 `tool-output` 等 continuation outcome；`magent-agent-process` 决定是否从 session history 重建 prompt 并继续 sampling。
-10. Assistant completion 记录 assistant message item，并完成 turn。
-11. Abort、failure 和 dropped queued submissions 分别把 turn 转成 `interrupted`、`failed` 或 `dropped`；aborted turn 下的 in-progress items 标记为 `cancelled`。
-12. `magent-max-sampling-requests` 是单个用户 turn 的 lifecycle guard。它限制包括 tool-output continuations 在内的 model sampling request 数量，但不检查或去重 tool command 内容。
+10. 如果 post-tool continuation 返回空 assistant text，`magent-agent-process` 会先尝试一次 no-tool final-response request，再决定是否完成 turn。Sampling-limit finalization 使用同样的 no-tool request 形状，但有独立 metadata。
+11. Assistant completion 记录 assistant message item，并完成 turn。
+12. Abort、failure 和 dropped queued submissions 分别把 turn 转成 `interrupted`、`failed` 或 `dropped`；aborted turn 下的 in-progress items 标记为 `cancelled`。
+13. `magent-max-sampling-requests` 是单个用户 turn 的 lifecycle guard。它限制包括 tool-output continuations 在内的 model sampling request 数量，但不检查或去重 tool command 内容。
 
 Prompt reconstruction 是 ledger-driven。知道 current turn id 时，Magent 只包含 completed history 和该 turn，避免后续 queued user submissions 泄漏进 active model request。
 
@@ -141,7 +142,7 @@ Magent 刻意保留以下差异：
 
 - UI 是 Emacs-native 且 backendized：默认 agent-shell + in-process ACP，旧 workspace/compose UI 是 legacy backend。
 - Provider streaming 经 `magent-llm-gptel.el` 规范化，但 transport 仍是 gptel。
-- Codex core 有 app-server mailbox、steering queue 和更丰富的 intra-turn input 语义；Magent 把 request serialization 放在 runtime queue，用 Codex-style tool continuation 处理工具结果。
+- Codex core 有 app-server mailbox、steering queue 和更丰富的 intra-turn input 语义；Magent 把 request serialization 放在 runtime queue，用 Codex-style tool continuation 处理工具结果，并在 post-tool response 为空时只追加一次 no-tool final answer 请求。
 - Magent 用自己的 session JSON `snapshot + journal`，不直接使用 Codex rollout files。
 - Tool call 和 output 在 Magent 中是一个 source-of-truth item 的状态更新。
 - Tool execution 当前由 Magent tool queue 串行化；Codex 更丰富的 per-tool runtime、approval、MCP 和 process execution 机制不在当前范围。

@@ -188,6 +188,7 @@ For a new child-agent/job module, prefer a focused module such as `magent-agent-
 - Active request/tool-loop behavior belongs in `magent-agent-loop.el`
 - Keep using `magent-llm-gptel.el` and `gptel-request` for provider transport
 - Add focused tests for normalized events, tool queueing, permission decisions, abort behavior, and session recording
+- When changing continuation or final-response behavior, test post-tool empty completions and reasoning-only completions; reasoning must not become assistant text
 - Update request generation and live-request checks when callbacks can arrive after interruption
 - Do not reintroduce removed agent-loop modules; add provider-specific transport handling only in `magent-llm-gptel.el`
 

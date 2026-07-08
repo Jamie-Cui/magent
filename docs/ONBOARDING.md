@@ -84,11 +84,11 @@ The action layer that executes operations requested by agents.
 Orchestrates the tool-calling loop and LLM communication.
 
 **Key Files:**
-- `magent-agent-loop.el` — Active Magent-owned loop, tool dispatch, serial queueing, abort helpers, continuation
+- `magent-agent-loop.el` — Active Magent-owned loop, tool dispatch, serial queueing, abort helpers, continuation outcomes
 - `magent-llm.el` — Provider-neutral request/event protocol
 - `magent-llm-gptel.el` — Thin `gptel-request` sampling adapter
 
-**What it does:** `magent-agent-loop.el` consumes normalized LLM events, records assistant/tool state into the session, dispatches tools through `magent-tool-orchestrator`, handles visible tool rendering, abort cleanup, and Codex-style continuation. Tool results are fed back to the model rather than being stopped by an `emacs_eval` call-count guard. `magent-llm-gptel.el` still calls `gptel-request`; Magent does not rewrite provider transport.
+**What it does:** `magent-agent-loop.el` consumes normalized LLM events, records assistant/tool state into the session, dispatches tools through `magent-tool-orchestrator`, and returns continuation outcomes after model-visible tool output is recorded. `magent-agent-process` decides whether to continue sampling, force a no-tool final response at the sampling budget, or retry once when a post-tool assistant completion is empty. Reasoning is kept separate from assistant text. `magent-llm-gptel.el` still calls `gptel-request`; Magent does not rewrite provider transport.
 
 ### Layer 6: UI Backends
 
@@ -198,7 +198,7 @@ submission live in `magent-ui-legacy.el`.
 
 Trace a request through these files in order:
 1. `magent-agent.el` — `magent-agent-process` builds the prompt
-2. `magent-agent-loop.el` — Owns normalized events, tool dispatch, queueing, abort, and continuation
+2. `magent-agent-loop.el` — Owns normalized events, tool dispatch, queueing, abort, and continuation outcomes
 3. `magent-llm-gptel.el` — Calls `gptel-request` for one sampling request
 4. `magent-tool-orchestrator.el` / `magent-tools.el` — Resolve permissions and execute tool implementations
 5. `magent-runtime-api.el` / `magent-acp.el` — Backend submissions and UI-neutral events for agent-shell
@@ -288,9 +288,9 @@ those paths at runtime.
 These areas require careful attention when modifying:
 
 ### 1. magent-agent-loop.el (High Complexity)
-**Why it's complex:** Owns the active request/tool loop: normalized event accumulation, provider-neutral tool-call batch completion, serial execution, permission orchestration, UI tool rendering, abort cleanup, tool-result session recording, and continuation.
+**Why it's complex:** Owns the active request/tool loop: normalized event accumulation, provider-neutral tool-call batch completion, serial execution, permission orchestration, UI tool rendering, abort cleanup, tool-result session recording, reasoning separation, and continuation outcomes.
 
-**Approach carefully:** Any changes to loop state, tool callback ordering, or abort handling can hang a turn or corrupt session history. Add focused ERT coverage first, then verify live with tool-use prompts when Emacs is available.
+**Approach carefully:** Any changes to loop state, tool callback ordering, final-response retry policy, or abort handling can hang a turn or corrupt session history. Add focused ERT coverage first, then verify live with tool-use prompts when Emacs is available.
 
 ### 2. magent-llm-gptel.el (Medium Complexity)
 **Why it's complex:** It is intentionally the only place that may touch gptel callback/FSM details. It converts provider callback shapes into normalized Magent events without letting gptel's tool-loop semantics leak into the main loop.

@@ -51,7 +51,7 @@ Emacs is not just a host process. Magent depends on live editor state through bu
 
 ### Provider Plumbing
 
-`magent-llm.el` defines provider-neutral request and event shapes. `magent-llm-gptel.el` performs one sampling request by calling `gptel-request` and translating gptel callbacks into normalized Magent events. Magent may hide gptel callback/FSM details inside this adapter, but the rest of the loop consumes only normalized events.
+`magent-llm.el` defines provider-neutral request and event shapes. `magent-llm-gptel.el` performs one sampling request by calling `gptel-request` and translating gptel callbacks into normalized Magent events. Magent may hide gptel callback/FSM details inside this adapter, but the rest of the loop consumes only normalized events. Reasoning events are kept separate from assistant text; reasoning-only completions are allowed to complete with empty assistant content instead of leaking chain text into the answer.
 
 ### UI And Runtime API
 
@@ -89,7 +89,8 @@ Legacy `messages`, `context-items`, and `buffer-content` are projections or migr
 8. Tool calls are accumulated until `tool-call-batch-end`, then dispatched serially through the orchestrator.
 9. Tool results update the same ledger item that started with the tool call.
 10. If tool output should be shown to the model, `magent-agent.el` rebuilds the prompt from the ledger and starts the next sampling request.
-11. Completion, failure, abort, or queue drop transitions the turn to its terminal state and notifies the UI backend.
+11. If that post-tool continuation completes with empty assistant text, `magent-agent.el` issues one no-tool final-response retry using the recorded tool results.
+12. Completion, failure, abort, or queue drop transitions the turn to its terminal state and notifies the UI backend.
 
 This continuation model is Codex-style in the sense that tool results feed a follow-up sampling request, but it remains Emacs-native and gptel-backed.
 

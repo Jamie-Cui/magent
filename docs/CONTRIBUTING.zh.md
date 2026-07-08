@@ -190,6 +190,7 @@ Agent lifecycle tools 是特殊情况。如果工具参与 spawn、message、wai
 - Active request/tool-loop behavior 属于 `magent-agent-loop.el`。
 - Provider transport 继续使用 `magent-llm-gptel.el` 和 `gptel-request`。
 - 为 normalized events、tool queueing、permission decisions、abort behavior 和 session recording 加 focused tests。
+- 修改 continuation 或 final-response 行为时，要覆盖 post-tool empty completion 和 reasoning-only completion；reasoning 不能变成 assistant text。
 - 当 callback 可能在 interruption 后到达时，更新 request generation 和 live-request checks。
 - 不要重新引入已移除的 agent-loop modules；provider-specific transport handling 只放在 `magent-llm-gptel.el`。
 
