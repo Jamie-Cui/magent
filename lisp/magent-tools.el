@@ -98,10 +98,13 @@ paths against the project root."
   "Read contents of file at PATH asynchronously.
 CALLBACK is called with the file contents or error message."
   (condition-case err
-      (let ((path (magent-tools--resolve-path path)))
-        (with-temp-buffer
-          (insert-file-contents path)
-          (funcall callback (buffer-string))))
+      (progn
+        (unless (stringp path)
+          (error "Missing required argument 'path' (got %S)" path))
+        (let ((path (magent-tools--resolve-path path)))
+          (with-temp-buffer
+            (insert-file-contents path)
+            (funcall callback (buffer-string)))))
     (error (funcall callback (format "Error reading file: %s" (error-message-string err))))))
 
 (defun magent-tools--write-file (callback path content)

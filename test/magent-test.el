@@ -390,14 +390,15 @@
                              :args (:sexp "(+ 1 2)")
                              :result "eval:(+ 1 2)")))))))
 
-(ert-deftest magent-test-agent-process-completes-empty-after-tool-output ()
-  "Test empty assistant completion after tool output ends the turn."
+(ert-deftest magent-test-agent-process-retries-empty-after-tool-output ()
+  "Test empty assistant completion after tool output gets one recovery retry."
   (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
          (gptel-model 'gpt-4o-mini)
          (magent-max-sampling-requests 0)
          (call-count 0)
          (sampled-prompts nil)
          (sampled-tool-use nil)
+         (sampled-streams nil)
          (response nil)
          (session (magent-session-create :id "session-1"))
          (request-state (magent-request-context-create
@@ -424,6 +425,7 @@
                  (cl-incf call-count)
                  (push prompt sampled-prompts)
                  (push gptel-use-tools sampled-tool-use)
+                 (push (plist-get kwargs :stream) sampled-streams)
                  (let ((callback (plist-get kwargs :callback)))
                    (pcase call-count
                      (1
@@ -435,6 +437,85 @@
                                             :args (:sexp "(+ 1 2)")))))
                        '(:tool-use t)))
                      (2
+                      (funcall callback t '(:content "")))
+                     (3
+                      (funcall callback "Final answer." '(:content "Final answer.")))
+                     (_
+                      (error "unexpected sampling request %d" call-count))))))
+              ((symbol-function 'magent-log) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-begin-turn)
+               (lambda (_title) 'turn))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
+              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+      (magent-agent-process
+       "Run eval"
+       (lambda (result) (setq response result))
+       agent nil nil nil nil nil nil request-state))
+    (should (= call-count 3))
+    (should (equal response "Final answer."))
+    (should (equal (nreverse sampled-tool-use) '(t t nil)))
+    (should (equal (nreverse sampled-streams) '(t t nil)))
+    (let ((final-prompt (car sampled-prompts)))
+      (should (equal final-prompt
+                     `((prompt . "Run eval")
+                       (tool :id "call-1"
+                             :name "emacs_eval"
+                             :args (:sexp "(+ 1 2)")
+                             :result "eval:3")
+                       (prompt
+                        . ,magent-agent--empty-final-response-retry-prompt)))))
+    (let ((turn (car (magent-thread-turns
+                      (magent-session-thread-ledger session)))))
+      (should (eq (magent-thread-turn-status turn) 'completed)))))
+
+(ert-deftest magent-test-agent-process-stops-after-empty-final-retry ()
+  "Test empty post-tool final-response retry fails visibly after one retry."
+  (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+         (gptel-model 'gpt-4o-mini)
+         (magent-max-sampling-requests 0)
+         (call-count 0)
+         (sampled-prompts nil)
+         (sampled-tool-use nil)
+         (sampled-streams nil)
+         (response nil)
+         (session (magent-session-create :id "session-1"))
+         (request-state (magent-request-context-create
+                         :session session
+                         :ui-visibility 'summary-only))
+         (agent (magent-agent-info-create
+                 :name "build"
+                 :mode 'primary
+                 :permission '((emacs_eval . allow)
+                               (* . allow))))
+         (tool-runtime
+          (magent-tool-runtime-create
+           :name "emacs_eval"
+           :description "Eval"
+           :args (list '(:name "sexp" :type string))
+           :function (lambda (_sexp) "eval:3")
+           :async nil)))
+    (cl-letf (((symbol-function 'magent-session-get)
+               (lambda () session))
+              ((symbol-function 'magent-tool-runtime-for-agent)
+               (lambda (_agent) (list tool-runtime)))
+              ((symbol-function 'gptel-request)
+               (lambda (prompt &rest kwargs)
+                 (cl-incf call-count)
+                 (push prompt sampled-prompts)
+                 (push gptel-use-tools sampled-tool-use)
+                 (push (plist-get kwargs :stream) sampled-streams)
+                 (let ((callback (plist-get kwargs :callback)))
+                   (pcase call-count
+                     (1
+                      (funcall
+                       callback
+                       '(tool-call . ((nil ("(+ 1 2)") nil
+                                           (:id "call-1"
+                                            :name "emacs_eval"
+                                            :args (:sexp "(+ 1 2)")))))
+                       '(:tool-use t)))
+                     ((or 2 3)
                       (funcall callback t '(:content "")))
                      (_
                       (error "unexpected sampling request %d" call-count))))))
@@ -448,19 +529,620 @@
        "Run eval"
        (lambda (result) (setq response result))
        agent nil nil nil nil nil nil request-state))
-    (should (= call-count 2))
-    (should (equal response ""))
-    (should (equal (nreverse sampled-tool-use) '(t t)))
+    (should (= call-count 3))
+    (should (magent-agent-result-p response))
+    (should-not (magent-agent-result-success-p response))
+    (should (equal
+             (magent-agent-result-content-string response)
+             "Error: Model returned an empty final response after tool output retry."))
+    (should (eq (plist-get (magent-agent-result-metadata response) :status)
+                'empty-final-response-retry))
+    (should (equal (nreverse sampled-tool-use) '(t t nil)))
+    (should (equal (nreverse sampled-streams) '(t t nil)))
     (let ((final-prompt (car sampled-prompts)))
-      (should (equal final-prompt
-                     '((prompt . "Run eval")
-                       (tool :id "call-1"
-                             :name "emacs_eval"
-                             :args (:sexp "(+ 1 2)")
-                             :result "eval:3")))))
-    (let ((turn (car (magent-thread-turns
-                      (magent-session-thread-ledger session)))))
-      (should (eq (magent-thread-turn-status turn) 'completed)))))
+      (should (equal (car (last final-prompt))
+                     (cons
+                      'prompt
+                      magent-agent--empty-final-response-retry-prompt))))))
+
+(ert-deftest magent-test-agent-metadata-without-retry-flags-drops-circular ()
+  "Test retry metadata cleanup does not loop on circular metadata."
+  (let ((metadata (list :temperature 0.3 :final-response-retry t)))
+    (setcdr (last metadata) metadata)
+    (should-not
+     (magent-agent--metadata-without-retry-flags metadata))))
+
+(ert-deftest magent-test-agent-metadata-without-retry-flags-preserves-normal ()
+  "Test retry metadata cleanup preserves ordinary non-retry metadata."
+  (should
+   (equal
+    (magent-agent--metadata-without-retry-flags
+     '(:temperature 0.3
+       :final-response-retry t
+       :top-p 0.8
+       :disable-provider-tools t
+       :effort xhigh))
+    '(:temperature 0.3 :top-p 0.8 :effort xhigh))))
+
+(ert-deftest magent-test-agent-abort-error-detects-duplicate-status ()
+  "Test provider abort detection scans duplicate status metadata keys."
+  (let ((event
+         (magent-llm-error-event
+          "Request aborted"
+          '(:provider gptel
+            :status "HTTP/1.1 200 Connection established"
+            :http-status "200"
+            :status abort))))
+    (should (magent-agent--abort-error-event-p event))))
+
+(ert-deftest magent-test-agent-process-runs-textual-tool-call-from-empty-retry ()
+  "Test textual DSML tool calls from an empty-response retry keep the loop going."
+  (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+         (gptel-model 'gpt-4o-mini)
+         (magent-max-sampling-requests 0)
+         (call-count 0)
+         (sampled-tool-use nil)
+         (sampled-streams nil)
+         (response nil)
+         (session (magent-session-create :id "session-1"))
+         (request-state (magent-request-context-create
+                         :session session
+                         :ui-visibility 'summary-only))
+         (agent (magent-agent-info-create
+                 :name "build"
+                 :mode 'primary
+                 :permission '((emacs_eval . allow)
+                               (* . allow))))
+         (tool-runtime
+          (magent-tool-runtime-create
+           :name "emacs_eval"
+           :description "Eval"
+           :args (list '(:name "sexp" :type string))
+           :function (lambda (sexp) (format "eval:%s" sexp))
+           :async nil))
+         (textual-tool-call
+          (concat
+           "<｜｜DSML｜｜tool_calls>\n"
+           "<｜｜DSML｜｜invoke name=\"emacs_eval\">\n"
+           "<｜｜DSML｜｜parameter name=\"sexp\" string=\"true\">"
+           "(+ 40 2)"
+           "</｜｜DSML｜｜parameter>\n"
+           "</｜｜DSML｜｜invoke>\n"
+           "</｜｜DSML｜｜tool_calls>")))
+    (cl-letf (((symbol-function 'magent-session-get)
+               (lambda () session))
+              ((symbol-function 'magent-tool-runtime-for-agent)
+               (lambda (_agent) (list tool-runtime)))
+              ((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (cl-incf call-count)
+                 (push gptel-use-tools sampled-tool-use)
+                 (push (plist-get kwargs :stream) sampled-streams)
+                 (let ((callback (plist-get kwargs :callback)))
+                   (pcase call-count
+                     (1
+                      (funcall
+                       callback
+                       '(tool-call . ((nil ("(+ 1 2)") nil
+                                           (:id "call-1"
+                                            :name "emacs_eval"
+                                            :args (:sexp "(+ 1 2)")))))
+                       '(:tool-use t)))
+                     (2
+                      (funcall callback t '(:content "")))
+                     (3
+                      (funcall callback textual-tool-call
+                               (list :content textual-tool-call)))
+                     (4
+                      (funcall callback "Final answer."
+                               '(:content "Final answer.")))
+                     (_
+                      (error "unexpected sampling request %d" call-count))))))
+              ((symbol-function 'magent-log) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-begin-turn)
+               (lambda (_title) 'turn))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
+              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+      (magent-agent-process
+       "Run eval"
+       (lambda (result) (setq response result))
+       agent nil nil nil nil nil nil request-state))
+    (should (= call-count 4))
+    (should (equal response "Final answer."))
+    (should (equal (nreverse sampled-tool-use) '(t t nil t)))
+    (should (equal (nreverse sampled-streams) '(t t nil t)))
+    (let* ((turn (car (magent-thread-turns
+                       (magent-session-thread-ledger session))))
+           (tool-items
+            (cl-remove-if-not
+             (lambda (item)
+               (eq (magent-thread-item-type item) 'tool))
+             (magent-thread-turn-items turn))))
+      (should (= (length tool-items) 2))
+      (should (equal
+               (magent-thread-item-output (cadr tool-items))
+               "eval:(+ 40 2)")))))
+
+(ert-deftest magent-test-agent-process-async-continuation-preserves-tools ()
+  "Test async callbacks keep request tools after dynamic gptel bindings unwind."
+  (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+         (gptel-model 'gpt-4o-mini)
+         (magent-max-sampling-requests 0)
+         (call-count 0)
+         (callbacks nil)
+         (sampled-tool-use nil)
+         (sampled-streams nil)
+         (response nil)
+         (session (magent-session-create :id "session-1"))
+         (request-state (magent-request-context-create
+                         :session session
+                         :ui-visibility 'summary-only))
+         (agent (magent-agent-info-create
+                 :name "build"
+                 :mode 'primary
+                 :permission '((emacs_eval . allow)
+                               (* . allow))))
+         (tool-runtime
+          (magent-tool-runtime-create
+           :name "emacs_eval"
+           :description "Eval"
+           :args (list '(:name "sexp" :type string))
+           :function (lambda (sexp) (format "eval:%s" sexp))
+           :async nil))
+         (textual-tool-call
+          (concat
+           "<｜｜DSML｜｜tool_calls>\n"
+           "<｜｜DSML｜｜invoke name=\"emacs_eval\">\n"
+           "<｜｜DSML｜｜parameter name=\"sexp\" string=\"true\">"
+           "(+ 40 2)"
+           "</｜｜DSML｜｜parameter>\n"
+           "</｜｜DSML｜｜invoke>\n"
+           "</｜｜DSML｜｜tool_calls>")))
+    (cl-letf (((symbol-function 'magent-session-get)
+               (lambda () session))
+              ((symbol-function 'magent-tool-runtime-for-agent)
+               (lambda (_agent) (list tool-runtime)))
+              ((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (cl-incf call-count)
+                 (setq callbacks
+                       (append callbacks
+                               (list (plist-get kwargs :callback))))
+                 (push gptel-use-tools sampled-tool-use)
+                 (push (plist-get kwargs :stream) sampled-streams)))
+              ((symbol-function 'magent-log) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-begin-turn)
+               (lambda (_title) 'turn))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
+              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+      (magent-agent-process
+       "Run eval"
+       (lambda (result) (setq response result))
+       agent nil nil nil nil nil nil request-state)
+      (should (= call-count 1))
+      (funcall
+       (nth 0 callbacks)
+       '(tool-call . ((nil ("(+ 1 2)") nil
+                           (:id "call-1"
+                            :name "emacs_eval"
+                            :args (:sexp "(+ 1 2)")))))
+       '(:tool-use t))
+      (should (= call-count 2))
+      (funcall (nth 1 callbacks) t '(:content ""))
+      (should (= call-count 3))
+      (funcall (nth 2 callbacks) textual-tool-call
+               (list :content textual-tool-call))
+      (should (= call-count 4))
+      (funcall (nth 3 callbacks) "Final answer."
+               '(:content "Final answer.")))
+    (should (equal response "Final answer."))
+    (should (equal (nreverse sampled-tool-use) '(t t nil t)))
+    (should (equal (nreverse sampled-streams) '(t t nil t)))
+    (let* ((turn (car (magent-thread-turns
+                       (magent-session-thread-ledger session))))
+           (tool-items
+            (cl-remove-if-not
+             (lambda (item)
+               (eq (magent-thread-item-type item) 'tool))
+             (magent-thread-turn-items turn))))
+      (should (= (length tool-items) 2))
+      (should (equal
+               (magent-thread-item-output (cadr tool-items))
+               "eval:(+ 40 2)")))))
+
+(ert-deftest magent-test-agent-process-retries-post-tool-reasoning-stall ()
+  "Test post-tool reasoning-only stalls are retried as final responses."
+  (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+         (gptel-model 'gpt-4o-mini)
+         (magent-max-sampling-requests 0)
+         (magent-post-tool-reasoning-idle-retry-delay 0.01)
+         (call-count 0)
+         (callbacks nil)
+         (sampled-tool-use nil)
+         (response nil)
+         (session (magent-session-create :id "session-1"))
+         (request-state (magent-request-context-create
+                         :session session
+                         :ui-visibility 'summary-only))
+         (agent (magent-agent-info-create
+                 :name "build"
+                 :mode 'primary
+                 :permission '((emacs_eval . allow)
+                               (* . allow))))
+         (tool-runtime
+          (magent-tool-runtime-create
+           :name "emacs_eval"
+           :description "Eval"
+           :args (list '(:name "sexp" :type string))
+           :function (lambda (_sexp) "eval:3")
+           :async nil)))
+    (cl-letf (((symbol-function 'magent-session-get)
+               (lambda () session))
+              ((symbol-function 'magent-tool-runtime-for-agent)
+               (lambda (_agent) (list tool-runtime)))
+              ((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (cl-incf call-count)
+                 (setq callbacks
+                       (append callbacks
+                               (list (plist-get kwargs :callback))))
+                 (push gptel-use-tools sampled-tool-use)))
+              ((symbol-function 'gptel-abort) #'ignore)
+              ((symbol-function 'magent-log) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-begin-turn)
+               (lambda (_title) 'turn))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
+              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+      (magent-agent-process
+       "Run eval"
+       (lambda (result) (setq response result))
+       agent nil nil nil nil nil nil request-state)
+      (should (= call-count 1))
+      (funcall
+       (nth 0 callbacks)
+       '(tool-call . ((nil ("(+ 1 2)") nil
+                           (:id "call-1"
+                            :name "emacs_eval"
+                            :args (:sexp "(+ 1 2)")))))
+       '(:tool-use t))
+      (should (= call-count 2))
+      (funcall (nth 1 callbacks)
+               '(reasoning . "I have enough information.")
+               '(:stream t))
+      (funcall (nth 1 callbacks)
+               '(reasoning . t)
+               '(:stream t))
+      (cl-loop repeat 20
+               until (= call-count 3)
+               do (accept-process-output nil 0.01))
+      (should (= call-count 3))
+      (funcall (nth 2 callbacks) "Final answer."
+               '(:content "Final answer.")))
+    (should (equal response "Final answer."))
+    (should (equal (nreverse sampled-tool-use) '(t t nil)))))
+
+(ert-deftest magent-test-agent-process-retries-post-tool-reasoning-stream ()
+  "Test continuous post-tool reasoning without text is eventually retried."
+  (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+         (gptel-model 'gpt-4o-mini)
+         (magent-max-sampling-requests 0)
+         (magent-post-tool-reasoning-idle-retry-delay nil)
+         (magent-post-tool-reasoning-max-duration 0.01)
+         (call-count 0)
+         (callbacks nil)
+         (sampled-tool-use nil)
+         (response nil)
+         (session (magent-session-create :id "session-1"))
+         (request-state (magent-request-context-create
+                         :session session
+                         :ui-visibility 'summary-only))
+         (agent (magent-agent-info-create
+                 :name "build"
+                 :mode 'primary
+                 :permission '((emacs_eval . allow)
+                               (* . allow))))
+         (tool-runtime
+          (magent-tool-runtime-create
+           :name "emacs_eval"
+           :description "Eval"
+           :args (list '(:name "sexp" :type string))
+           :function (lambda (_sexp) "eval:3")
+           :async nil)))
+    (cl-letf (((symbol-function 'magent-session-get)
+               (lambda () session))
+              ((symbol-function 'magent-tool-runtime-for-agent)
+               (lambda (_agent) (list tool-runtime)))
+              ((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (cl-incf call-count)
+                 (setq callbacks
+                       (append callbacks
+                               (list (plist-get kwargs :callback))))
+                 (push gptel-use-tools sampled-tool-use)))
+              ((symbol-function 'gptel-abort) #'ignore)
+              ((symbol-function 'magent-log) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-begin-turn)
+               (lambda (_title) 'turn))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
+              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+      (magent-agent-process
+       "Run eval"
+       (lambda (result) (setq response result))
+       agent nil nil nil nil nil nil request-state)
+      (should (= call-count 1))
+      (funcall
+       (nth 0 callbacks)
+       '(tool-call . ((nil ("(+ 1 2)") nil
+                           (:id "call-1"
+                            :name "emacs_eval"
+                            :args (:sexp "(+ 1 2)")))))
+       '(:tool-use t))
+      (should (= call-count 2))
+      (funcall (nth 1 callbacks)
+               '(reasoning . "still thinking")
+               '(:stream t))
+      (cl-loop repeat 20
+               until (= call-count 3)
+               do (accept-process-output nil 0.01))
+      (should (= call-count 3))
+      (funcall (nth 2 callbacks) "Final answer."
+               '(:content "Final answer.")))
+    (should (equal response "Final answer."))
+    (should (equal (nreverse sampled-tool-use) '(t t nil)))))
+
+(ert-deftest magent-test-agent-process-retries-post-tool-reasoning-stream-in-callback ()
+  "Test post-tool reasoning deadline is enforced from streaming callbacks."
+  (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+         (gptel-model 'gpt-4o-mini)
+         (magent-max-sampling-requests 0)
+         (magent-post-tool-reasoning-idle-retry-delay nil)
+         (magent-post-tool-reasoning-max-duration 1)
+         (fake-time 0.0)
+         (call-count 0)
+         (callbacks nil)
+         (sampled-tool-use nil)
+         (response nil)
+         (session (magent-session-create :id "session-1"))
+         (request-state (magent-request-context-create
+                         :session session
+                         :ui-visibility 'summary-only))
+         (agent (magent-agent-info-create
+                 :name "build"
+                 :mode 'primary
+                 :permission '((emacs_eval . allow)
+                               (* . allow))))
+         (tool-runtime
+          (magent-tool-runtime-create
+           :name "emacs_eval"
+           :description "Eval"
+           :args (list '(:name "sexp" :type string))
+           :function (lambda (_sexp) "eval:3")
+           :async nil)))
+    (cl-letf (((symbol-function 'float-time)
+               (lambda (&optional _time) fake-time))
+              ((symbol-function 'magent-session-get)
+               (lambda () session))
+              ((symbol-function 'magent-tool-runtime-for-agent)
+               (lambda (_agent) (list tool-runtime)))
+              ((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (cl-incf call-count)
+                 (setq callbacks
+                       (append callbacks
+                               (list (plist-get kwargs :callback))))
+                 (push gptel-use-tools sampled-tool-use)))
+              ((symbol-function 'gptel-abort) #'ignore)
+              ((symbol-function 'magent-log) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-begin-turn)
+               (lambda (_title) 'turn))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
+              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+      (magent-agent-process
+       "Run eval"
+       (lambda (result) (setq response result))
+       agent nil nil nil nil nil nil request-state)
+      (should (= call-count 1))
+      (funcall
+       (nth 0 callbacks)
+       '(tool-call . ((nil ("(+ 1 2)") nil
+                           (:id "call-1"
+                            :name "emacs_eval"
+                            :args (:sexp "(+ 1 2)")))))
+       '(:tool-use t))
+      (should (= call-count 2))
+      (setq fake-time 10.0)
+      (funcall (nth 1 callbacks)
+               '(reasoning . "still thinking")
+               '(:stream t))
+      (should (= call-count 2))
+      (setq fake-time 11.1)
+      (funcall (nth 1 callbacks)
+               '(reasoning . "still thinking more")
+               '(:stream t))
+      (should (= call-count 3))
+      (funcall (nth 2 callbacks) "Final answer."
+               '(:content "Final answer.")))
+    (should (equal response "Final answer."))
+    (should (equal (nreverse sampled-tool-use) '(t t nil)))))
+
+(ert-deftest magent-test-agent-process-strict-retries-final-retry-reasoning ()
+  "Test final-response retry reasoning-only streams get one strict retry."
+  (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+         (gptel-model 'gpt-4o-mini)
+         (magent-max-sampling-requests 0)
+         (magent-post-tool-reasoning-idle-retry-delay nil)
+         (magent-post-tool-reasoning-max-duration 1)
+         (fake-time 0.0)
+         (call-count 0)
+         (callbacks nil)
+         (sampled-tool-use nil)
+         (sampled-prompts nil)
+         (response nil)
+         (session (magent-session-create :id "session-1"))
+         (request-state (magent-request-context-create
+                         :session session
+                         :ui-visibility 'summary-only))
+         (agent (magent-agent-info-create
+                 :name "build"
+                 :mode 'primary
+                 :permission '((emacs_eval . allow)
+                               (* . allow))))
+         (tool-runtime
+          (magent-tool-runtime-create
+           :name "emacs_eval"
+           :description "Eval"
+           :args (list '(:name "sexp" :type string))
+           :function (lambda (_sexp) "eval:3")
+           :async nil)))
+    (cl-letf (((symbol-function 'float-time)
+               (lambda (&optional _time) fake-time))
+              ((symbol-function 'magent-session-get)
+               (lambda () session))
+              ((symbol-function 'magent-tool-runtime-for-agent)
+               (lambda (_agent) (list tool-runtime)))
+              ((symbol-function 'gptel-request)
+               (lambda (prompt &rest kwargs)
+                 (cl-incf call-count)
+                 (push prompt sampled-prompts)
+                 (setq callbacks
+                       (append callbacks
+                               (list (plist-get kwargs :callback))))
+                 (push gptel-use-tools sampled-tool-use)))
+              ((symbol-function 'gptel-abort) #'ignore)
+              ((symbol-function 'magent-log) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-begin-turn)
+               (lambda (_title) 'turn))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
+              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+      (magent-agent-process
+       "Run eval"
+       (lambda (result) (setq response result))
+       agent nil nil nil nil nil nil request-state)
+      (should (= call-count 1))
+      (funcall
+       (nth 0 callbacks)
+       '(tool-call . ((nil ("(+ 1 2)") nil
+                           (:id "call-1"
+                            :name "emacs_eval"
+                            :args (:sexp "(+ 1 2)")))))
+       '(:tool-use t))
+      (should (= call-count 2))
+      (funcall (nth 1 callbacks) t '(:content ""))
+      (should (= call-count 3))
+      (setq fake-time 10.0)
+      (funcall (nth 2 callbacks)
+               '(reasoning . "still thinking during final retry")
+               '(:stream t))
+      (should (= call-count 3))
+      (setq fake-time 11.1)
+      (funcall (nth 2 callbacks)
+               '(reasoning . "still no final answer")
+               '(:stream t))
+      (should (= call-count 4))
+      (funcall (nth 3 callbacks) "Final answer."
+               '(:content "Final answer.")))
+    (should (equal response "Final answer."))
+    (should (equal (nreverse sampled-tool-use) '(t t nil nil)))
+    (let ((strict-prompt (car sampled-prompts)))
+      (should (equal (car (last strict-prompt))
+                     (cons
+                      'prompt
+                      magent-agent--strict-final-response-retry-prompt))))))
+
+(ert-deftest magent-test-agent-process-fails-after-empty-strict-final-retry ()
+  "Test an empty strict final-response retry fails with strict status."
+  (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+         (gptel-model 'gpt-4o-mini)
+         (magent-max-sampling-requests 0)
+         (magent-post-tool-reasoning-idle-retry-delay nil)
+         (magent-post-tool-reasoning-max-duration 1)
+         (fake-time 0.0)
+         (call-count 0)
+         (callbacks nil)
+         (sampled-tool-use nil)
+         (sampled-streams nil)
+         (response nil)
+         (session (magent-session-create :id "session-1"))
+         (request-state (magent-request-context-create
+                         :session session
+                         :ui-visibility 'summary-only))
+         (agent (magent-agent-info-create
+                 :name "build"
+                 :mode 'primary
+                 :permission '((emacs_eval . allow)
+                               (* . allow))))
+         (tool-runtime
+          (magent-tool-runtime-create
+           :name "emacs_eval"
+           :description "Eval"
+           :args (list '(:name "sexp" :type string))
+           :function (lambda (_sexp) "eval:3")
+           :async nil)))
+    (cl-letf (((symbol-function 'float-time)
+               (lambda (&optional _time) fake-time))
+              ((symbol-function 'magent-session-get)
+               (lambda () session))
+              ((symbol-function 'magent-tool-runtime-for-agent)
+               (lambda (_agent) (list tool-runtime)))
+              ((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (cl-incf call-count)
+                 (setq callbacks
+                       (append callbacks
+                               (list (plist-get kwargs :callback))))
+                 (push gptel-use-tools sampled-tool-use)
+                 (push (plist-get kwargs :stream) sampled-streams)))
+              ((symbol-function 'gptel-abort) #'ignore)
+              ((symbol-function 'magent-log) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-begin-turn)
+               (lambda (_title) 'turn))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
+              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+      (magent-agent-process
+       "Run eval"
+       (lambda (result) (setq response result))
+       agent nil nil nil nil nil nil request-state)
+      (should (= call-count 1))
+      (funcall
+       (nth 0 callbacks)
+       '(tool-call . ((nil ("(+ 1 2)") nil
+                           (:id "call-1"
+                            :name "emacs_eval"
+                            :args (:sexp "(+ 1 2)")))))
+       '(:tool-use t))
+      (should (= call-count 2))
+      (funcall (nth 1 callbacks) t '(:content ""))
+      (should (= call-count 3))
+      (setq fake-time 10.0)
+      (funcall (nth 2 callbacks)
+               '(reasoning . "still thinking during final retry")
+               '(:stream t))
+      (should (= call-count 3))
+      (setq fake-time 11.1)
+      (funcall (nth 2 callbacks)
+               '(reasoning . "still no final answer")
+               '(:stream t))
+      (should (= call-count 4))
+      (funcall (nth 3 callbacks) t '(:content "")))
+    (should (= call-count 4))
+    (should (magent-agent-result-p response))
+    (should-not (magent-agent-result-success-p response))
+    (should (equal
+             (magent-agent-result-content-string response)
+             "Error: Model returned no assistant text after strict final-response retry."))
+    (should (eq (plist-get (magent-agent-result-metadata response) :status)
+                'strict-final-response-retry))
+    (should (eq (plist-get (magent-agent-result-metadata response) :reason)
+                'completed-empty))
+    (should (equal (nreverse sampled-tool-use) '(t t nil nil)))
+    (should (equal (nreverse sampled-streams) '(t t nil nil)))))
 
 (ert-deftest magent-test-agent-process-fails-at-configured-sampling-budget ()
   "Test optional per-turn sampling budget fails instead of forcing final text."
@@ -1010,6 +1692,14 @@
                (json-false :json-false))
            (json-encode (list :name (plist-get tool :name)
                               :args args))))))))
+
+(ert-deftest magent-test-json-safe-tool-args-preserves-nil-values ()
+  "Test Lisp nil values are kept distinct from provider JSON null sentinels."
+  (require 'magent-json)
+  (should
+   (equal (magent-json-safe-tool-args
+           '(:optional nil :missing :null :name "value"))
+          '(:optional :null :name "value"))))
 
 (ert-deftest magent-test-session-to-gptel-prompt-list-skips-legacy-tool-string ()
   "Test old string-only tool messages are skipped in gptel prompt list."
@@ -3181,6 +3871,14 @@
     (magent-tools--read-file (lambda (r) (setq result r)) "/tmp/magent-nonexistent-file-xyz")
     (should (string-match-p "Error" result))))
 
+(ert-deftest magent-test-tools-read-file-null-path ()
+  "Test read_file rejects JSON null path values clearly."
+  (require 'magent-tools)
+  (let ((result nil))
+    (magent-tools--read-file (lambda (r) (setq result r)) :null)
+    (should
+     (string-match-p "Missing required argument .*path" result))))
+
 (ert-deftest magent-test-tools-write-file ()
   "Test write_file tool implementation."
   (require 'magent-tools)
@@ -4463,6 +5161,52 @@
       (should (equal (magent-llm-event-text completed) "hello"))
       (should (equal (magent-llm-event-usage completed) '(:total 3))))))
 
+(ert-deftest magent-test-llm-gptel-disable-provider-tools-keeps-tool-specs ()
+  "Test metadata can hide tools from gptel while keeping request tools."
+  (require 'magent-llm-gptel)
+  (let ((captured-use-tools :unset)
+        sample-handle)
+    (cl-letf (((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (setq captured-use-tools gptel-use-tools)
+                 (funcall (plist-get kwargs :callback)
+                          t '(:content "done" :status "ok"))
+                 'fake-fsm)))
+      (setq sample-handle
+            (magent-llm-gptel-sample
+             (magent-llm-request-create
+              :prompt '((user . "hello"))
+              :tools '(fake-tool)
+              :stream t
+              :metadata '(:disable-provider-tools t)
+              :callback #'ignore))))
+    (when (buffer-live-p sample-handle)
+      (kill-buffer sample-handle))
+    (should-not captured-use-tools)))
+
+(ert-deftest magent-test-llm-gptel-include-reasoning-metadata-overrides-default ()
+  "Test request metadata can override `magent-include-reasoning'."
+  (require 'magent-llm-gptel)
+  (let ((magent-include-reasoning t)
+        (captured-include-reasoning :unset)
+        sample-handle)
+    (cl-letf (((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (setq captured-include-reasoning gptel-include-reasoning)
+                 (funcall (plist-get kwargs :callback)
+                          t '(:content "done" :status "ok"))
+                 'fake-fsm)))
+      (setq sample-handle
+            (magent-llm-gptel-sample
+             (magent-llm-request-create
+              :prompt '((user . "hello"))
+              :stream t
+              :metadata '(:include-reasoning nil)
+              :callback #'ignore))))
+    (when (buffer-live-p sample-handle)
+      (kill-buffer sample-handle))
+    (should-not captured-include-reasoning)))
+
 (ert-deftest magent-test-llm-gptel-callback-maps-reasoning-and-error ()
   "Test gptel adapter maps reasoning and error callbacks."
   (require 'magent-llm-gptel)
@@ -4557,6 +5301,155 @@
       (should (eq (magent-llm-event-type event) 'completed))
       (should (equal (magent-llm-event-text event) "done"))
       (should (equal (magent-llm-event-usage event) '(:total 3))))))
+
+(ert-deftest magent-test-llm-gptel-textual-dsml-tool-call-becomes-tool-event ()
+  "Test pure textual DSML tool calls are normalized before completion."
+  (require 'magent-llm-gptel)
+  (let* ((events nil)
+         (text
+          (concat
+           "<｜｜DSML｜｜tool_calls>\n"
+           "<｜｜DSML｜｜invoke name=\"bash\">\n"
+           "<｜｜DSML｜｜parameter name=\"command\" string=\"true\">"
+           "git diff test/magent-test.el | tail -n 120"
+           "</｜｜DSML｜｜parameter>\n"
+           "<｜｜DSML｜｜parameter name=\"reason\" string=\"true\">"
+           "Read remainder of test diff"
+           "</｜｜DSML｜｜parameter>\n"
+           "</｜｜DSML｜｜invoke>\n"
+           "</｜｜DSML｜｜tool_calls>"))
+         (request (magent-llm-request-create
+                   :stream nil
+                   :callback (lambda (event) (push event events))))
+         (buffer (generate-new-buffer " *magent-test-gptel*"))
+         (state (magent-llm-gptel--make-state)))
+    (unwind-protect
+        (progn
+          (magent-llm-gptel--callback
+           request state buffer text (list :status "ok" :content text))
+          (should-not (buffer-live-p buffer))
+          (let ((ordered (nreverse events)))
+            (should (= (length ordered) 2))
+            (let ((tool-event (car ordered))
+                  (batch-event (cadr ordered)))
+              (should (eq (magent-llm-event-type tool-event) 'tool-call))
+              (should (equal (magent-llm-event-name tool-event) "bash"))
+              (should (equal
+                       (magent-llm-event-arguments tool-event)
+                       '(:command
+                         "git diff test/magent-test.el | tail -n 120"
+                         :reason
+                         "Read remainder of test diff")))
+              (should (eq (magent-llm-event-type batch-event)
+                          'tool-call-batch-end)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-llm-gptel-mixed-textual-dsml-tool-call-becomes-tool-event ()
+  "Test mixed prose plus textual DSML tool calls becomes tool events."
+  (require 'magent-llm-gptel)
+  (let* ((events nil)
+         (text
+          (concat
+           "I'll continue reading the remaining diff sections.\n\n"
+           "<｜｜DSML｜｜tool_calls>\n"
+           "<｜｜DSML｜｜invoke name=\"bash\">\n"
+           "<｜｜DSML｜｜parameter name=\"command\" string=\"true\">"
+           "git diff test/magent-test.el | sed -n '550,750p'"
+           "</｜｜DSML｜｜parameter>\n"
+           "<｜｜DSML｜｜parameter name=\"reason\" string=\"true\">"
+           "Continue test diff"
+           "</｜｜DSML｜｜parameter>\n"
+           "</｜｜DSML｜｜invoke>\n"
+           "</｜｜DSML｜｜tool_calls>"))
+         (request (magent-llm-request-create
+                   :stream nil
+                   :callback (lambda (event) (push event events))))
+         (buffer (generate-new-buffer " *magent-test-gptel*"))
+         (state (magent-llm-gptel--make-state)))
+    (unwind-protect
+        (progn
+          (magent-llm-gptel--callback
+           request state buffer text (list :status "ok" :content text))
+          (should-not (buffer-live-p buffer))
+          (let ((ordered (nreverse events)))
+            (should (= (length ordered) 2))
+            (let ((tool-event (car ordered))
+                  (batch-event (cadr ordered)))
+              (should (eq (magent-llm-event-type tool-event) 'tool-call))
+              (should (equal (magent-llm-event-name tool-event) "bash"))
+              (should (equal
+                       (magent-llm-event-arguments tool-event)
+                       '(:command
+                         "git diff test/magent-test.el | sed -n '550,750p'"
+                         :reason
+                         "Continue test diff")))
+              (should (eq (magent-llm-event-type batch-event)
+                          'tool-call-batch-end)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-llm-gptel-textual-dsml-malformed-completes ()
+  "Test malformed textual DSML envelopes complete as text without looping."
+  (require 'magent-llm-gptel)
+  (let* ((events nil)
+         (text
+          (concat
+           "<｜｜DSML｜｜tool_calls>\n"
+           "<｜｜DSML｜｜invoke name=\"bash\">\n"
+           (make-string 10000 ?x)
+           "\n</｜｜DSML｜｜tool_calls>"))
+         (request (magent-llm-request-create
+                   :stream nil
+                   :callback (lambda (event) (push event events))))
+         (buffer (generate-new-buffer " *magent-test-gptel*"))
+         (state (magent-llm-gptel--make-state)))
+    (unwind-protect
+        (progn
+          (magent-llm-gptel--callback
+           request state buffer text (list :status "ok" :content text))
+          (should-not (buffer-live-p buffer))
+          (should (= (length events) 1))
+          (let ((event (car events)))
+            (should (eq (magent-llm-event-type event) 'completed))
+            (should (equal (magent-llm-event-text event) text))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-llm-gptel-final-retry-buffers-streamed-dsml-tool-call ()
+  "Test final-response retry buffers streamed DSML instead of emitting text."
+  (require 'magent-llm-gptel)
+  (let* ((events nil)
+         (text
+          (concat
+           "<｜｜DSML｜｜tool_calls>\n"
+           "<｜｜DSML｜｜invoke name=\"bash\">\n"
+           "<｜｜DSML｜｜parameter name=\"command\" string=\"true\">"
+           "git diff"
+           "</｜｜DSML｜｜parameter>\n"
+           "</｜｜DSML｜｜invoke>\n"
+           "</｜｜DSML｜｜tool_calls>"))
+         (request (magent-llm-request-create
+                   :stream t
+                   :metadata '(:final-response-retry t)
+                   :callback (lambda (event) (push event events))))
+         (buffer (generate-new-buffer " *magent-test-gptel*"))
+         (state (magent-llm-gptel--make-state)))
+    (unwind-protect
+        (progn
+          (magent-llm-gptel--callback
+           request state buffer text '(:stream t))
+          (should (null events))
+          (magent-llm-gptel--callback
+           request state buffer t (list :stream t :content text))
+          (should-not (buffer-live-p buffer))
+          (let ((ordered (nreverse events)))
+            (should (= (length ordered) 2))
+            (should (eq (magent-llm-event-type (car ordered)) 'tool-call))
+            (should (eq (magent-llm-event-type (cadr ordered))
+                        'tool-call-batch-end))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest magent-test-llm-gptel-stream-final-empty-content-keeps-chunks ()
   "Test streaming completion does not replace chunks with empty content."
@@ -4756,6 +5649,26 @@
       (should (equal (plist-get content :result) "content"))
       (should (equal (magent-thread-item-metadata item)
                      '(:source "tool-result"))))))
+
+(ert-deftest magent-test-agent-loop-tool-args-drop-json-null ()
+  "Test JSON null tool args are omitted from model-visible args."
+  (require 'magent-agent-loop)
+  (require 'gptel)
+  (let* ((tool (gptel-make-tool
+                :name "read_file"
+                :description "read"
+                :args (list '(:name "path" :type string)
+                            '(:name "reason" :type string))
+                :function #'ignore))
+         (values (magent-agent-loop--tool-arg-values
+                  tool
+                  '(:path :null :reason :null))))
+    (should (equal values '(nil nil)))
+    (should
+     (equal
+      (magent-agent-loop--tool-args-plist
+       tool values '(:id "call-1" :name "read_file"))
+      nil))))
 
 (ert-deftest magent-test-agent-loop-records-tool-approval-metadata ()
   "Test tool approval metadata is preserved in ledger tool items."

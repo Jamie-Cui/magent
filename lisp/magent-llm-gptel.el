@@ -56,6 +56,25 @@
            (magent-llm-gptel--managed-context-p
             (plist-get info :context)))))
 
+(defun magent-llm-gptel--sanitize-provider-tool-args (args)
+  "Return JSON-safe provider tool ARGS with null-like plist values omitted.
+This boundary receives provider/gptel tool metadata where nil means missing or
+JSON null, unlike Magent's internal tool args where Lisp nil can be meaningful."
+  (cond
+   ((null args) nil)
+   ((magent-json--plist-p args)
+    (let (out)
+      (while args
+        (let ((key (pop args))
+              (val (pop args)))
+          (unless (or (null val)
+                      (eq val :null))
+            (setq out (append out
+                              (list key (magent-json-safe-value val)))))))
+      out))
+   (t
+    (magent-json-safe-value args))))
+
 (defun magent-llm-gptel--sanitize-tool-call (tool-call)
   "Sanitize one gptel TOOL-CALL plist in place and return it."
   (when (listp tool-call)
@@ -66,7 +85,7 @@
     (when (plist-member tool-call :args)
       (plist-put tool-call
                  :args
-                 (magent-json-safe-tool-args
+                 (magent-llm-gptel--sanitize-provider-tool-args
                   (plist-get tool-call :args)))))
   tool-call)
 
@@ -108,7 +127,7 @@ requests, so Magent normalizes this boundary before curl serializes it."
                                        func
                                        :arguments
                                        (magent-json-encode
-                                        (magent-json-safe-tool-args
+                                        (magent-llm-gptel--sanitize-provider-tool-args
                                          arguments))))))))))))
 
 (defun magent-llm-gptel--sanitize-info (info)
@@ -236,6 +255,194 @@ that put the final answer only in a reasoning field."
      ((not (string-empty-p streamed)) streamed)
      (t ""))))
 
+(defconst magent-llm-gptel--dsml-tool-calls-open
+  "<｜｜DSML｜｜tool_calls>"
+  "Opening marker for textual DSML tool-call envelopes.")
+
+(defconst magent-llm-gptel--dsml-tool-calls-close
+  "</｜｜DSML｜｜tool_calls>"
+  "Closing marker for textual DSML tool-call envelopes.")
+
+(defconst magent-llm-gptel--textual-tool-call-max-length 200000
+  "Maximum text length considered for textual DSML tool-call parsing.")
+
+(defun magent-llm-gptel--dsml-tool-call-text-p (text)
+  "Return non-nil when TEXT is exactly a textual DSML tool-call envelope."
+  (when (stringp text)
+    (let ((trimmed (string-trim text)))
+      (and (<= (length trimmed)
+               magent-llm-gptel--textual-tool-call-max-length)
+           (string-prefix-p magent-llm-gptel--dsml-tool-calls-open trimmed)
+           (string-suffix-p magent-llm-gptel--dsml-tool-calls-close trimmed)))))
+
+(defun magent-llm-gptel--parse-dsml-tag-attr
+    (text pos tag attr)
+  "Return (VALUE . BODY-START) for TAG ATTR in TEXT at POS, or nil."
+  (let* ((prefix (format "<｜｜DSML｜｜%s " tag))
+         (attr-prefix (format "%s=\"" attr))
+         (tag-start (string-search prefix text pos)))
+    (when (and tag-start (= tag-start pos))
+      (let* ((attr-start (string-search attr-prefix text
+                                         (+ tag-start (length prefix))))
+             (value-start (and attr-start
+                               (+ attr-start (length attr-prefix))))
+             (value-end (and value-start
+                             (string-search "\"" text value-start)))
+             (tag-end (and value-end
+                           (string-search ">" text value-end))))
+        (when (and value-start value-end tag-end)
+          (cons (substring text value-start value-end)
+                (1+ tag-end)))))))
+
+(defun magent-llm-gptel--parse-dsml-tool-call-params (body)
+  "Return a plist of textual DSML parameter values from BODY."
+  (let ((pos 0)
+        (close "</｜｜DSML｜｜parameter>")
+        args)
+    (while (< pos (length body))
+      (let ((start (string-search "<｜｜DSML｜｜parameter " body pos)))
+        (if (null start)
+            (setq pos (length body))
+          (let* ((parsed (magent-llm-gptel--parse-dsml-tag-attr
+                          body start "parameter" "name"))
+                 (name (car-safe parsed))
+                 (content-start (cdr-safe parsed))
+                 (content-end (and content-start
+                                   (string-search close body content-start))))
+            (if (not (and name content-start content-end))
+                (setq pos (length body))
+              (setq args
+                    (plist-put
+                     args
+                     (intern (concat ":" name))
+                     (string-trim
+                      (substring body content-start content-end)))
+                    pos (+ content-end (length close))))))))
+    args))
+
+(defun magent-llm-gptel--parse-dsml-tool-calls (text &optional metadata)
+  "Return normalized tool-call events parsed from textual DSML TEXT.
+Tool-call blocks may appear as a pure envelope or embedded in surrounding
+assistant prose."
+  (when (and (stringp text)
+             (<= (length text)
+                 magent-llm-gptel--textual-tool-call-max-length))
+    (let ((pos 0)
+          (invoke-close "</｜｜DSML｜｜invoke>")
+          events
+          (index 0)
+          (metadata (if (plist-member metadata :provider)
+                        metadata
+                      (append (list :provider 'gptel) metadata))))
+      (while (< pos (length text))
+        (let ((block-start
+               (string-search
+                magent-llm-gptel--dsml-tool-calls-open text pos)))
+          (if (null block-start)
+              (setq pos (length text))
+            (let* ((block-body-start
+                    (+ block-start
+                       (length magent-llm-gptel--dsml-tool-calls-open)))
+                   (block-end
+                    (string-search
+                     magent-llm-gptel--dsml-tool-calls-close
+                     text
+                     block-body-start)))
+              (if (null block-end)
+                  (setq pos (length text))
+                (let* ((block-body (substring text block-body-start block-end))
+                       (block-pos 0))
+                  (while (< block-pos (length block-body))
+                    (let ((start (string-search
+                                  "<｜｜DSML｜｜invoke "
+                                  block-body
+                                  block-pos)))
+                      (if (null start)
+                          (setq block-pos (length block-body))
+                        (let* ((parsed
+                                (magent-llm-gptel--parse-dsml-tag-attr
+                                 block-body start "invoke" "name"))
+                               (name (car-safe parsed))
+                               (body-start (cdr-safe parsed))
+                               (body-end
+                                (and body-start
+                                     (string-search
+                                      invoke-close
+                                      block-body
+                                      body-start))))
+                          (if (not (and name body-start body-end))
+                              (setq block-pos (length block-body))
+                            (cl-incf index)
+                            (let* ((raw-text
+                                    (substring
+                                     block-body
+                                     start
+                                     (+ body-end (length invoke-close))))
+                                   (body
+                                    (substring block-body
+                                               body-start
+                                               body-end))
+                                   (args
+                                    (magent-llm-gptel--parse-dsml-tool-call-params
+                                     body))
+                                   (id (format
+                                        "textual-dsml-%d-%s"
+                                        index
+                                        (substring
+                                         (secure-hash 'sha1 raw-text)
+                                         0 10)))
+                                   (raw-call (list :id id
+                                                   :name name
+                                                   :args args
+                                                   :source 'textual-dsml)))
+                              (push (magent-llm-tool-call-event
+                                     id name args raw-call metadata)
+                                    events)
+                              (setq block-pos
+                                    (+ body-end
+                                       (length invoke-close)))))))))
+                  (setq pos
+                        (+ block-end
+                           (length
+                            magent-llm-gptel--dsml-tool-calls-close)))))))))
+      (nreverse events))))
+
+(defun magent-llm-gptel--emit-tool-call-batch
+    (request state events metadata)
+  "Emit normalized tool-call EVENTS followed by a batch-end event."
+  (puthash :terminal-emitted t state)
+  (dolist (event events)
+    (magent-llm-gptel--emit request event))
+  (magent-llm-gptel--emit
+   request
+   (magent-llm-tool-call-batch-end-event metadata)))
+
+(defun magent-llm-gptel--emit-completed-or-textual-tool-calls
+    (request state info text)
+  "Emit completion TEXT, or convert textual DSML tool calls into tool events.
+Return `tool-call' when textual tool calls were emitted, otherwise
+`completed'."
+  (let* ((metadata (magent-llm-gptel--metadata info))
+         (events (magent-llm-gptel--parse-dsml-tool-calls
+                  text metadata)))
+    (if events
+      (progn
+        (magent-llm-gptel--flush-reasoning request state info)
+        (magent-llm-gptel--emit-tool-call-batch
+         request state events metadata)
+        'tool-call)
+      (unless (string-empty-p (or text ""))
+        (magent-llm-gptel--flush-reasoning request state info))
+      (magent-llm-gptel--emit-terminal
+       request
+       state
+       (magent-llm-completed-event
+        text
+        (and (listp info) (plist-get info :tokens))
+        (and (listp info) (plist-get info :stop-reason))
+        metadata))
+      'completed)))
+
 (defun magent-llm-gptel--metadata (info)
   "Return adapter metadata extracted from gptel INFO."
   (let ((metadata (list :provider 'gptel)))
@@ -312,14 +519,11 @@ input."
                     (not (string-empty-p
                           (magent-llm-gptel--streamed-text state))))
             (magent-llm-gptel--flush-reasoning request state info)))
-        (magent-llm-gptel--emit-terminal
+        (magent-llm-gptel--emit-completed-or-textual-tool-calls
          request
          state
-         (magent-llm-completed-event
-          (magent-llm-gptel--final-text state info)
-          (and (listp info) (plist-get info :tokens))
-          (and (listp info) (plist-get info :stop-reason))
-          (magent-llm-gptel--metadata info)))
+         info
+         (magent-llm-gptel--final-text state info))
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
@@ -349,23 +553,18 @@ executing tools or continuing the tool loop."
     (if (and (not (plist-get info :stream))
              (not (magent-llm-gptel--pending-tool-use-p info)))
         (progn
-          (magent-llm-gptel--flush-reasoning request state info)
-          (magent-llm-gptel--emit-terminal
-           request
-           state
-           (magent-llm-completed-event
-            response
-            (plist-get info :tokens)
-            (plist-get info :stop-reason)
-            (magent-llm-gptel--metadata info)))
+          (magent-llm-gptel--emit-completed-or-textual-tool-calls
+           request state info response)
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))
       (push response (gethash :text-chunks state))
-      (magent-llm-gptel--emit
-       request
-       (magent-llm-text-delta-event
-        response
-        (magent-llm-gptel--metadata info)))))
+      (unless (plist-get (magent-llm-request-metadata request)
+                         :final-response-retry)
+        (magent-llm-gptel--emit
+         request
+         (magent-llm-text-delta-event
+          response
+          (magent-llm-gptel--metadata info))))))
    ((and (consp response) (eq (car response) 'reasoning))
     (if (eq (cdr response) t)
         (progn
@@ -401,15 +600,8 @@ executing tools or continuing the tool loop."
     (if (magent-llm-gptel--pending-tool-use-p info)
         (when (buffer-live-p buffer)
           (kill-buffer buffer))
-      (magent-llm-gptel--flush-reasoning request state info)
-      (magent-llm-gptel--emit-terminal
-       request
-       state
-       (magent-llm-completed-event
-        (magent-llm-gptel--final-text state info)
-        (plist-get info :tokens)
-        (plist-get info :stop-reason)
-        (magent-llm-gptel--metadata info)))
+      (magent-llm-gptel--emit-completed-or-textual-tool-calls
+       request state info (magent-llm-gptel--final-text state info))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))))
    ((eq response 'abort)
@@ -522,10 +714,15 @@ Return the request buffer as the abort handle.  REQUEST must be a
                      gptel--request-params
                      effort-params)))
       (setq-local gptel-tools (magent-llm-request-tools request))
-      (setq-local gptel-use-tools (and gptel-tools t))
+      (setq-local gptel-use-tools
+                  (and gptel-tools
+                       (not (plist-get metadata :disable-provider-tools))))
       (setq-local gptel-confirm-tool-calls t)
       (when (boundp 'magent-include-reasoning)
-        (setq-local gptel-include-reasoning magent-include-reasoning))
+        (setq-local gptel-include-reasoning
+                    (if (plist-member metadata :include-reasoning)
+                        (plist-get metadata :include-reasoning)
+                      magent-include-reasoning)))
       (gptel-request
           (magent-llm-request-prompt request)
         :buffer buffer

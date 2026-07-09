@@ -106,8 +106,8 @@ Lisp symbols or lists that `json-serialize' rejects."
 
 (defun magent-json-safe-tool-args (args)
   "Return JSON-safe tool ARGS for display, persistence, and prompt reuse.
-Nil values in keyword plists are omitted because gptel parses JSON null tool
-arguments as nil, and optional nil arguments should not round-trip as `{}`."
+The provider JSON null sentinel `:null' is omitted from keyword plists.  Lisp
+nil values are preserved and encoded as JSON null by `magent-json-safe-value'."
   (cond
    ((null args) nil)
    ((magent-json--plist-p args)
@@ -115,7 +115,7 @@ arguments as nil, and optional nil arguments should not round-trip as `{}`."
       (while args
         (let ((key (pop args))
               (val (pop args)))
-          (unless (null val)
+          (unless (eq val :null)
             (setq out (append out
                               (list key (magent-json-safe-value val)))))))
       out))

@@ -609,7 +609,11 @@ carry provider-specific ids and names."
            (fboundp 'gptel-tool-args))
       (mapcar
        (lambda (spec)
-         (plist-get args (intern (concat ":" (plist-get spec :name)))))
+         (let ((value
+                (plist-get args
+                           (intern (concat ":" (plist-get spec :name))))))
+           (unless (eq value :null)
+             value)))
        (gptel-tool-args tool-spec))
     args))
 
@@ -617,17 +621,25 @@ carry provider-specific ids and names."
   "Return model-visible plist args for TOOL-SPEC and ARG-VALUES."
   (cond
    ((magent-agent-loop--plist-args-p arg-values)
-    arg-values)
+    (magent-json-safe-tool-args arg-values))
    ((and tool-spec
          (listp arg-values)
          (fboundp 'gptel-tool-args))
-    (cl-loop for spec in (gptel-tool-args tool-spec)
-             for value in arg-values
-             append (list (intern (concat ":" (plist-get spec :name)))
-                          value)))
+    (let ((raw-args (plist-get raw-call :args)))
+      (magent-json-safe-tool-args
+       (if (and (plist-member raw-call :args)
+                (magent-agent-loop--plist-args-p raw-args))
+           raw-args
+         (cl-loop for spec in (gptel-tool-args tool-spec)
+                  for value in arg-values
+                  unless (or (null value)
+                             (eq value :null))
+                  append (list (intern (concat ":" (plist-get spec :name)))
+                               value))))))
    (t
-    (or (plist-get raw-call :args)
-        arg-values))))
+    (magent-json-safe-tool-args
+     (or (plist-get raw-call :args)
+         arg-values)))))
 
 (defun magent-agent-loop-tool-event-to-call (loop event)
   "Convert normalized tool-call EVENT to orchestrator call shape.

@@ -43,6 +43,71 @@
 
 ;;; Agent execution
 
+(defconst magent-agent--empty-final-response-retry-prompt
+  "The previous assistant response after tool execution was empty. Continue the task now. Use tools if additional inspection is required; otherwise write the final answer."
+  "User prompt appended when retrying an empty post-tool final response.")
+
+(defconst magent-agent--strict-final-response-retry-prompt
+  "The previous final-response retry still produced no assistant text. Do not call tools or emit tool-call markup. Write the final answer now based only on the context already available."
+  "User prompt appended when strict final-response recovery is required.")
+
+(defcustom magent-post-tool-reasoning-idle-retry-delay 5
+  "Seconds to wait after post-tool reasoning ends with no assistant text.
+When a provider emits only reasoning after tool output and then stalls,
+Magent aborts that sampling request and performs the normal final-response
+retry.  Set to nil or 0 to disable this guard."
+  :type '(choice (const :tag "Disabled" nil)
+                 (number :tag "Seconds"))
+  :group 'magent)
+
+(defcustom magent-post-tool-reasoning-max-duration 30
+  "Maximum seconds to allow post-tool reasoning with no assistant text.
+Some providers can keep streaming reasoning after tool output without ever
+emitting assistant text, a tool call, or a terminal completion.  When this
+limit is reached Magent aborts that sampling request and performs the
+normal final-response retry.  Set to nil or 0 to disable this guard."
+  :type '(choice (const :tag "Disabled" nil)
+                 (number :tag "Seconds"))
+  :group 'magent)
+
+(defun magent-agent--metadata-without-retry-flags (metadata)
+  "Return METADATA without request-local retry flags.
+Improper or circular metadata is dropped instead of scanned, because this
+helper runs from async process callbacks where an unbounded plist walk can
+lock the Emacs main thread."
+  (when (proper-list-p metadata)
+    (let (result)
+      (while (consp metadata)
+        (let ((key (pop metadata))
+              (value (pop metadata)))
+          (unless (memq key '(:final-response-retry
+                              :strict-final-response-retry
+                              :include-reasoning
+                              :disable-provider-tools))
+            (push key result)
+            (push value result))))
+      (nreverse result))))
+
+(defun magent-agent--metadata-status-p (metadata status)
+  "Return non-nil when METADATA contains a `:status' equal to STATUS.
+Provider error metadata can contain duplicate `:status' keys, so callers must
+not rely on `plist-get' returning the meaningful one."
+  (when (proper-list-p metadata)
+    (let ((found nil))
+      (while (consp metadata)
+        (let ((key (pop metadata))
+              (value (pop metadata)))
+          (when (and (eq key :status)
+                     (equal value status))
+            (setq found t))))
+      found)))
+
+(defun magent-agent--abort-error-event-p (event)
+  "Return non-nil when EVENT represents an expected provider abort."
+  (let ((metadata (magent-llm-event-metadata event)))
+    (or (magent-agent--metadata-status-p metadata 'abort)
+        (equal (magent-llm-event-message event) "Request aborted"))))
+
 (defun magent-agent--dedupe-skill-names (skill-names)
   "Return SKILL-NAMES without duplicates, preserving order."
   (let (seen result)
@@ -290,7 +355,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
            (let* ((gptel-backend backend)
                   (gptel-model model)
                   (gptel-temperature temperature)
-                  (gptel-tools (magent-agent-loop-tools-to-gptel tools))
+                  (request-tools (magent-agent-loop-tools-to-gptel tools))
+                  (gptel-tools request-tools)
                   (live-p (or request-live-p
                               (and request-state
                                    (magent-request-context-live-p
@@ -301,6 +367,17 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                   (assistant-item nil)
                   (reasoning-item nil)
                   (sampling-count 0)
+                  (sample-text-delta-seen nil)
+                  (sample-final-response-retry nil)
+                  (sample-strict-final-response-retry nil)
+                  (last-continuation-reason nil)
+                  (tool-output-seq 0)
+                  (empty-final-response-retried-for-tool-output-seq nil)
+                  (strict-final-response-retried-for-tool-output-seq nil)
+                  (post-tool-reasoning-idle-timer nil)
+                  (post-tool-reasoning-deadline-timer nil)
+                  (post-tool-reasoning-deadline-start-time nil)
+                  (suppress-next-abort-error nil)
                   loop)
              (cl-labels
                  ((current-turn-id
@@ -439,9 +516,247 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                    (finish-reasoning-item))
                   (sample
                    ()
+                   (when post-tool-reasoning-idle-timer
+                     (cancel-timer post-tool-reasoning-idle-timer)
+                     (setq post-tool-reasoning-idle-timer nil))
+                   (when post-tool-reasoning-deadline-timer
+                     (cancel-timer post-tool-reasoning-deadline-timer)
+                     (setq post-tool-reasoning-deadline-timer nil))
+                   (setq post-tool-reasoning-deadline-start-time nil)
+                   (setq sample-text-delta-seen nil
+                         sample-final-response-retry
+                         (and loop
+                              (plist-get
+                               (magent-llm-request-metadata
+                                (magent-agent-loop-request loop))
+                               :final-response-retry))
+                         sample-strict-final-response-retry
+                         (and loop
+                              (plist-get
+                               (magent-llm-request-metadata
+                                (magent-agent-loop-request loop))
+                               :strict-final-response-retry)))
                    (cl-incf sampling-count)
                    (emit-request-start)
                    (magent-agent-loop-start loop))
+                  (request-for-current-session
+                   ()
+                   (let ((request
+                          (magent-agent-loop-request-for-current-session
+                           loop)))
+                     (magent-llm-request-create
+                      :prompt (magent-llm-request-prompt request)
+                      :system (magent-llm-request-system request)
+                      :tools request-tools
+                      :model (magent-llm-request-model request)
+                      :backend (magent-llm-request-backend request)
+                      :stream t
+                      :callback (magent-llm-request-callback request)
+                      :metadata
+                      (magent-agent--metadata-without-retry-flags
+                       (magent-llm-request-metadata request)))))
+                  (request-for-current-session-final-response-retry
+                   ()
+                   (let ((request (request-for-current-session)))
+                     (magent-llm-request-create
+                      :prompt
+                      (append
+                       (magent-llm-request-prompt request)
+                       (list
+                        (cons
+                         'prompt
+                         magent-agent--empty-final-response-retry-prompt)))
+                      :system (magent-llm-request-system request)
+                      :tools (magent-llm-request-tools request)
+                      :model (magent-llm-request-model request)
+                      :backend (magent-llm-request-backend request)
+                      :stream nil
+                      :callback (magent-llm-request-callback request)
+                      :metadata
+                      (append
+                       (magent-agent--metadata-without-retry-flags
+                        (magent-llm-request-metadata request))
+                       (list :final-response-retry t
+                             :disable-provider-tools t)))))
+                  (request-for-current-session-strict-final-response-retry
+                   ()
+                   (let ((request (request-for-current-session)))
+                     (magent-llm-request-create
+                      :prompt
+                      (append
+                       (magent-llm-request-prompt request)
+                       (list
+                        (cons
+                         'prompt
+                         magent-agent--strict-final-response-retry-prompt)))
+                      :system (magent-llm-request-system request)
+                      :tools (magent-llm-request-tools request)
+                      :model (magent-llm-request-model request)
+                      :backend (magent-llm-request-backend request)
+                      :stream nil
+                      :callback (magent-llm-request-callback request)
+                      :metadata
+                      (append
+                       (magent-agent--metadata-without-retry-flags
+                        (magent-llm-request-metadata request))
+                       (list :final-response-retry t
+                             :strict-final-response-retry t
+                             :effort 'minimal
+                             :include-reasoning nil
+                             :disable-provider-tools t)))))
+                  (cancel-post-tool-reasoning-idle-timer
+                   ()
+                   (when post-tool-reasoning-idle-timer
+                     (cancel-timer post-tool-reasoning-idle-timer)
+                     (setq post-tool-reasoning-idle-timer nil)))
+                  (cancel-post-tool-reasoning-deadline-timer
+                   ()
+                   (when post-tool-reasoning-deadline-timer
+                     (cancel-timer post-tool-reasoning-deadline-timer)
+                     (setq post-tool-reasoning-deadline-timer nil))
+                   (setq post-tool-reasoning-deadline-start-time nil))
+                  (empty-post-tool-final-response-retry-p
+                   ()
+                   (and (eq last-continuation-reason 'tool-output)
+                        (not sample-final-response-retry)
+                        (not
+                         (equal
+                          empty-final-response-retried-for-tool-output-seq
+                          tool-output-seq))
+                        (not sample-text-delta-seen)))
+                  (final-response-retry-reasoning-retry-p
+                   ()
+                   (and sample-final-response-retry
+                        (not sample-strict-final-response-retry)
+                        (not
+                         (equal
+                          strict-final-response-retried-for-tool-output-seq
+                          tool-output-seq))
+                        (not sample-text-delta-seen)))
+                  (strict-final-response-retry-failure-p
+                   ()
+                   (and sample-strict-final-response-retry
+                        (not sample-text-delta-seen)))
+                  (retry-empty-final-response
+                   (reason)
+                   (when (empty-post-tool-final-response-retry-p)
+                     (cancel-post-tool-reasoning-idle-timer)
+                     (cancel-post-tool-reasoning-deadline-timer)
+                     (when (memq reason '(reasoning-idle
+                                          reasoning-timeout))
+                       (magent-agent-loop--cancel-request-timeout loop)
+                       (setq suppress-next-abort-error t)
+                       (magent-agent-loop--abort-request-handle
+                        (magent-agent-loop-request-handle loop)))
+                     (setq empty-final-response-retried-for-tool-output-seq
+                           tool-output-seq
+                           last-continuation-reason
+                           'empty-final-response-retry)
+                     (setf (magent-agent-loop-request loop)
+                           (request-for-current-session-final-response-retry))
+                     (magent-log
+                      "INFO retrying empty final response after tool output: %s"
+                      reason)
+                     (sample)
+                     t))
+                  (retry-strict-final-response
+                   (reason)
+                   (when (final-response-retry-reasoning-retry-p)
+                     (cancel-post-tool-reasoning-idle-timer)
+                     (cancel-post-tool-reasoning-deadline-timer)
+                     (when (memq reason '(reasoning-idle
+                                          reasoning-timeout))
+                       (magent-agent-loop--cancel-request-timeout loop)
+                       (setq suppress-next-abort-error t)
+                       (magent-agent-loop--abort-request-handle
+                        (magent-agent-loop-request-handle loop)))
+                     (setq strict-final-response-retried-for-tool-output-seq
+                           tool-output-seq
+                           last-continuation-reason
+                           'strict-final-response-retry)
+                     (setf (magent-agent-loop-request loop)
+                           (request-for-current-session-strict-final-response-retry))
+                     (magent-log
+                      "INFO retrying strict final response after retry reasoning: %s"
+                      reason)
+                     (sample)
+                     t))
+                  (fail-strict-final-response
+                   (reason)
+                   (when (strict-final-response-retry-failure-p)
+                     (cancel-post-tool-reasoning-idle-timer)
+                     (cancel-post-tool-reasoning-deadline-timer)
+                     (when (memq reason '(reasoning-idle
+                                          reasoning-timeout))
+                       (magent-agent-loop--cancel-request-timeout loop)
+                       (setq suppress-next-abort-error t)
+                       (magent-agent-loop--abort-request-handle
+                        (magent-agent-loop-request-handle loop)))
+                     (let ((message
+                            "Error: Model returned no assistant text after strict final-response retry."))
+                       (magent-request-context-notify
+                        request-state 'turn-error
+                        :message message
+                        :metadata
+                        (list :status 'strict-final-response-retry))
+                       (finish-turn
+                        'failed message
+                        (list :status 'strict-final-response-retry
+                              :reason reason)))
+                     t))
+                  (handle-post-tool-reasoning-timeout
+                   (reason)
+                   (or (retry-empty-final-response reason)
+                       (retry-strict-final-response reason)
+                       (fail-strict-final-response reason)))
+                  (post-tool-reasoning-guard-active-p
+                   ()
+                   (or (empty-post-tool-final-response-retry-p)
+                       (final-response-retry-reasoning-retry-p)
+                       (strict-final-response-retry-failure-p)))
+                  (schedule-post-tool-reasoning-idle-retry
+                   ()
+                   (when (and (numberp
+                              magent-post-tool-reasoning-idle-retry-delay)
+                              (> magent-post-tool-reasoning-idle-retry-delay
+                                 0)
+                              (post-tool-reasoning-guard-active-p))
+                     (cancel-post-tool-reasoning-idle-timer)
+                     (setq post-tool-reasoning-idle-timer
+                           (run-at-time
+                            magent-post-tool-reasoning-idle-retry-delay
+                            nil
+                            (lambda ()
+                              (setq post-tool-reasoning-idle-timer nil)
+                              (handle-post-tool-reasoning-timeout
+                               'reasoning-idle))))))
+                  (schedule-post-tool-reasoning-deadline-retry
+                   ()
+                   (when (and (numberp
+                              magent-post-tool-reasoning-max-duration)
+                              (> magent-post-tool-reasoning-max-duration 0)
+                              (post-tool-reasoning-guard-active-p))
+                     (unless post-tool-reasoning-deadline-start-time
+                       (setq post-tool-reasoning-deadline-start-time
+                             (float-time)))
+                     (unless post-tool-reasoning-deadline-timer
+                       (setq post-tool-reasoning-deadline-timer
+                             (run-at-time
+                              magent-post-tool-reasoning-max-duration
+                              nil
+                              (lambda ()
+                                (setq post-tool-reasoning-deadline-timer nil)
+                                (handle-post-tool-reasoning-timeout
+                                 'reasoning-timeout)))))))
+                  (post-tool-reasoning-deadline-expired-p
+                   ()
+                   (and (numberp magent-post-tool-reasoning-max-duration)
+                        (> magent-post-tool-reasoning-max-duration 0)
+                        post-tool-reasoning-deadline-start-time
+                        (>= (- (float-time)
+                               post-tool-reasoning-deadline-start-time)
+                            magent-post-tool-reasoning-max-duration)
+                        (post-tool-reasoning-guard-active-p)))
                   (continue-turn
                    (outcome)
                    (if (and (numberp magent-max-sampling-requests)
@@ -458,12 +773,15 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                           (plist-get outcome :reason))
                          (finish-turn 'failed message
                                       (list :status 'sampling-limit
-                                            :sampling-count sampling-count
-                                            :continuation-reason
-                                            (plist-get outcome :reason))))
+                                           :sampling-count sampling-count
+                                           :continuation-reason
+                                           (plist-get outcome :reason))))
+                     (setq last-continuation-reason
+                           (plist-get outcome :reason))
+                     (when (eq last-continuation-reason 'tool-output)
+                       (cl-incf tool-output-seq))
                      (setf (magent-agent-loop-request loop)
-                           (magent-agent-loop-request-for-current-session
-                            loop))
+                           (request-for-current-session))
                      (magent-log
                       "INFO continuing model response: reason=%s count=%d"
                       (plist-get outcome :reason)
@@ -471,6 +789,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                      (sample)))
                   (finish-streaming
                    ()
+                   (cancel-post-tool-reasoning-idle-timer)
+                   (cancel-post-tool-reasoning-deadline-timer)
                    (close-reasoning)
                    (when (and streaming-started
                               (magent-agent--ui-visible-p request-state))
@@ -503,7 +823,13 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                   (handle-event
                    (event)
                    (when (magent-agent--request-live-p live-p)
-                     (pcase (magent-llm-event-type event)
+                     (let ((event-type (magent-llm-event-type event)))
+                       (unless (eq event-type 'reasoning-end)
+                         (cancel-post-tool-reasoning-idle-timer))
+                       (unless (memq event-type '(reasoning-delta
+                                                  reasoning-end))
+                         (cancel-post-tool-reasoning-deadline-timer))
+                     (pcase event-type
                        ('text-delta
                         (start-streaming)
                        (magent-lifecycle-events-emit
@@ -512,7 +838,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                         :text (magent-llm-event-text event))
                        (unless (string-empty-p
                                 (or (magent-llm-event-text event) ""))
-                         (setq text-delta-seen t))
+                         (setq text-delta-seen t
+                               sample-text-delta-seen t))
                        (magent-request-context-notify
                         request-state 'assistant-delta
                         :text (magent-llm-event-text event))
@@ -532,12 +859,17 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                         (magent-request-context-notify
                          request-state 'reasoning-delta
                          :text (magent-llm-event-text event))
-                        (record-reasoning-delta
-                         (magent-llm-event-text event)))
+                        (schedule-post-tool-reasoning-deadline-retry)
+                        (if (post-tool-reasoning-deadline-expired-p)
+                            (handle-post-tool-reasoning-timeout
+                             'reasoning-timeout)
+                          (record-reasoning-delta
+                           (magent-llm-event-text event))))
                        ('reasoning-end
                         (magent-request-context-notify
                          request-state 'reasoning-complete)
-                        (close-reasoning))
+                        (close-reasoning)
+                        (schedule-post-tool-reasoning-idle-retry))
                        ('tool-call
                         (close-reasoning)
                         (magent-request-context-notify
@@ -591,19 +923,51 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                               (funcall (or ui-callback
                                            #'magent-ui-insert-streaming)
                                        ui-text))))
-                        (magent-request-context-notify
-                         request-state 'assistant-complete
-                         :text (magent-agent-loop-result loop))
-                        (finish-turn 'completed
-                                     (magent-agent-loop-result loop)))
+                        (cond
+                         ((and (empty-post-tool-final-response-retry-p)
+                               (string-empty-p
+                                (or (magent-llm-event-text event) "")))
+                          (retry-empty-final-response 'completed-empty))
+                         ((and sample-strict-final-response-retry
+                               (not sample-text-delta-seen)
+                               (string-empty-p
+                                (or (magent-llm-event-text event) "")))
+                          (fail-strict-final-response 'completed-empty))
+                         ((and sample-final-response-retry
+                               (not sample-strict-final-response-retry)
+                               (not sample-text-delta-seen)
+                               (string-empty-p
+                                (or (magent-llm-event-text event) "")))
+                          (let ((message
+                                 "Error: Model returned an empty final response after tool output retry."))
+                            (magent-log
+                             "WARN empty final response retry returned no text")
+                            (magent-request-context-notify
+                             request-state 'turn-error
+                             :message message
+                             :metadata
+                             (list :status 'empty-final-response-retry))
+                            (finish-turn
+                             'failed message
+                             (list :status
+                                   'empty-final-response-retry))))
+                         (t
+                          (magent-request-context-notify
+                           request-state 'assistant-complete
+                           :text (magent-agent-loop-result loop))
+                          (finish-turn 'completed
+                                       (magent-agent-loop-result loop)))))
                       ('error
-                        (magent-request-context-notify
-                         request-state 'turn-error
-                         :message (magent-llm-event-message event)
-                         :metadata (magent-llm-event-metadata event))
-                        (finish-turn 'failed
-                                     (magent-llm-event-message event)
-                                     (magent-llm-event-metadata event)))))))
+                       (if (and suppress-next-abort-error
+                                (magent-agent--abort-error-event-p event))
+                           (setq suppress-next-abort-error nil)
+                         (magent-request-context-notify
+                          request-state 'turn-error
+                          :message (magent-llm-event-message event)
+                          :metadata (magent-llm-event-metadata event))
+                         (finish-turn 'failed
+                                      (magent-llm-event-message event)
+                                      (magent-llm-event-metadata event)))))))))
                (setq loop
                      (magent-agent-loop-create
                       :session session
@@ -611,7 +975,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                      (magent-llm-request-create
                       :prompt prompt-list
                       :system system-msg
-                      :tools gptel-tools
+                      :tools request-tools
                       :model model
                       :backend backend
                       :stream t
