@@ -24,9 +24,9 @@ Magent keeps the same workflow boundary, adapted to Emacs:
 
 - Provider transport still goes through ~gptel-request~.
 - The Magent loop owns tool dispatch, continuation outcomes, abort, and
-  Emacs UI rendering. The turn layer owns final-response policy, including
-  one no-tool retry when a post-tool continuation produces empty assistant
-  text.
+  Emacs UI rendering. The turn layer follows Codex-style continuation:
+  tool output drives the next sampling request, while assistant completion
+  ends the turn even when the assistant text is empty.
 - No Codex sandbox, seatbelt, bubblewrap, or shell isolation parity is
   introduced.
 
@@ -167,19 +167,18 @@ append-only record. The two are not interchangeable.
    ~magent-agent-process~ owns the decision to rebuild the prompt from
    session history and start the next sampling request.  This keeps tool
    execution separate from turn continuation policy.
-10. If a post-tool continuation completes with empty assistant text,
-    ~magent-agent-process~ attempts one no-tool final-response request
-    before completing the turn.  Sampling-limit finalization uses the same
-    no-tool request shape with separate metadata.
+10. If a post-tool continuation completes with empty assistant text, Magent
+    records the empty assistant message and completes the turn.  The empty
+    message is preserved in the transcript but omitted from later prompt reuse.
 11. Assistant completion records an assistant message item and completes
    the turn.
 12. Abort, failure, and dropped queued submissions transition the turn to
    ~interrupted~, ~failed~, or ~dropped~; in-progress items under an
    aborted turn are marked ~cancelled~.
-13. ~magent-max-sampling-requests~ is a lifecycle guard for one user
-    turn.  It limits the number of model sampling requests, including
-    tool-output continuations, without inspecting or deduplicating tool
-    command contents.
+13. ~magent-max-sampling-requests~ is an optional compatibility safety guard,
+    disabled by default.  Codex does not impose a per-turn sampling cap; when
+    this guard is explicitly enabled, Magent fails the turn after the limit
+    instead of forcing a synthetic no-tool final answer.
 
 Prompt reconstruction is ledger-driven.  When a current turn id is known,
 Magent includes completed history plus that turn only, preventing later
@@ -223,10 +222,10 @@ areas:
   input, mailbox items, auto-compaction, and tool follow-up can all
   extend one active turn. Magent keeps request serialization in the
   runtime queue and uses Codex-style continuation for tool results: tool
-  execution records model-visible output, then the turn layer decides
-  whether to continue sampling or ask once for a no-tool final answer when
-  the post-tool response is empty.  Magent does not implement Codex's
-  app-server mailbox or steering queue.
+  execution records model-visible output, then the turn layer continues
+  sampling until the model returns assistant completion. Magent does not
+  implement Codex's app-server mailbox, steering queue, stop hooks, or
+  mid-turn auto-compaction.
 - Codex thread status is app-server-facing
   ~notLoaded/idle/systemError/active{activeFlags}~. Magent keeps the
   same top-level status idea but also persists explicit local turn and

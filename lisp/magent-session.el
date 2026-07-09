@@ -67,13 +67,19 @@ If CONTENT is a list of content blocks, concatenate their text fields."
     (mapconcat (lambda (b) (or (cdr (assq 'text b)) "")) content ""))
    (t "")))
 
+(defun magent-session--assistant-response-error-p (content)
+  "Return non-nil when assistant CONTENT is synthetic failure text."
+  (string-prefix-p "Error:"
+                   (string-trim
+                    (magent-session--content-to-string content))))
+
 (defun magent-session--assistant-response-reusable-p (content)
   "Return non-nil when assistant CONTENT should be reused in prompts.
 Empty assistant replies and synthetic failure text are preserved in the
 saved transcript, but should not be fed back into later requests."
   (let ((text (string-trim (magent-session--content-to-string content))))
     (and (not (string-empty-p text))
-         (not (string-prefix-p "Error:" text)))))
+         (not (magent-session--assistant-response-error-p content)))))
 
 (defconst magent-session-summary-title-max-width 48
   "Maximum display width for saved session summary titles.")
@@ -219,9 +225,9 @@ saved transcript, but should not be fed back into later requests."
                               role content
                               (magent-thread-turn-id current-turn)))))
           (setf (magent-thread-turn-status current-turn)
-                (if (magent-session--assistant-response-reusable-p content)
-                    'completed
-                  'failed)
+                (if (magent-session--assistant-response-error-p content)
+                    'failed
+                  'completed)
                 (magent-thread-turn-completed-at current-turn) (float-time)
                 (magent-thread-turn-duration-ms current-turn) 0)))))
     thread))
@@ -818,12 +824,12 @@ CONTENT can be a string or a list of content blocks."
                 thread nil nil (list :synthetic t))))
        (magent-thread-record-message
         thread (magent-thread-turn-id turn) 'assistant content)
-       (if (magent-session--assistant-response-reusable-p content)
-           (magent-thread-complete-turn
-            thread (magent-thread-turn-id turn))
-         (magent-thread-fail-turn
-          thread (magent-thread-turn-id turn)
-          (magent-session--content-to-string content))))
+       (if (magent-session--assistant-response-error-p content)
+           (magent-thread-fail-turn
+            thread (magent-thread-turn-id turn)
+            (magent-session--content-to-string content))
+         (magent-thread-complete-turn
+          thread (magent-thread-turn-id turn))))
       ('tool
        (unless turn
          (setq turn
@@ -1047,7 +1053,7 @@ sampling request."
                       prompt-list))
                ((and completed assistant-content)
                 (magent-log
-                 "INFO dropping failed session turn from prompt reuse"))
+                 "INFO dropping non-reusable session turn from prompt reuse"))
                ((or effective-current-turn-id
                     (not completed))
                 (push (cons 'prompt user-text) prompt-list)

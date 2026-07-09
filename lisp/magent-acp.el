@@ -20,6 +20,7 @@
 (require 'magent-agent-registry)
 (require 'magent-config)
 (require 'magent-json)
+(require 'magent-protocol)
 (require 'magent-runtime-api)
 (require 'magent-session)
 (require 'magent-ledger)
@@ -698,6 +699,21 @@ switching semantics."
     (magent-runtime-session-set-effort runtime-session value)
     (magent-acp--session-response runtime-session)))
 
+(defun magent-acp--stop-reason (status result)
+  "Return ACP stopReason for Magent STATUS and RESULT."
+  (pcase status
+    ('completed "end_turn")
+    ('cancelled "cancelled")
+    (_
+     (let ((failure-status
+            (and (magent-agent-result-p result)
+                 (plist-get (magent-agent-result-metadata result) :status))))
+       (pcase failure-status
+         ('sampling-limit "max_turn_requests")
+         ('max-tokens "max_tokens")
+         ('refusal "refusal")
+         (_ "error"))))))
+
 (defun magent-acp--handle-request (client request on-success on-failure)
   "Handle ACP REQUEST from CLIENT."
   (condition-case err
@@ -749,10 +765,8 @@ switching semantics."
               (lambda (status result)
                 (funcall
                  on-success
-                 `((stopReason . ,(pcase status
-                                     ('completed "end_turn")
-                                     ('cancelled "cancelled")
-                                     (_ "refusal")))
+                 `((stopReason . ,(magent-acp--stop-reason
+                                    status result))
                    ,@(unless (eq status 'completed)
                        `((error . ,(magent-agent-result-content-string
                                     result))))))))))

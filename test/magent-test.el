@@ -305,7 +305,7 @@
   "Test tool output is recorded before the next sampling request."
   (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
          (gptel-model 'gpt-4o-mini)
-         (magent-max-sampling-requests 25)
+         (magent-max-sampling-requests 0)
          (call-count 0)
          (sampled-prompts nil)
          (response nil)
@@ -373,11 +373,11 @@
                              :args (:sexp "(+ 1 2)")
                              :result "eval:(+ 1 2)")))))))
 
-(ert-deftest magent-test-agent-process-retries-empty-final-after-tool-output ()
-  "Test empty completion after tool output gets one no-tool final retry."
+(ert-deftest magent-test-agent-process-completes-empty-after-tool-output ()
+  "Test empty assistant completion after tool output ends the turn."
   (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
          (gptel-model 'gpt-4o-mini)
-         (magent-max-sampling-requests 25)
+         (magent-max-sampling-requests 0)
          (call-count 0)
          (sampled-prompts nil)
          (sampled-tool-use nil)
@@ -419,9 +419,6 @@
                        '(:tool-use t)))
                      (2
                       (funcall callback t '(:content "")))
-                     (3
-                      (funcall callback "The result is 3."
-                               '(:content "The result is 3.")))
                      (_
                       (error "unexpected sampling request %d" call-count))))))
               ((symbol-function 'magent-log) #'ignore)
@@ -434,22 +431,26 @@
        "Run eval"
        (lambda (result) (setq response result))
        agent nil nil nil nil nil nil request-state))
-    (should (= call-count 3))
-    (should (equal response "The result is 3."))
-    (should (equal (nreverse sampled-tool-use) '(t t nil)))
+    (should (= call-count 2))
+    (should (equal response ""))
+    (should (equal (nreverse sampled-tool-use) '(t t)))
     (let ((final-prompt (car sampled-prompts)))
-      (should (equal (caar (last final-prompt)) 'prompt))
-      (should (string-match-p
-               "previous tool calls have completed"
-               (cdar (last final-prompt)))))))
+      (should (equal final-prompt
+                     '((prompt . "Run eval")
+                       (tool :id "call-1"
+                             :name "emacs_eval"
+                             :args (:sexp "(+ 1 2)")
+                             :result "eval:3")))))
+    (let ((turn (car (magent-thread-turns
+                      (magent-session-thread-ledger session)))))
+      (should (eq (magent-thread-turn-status turn) 'completed)))))
 
-(ert-deftest magent-test-agent-process-forces-final-at-sampling-budget ()
-  "Test per-turn sampling budget forces a final no-tool response."
+(ert-deftest magent-test-agent-process-fails-at-configured-sampling-budget ()
+  "Test optional per-turn sampling budget fails instead of forcing final text."
   (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
          (gptel-model 'gpt-4o-mini)
          (magent-max-sampling-requests 1)
          (call-count 0)
-         (sampled-prompts nil)
          (sampled-tool-use nil)
          (response nil)
          (session (magent-session-create :id "session-1"))
@@ -473,9 +474,8 @@
               ((symbol-function 'magent-tool-runtime-for-agent)
                (lambda (_agent) (list tool-runtime)))
               ((symbol-function 'gptel-request)
-               (lambda (prompt &rest kwargs)
+               (lambda (_prompt &rest kwargs)
                  (cl-incf call-count)
-                 (push prompt sampled-prompts)
                  (push gptel-use-tools sampled-tool-use)
                  (let ((callback (plist-get kwargs :callback)))
                    (pcase call-count
@@ -487,10 +487,6 @@
                                             :name "emacs_eval"
                                             :args (:sexp "(+ 1 2)")))))
                        '(:tool-use t)))
-                     (2
-                      (should (plist-get kwargs :stream))
-                      (funcall callback "The result is 3." '(:stream t))
-                      (funcall callback t '(:content "The result is 3.")))
                      (_
                       (error "unexpected sampling request %d" call-count))))))
               ((symbol-function 'magent-log) #'ignore)
@@ -503,14 +499,15 @@
        "Run eval"
        (lambda (result) (setq response result))
        agent nil nil nil nil nil nil request-state))
-    (should (= call-count 2))
-    (should (equal response "The result is 3."))
-    (should (equal (nreverse sampled-tool-use) '(t nil)))
-    (let ((final-prompt (car sampled-prompts)))
-      (should (equal (caar (last final-prompt)) 'prompt))
-      (should (string-match-p
-               "Stop using tools"
-               (cdar (last final-prompt)))))))
+    (should (= call-count 1))
+    (should (equal (nreverse sampled-tool-use) '(t)))
+    (should (magent-agent-result-p response))
+    (should-not (magent-agent-result-success-p response))
+    (should (eq (plist-get (magent-agent-result-metadata response) :status)
+                'sampling-limit))
+    (should (string-match-p
+             "Maximum sampling requests reached"
+             (magent-agent-result-content-string response)))))
 
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Frontmatter parsing tests
@@ -1024,12 +1021,16 @@
                    '((prompt . "Run ls")
                      (response . "Here are the files."))))))
 
-(ert-deftest magent-test-session-to-gptel-prompt-list-drops-failed-turns ()
-  "Test failed turns do not leak into later prompt reuse."
+(ert-deftest magent-test-session-to-gptel-prompt-list-drops-non-reusable-turns ()
+  "Test empty and failed assistant turns do not leak into prompt reuse."
   (require 'magent-session)
   (let ((session (magent-session-create)))
     (magent-session-add-message session 'user "emacs 有几个 buffer")
     (magent-session-add-message session 'assistant "")
+    (should (eq (magent-thread-turn-status
+                 (car (magent-thread-turns
+                       (magent-session-thread-ledger session))))
+                'completed))
     (magent-session-add-message session 'user "magent 有几个 skills")
     (magent-session-add-message
      session 'assistant
@@ -7505,6 +7506,28 @@ tolerate leading whitespace."
     (should-not success)
     (funcall complete 'completed "ok")
     (should (equal (map-elt success 'stopReason) "end_turn"))))
+
+(ert-deftest magent-test-acp-stop-reason-preserves-failure-kind ()
+  "Test ACP stopReason does not report internal failures as refusals."
+  (require 'magent-acp)
+  (should (equal (magent-acp--stop-reason
+                  'failed
+                  (magent-agent-result-failed
+                   "Maximum sampling requests reached"
+                   '(:status sampling-limit)))
+                 "max_turn_requests"))
+  (should (equal (magent-acp--stop-reason
+                  'failed
+                  (magent-agent-result-failed
+                   "Request timed out"
+                   '(:status timeout)))
+                 "error"))
+  (should (equal (magent-acp--stop-reason
+                  'failed
+                  (magent-agent-result-failed
+                   "Model refused"
+                   '(:status refusal)))
+                 "refusal")))
 
 (ert-deftest magent-test-acp-session-prompt-success-runs-in-request-buffer ()
   "Test deferred ACP prompt callbacks run in the buffer supplied by acp.el."

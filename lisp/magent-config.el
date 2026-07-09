@@ -180,10 +180,12 @@ transitions to an error state.  Set to 0 to disable."
   :type 'integer
   :group 'magent)
 
-(defcustom magent-max-sampling-requests 25
-  "Maximum model sampling requests allowed in one user turn.
-The initial request counts as one.  Tool output continuations count as
-additional requests.  Set to 0 to disable this lifecycle guard."
+(defcustom magent-max-sampling-requests 0
+  "Compatibility safety guard for model sampling requests in one turn.
+Magent normally follows Codex-style turn continuation and does not impose a
+per-turn sampling limit.  When this value is positive, the initial request
+counts as one and tool-output continuations count as additional requests; the
+turn fails once the limit is reached.  Set to 0 to disable."
   :type 'integer
   :group 'magent)
 
