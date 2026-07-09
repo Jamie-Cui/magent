@@ -39,6 +39,10 @@
   '("explain" "fix" "init" "review" "test")
   "Bundled instruction skills that are exposed as slash commands.")
 
+(defconst magent-test--local-slash-command-names
+  '("magent-memory-clear" "magent-memory-init" "magent-memory-refresh")
+  "Local slash commands exposed by Magent without skill prompts.")
+
 (defun magent-test--load-builtin-skills-only ()
   "Load bundled skill files into the caller's test skill registry."
   (require 'magent-skills)
@@ -2138,6 +2142,129 @@
                system))
       (should (equal (magent-request-context-project-root request-state)
                      "/tmp/project")))))
+
+(ert-deftest magent-test-memory-scan-plan-skips-sensitive-and-org-notes ()
+  "Test memory scan plans avoid secrets, custom-file contents, and Org notes."
+  (require 'magent-memory)
+  (let* ((root (file-name-as-directory
+                (make-temp-file "magent-memory-root" t)))
+         (init-file (expand-file-name "init.el" root))
+         (custom-path (expand-file-name "custom.el" root))
+         (readme (expand-file-name "README.org" root))
+         (notes (expand-file-name "notes.org" root))
+         (secret (expand-file-name "secrets.el" root))
+         (user-emacs-directory root)
+         (user-init-file init-file)
+         (early-init-file nil)
+         (custom-file custom-path)
+         (magent-memory-extra-scan-roots nil)
+         (magent-memory-scan-custom-file nil)
+         (magent-memory-max-files 20)
+         (magent-memory-max-file-bytes 10000)
+         (magent-memory-max-scan-bytes 50000))
+    (with-temp-file init-file
+      (insert "(use-package magit)\n"))
+    (with-temp-file custom-path
+      (insert "(custom-set-variables '(secret-token \"abc\"))\n"))
+    (with-temp-file readme
+      (insert "# Emacs config\n"))
+    (with-temp-file notes
+      (insert "* Personal notes\n"))
+    (with-temp-file secret
+      (insert "(setq token \"secret\")\n"))
+    (let* ((plan (magent-memory-build-scan-plan))
+           (files (magent-memory--scan-plan-file-paths plan)))
+      (should (member init-file files))
+      (should (member readme files))
+      (should-not (member custom-path files))
+      (should-not (member notes files))
+      (should-not (member secret files))
+      (should (member secret
+                      (magent-memory-scan-plan-skipped-sensitive plan))))))
+
+(ert-deftest magent-test-memory-refresh-preserves-user-notes ()
+  "Test memory refresh rewrites managed content and preserves User Notes."
+  (require 'magent-memory)
+  (let* ((root (file-name-as-directory
+                (make-temp-file "magent-memory-root" t)))
+         (memory-dir (file-name-as-directory
+                      (make-temp-file "magent-memory-store" t)))
+         (init-file (expand-file-name "init.el" root))
+         (user-emacs-directory root)
+         (user-init-file init-file)
+         (early-init-file nil)
+         (custom-file nil)
+         (magent-memory-directory memory-dir)
+         (magent-memory-use-llm nil)
+         (magent-memory-open-after-write nil)
+         (magent-memory-extra-scan-roots nil))
+    (with-temp-file init-file
+      (insert "(use-package project)\n"))
+    (magent-memory-run
+     'init
+     :confirm-fn (lambda (_plan continue) (funcall continue t)))
+    (with-temp-buffer
+      (insert-file-contents (magent-memory-file))
+      (goto-char (point-max))
+      (insert "Prefer minibuffer-driven confirmations.\n")
+      (write-region (point-min) (point-max) (magent-memory-file)))
+    (magent-memory-run
+     'refresh
+     :confirm-fn (lambda (_plan continue) (funcall continue t)))
+    (with-temp-buffer
+      (insert-file-contents (magent-memory-file))
+      (let ((text (buffer-string)))
+        (should (string-match-p
+                 (regexp-quote "* Magent Managed Profile")
+                 text))
+        (should (string-match-p
+                 (regexp-quote "Prefer minibuffer-driven confirmations.")
+                 text))
+        (should (file-directory-p
+                 (magent-memory-snapshots-directory)))))))
+
+(ert-deftest magent-test-memory-system-message-selects-relevant-sections ()
+  "Test prompt-time memory injection selects bounded relevant sections."
+  (require 'magent-memory)
+  (let* ((memory-dir (file-name-as-directory
+                      (make-temp-file "magent-memory-store" t)))
+         (magent-memory-directory memory-dir)
+         (magent-memory-enable-auto-injection t)
+         (magent-memory-max-injected-sections 2)
+         (magent-memory-injection-max-chars 2000))
+    (make-directory memory-dir t)
+    (with-temp-file (magent-memory-file)
+      (insert "#+magent-active: true\n")
+      (insert "#+magent-generated-at: 2026-07-09T00:00:00+0800\n")
+      (insert "#+magent-generated-at-float: 1783526400.000\n")
+      (insert "#+magent-roots-json: []\n")
+      (insert "#+magent-source-files-json: []\n\n")
+      (insert "* Magent Managed Profile\n")
+      (dolist (heading magent-memory--managed-section-headings)
+        (insert "** " heading "\n")
+        (insert "Body for " heading ".\n"))
+      (insert "* User Notes\n")
+      (insert "For magent completion work, prefer concise status updates.\n"))
+    (let ((message (magent-memory-system-message
+                    "debug magent completion workflow"
+                    nil
+                    "/tmp/magent")))
+      (should message)
+      (should (string-match-p
+               (regexp-quote "# Magent Emacs Profile Memory")
+               message))
+      (should (string-match-p (regexp-quote "User Notes") message))
+      (should (<= (length message) 2100)))
+    (should-not
+     (magent-memory-system-message
+      "ignore magent memory and debug completion"
+      nil
+      "/tmp/magent"))
+    (should-not
+     (magent-memory-system-message
+      "review this git config"
+      nil
+      "/tmp/project"))))
 
 (ert-deftest magent-test-agent-process-keeps-streaming-for-tool-requests ()
   "Test tool-enabled requests still use streaming provider sampling."
@@ -8264,7 +8391,7 @@ tolerate leading whitespace."
                    magent-default-agent))))
 
 (ert-deftest magent-test-acp-available-commands-list-command-skills ()
-  "Test ACP available commands expose command-like instruction skills."
+  "Test ACP available commands expose local and command-like skills."
   (require 'magent-acp)
   (let ((magent-skills--registry nil))
     (magent-skills-register
@@ -8280,11 +8407,22 @@ tolerate leading whitespace."
       :description "Plain instruction skill."
       :type 'instruction))
     (let* ((commands (magent-acp--available-commands))
-           (command (aref commands 0)))
-      (should (= (length commands) 1))
-      (should (equal (map-elt command 'name) "init"))
+           (names (mapcar (lambda (command)
+                            (map-elt command 'name))
+                          (append commands nil)))
+           (command (cl-find-if (lambda (entry)
+                                  (equal (map-elt entry 'name) "init"))
+                                (append commands nil))))
+      (should (equal names
+                     (sort (copy-sequence
+                            (append magent-test--local-slash-command-names
+                                    '("init")))
+                           #'string<)))
+      (should command)
       (should (equal (map-elt command 'description)
-                     "Initialize project instructions, similar to Codex /init.")))))
+                     "Initialize project instructions, similar to Codex /init."))
+      (dolist (name magent-test--local-slash-command-names)
+        (should (member name names))))))
 
 (ert-deftest magent-test-acp-available-commands-lists-all-bundled-slash-commands ()
   "Test ACP available commands expose every bundled slash command skill."
@@ -8295,14 +8433,19 @@ tolerate leading whitespace."
            (names (mapcar (lambda (command)
                             (map-elt command 'name))
                           commands)))
-      (should (equal names magent-test--builtin-slash-command-names))
+      (should (equal names
+                     (sort (copy-sequence
+                            (append magent-test--local-slash-command-names
+                                    magent-test--builtin-slash-command-names))
+                           #'string<)))
       (dolist (command commands)
         (let* ((name (map-elt command 'name))
                (skill (magent-skills-get name)))
-          (should skill)
-          (should (equal (map-elt command 'description)
-                         (magent-acp--metadata-string
-                          (magent-skill-description skill)))))))))
+          (if skill
+              (should (equal (map-elt command 'description)
+                             (magent-acp--metadata-string
+                              (magent-skill-description skill))))
+            (should (member name magent-test--local-slash-command-names))))))))
 
 (ert-deftest magent-test-acp-slash-command-expands-all-bundled-commands ()
   "Test every bundled slash command expands to its default prompt."
@@ -8531,6 +8674,108 @@ tolerate leading whitespace."
     (should (equal (magent-runtime-session-pending-skills runtime-session)
                    '("existing-skill")))
     (should (equal (map-elt response 'stopReason) "end_turn"))))
+
+(ert-deftest magent-test-acp-session-prompt-runs-local-memory-command ()
+  "Test memory slash commands run locally and do not submit a model prompt."
+  (require 'magent-acp)
+  (let ((runtime-session (magent-runtime-session-create
+                          :id "session-1"))
+        operation submitted response failure notifications)
+    (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
+               (lambda (session-id)
+                 (and (equal session-id "session-1")
+                      runtime-session)))
+              ((symbol-function 'magent-runtime-submit)
+               (lambda (&rest _args)
+                 (setq submitted t)))
+              ((symbol-function 'magent-memory-run)
+               (lambda (op &rest args)
+                 (setq operation op)
+                 (funcall (plist-get args :on-complete)
+                          'completed
+                          "memory cleared"))))
+      (magent-acp--handle-request
+       `((:notification-handlers
+          . (,(lambda (value) (push value notifications))))
+         (:request-handlers . nil))
+       '((:method . "session/prompt")
+         (:params . ((sessionId . "session-1")
+                     (prompt . [((type . "text")
+                                 (text . "/magent-memory-clear"))]))))
+       (lambda (value) (setq response value))
+       (lambda (err &optional _raw) (setq failure err))))
+    (should-not failure)
+    (should-not submitted)
+    (should (eq operation 'clear))
+    (should (equal (map-elt response 'stopReason) "end_turn"))
+    (let* ((updates (mapcar (lambda (notification)
+                              (map-nested-elt notification
+                                              '(params update)))
+                            notifications))
+           (kinds (mapcar (lambda (update)
+                            (map-elt update 'sessionUpdate))
+                          updates)))
+      (should (member "tool_call" kinds))
+      (should (member "tool_call_update" kinds))
+      (should-not (member "agent_message_chunk" kinds)))))
+
+(ert-deftest magent-test-acp-local-memory-command-uses-one-tool-card ()
+  "Test local memory command progress updates one tool card."
+  (require 'magent-acp)
+  (let ((runtime-session (magent-runtime-session-create
+                          :id "session-1"))
+        response failure notifications)
+    (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
+               (lambda (session-id)
+                 (and (equal session-id "session-1")
+                      runtime-session)))
+              ((symbol-function 'magent-memory-run)
+               (lambda (_op &rest args)
+                 (funcall (plist-get args :notify-fn)
+                          "memory init complete")
+                 (funcall (plist-get args :on-complete)
+                          'completed
+                          "memory init complete"))))
+      (magent-acp--handle-request
+       `((:notification-handlers
+          . (,(lambda (value) (push value notifications))))
+         (:request-handlers . nil))
+       '((:method . "session/prompt")
+         (:params . ((sessionId . "session-1")
+                     (prompt . [((type . "text")
+                                 (text . "/magent-memory-init"))]))))
+       (lambda (value) (setq response value))
+       (lambda (err &optional _raw) (setq failure err))))
+    (should-not failure)
+    (should (equal (map-elt response 'stopReason) "end_turn"))
+    (let* ((updates (nreverse
+                     (mapcar (lambda (notification)
+                               (map-nested-elt notification
+                                               '(params update)))
+                             notifications)))
+           (session-updates (mapcar (lambda (update)
+                                      (map-elt update 'sessionUpdate))
+                                    updates))
+           (tool-call-ids
+            (delq nil
+                  (mapcar (lambda (update)
+                            (map-elt update 'toolCallId))
+                          updates)))
+           (tool-updates
+            (cl-remove-if-not
+             (lambda (update)
+               (equal (map-elt update 'sessionUpdate)
+                      "tool_call_update"))
+             updates))
+           (statuses (mapcar (lambda (update)
+                               (map-elt update 'status))
+                             tool-updates)))
+      (should-not (member "agent_message_chunk" session-updates))
+      (should (equal (car session-updates) "tool_call"))
+      (should (cl-every (lambda (id)
+                          (equal id (car tool-call-ids)))
+                        tool-call-ids))
+      (should (equal statuses '("in_progress" "completed"))))))
 
 (ert-deftest magent-test-acp-call-failure-supports-rest-wrapper ()
   "Test ACP failures preserve two-argument callbacks through wrapper layers."

@@ -91,6 +91,7 @@
 (require 'magent-agent-job)
 (require 'magent-llm)
 (require 'magent-llm-gptel)
+(require 'magent-memory)
 (require 'magent-agent-loop)
 (require 'magent-session)
 (require 'magent-transcript-context)

@@ -543,6 +543,86 @@ that one capability."
   :type '(repeat string)
   :group 'magent)
 
+(defcustom magent-memory-directory
+  (expand-file-name "magent/memory/" user-emacs-directory)
+  "Directory where Magent stores local Emacs profile memory."
+  :type 'directory
+  :group 'magent)
+
+(defcustom magent-memory-file-name "emacs-profile.org"
+  "File name used for the active Emacs profile memory Org file."
+  :type 'string
+  :group 'magent)
+
+(defcustom magent-memory-use-llm t
+  "Whether memory init and refresh use the current gptel provider.
+When nil, Magent writes a deterministic skeleton and source index without
+sending any configuration excerpts to the provider."
+  :type 'boolean
+  :group 'magent)
+
+(defcustom magent-memory-open-after-write t
+  "Whether interactive memory init and refresh open the memory file."
+  :type 'boolean
+  :group 'magent)
+
+(defcustom magent-memory-enable-auto-injection t
+  "Whether Magent may inject relevant Emacs profile memory into prompts."
+  :type 'boolean
+  :group 'magent)
+
+(defcustom magent-memory-scan-custom-file nil
+  "Whether memory scans may read `custom-file' contents.
+When nil, the custom file path is recorded but its contents are not read."
+  :type 'boolean
+  :group 'magent)
+
+(defcustom magent-memory-max-scan-bytes 200000
+  "Maximum total bytes read during one Emacs profile memory scan."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-memory-max-file-bytes 30000
+  "Maximum bytes read from any one file during memory scanning."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-memory-max-files 80
+  "Maximum number of files read during one Emacs profile memory scan."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-memory-extra-scan-roots nil
+  "Additional Emacs configuration roots included in memory scan plans."
+  :type '(repeat directory)
+  :group 'magent)
+
+(defcustom magent-memory-exclude-patterns
+  '("/\\.git/"
+    "/\\.cache/"
+    "/auto-save-list/"
+    "/eln-cache/"
+    "/elpa/"
+    "/straight/repos/"
+    "/straight/build/"
+    "/elpaca/repos/"
+    "/elpaca/builds/"
+    "/var/"
+    "/cache/")
+  "Regexps for paths excluded from Emacs profile memory scans."
+  :type '(repeat regexp)
+  :group 'magent)
+
+(defcustom magent-memory-injection-max-chars 6000
+  "Maximum characters of Emacs profile memory injected into a prompt."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-memory-max-injected-sections 3
+  "Maximum number of memory sections injected into one prompt."
+  :type 'integer
+  :group 'magent)
+
 ;;; Shared utilities
 
 (defmacro magent--with-display-buffer (name &rest body)

@@ -44,6 +44,7 @@ SRCS = lisp/magent-config.el \
        lisp/magent-thread.el \
        lisp/magent-llm.el \
        lisp/magent-llm-gptel.el \
+       lisp/magent-memory.el \
        lisp/magent-agent-loop.el \
        lisp/magent-approval.el \
        lisp/magent-file-loader.el \

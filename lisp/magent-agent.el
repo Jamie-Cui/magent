@@ -19,6 +19,7 @@
 (require 'magent-lifecycle-events)
 (require 'magent-llm)
 (require 'magent-llm-gptel)
+(require 'magent-memory)
 (require 'magent-protocol)
 (require 'magent-runtime)
 (require 'magent-tools)
@@ -170,8 +171,10 @@ was not already emitted as text deltas."
      project-root)))
 
 (defun magent-agent--compose-system-message
-    (base-system-message project-root skill-prompts)
-  "Return system prompt from BASE-SYSTEM-MESSAGE, PROJECT-ROOT, and SKILL-PROMPTS."
+    (base-system-message project-root memory-message skill-prompts)
+  "Return system prompt from BASE-SYSTEM-MESSAGE and prompt context.
+PROJECT-ROOT contributes workspace context, MEMORY-MESSAGE is a selected
+Emacs profile memory block, and SKILL-PROMPTS are active skill prompts."
   (let ((context-message
          (magent-agent--context-system-message project-root))
         (skills-message
@@ -182,6 +185,7 @@ was not already emitted as text deltas."
                (delq nil
                      (list base-system-message
                            context-message
+                           memory-message
                            skills-message))
                "\n\n")))
 
@@ -273,9 +277,12 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                      resolved-skill-names)
                             (magent-skills-get-instruction-prompts
                              resolved-skill-names)))
+           (memory-message
+            (magent-memory-system-message
+             user-prompt request-context request-project-root))
            (system-msg
             (magent-agent--compose-system-message
-             base-system-msg request-project-root skill-prompts))
+             base-system-msg request-project-root memory-message skill-prompts))
            (tools (mapcar #'magent-tool-runtime-to-plist
                           (magent-tool-runtime-for-agent agent))))
       (when capability-resolution

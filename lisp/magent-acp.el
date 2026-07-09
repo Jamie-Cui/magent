@@ -24,6 +24,7 @@
 (require 'magent-runtime-api)
 (require 'magent-session)
 (require 'magent-ledger)
+(require 'magent-memory)
 (require 'magent-skills)
 
 (defvar gptel-model)
@@ -121,7 +122,7 @@
                           (magent-skills-list-by-type 'instruction))
         #'string<))
 
-(defun magent-acp--command-entry (skill-name)
+(defun magent-acp--skill-command-entry (skill-name)
   "Return ACP available command entry for command-like SKILL-NAME."
   (let ((skill (magent-skills-get skill-name)))
     `((name . ,skill-name)
@@ -129,10 +130,24 @@
                        (and skill
                             (magent-skill-description skill)))))))
 
+(defun magent-acp--local-command-entry (name)
+  "Return ACP available command entry for local command NAME."
+  `((name . ,name)
+    (description . ,(magent-acp--metadata-string
+                     (magent-memory-local-command-description name)))))
+
 (defun magent-acp--available-commands ()
-  "Return ACP available command entries for command-like skills."
-  (vconcat (mapcar #'magent-acp--command-entry
-                   (magent-acp--command-skill-names))))
+  "Return ACP available command entries for command-like skills and locals."
+  (vconcat
+   (sort
+    (append
+     (mapcar #'magent-acp--local-command-entry
+             (magent-memory-local-command-names))
+     (mapcar #'magent-acp--skill-command-entry
+             (magent-acp--command-skill-names)))
+    (lambda (a b)
+      (string< (map-elt a 'name)
+               (map-elt b 'name))))))
 
 (defun magent-acp--session-response (runtime-session)
   "Return common ACP session response for RUNTIME-SESSION."
@@ -310,9 +325,8 @@ keywords."
         prompt
       (concat prompt "\n\nAdditional instruction:\n" extra))))
 
-(defun magent-acp--slash-command (prompt)
-  "Return slash command plist parsed from PROMPT, or nil.
-Only command-like instruction skills are recognized."
+(defun magent-acp--slash-command-name (prompt)
+  "Return `(NAME . REST)' parsed from slash PROMPT, or nil."
   (let ((trimmed (string-trim prompt)))
     (when (string-prefix-p "/" trimmed)
       (let ((body (substring trimmed 1)))
@@ -320,11 +334,25 @@ Only command-like instruction skills are recognized."
           (let* ((name (match-string 1 body))
                  (rest (substring body (match-end 1))))
             (when (and (or (string-empty-p rest)
-                           (string-match-p "\\`[[:space:]]" rest))
-                       (magent-skills-default-prompt name))
-              (list :name name
-                    :prompt (magent-acp--skill-command-text name rest)
-                    :skills (list name)))))))))
+                           (string-match-p "\\`[[:space:]]" rest)))
+              (cons name rest))))))))
+
+(defun magent-acp--local-slash-command (prompt)
+  "Return local slash command plist parsed from PROMPT, or nil."
+  (when-let* ((parsed (magent-acp--slash-command-name prompt))
+              (name (car parsed))
+              (operation (magent-memory-local-command-operation name)))
+    (list :name name :operation operation :extra (cdr parsed))))
+
+(defun magent-acp--slash-command (prompt)
+  "Return skill slash command plist parsed from PROMPT, or nil.
+Only command-like instruction skills are recognized."
+  (when-let* ((parsed (magent-acp--slash-command-name prompt))
+              (name (car parsed)))
+    (when (magent-skills-default-prompt name)
+      (list :name name
+            :prompt (magent-acp--skill-command-text name (cdr parsed))
+            :skills (list name)))))
 
 (defun magent-acp--apply-slash-command (runtime-session prompt)
   "Apply slash command PROMPT to RUNTIME-SESSION and return prompt text."
@@ -524,6 +552,111 @@ Each handler runs inside the CLIENT's context buffer (via
      ((equal option-id "allow_always") 'allow-session)
      ((equal option-id "reject_once") 'deny-once)
      (t 'deny-once))))
+
+(defun magent-acp--local-command-stop-reason (status)
+  "Return ACP stopReason for local command STATUS."
+  (pcase status
+    ('completed "end_turn")
+    ('cancelled "cancelled")
+    (_ "error")))
+
+(defun magent-acp--local-command-tool-status (status)
+  "Return ACP tool status for local command STATUS."
+  (pcase status
+    ('failed "failed")
+    ;; agent-shell treats completed/failed as terminal for transcripts
+    ;; and cleanup.  Render local cancellations as terminal with a
+    ;; cancelled body instead of leaving the card in progress.
+    ('cancelled "completed")
+    (_ "completed")))
+
+(defun magent-acp--local-command-tool-start
+    (client session-id tool-call-id title raw-input)
+  "Send an in-progress local command tool card."
+  (magent-acp--session-update
+   client session-id
+   `((sessionUpdate . "tool_call")
+     (toolCallId . ,tool-call-id)
+     (title . ,title)
+     (kind . "other")
+     (status . "in_progress")
+     (rawInput . ,(magent-acp--raw-input-object raw-input)))))
+
+(defun magent-acp--local-command-tool-update
+    (client session-id tool-call-id title status text &optional raw-input)
+  "Update local command tool card TOOL-CALL-ID."
+  (magent-acp--session-update
+   client session-id
+   `((sessionUpdate . "tool_call_update")
+     (toolCallId . ,tool-call-id)
+     (title . ,title)
+     (status . ,status)
+     ,@(when raw-input
+         `((rawInput . ,(magent-acp--raw-input-object raw-input))))
+     (content . ,(vector
+                  (magent-acp--tool-content
+                   (if (and text (not (string-empty-p text)))
+                       (string-trim-right text)
+                     "")))))))
+
+(defun magent-acp--memory-confirm-provider (client session-id operation)
+  "Return async confirmation function for memory OPERATION."
+  (lambda (plan continue)
+    (let* ((request-id (format "magent-memory-%s-%s-%06x"
+                               operation
+                               (format-time-string "%Y%m%d%H%M%S")
+                               (random #xFFFFFF)))
+           (summary (if plan
+                        (magent-memory-scan-plan-summary plan)
+                      "Clear active Magent Emacs profile memory. A snapshot is kept."))
+           (args (if plan
+                     (magent-memory-scan-plan-approval-input plan)
+                   `((operation . ,(symbol-name operation))))))
+      (magent-approval-request
+       (list :request-id request-id
+             :tool-name (format "magent_memory_%s" operation)
+             :summary summary
+             :perm-key 'read
+             :args args
+             :provider (magent-acp--approval-provider client session-id))
+       (lambda (decision)
+         (funcall continue
+                  (memq decision '(allow-once allow-session))))))))
+
+(defun magent-acp--handle-local-command
+    (client session-id command on-success)
+  "Handle local slash COMMAND for SESSION-ID."
+  (let* ((operation (plist-get command :operation))
+         (name (plist-get command :name))
+         (tool-call-id (format "local-%s-%s-%06x"
+                               name
+                               (format-time-string "%Y%m%d%H%M%S")
+                               (random #xFFFFFF)))
+         (title (format "/%s" name)))
+    (let (last-message)
+      (magent-acp--local-command-tool-start
+       client session-id tool-call-id title
+       `((operation . ,(symbol-name operation))))
+      (magent-memory-run
+       operation
+       :confirm-fn (magent-acp--memory-confirm-provider
+                    client session-id operation)
+       :notify-fn (lambda (text)
+                    (setq last-message text)
+                    (magent-acp--local-command-tool-update
+                     client session-id tool-call-id title
+                     "in_progress" text))
+       :on-complete
+       (lambda (status message)
+         (magent-acp--local-command-tool-update
+          client session-id tool-call-id title
+          (magent-acp--local-command-tool-status status)
+          (or message last-message))
+         (funcall
+          on-success
+          `((stopReason . ,(magent-acp--local-command-stop-reason status))
+            ,@(when (eq status 'failed)
+                `((error . ,message))))))))))
 
 (cl-defun magent-acp--response-sender (&key client response)
   "Handle ACP RESPONSE sent by the client to Magent."
@@ -754,22 +887,25 @@ switching semantics."
                   (prompt (magent-acp--prompt-text (map-elt params 'prompt))))
              (unless runtime-session
                (error "Unknown session: %s" session-id))
-             (setq prompt
-                   (magent-acp--apply-slash-command runtime-session prompt))
-             (magent-runtime-submit
-              runtime-session prompt
-              :observer (magent-acp--observer client session-id)
-              :approval-provider
-              (magent-acp--approval-provider client session-id)
-              :on-complete
-              (lambda (status result)
-                (funcall
-                 on-success
-                 `((stopReason . ,(magent-acp--stop-reason
-                                    status result))
-                   ,@(unless (eq status 'completed)
-                       `((error . ,(magent-agent-result-content-string
-                                    result))))))))))
+             (if-let* ((command (magent-acp--local-slash-command prompt)))
+                 (magent-acp--handle-local-command
+                  client session-id command on-success)
+               (setq prompt
+                     (magent-acp--apply-slash-command runtime-session prompt))
+               (magent-runtime-submit
+                runtime-session prompt
+                :observer (magent-acp--observer client session-id)
+                :approval-provider
+                (magent-acp--approval-provider client session-id)
+                :on-complete
+                (lambda (status result)
+                  (funcall
+                   on-success
+                   `((stopReason . ,(magent-acp--stop-reason
+                                      status result))
+                     ,@(unless (eq status 'completed)
+                         `((error . ,(magent-agent-result-content-string
+                                      result)))))))))))
           (_
            (error "Unsupported ACP method: %s" method))))
     (error
