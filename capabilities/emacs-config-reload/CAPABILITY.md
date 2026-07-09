@@ -7,7 +7,7 @@ source: builtin
 feature: emacs
 skills: emacs-config-reload
 modes: emacs-lisp-mode, lisp-interaction-mode
-files: init.el, early-init.el, *.el
+files: "init.el, early-init.el, *.el"
 keywords: reload, config, init.el, early-init.el, package reload, stale state, re-evaluate
 disclosure: active
 risk: low

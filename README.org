@@ -23,8 +23,8 @@ Magent now uses a durable child-agent lifecycle for collaborative agent work: sp
 - *Skill system* for extending agent capabilities (built-in Emacs skill + custom skills from files)
 - *Runtime queue* for serializing concurrent requests with session-scoped cancellation
 - *Project-scoped session management* with conversation history and JSON persistence
-- *Streaming responses* with chunk batching and async fontification
-- *agent-shell UI backend* via an in-process ACP adapter, plus an isolated legacy workspace/compose UI
+- *Streaming responses* through agent-shell with visible tool activity
+- *Recommended agent-shell UI backend* via an in-process ACP adapter
 - *Context-aware prompting* via ~magent-dwim~ with automatic buffer context attachment
 
 * Requirements
@@ -91,8 +91,6 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | Option                       | Default                     | Description                                                                           |
 |------------------------------+-----------------------------+---------------------------------------------------------------------------------------|
 | ~magent-system-prompt~         | (built-in)                  | Default system prompt for agents                                                      |
-| ~magent-buffer-name~           | ~"*magent*"~                    | Output buffer name                                                                    |
-| ~magent-auto-scroll~           | ~t~                           | Auto-scroll output buffer                                                             |
 | ~magent-enable-tools~          | default tool set            | Globally enabled tool permission groups                                               |
 | ~magent-project-root-function~ | ~nil~                         | Custom project root finder                                                            |
 | ~magent-max-history~           | ~100~                         | Max messages in history                                                               |
@@ -100,15 +98,12 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-max-sampling-requests~ | ~25~                          | Max model sampling requests in one user turn; 0 disables the lifecycle guard           |
 | ~magent-default-agent~         | ~"build"~                     | Default agent for new sessions                                                        |
 | ~magent-default-effort~        | ~nil~                         | Default reasoning effort; nil/auto uses provider default                              |
-| ~magent-ui-backend~            | ~agent-shell~                  | UI backend: ~agent-shell~ by default, or ~legacy~ for the old workspace/compose UI       |
+| ~magent-ui-backend~            | ~agent-shell~                  | Recommended UI backend for Magent public commands                                     |
+| ~magent-agent-shell-session-strategy~ | ~new~                  | agent-shell session startup policy: ~new~, ~latest~, or ~prompt~                        |
 | ~magent-load-custom-agents~    | ~t~                           | Load custom agents from ~.magent/agent/*.md~                                            |
 | ~magent-enable-logging~        | ~t~                           | Enable logging to ~*magent-log*~ buffer                                                 |
 | ~magent-log-level~             | ~info~                        | Minimum displayed log level; ~PERM~ and unprefixed messages count as ~info~           |
 | ~magent-enable-audit-log~      | ~t~                           | Persist compact audit logs for permission and sensitive actions                       |
-| ~magent-assistant-prompt~      | ~"ASSISTANT"~                 | Tag text in assistant section headers                                                 |
-| ~magent-user-prompt~           | ~"USER"~                      | Tag text in user section headers                                                      |
-| ~magent-tool-call-prompt~      | ~"tool"~                      | Tag text in tool call lines                                                           |
-| ~magent-error-prompt~          | ~"error"~                     | Tag text in error section headers                                                     |
 | ~magent-agent-directory~       | ~".magent/agent"~             | Relative path to custom agent dir                                                     |
 | ~magent-session-directory~     | =~/.emacs.d/magent/sessions/= | Base directory for global sessions and per-project session subdirectories             |
 | ~magent-audit-directory~       | ~nil~                         | Override directory for audit JSONL files; defaults to ~magent-session-directory/audit/~ |
@@ -120,8 +115,6 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-audit-preview-length~  | ~120~                         | Max width for persisted audit summaries and previews                                  |
 | ~magent-include-reasoning~     | ~t~                           | Display (~t~), hide but retain (~ignore~), or discard (~nil~) reasoning; never final-answer fallback |
 | ~magent-auto-context~          | ~t~                           | Auto-attach buffer context in ~magent-dwim~                                             |
-| ~magent-ui-batch-insert-delay~ | ~0.05~                        | Delay in seconds for batching streaming chunks                                        |
-| ~magent-ui-fontify-threshold~  | ~500~                         | Character threshold for async fontification                                           |
 
 * Usage
 
@@ -135,58 +128,29 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-transient-menu~            | ~C-c m ?~    | Open the Magent command menu                                             |
 | ~magent-toggle-bypass-permission~ | ~M-x~        | Toggle permission bypass for tool filtering and approval prompts         |
 
-Plain prompt interaction uses agent-shell by default through Magent's
-in-process ACP adapter.  Set ~magent-ui-backend~ to ~legacy~ to use the old
-read-only workspace and compose buffers.
+The recommended workflow is agent-shell.  ~magent-dwim~ opens or reuses a
+project-local Magent agent-shell buffer through Magent's in-process ACP adapter;
+prompt text is entered directly in that buffer, and Magent streams assistant
+responses, tool activity, permission prompts, and session updates back through
+agent-shell.  ~magent-prompt-region~ and ~magent-ask-at-point~ submit their
+context through the same backend.
 
-Formal legacy session commands are selected from the Magent transient menu
-instead of typed into compose or bound as a wide set of default ~C-c m~
-shortcuts. Open the menu with ~C-c m ?~ from any Magent-enabled buffer or ~?~
-from the legacy ~*magent*~ workspace. The top-level menu routes agent, skill,
-capability, session, log, health, and buffer commands through small Magit-style
-submenus. Agent-shell also has native instruction skill commands for the common
-request path: ~magent-agent-shell-toggle-skill-for-next-request~,
-~magent-agent-shell-clear-skills-for-next-request~,
-~magent-agent-shell-run-skill-command~, and
-~magent-agent-shell-run-init-command~.  Reasoning effort is exposed as
-agent-shell's thought level session option; use
+Use agent-shell session options for per-session request settings.  Reasoning
+effort is exposed as agent-shell's thought level session option; use
 ~agent-shell-set-session-thought-level~ to choose ~auto~, ~minimal~, ~low~,
 ~medium~, ~high~, or ~xhigh~ for future turns in the current session.
 
-In the legacy ~*magent*~ output buffer: ~TAB~ and ~S-TAB~ fold sections, ~?~
-opens the transient menu, ~C-c C-o~ opens compose directly, and ~C-c C-c~ opens
-compose when idle or confirms interrupt while a request is running. Compose is
-plain prompt text; session commands and one-shot skill selection live in the
-transient menu, and the workspace header-line shows the current scope, agent,
-thread status, request state, queue length, session id, and selected skills for
-the next request.
-
-Top-level transient groups:
-
-| Key | Action |
-|-----+--------|
-| ~o~ | Open compose |
-| ~i~ | Run built-in ~init~ skill command |
-| ~!~ | Run a command-like skill |
-| ~A~ | Agent submenu |
-| ~s~ | Skills submenu |
-| ~x~ | Capabilities submenu |
-| ~c~ | Clear current session |
-| ~S~ | Session/transcript submenu |
-| ~l~ | Logs submenu |
-| ~h~ | Health/diagnostics submenu |
-| ~b~ | Buffer submenu |
-
-Common nested paths: ~? s s~ toggles a one-shot instruction skill, ~? s K~
-clears selected skills, ~? A A~ selects an agent, ~? A v~ lists agents,
-~? S j~ opens a child-agent transcript, and ~? l l~ shows the log.
+The Magent transient menu remains available for lower-frequency agent, skill,
+capability, session, log, health, and buffer commands.  For day-to-day prompt
+entry, prefer the agent-shell buffer opened by ~magent-dwim~.
 
 The same bypass state is also exposed as the customize option
 ~magent-bypass-permission~ under ~M-x customize-group RET magent RET~.
 
 ** Session Scope
 
-Magent keeps a single ~*magent*~ buffer, but session state is scoped by project:
+Magent runtime state is scoped by project, and the recommended agent-shell
+workflow reuses the session associated with the current project:
 
 - In a recognized project, prompts, agent selection, clear, and resume operate on that project's current session.
 - Saved project sessions live under ~magent-session-directory/projects/<sha1(project-root)>/~.
@@ -215,18 +179,14 @@ C-c m p
 Instruction skills can be selected as one-shot context for the next request.
 In agent-shell, use ~M-x magent-agent-shell-toggle-skill-for-next-request~ to
 toggle a skill and ~M-x magent-agent-shell-clear-skills-for-next-request~ to
-clear selected skills.  In the legacy workspace, use ~? s s~ and ~? s K~ from
-the transient menu.  Selected skills are scoped to the active Magent session and
-are consumed by the next prompt.
+clear selected skills.  Selected skills are scoped to the active Magent session
+and are consumed by the next prompt.
 
 Skills with a ~default-prompt~ can also be run as command-like actions.  In
 agent-shell, use ~M-x magent-agent-shell-run-skill-command~ or
-~M-x magent-agent-shell-run-init-command~.  In the legacy menu, ~? i~ runs the
-built-in ~init~ skill from the top-level menu, while ~? s i~ runs the same
-action from the Skills submenu.  The ~init~ skill initializes or refreshes the
-project's root ~AGENTS.md~ and prompts for optional extra instructions such as
-focusing on tests.  Compose buffers no longer parse ~@skill~ or ~@clear~
-control syntax; that text is sent to the model as ordinary prompt text.
+~M-x magent-agent-shell-run-init-command~.  The ~init~ skill initializes or
+refreshes the project's root ~AGENTS.md~ and prompts for optional extra
+instructions such as focusing on tests.
 
 * Agent System
 
@@ -254,7 +214,7 @@ Magent uses a multi-agent architecture where different agents have different cap
 
 Primary agents can coordinate child agents through durable jobs. A root turn can call ~spawn_agent~ to start work under a subagent profile, use ~list_agents~ and ~wait_agent~ to monitor results, send follow-up input with ~send_agent_message~, and close work explicitly with ~close_agent~.
 
-Child jobs are stored in the parent session under ~agent-jobs~ with status, prompt, metadata, result/error, and transcript state. The UI shows compact lifecycle updates, while the full child transcript is available through ~magent-show-agent-transcript~ or ~? S j~ in the legacy transient menu. See [[file:docs/AGENT_JOBS.org][docs/AGENT_JOBS.org]] for the implementation model and boundaries.
+Child jobs are stored in the parent session under ~agent-jobs~ with status, prompt, metadata, result/error, and transcript state. The UI shows compact lifecycle updates in agent-shell, while the full child transcript is available through ~M-x magent-show-agent-transcript~. See [[file:docs/AGENT_JOBS.org][docs/AGENT_JOBS.org]] for the implementation model and boundaries.
 
 ** Permission System
 
@@ -370,19 +330,17 @@ Tool availability is controlled by:
 
 8. *Tools* (~magent-tools.el~): 14 tool implementations registered as ~gptel-tool~ structs, filtered per agent based on permission rules. The durable child-agent lifecycle tools are ~spawn_agent~, ~send_agent_message~, ~wait_agent~, ~list_agents~, and ~close_agent~.
 
-9. *Skills* (~magent-skills.el~): Two skill types -- ~instruction~ (markdown injected into the system prompt) and ~tool~ (invoked via ~skill_invoke~). Instruction skills can be selected from the transient menu as one-shot request context, and skills that declare ~default-prompt~ can be run as command-like transient actions such as ~init~ for project instruction initialization. The module contains the registry, built-in ~skill-creator~ definition, file-based skill loading, and interactive inspection commands. Skills load in priority order from: (1) built-in ~skills/~ directory bundled with magent, (2) user directory =~/.emacs.d/magent-skills/<name>/SKILL.md=, (3) project-local ~.magent/skills/<name>/SKILL.md~.
+9. *Skills* (~magent-skills.el~): Two skill types -- ~instruction~ (markdown injected into the system prompt) and ~tool~ (invoked via ~skill_invoke~). Instruction skills can be selected from agent-shell as one-shot request context, and skills that declare ~default-prompt~ can be run as command-like agent-shell actions such as ~init~ for project instruction initialization. The module contains the registry, built-in ~skill-creator~ definition, file-based skill loading, and interactive inspection commands. Skills load in priority order from: (1) built-in ~skills/~ directory bundled with magent, (2) user directory =~/.emacs.d/magent-skills/<name>/SKILL.md=, (3) project-local ~.magent/skills/<name>/SKILL.md~.
 
-10. *Session* (~magent-ledger.el~, ~magent-session.el~): Thread-ledger backed conversation history with per-project active sessions, global fallback outside projects, and JSON persistence. ~buffer-content~ is legacy data only; workspace restore renders from the ledger.
+10. *Session* (~magent-ledger.el~, ~magent-session.el~): Thread-ledger backed conversation history with per-project active sessions, global fallback outside projects, JSON persistence, and durable restore from ledger snapshots plus journals.
 
 11. *Audit* (~magent-audit.el~): Persistent JSONL audit logging for permission prompts and decisions plus sensitive actions such as ~bash~, ~emacs_eval~, ~write_file~, ~edit_file~, and child-agent lifecycle tools. Payloads are redacted to metadata and truncated previews.
 
-12. *UI backends* (~magent-ui.el~, ~magent-agent-shell.el~, ~magent-acp.el~, ~magent-ui-legacy.el~): ~magent-ui.el~ is a thin command router and compatibility layer. The default backend is agent-shell through an in-process ACP adapter; ACP prompt requests submit to the runtime API and stay pending until the turn completes. The old special-mode workspace/compose UI lives in ~magent-ui-legacy.el~ and can be selected with ~magent-ui-backend~. See [[file:docs/UI_BACKENDS.org][docs/UI_BACKENDS.org]].
+12. *UI backend* (~magent-ui.el~, ~magent-agent-shell.el~, ~magent-acp.el~): ~magent-ui.el~ is a thin command router and compatibility layer. The recommended backend is agent-shell through an in-process ACP adapter; ACP prompt requests submit to the runtime API and stay pending until the turn completes. See [[file:docs/UI_BACKENDS.org][docs/UI_BACKENDS.org]].
 
 13. *Evil Integration* (~magent-evil.el~): Optional feature for Evil users. It is not loaded by ~magent~ and is enabled explicitly with ~magent-evil-mode~.
 
-14. *Markdown-to-Org* (~magent-markdown-to-org.el~): Legacy markdown-to-org conversion helper kept outside the live workspace path.
-
-15. *File Loader* (~magent-file-loader.el~): Shared definition loader for agent, skill, and capability files. It includes frontmatter parsing and supports booleans, numbers, quoted strings, and comma-separated lists.
+14. *File Loader* (~magent-file-loader.el~): Shared definition loader for agent, skill, and capability files. It includes frontmatter parsing and supports booleans, numbers, quoted strings, and comma-separated lists.
 
 ** File Structure
 
@@ -400,7 +358,6 @@ magent/
 |-- magent-runtime.el              # Static initialization and project overlay activation
 |-- magent-runtime-api.el          # UI/backend-facing runtime session API
 |-- magent-runtime-queue.el        # Runtime queue and session-scoped cancellation
-|-- magent-legacy-queue.el         # Legacy UI submission queue compatibility layer
 |-- magent-session.el              # Session and message history (JSON persistence)
 |-- magent-transcript-context.el   # Transcript context projection helpers
 |-- magent-agent-job.el            # Durable child-agent job state
@@ -413,7 +370,7 @@ magent/
 |-- magent-tool-runtime.el         # Runtime-facing tool metadata adapter
 |-- magent-tool-orchestrator.el    # Permission, approval, audit, and tool-call orchestration
 |-- magent-agent.el                # Agent logic (gptel integration)
-|-- magent-agent-types.el          # Compatibility shim for legacy agent-types feature
+|-- magent-agent-types.el          # Compatibility shim for older agent-types feature
 |-- magent-agent-info.el           # Agent metadata struct and helpers
 |-- magent-agent-builtins.el       # Built-in agent definitions
 |-- magent-agent-registry.el       # Agent registry and custom overlays
@@ -422,10 +379,8 @@ magent/
 |-- magent-acp.el                  # In-process ACP adapter
 |-- magent-agent-shell.el          # agent-shell backend
 |-- magent-file-loader.el          # Shared definition loader and frontmatter parser
-|-- magent-markdown-to-org.el      # Legacy markdown to org-mode compatibility helpers
 |-- magent-skills.el               # Skill registry, built-in skills, file loading, and skill commands
 |-- magent-ui.el                   # UI backend router and compatibility shims
-|-- magent-ui-legacy.el            # Legacy read-only workspace and compose UI
 |-- magent-evil.el                 # Optional Evil integration
 |-- magent-pkg.el                  # Package descriptor
 |-- prompt.org                     # Default system prompt
@@ -457,7 +412,7 @@ magent/
 ** Key Data Structures
 
 - ~magent-agent-info~: Agent configuration struct (name, description, mode, permissions, prompt, temperature, effort, model, and related settings)
-- ~magent-session~: Conversation state with message list, assigned agent, history trimming, raw buffer content, and durable child-agent jobs
+- ~magent-session~: Conversation state with message list, assigned agent, history trimming, ledger state, and durable child-agent jobs
 - ~magent-agent-job~: Child-agent job state with stable id, status, prompt, transcript, result/error, and inheritance metadata
 - ~magent-agent-loop~: Active turn state for normalized LLM events, reasoning, tool queueing, guards, aborts, and continuation
 - ~magent-skill~: Loaded skill definition (name, description, tools, body, dir)
@@ -519,7 +474,7 @@ Sessions are automatically saved to =~/.emacs.d/magent/sessions/= (configurable)
 - Conversation history
 - Assigned agent
 - Message metadata
-- Raw buffer content for lossless restore
+- Ledger snapshot and journal data for durable restore
 - Durable child-agent job metadata, results, errors, and transcripts
 
 * Troubleshooting
@@ -531,7 +486,7 @@ View request and response logs:
 #+begin_src elisp
 (setq magent-enable-logging t
       magent-log-level 'debug)
-M-x magent-show-log    ; or open transient with C-c m ? / ? and press l l
+M-x magent-show-log
 #+end_src
 
 ** Check Agent Configuration

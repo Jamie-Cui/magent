@@ -23,6 +23,7 @@
 (require 'magent-runtime-api)
 (require 'magent-session)
 (require 'magent-ledger)
+(require 'magent-skills)
 
 (defvar gptel-model)
 
@@ -38,6 +39,16 @@
   `((type . "text")
     (text . ,(if (stringp text) text (format "%s" (or text ""))))))
 
+(defun magent-acp--metadata-string (value)
+  "Return VALUE as a string suitable for ACP metadata fields."
+  (cond
+   ((stringp value) value)
+   ((null value) "")
+   ((listp value)
+    (string-join (mapcar (lambda (item) (format "%s" item)) value)
+                 ", "))
+   (t (format "%s" value))))
+
 (defun magent-acp--tool-content (text)
   "Return ACP tool result content object for TEXT."
   `((content . ,(magent-acp--content-block text))))
@@ -50,7 +61,8 @@
   "Return ACP mode entry for AGENT."
   `((id . ,(magent-agent-info-name agent))
     (name . ,(magent-agent-info-name agent))
-    (description . ,(or (magent-agent-info-description agent) ""))))
+    (description . ,(magent-acp--metadata-string
+                     (magent-agent-info-description agent)))))
 
 (defun magent-acp--modes (&optional runtime-session)
   "Return ACP modes object for RUNTIME-SESSION."
@@ -101,6 +113,25 @@
           (magent-runtime-session-effort-option runtime-session)))
      (options . ,(vconcat (mapcar #'magent-acp--effort-option-entry
                                   magent-effort-option-values))))))
+
+(defun magent-acp--command-skill-names ()
+  "Return sorted instruction skill names that can act as slash commands."
+  (sort (cl-remove-if-not #'magent-skills-default-prompt
+                          (magent-skills-list-by-type 'instruction))
+        #'string<))
+
+(defun magent-acp--command-entry (skill-name)
+  "Return ACP available command entry for command-like SKILL-NAME."
+  (let ((skill (magent-skills-get skill-name)))
+    `((name . ,skill-name)
+      (description . ,(magent-acp--metadata-string
+                       (and skill
+                            (magent-skill-description skill)))))))
+
+(defun magent-acp--available-commands ()
+  "Return ACP available command entries for command-like skills."
+  (vconcat (mapcar #'magent-acp--command-entry
+                   (magent-acp--command-skill-names))))
 
 (defun magent-acp--session-response (runtime-session)
   "Return common ACP session response for RUNTIME-SESSION."
@@ -258,6 +289,53 @@ keywords."
              (string-join (nreverse unsupported) ", ")))
     (string-trim (mapconcat #'identity (nreverse parts) "\n"))))
 
+(defun magent-acp--dedupe-string-list (strings)
+  "Return STRINGS without duplicates, preserving order."
+  (let (seen result)
+    (dolist (string strings)
+      (when (and (stringp string)
+                 (not (member string seen)))
+        (push string seen)
+        (push string result)))
+    (nreverse result)))
+
+(defun magent-acp--skill-command-text (skill-name extra-instruction)
+  "Return default prompt text for SKILL-NAME plus EXTRA-INSTRUCTION."
+  (let ((prompt (magent-skills-default-prompt skill-name))
+        (extra (string-trim (or extra-instruction ""))))
+    (unless prompt
+      (error "Magent skill '%s' has no default prompt" skill-name))
+    (if (string-blank-p extra)
+        prompt
+      (concat prompt "\n\nAdditional instruction:\n" extra))))
+
+(defun magent-acp--slash-command (prompt)
+  "Return slash command plist parsed from PROMPT, or nil.
+Only command-like instruction skills are recognized."
+  (let ((trimmed (string-trim prompt)))
+    (when (string-prefix-p "/" trimmed)
+      (let ((body (substring trimmed 1)))
+        (when (string-match "\\`\\([[:alnum:]_-]+\\)" body)
+          (let* ((name (match-string 1 body))
+                 (rest (substring body (match-end 1))))
+            (when (and (or (string-empty-p rest)
+                           (string-match-p "\\`[[:space:]]" rest))
+                       (magent-skills-default-prompt name))
+              (list :name name
+                    :prompt (magent-acp--skill-command-text name rest)
+                    :skills (list name)))))))))
+
+(defun magent-acp--apply-slash-command (runtime-session prompt)
+  "Apply slash command PROMPT to RUNTIME-SESSION and return prompt text."
+  (if-let* ((command (magent-acp--slash-command prompt)))
+      (let ((skills (plist-get command :skills)))
+        (setf (magent-runtime-session-pending-skills runtime-session)
+              (magent-acp--dedupe-string-list
+               (append (magent-runtime-session-pending-skills runtime-session)
+                       skills)))
+        (plist-get command :prompt))
+    prompt))
+
 (defun magent-acp--notify (client method params)
   "Deliver incoming ACP notification METHOD PARAMS to CLIENT subscribers.
 
@@ -295,6 +373,19 @@ Each handler runs inside the CLIENT's context buffer (via
    client "session/update"
    `((sessionId . ,session-id)
      (update . ,update))))
+
+(defun magent-acp--notify-available-commands (client runtime-session)
+  "Notify CLIENT of available slash commands for RUNTIME-SESSION."
+  (magent-acp--session-update
+   client
+   (magent-runtime-session-id runtime-session)
+   `((sessionUpdate . "available_commands_update")
+     (availableCommands . ,(magent-acp--available-commands)))))
+
+(defun magent-acp--session-success (client runtime-session on-success)
+  "Call ON-SUCCESS with RUNTIME-SESSION response and command metadata."
+  (funcall on-success (magent-acp--session-response runtime-session))
+  (magent-acp--notify-available-commands client runtime-session))
 
 (defun magent-acp--tool-kind (kind)
   "Return ACP tool kind string for Magent KIND."
@@ -618,9 +709,9 @@ switching semantics."
           ("session/new"
            (let* ((cwd (or (map-elt params 'cwd) default-directory))
                   (scope (magent-session-scope-from-directory cwd))
+                  (_ (magent-runtime-prepare-command-context scope))
                   (runtime-session (magent-runtime-session-new scope)))
-             (funcall on-success
-                      (magent-acp--session-response runtime-session))))
+             (magent-acp--session-success client runtime-session on-success)))
           ("session/list"
            (funcall on-success (magent-acp--session-list-response)))
           ((or "session/load" "session/resume")
@@ -629,10 +720,11 @@ switching semantics."
                    (magent-acp--runtime-session-by-id session-id)))
              (unless runtime-session
                (error "Unknown session: %s" session-id))
+             (magent-runtime-prepare-command-context
+              (magent-runtime-session-scope runtime-session))
              (when (equal method "session/load")
                (magent-acp--replay-session client runtime-session))
-             (funcall on-success
-                      (magent-acp--session-response runtime-session))))
+             (magent-acp--session-success client runtime-session on-success)))
           ("session/set_mode"
            (funcall on-success (magent-acp--handle-set-mode params)))
           ("session/set_model"
@@ -646,6 +738,8 @@ switching semantics."
                   (prompt (magent-acp--prompt-text (map-elt params 'prompt))))
              (unless runtime-session
                (error "Unknown session: %s" session-id))
+             (setq prompt
+                   (magent-acp--apply-slash-command runtime-session prompt))
              (magent-runtime-submit
               runtime-session prompt
               :observer (magent-acp--observer client session-id)

@@ -18,7 +18,7 @@
 - [[file:../ARCHITECTURE.zh.html][ARCHITECTURE.zh.org]] ：产品定位、系统边界、模块层次、请求流和扩展模型。
 - [[file:../AGENT_WORKFLOW.zh.html][AGENT_WORKFLOW.zh.org]] ： ~thread -> turn -> item~ 状态机、循环流程、 ~snapshot + journal~ 持久化、UI 投影和 Codex 差异。
 - [[file:../AGENT_JOBS.zh.html][AGENT_JOBS.zh.org]] ：durable child-agent job 生命周期、工具面、持久化、UI 和边界。
-- [[file:../UI_BACKENDS.zh.html][UI_BACKENDS.zh.org]] ：UI backend 边界、agent-shell + ACP 流程、runtime API 和 legacy UI 隔离。
+- [[file:../UI_BACKENDS.zh.html][UI_BACKENDS.zh.org]] ：UI backend 边界、推荐的 agent-shell + ACP 流程和 runtime API。
 
 ** 贡献
 
@@ -44,7 +44,7 @@
 1. [[https://github.com/jamie-cui/magent/blob/master/README.org][../README.org]]：安装和配置。
 2. [[file:../TROUBLESHOOTING.zh.html][TROUBLESHOOTING.zh.org]]：常见问题。
 3. 运行 ~M-x magent-doctor~ 做自诊断。
-4. 使用 ~C-c m ?~ 打开 transient 菜单。
+4. 使用 ~C-c m p~ 打开推荐的 agent-shell UI。
 
 ** 开发者
 

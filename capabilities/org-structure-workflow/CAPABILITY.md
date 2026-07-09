@@ -7,7 +7,7 @@ package: org
 skills: org-structure-workflow
 modes: org-mode
 features: org
-files: *.org
+files: "*.org"
 keywords: org, heading, subtree, drawer, todo, agenda, src block, property drawer
 disclosure: active
 risk: low

@@ -2294,7 +2294,7 @@
              "skills: reload-workflow, diagnose-workflow\n"
              "modes: emacs-lisp-mode, lisp-interaction-mode\n"
              "features: emacs-lisp, lisp-mode\n"
-             "files: *.el, init.el\n"
+             "files: \"*.el, init.el\"\n"
              "keywords: reload, package, config\n"
              "---\n"))
           (let ((capability (magent-capability-load-file capfile)))
@@ -7268,6 +7268,71 @@ tolerate leading whitespace."
     (should (equal (map-nested-elt response '(modes currentModeId))
                    magent-default-agent))))
 
+(ert-deftest magent-test-acp-available-commands-list-command-skills ()
+  "Test ACP available commands expose command-like instruction skills."
+  (require 'magent-acp)
+  (let ((magent-skills--registry nil))
+    (magent-skills-register
+     (magent-skill-create
+      :name "init"
+      :description '("Initialize project instructions"
+                     "similar to Codex /init.")
+      :type 'instruction
+      :default-prompt "Initialize this project."))
+    (magent-skills-register
+     (magent-skill-create
+      :name "note"
+      :description "Plain instruction skill."
+      :type 'instruction))
+    (let* ((commands (magent-acp--available-commands))
+           (command (aref commands 0)))
+      (should (= (length commands) 1))
+      (should (equal (map-elt command 'name) "init"))
+      (should (equal (map-elt command 'description)
+                     "Initialize project instructions, similar to Codex /init.")))))
+
+(ert-deftest magent-test-acp-session-new-notifies-available-commands ()
+  "Test ACP session creation notifies agent-shell of slash commands."
+  (require 'magent-acp)
+  (let ((runtime-session (magent-runtime-session-create
+                          :id "session-1"
+                          :scope 'global
+                          :magent-session (magent-session-create)))
+        response notification failure)
+    (cl-letf (((symbol-function 'magent-runtime-prepare-command-context)
+               (lambda (_scope) 'global))
+              ((symbol-function 'magent-runtime-session-new)
+               (lambda (_scope) runtime-session))
+              ((symbol-function 'magent-agent-registry-primary-agents)
+               (lambda ()
+                 (list (magent-agent-info-create
+                        :name "build"
+                        :description "Build"))))
+              ((symbol-function 'magent-acp--available-commands)
+               (lambda ()
+                 [((name . "init")
+                   (description . "Initialize project instructions."))])))
+      (magent-acp--handle-request
+       `((:notification-handlers
+          . (,(lambda (value) (setq notification value))))
+         (:request-handlers . nil))
+       '((:method . "session/new")
+         (:params . ((cwd . "/tmp"))))
+       (lambda (value) (setq response value))
+       (lambda (err &optional _raw) (setq failure err))))
+    (should-not failure)
+    (should (equal (map-elt response 'sessionId) "session-1"))
+    (should (equal (map-elt notification 'method) "session/update"))
+    (should (equal (map-nested-elt notification
+                                   '(params update sessionUpdate))
+                   "available_commands_update"))
+    (should (equal (map-elt
+                    (aref (map-nested-elt notification
+                                          '(params update availableCommands))
+                          0)
+                    'name)
+                   "init"))))
+
 (ert-deftest magent-test-acp-models-use-model-id ()
   "Test ACP available model entries expose modelId for agent-shell."
   (require 'magent-acp)
@@ -7320,6 +7385,42 @@ tolerate leading whitespace."
     (should-not (string-match-p
                  (regexp-quote "[Context resource: resource]")
                  text))))
+
+(ert-deftest magent-test-acp-session-prompt-expands-slash-command ()
+  "Test ACP slash command prompts dispatch command-like skills."
+  (require 'magent-acp)
+  (let ((runtime-session (magent-runtime-session-create
+                          :id "session-1"
+                          :pending-skills '("existing-skill")))
+        submitted response failure)
+    (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
+               (lambda (session-id)
+                 (and (equal session-id "session-1")
+                      runtime-session)))
+              ((symbol-function 'magent-skills-default-prompt)
+               (lambda (skill-name)
+                 (and (equal skill-name "init")
+                      "Initialize this project.")))
+              ((symbol-function 'magent-runtime-submit)
+               (lambda (session prompt &rest args)
+                 (setq submitted (list session prompt))
+                 (funcall (plist-get args :on-complete)
+                          'completed "ok"))))
+      (magent-acp--handle-request
+       '((:notification-handlers . nil)
+         (:request-handlers . nil))
+       '((:method . "session/prompt")
+         (:params . ((sessionId . "session-1")
+                     (prompt . [((type . "text")
+                                 (text . "/init focus on tests"))]))))
+       (lambda (value) (setq response value))
+       (lambda (err &optional _raw) (setq failure err))))
+    (should-not failure)
+    (should (equal (nth 1 submitted)
+                   "Initialize this project.\n\nAdditional instruction:\nfocus on tests"))
+    (should (equal (magent-runtime-session-pending-skills runtime-session)
+                   '("existing-skill" "init")))
+    (should (equal (map-elt response 'stopReason) "end_turn"))))
 
 (ert-deftest magent-test-acp-call-failure-supports-rest-wrapper ()
   "Test ACP failures preserve two-argument callbacks through wrapper layers."
