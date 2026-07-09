@@ -2164,7 +2164,7 @@ Returns a context string or nil if context should not be captured."
    (magent-ui--build-diagnosis-prompt instructions)
    source
    display
-   '("systematic-debugging")
+   '("emacs-runtime-inspection")
    t
    (magent-ui--diagnosis-agent)))
 

@@ -88,10 +88,16 @@ Emacs 不只是宿主进程。Magent 依赖活的编辑器状态：buffer、majo
 Magent 有三层 file-backed 扩展：
 
 - ~.magent/agent/*.md~ 下的 custom agents。
-- bundled ~skills/~ 、用户 ~~/.emacs.d/magent-skills/~ 、项目 ~.magent/skills/~ 下的 skills。
-- bundled ~capabilities/~ 和项目 ~.magent/capabilities/~ 下的 capabilities。
+- bundled ~skills/~ 、用户 ~~/.emacs.d/magent/skills~ 、存在时兼容 legacy ~~/.emacs.d/magent-skills/~ 、以及项目 ~.magent/skills/~ 下的 skills。
+- 带 ~capability: true~ 的 skill frontmatter 中的 capability metadata，以及用户 capability 目录和项目 ~.magent/capabilities/~ 下的独立 ~CAPABILITY.md~。独立文件只用于触发 metadata 不应该归属于单个 skill 的场景。
 
-Instruction skill 会注入 system prompt。Tool skill 通过 ~skill_invoke~ 调用。Capability 会根据当前上下文打分，激活少量 instruction skills。这种 progressive disclosure 能保持基础 prompt 更小，同时在需要时注入 Emacs-specific workflow 知识。
+Instruction skill 会注入 system prompt。Tool skill 通过 ~skill_invoke~ 调用。Capability 会根据当前上下文打分，激活少量 instruction skills。内置同名 workflow capability 和对应 skill 放在同一个 ~SKILL.md~ 里，触发 metadata 和注入说明不再分散成两份文件。这种 progressive disclosure 能保持基础 prompt 更小，同时在需要时注入 Emacs-specific workflow 知识。
+
+两者的区别是：
+
+- ~skill~ 是实际给 agent 的内容或命令入口：注入 prompt 的 instruction text、command-like ~default-prompt~，或者 tool-type operation。
+- ~capability~ 是自动激活规则：由 ~modes~ 、~features~ 、~files~ 、~keywords~ 、~disclosure~ 和 ~risk~ 等 resolver metadata 描述什么时候为当前 turn 选择一个或多个 skills。
+- skill-backed capability 是内置默认能力的常见形态：某个 ~SKILL.md~ 声明 ~capability: true~ 后，resolver 会在当前 buffer 或 prompt 匹配时自动激活同名 skill。~init~ 、~review~ 、~fix~ 、~test~ 和 ~explain~ 这类 command-style built-in skills 仍然只是 skills，除非它们显式声明 ~capability: true~。
 
 * 产品取舍
 

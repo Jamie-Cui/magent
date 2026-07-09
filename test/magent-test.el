@@ -35,6 +35,24 @@
                     (file-name-directory (or load-file-name buffer-file-name)))
   "Repository root used by reload-oriented tests.")
 
+(defconst magent-test--builtin-slash-command-names
+  '("explain" "fix" "init" "review" "test")
+  "Bundled instruction skills that are exposed as slash commands.")
+
+(defun magent-test--load-builtin-skills-only ()
+  "Load bundled skill files into the caller's test skill registry."
+  (require 'magent-skills)
+  (cl-letf (((symbol-function 'magent-log) #'ignore))
+    (magent-skills-load-all (list magent-skills--builtin-dir))))
+
+(defun magent-test--load-builtin-capabilities-only ()
+  "Load bundled capability definitions into the caller's test registry."
+  (require 'magent-capability)
+  (let ((magent-skill-directories nil)
+        (magent-capability-directories nil))
+    (cl-letf (((symbol-function 'magent-log) #'ignore))
+      (magent-capability-initialize-static))))
+
 (defun magent-test--count-heading-lines (buffer label)
   "Return the number of top-level Magent headings matching LABEL in BUFFER."
   (with-current-buffer buffer
@@ -1732,9 +1750,8 @@
   "Test bundled slash command skills have default prompts."
   (require 'magent-skills)
   (let ((magent-skills--registry nil))
-    (cl-letf (((symbol-function 'magent-log) #'ignore))
-      (magent-skills-load-all (list magent-skills--builtin-dir)))
-    (dolist (name '("init" "review" "fix" "test" "explain"))
+    (magent-test--load-builtin-skills-only)
+    (dolist (name magent-test--builtin-slash-command-names)
       (let ((skill (magent-skills-get name)))
         (should skill)
         (should (eq (magent-skill-type skill) 'instruction))
@@ -2225,16 +2242,16 @@
             (should (string-match-p "Do the thing" (magent-skill-prompt skill)))))
       (delete-directory tmpdir t))))
 
-(ert-deftest magent-test-skills-load-all-includes-systematic-debugging ()
-  "Test builtin skill loading includes the systematic debugging workflow."
+(ert-deftest magent-test-skills-load-all-includes-emacs-runtime-inspection ()
+  "Test builtin skill loading includes the Emacs runtime inspection workflow."
   (require 'magent-skills)
   (let ((magent-skills--registry nil))
     (cl-letf (((symbol-function 'magent-log) #'ignore))
       (magent-skills-load-all (list magent-skills--builtin-dir)))
-    (let ((skill (magent-skills-get "systematic-debugging")))
+    (let ((skill (magent-skills-get "emacs-runtime-inspection")))
       (should skill)
       (should (eq (magent-skill-type skill) 'instruction))
-      (should (string-match-p "Systematic Debugging"
+      (should (string-match-p "Emacs Runtime Inspection"
                               (or (magent-skill-prompt skill) ""))))))
 
 (ert-deftest magent-test-capability-load-file-from-temp ()
@@ -2267,6 +2284,49 @@
                            '("org-structure-workflow")))
             (should (equal (magent-capability-modes capability) '(org-mode)))
             (should (equal (magent-capability-features capability) '(org)))))
+      (delete-directory tmpdir t))))
+
+(ert-deftest magent-test-capability-load-skill-file-from-temp ()
+  "Test loading embedded capability metadata from a skill file."
+  (require 'magent-capability)
+  (let* ((magent-capability--registry nil)
+         (tmpdir (make-temp-file "skill-capability-" t))
+         (skillfile (expand-file-name "SKILL.md" tmpdir)))
+    (unwind-protect
+        (progn
+          (with-temp-file skillfile
+            (insert
+             "---\n"
+             "name: project-workflow\n"
+             "description: Project workflow helper\n"
+             "type: instruction\n"
+             "tools: emacs_eval\n"
+             "capability: true\n"
+             "source: package\n"
+             "package: project\n"
+             "modes: prog-mode, text-mode\n"
+             "features: project\n"
+             "keywords: project root, project compile\n"
+             "disclosure: active\n"
+             "---\n"
+             "Use project.el state.\n"))
+          (let ((capability (magent-capability-load-skill-file skillfile)))
+            (should capability)
+            (should (equal (magent-capability-name capability)
+                           "project-workflow"))
+            (should (equal (magent-capability-skills capability)
+                           '("project-workflow")))
+            (should (eq (magent-capability-source-kind capability) 'package))
+            (should (equal (magent-capability-source-name capability)
+                           "project"))
+            (should (equal (magent-capability-modes capability)
+                           '(prog-mode text-mode)))
+            (should (equal (magent-capability-features capability)
+                           '(project)))
+            (should (equal (magent-capability-prompt-keywords capability)
+                           '("project root" "project compile")))
+            (should (eq (magent-capability-disclosure capability) 'active))
+            (should-not (magent-capability-notes capability))))
       (delete-directory tmpdir t))))
 
 (ert-deftest magent-test-capability-load-file-normalizes-list-metadata ()
@@ -2507,7 +2567,7 @@
   "Test builtin capability loading includes new builtin and curated package families."
   (require 'magent-capability)
   (let ((magent-capability--registry nil))
-    (magent-capability-load-all (list magent-capability--builtin-dir))
+    (magent-test--load-builtin-capabilities-only)
     (dolist (name '("emacs-hook-debugging"
                     "emacs-config-reload"
                     "emacs-command-variable-introspection"
@@ -2519,7 +2579,7 @@
   "Test builtin hook debugging capability activates in Emacs Lisp buffers."
   (require 'magent-capability)
   (let ((magent-capability--registry nil))
-    (magent-capability-load-all (list magent-capability--builtin-dir))
+    (magent-test--load-builtin-capabilities-only)
     (let* ((resolution (magent-capability-resolve
                         "Diagnose why this hook and key binding are shadowed"
                         '(:major-mode emacs-lisp-mode
@@ -2536,7 +2596,7 @@
   "Test builtin command and variable introspection activates in scratch-like contexts."
   (require 'magent-capability)
   (let ((magent-capability--registry nil))
-    (magent-capability-load-all (list magent-capability--builtin-dir))
+    (magent-test--load-builtin-capabilities-only)
     (let* ((resolution (magent-capability-resolve
                         "Inspect this command and variable binding for me"
                         '(:major-mode lisp-interaction-mode
@@ -2553,7 +2613,7 @@
   "Test builtin config reload capability activates for diagnosis-style reload prompts."
   (require 'magent-capability)
   (let ((magent-capability--registry nil))
-    (magent-capability-load-all (list magent-capability--builtin-dir))
+    (magent-test--load-builtin-capabilities-only)
     (let* ((resolution (magent-capability-resolve
                         "Diagnose why reloading init.el leaves stale package state"
                         '(:major-mode emacs-lisp-mode
@@ -2571,7 +2631,7 @@
   "Test curated project capability activates from explicit project workflow wording."
   (require 'magent-capability)
   (let ((magent-capability--registry nil))
-    (magent-capability-load-all (list magent-capability--builtin-dir))
+    (magent-test--load-builtin-capabilities-only)
     (let* ((resolution (magent-capability-resolve
                         "Switch project and show me the current project root"
                         '(:major-mode emacs-lisp-mode
@@ -2588,7 +2648,7 @@
   "Test curated LSP capability activates only in programming/LSP contexts."
   (require 'magent-capability)
   (let ((magent-capability--registry nil))
-    (magent-capability-load-all (list magent-capability--builtin-dir))
+    (magent-test--load-builtin-capabilities-only)
     (let* ((resolution (magent-capability-resolve
                         "Use diagnostics and rename symbol across the workspace"
                         '(:major-mode python-mode
@@ -2605,7 +2665,7 @@
   "Test installed package features alone do not force curated capability activation."
   (require 'magent-capability)
   (let ((magent-capability--registry nil))
-    (magent-capability-load-all (list magent-capability--builtin-dir))
+    (magent-test--load-builtin-capabilities-only)
     (let* ((resolution (magent-capability-resolve
                         "Hello there"
                         '(:major-mode fundamental-mode
@@ -7078,13 +7138,13 @@ tolerate leading whitespace."
        "Diagnose why this hook is not running"
        #'ignore
        nil
-       '("systematic-debugging")
+       '("emacs-runtime-inspection")
        nil
        '(:major-mode emacs-lisp-mode :major-mode-family (emacs-lisp-mode prog-mode))
        (magent-capability-resolution-create
-        :skill-names '("systematic-debugging" "emacs-runtime-inspection" "systematic-debugging"))))
+        :skill-names '("emacs-runtime-inspection" "emacs-hook-debugging" "emacs-runtime-inspection"))))
     (should (equal captured-skill-names
-                   '("systematic-debugging" "emacs-runtime-inspection")))))
+                   '("emacs-runtime-inspection" "emacs-hook-debugging")))))
 
 (ert-deftest magent-test-agent-process-emits-capability-resolution-event ()
   "Test `magent-agent-process' emits capability resolution metadata."
@@ -7159,7 +7219,7 @@ tolerate leading whitespace."
     (should (string-match-p "\\[Context: buffer=\"\\*scratch\\*\"" (nth 0 captured)))
     (should (equal (nth 1 captured) 'diagnose-emacs))
     (should (equal (nth 2 captured) "Diagnose the current Emacs session."))
-    (should (equal (nth 3 captured) '("systematic-debugging")))
+    (should (equal (nth 3 captured) '("emacs-runtime-inspection")))
     (should (eq (nth 4 captured) t))
     (should (eq (nth 5 captured) agent))))
 
@@ -7188,7 +7248,7 @@ tolerate leading whitespace."
     (should (string-match-p "\\[Context: buffer=\"\\*magent\\*\"" (nth 0 captured)))
     (should (equal (nth 1 captured) 'doctor))
     (should (equal (nth 2 captured) "Run Magent doctor."))
-    (should (equal (nth 3 captured) '("systematic-debugging")))
+    (should (equal (nth 3 captured) '("emacs-runtime-inspection")))
     (should (eq (nth 4 captured) t))
     (should (eq (nth 5 captured) agent))))
 
@@ -7207,11 +7267,11 @@ tolerate leading whitespace."
               ((symbol-function 'magent-ui--enqueue)
                (lambda (prompt source &optional display skills agent-info request-context capability-resolution)
                  (setq captured (list prompt source display skills agent-info request-context capability-resolution)))))
-      (magent-ui-dispatch-prompt "diag" 'diagnose "display" '("systematic-debugging") t agent))
+      (magent-ui-dispatch-prompt "diag" 'diagnose "display" '("emacs-runtime-inspection") t agent))
     (should (equal (nth 0 captured) "diag"))
     (should (equal (nth 1 captured) 'diagnose))
     (should (equal (nth 2 captured) "display"))
-    (should (equal (nth 3 captured) '("systematic-debugging")))
+    (should (equal (nth 3 captured) '("emacs-runtime-inspection")))
     (should (eq (nth 4 captured) agent))
     (should (equal (nth 5 captured)
                    '(:buffer-name "*scratch*" :major-mode emacs-lisp-mode)))
@@ -7312,6 +7372,48 @@ tolerate leading whitespace."
       (should (equal (map-elt command 'name) "init"))
       (should (equal (map-elt command 'description)
                      "Initialize project instructions, similar to Codex /init.")))))
+
+(ert-deftest magent-test-acp-available-commands-lists-all-bundled-slash-commands ()
+  "Test ACP available commands expose every bundled slash command skill."
+  (require 'magent-acp)
+  (let ((magent-skills--registry nil))
+    (magent-test--load-builtin-skills-only)
+    (let* ((commands (append (magent-acp--available-commands) nil))
+           (names (mapcar (lambda (command)
+                            (map-elt command 'name))
+                          commands)))
+      (should (equal names magent-test--builtin-slash-command-names))
+      (dolist (command commands)
+        (let* ((name (map-elt command 'name))
+               (skill (magent-skills-get name)))
+          (should skill)
+          (should (equal (map-elt command 'description)
+                         (magent-acp--metadata-string
+                          (magent-skill-description skill)))))))))
+
+(ert-deftest magent-test-acp-slash-command-expands-all-bundled-commands ()
+  "Test every bundled slash command expands to its default prompt."
+  (require 'magent-acp)
+  (let ((magent-skills--registry nil))
+    (magent-test--load-builtin-skills-only)
+    (should (equal (magent-acp--command-skill-names)
+                   magent-test--builtin-slash-command-names))
+    (dolist (name magent-test--builtin-slash-command-names)
+      (let ((default-prompt (magent-skills-default-prompt name)))
+        (should-not (string-blank-p default-prompt))
+        (should (equal (plist-get (magent-acp--slash-command
+                                   (format "/%s" name))
+                                  :prompt)
+                       default-prompt))
+        (should (equal (plist-get (magent-acp--slash-command
+                                   (format "/%s focus on tests" name))
+                                  :prompt)
+                       (concat default-prompt
+                               "\n\nAdditional instruction:\nfocus on tests")))
+        (should (equal (plist-get (magent-acp--slash-command
+                                   (format "/%s focus on tests" name))
+                                  :skills)
+                       (list name)))))))
 
 (ert-deftest magent-test-acp-session-new-notifies-available-commands ()
   "Test ACP session creation notifies agent-shell of slash commands."
@@ -7442,6 +7544,79 @@ tolerate leading whitespace."
                    "Initialize this project.\n\nAdditional instruction:\nfocus on tests"))
     (should (equal (magent-runtime-session-pending-skills runtime-session)
                    '("existing-skill" "init")))
+    (should (equal (map-elt response 'stopReason) "end_turn"))))
+
+(ert-deftest magent-test-acp-session-prompt-expands-all-bundled-slash-commands ()
+  "Test ACP session prompts dispatch every bundled slash command skill."
+  (require 'magent-acp)
+  (let ((magent-skills--registry nil))
+    (magent-test--load-builtin-skills-only)
+    (dolist (name magent-test--builtin-slash-command-names)
+      (let ((runtime-session
+             (magent-runtime-session-create
+              :id "session-1"
+              :pending-skills '("existing-skill")))
+            submitted response failure)
+        (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
+                   (lambda (session-id)
+                     (and (equal session-id "session-1")
+                          runtime-session)))
+                  ((symbol-function 'magent-runtime-submit)
+                   (lambda (session prompt &rest args)
+                     (setq submitted (list session prompt))
+                     (funcall (plist-get args :on-complete)
+                              'completed "ok"))))
+          (magent-acp--handle-request
+           '((:notification-handlers . nil)
+             (:request-handlers . nil))
+           `((:method . "session/prompt")
+             (:params . ((sessionId . "session-1")
+                         (prompt . [((type . "text")
+                                     (text . ,(format "/%s focus on tests"
+                                                      name)))]))))
+           (lambda (value) (setq response value))
+           (lambda (err &optional _raw) (setq failure err))))
+        (should-not failure)
+        (should (eq (car submitted) runtime-session))
+        (should (equal (cadr submitted)
+                       (concat (magent-skills-default-prompt name)
+                               "\n\nAdditional instruction:\nfocus on tests")))
+        (should (equal (magent-runtime-session-pending-skills runtime-session)
+                       (list "existing-skill" name)))
+        (should (equal (map-elt response 'stopReason) "end_turn"))))))
+
+(ert-deftest magent-test-acp-session-prompt-leaves-unknown-slash-command-unchanged ()
+  "Test unknown slash commands are submitted as normal prompt text."
+  (require 'magent-acp)
+  (let ((runtime-session (magent-runtime-session-create
+                          :id "session-1"
+                          :pending-skills '("existing-skill")))
+        submitted response failure)
+    (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
+               (lambda (session-id)
+                 (and (equal session-id "session-1")
+                      runtime-session)))
+              ((symbol-function 'magent-skills-default-prompt)
+               (lambda (_skill-name) nil))
+              ((symbol-function 'magent-runtime-submit)
+               (lambda (session prompt &rest args)
+                 (setq submitted (list session prompt))
+                 (funcall (plist-get args :on-complete)
+                          'completed "ok"))))
+      (magent-acp--handle-request
+       '((:notification-handlers . nil)
+         (:request-handlers . nil))
+       '((:method . "session/prompt")
+         (:params . ((sessionId . "session-1")
+                     (prompt . [((type . "text")
+                                 (text . "/unknown focus on tests"))]))))
+       (lambda (value) (setq response value))
+       (lambda (err &optional _raw) (setq failure err))))
+    (should-not failure)
+    (should (eq (car submitted) runtime-session))
+    (should (equal (cadr submitted) "/unknown focus on tests"))
+    (should (equal (magent-runtime-session-pending-skills runtime-session)
+                   '("existing-skill")))
     (should (equal (map-elt response 'stopReason) "end_turn"))))
 
 (ert-deftest magent-test-acp-call-failure-supports-rest-wrapper ()
@@ -7812,6 +7987,33 @@ tolerate leading whitespace."
                  'shell-buffer)))
       (should (eq (magent-agent-shell-start) 'shell-buffer))
       (should (eq captured 'new)))))
+
+(ert-deftest magent-test-agent-shell-suppresses-blank-line-context ()
+  "Test blank current-line context does not produce inverted line ranges."
+  (require 'magent-agent-shell)
+  (with-temp-buffer
+    (insert "first\n\nthird\n")
+    (goto-char (point-min))
+    (forward-line 1)
+    (let ((called nil))
+      (should-not
+       (magent-agent-shell--get-current-line-context
+        (lambda (&rest _args)
+          (setq called t)
+          "bad-context")
+        :agent-cwd default-directory))
+      (should-not called))
+    (goto-char (point-min))
+    (let ((called nil))
+      (should
+       (equal
+        (magent-agent-shell--get-current-line-context
+         (lambda (&rest _args)
+           (setq called t)
+           "line-context")
+         :agent-cwd default-directory)
+        "line-context"))
+      (should called))))
 
 (ert-deftest magent-test-agent-shell-send-prompt-queues-skills ()
   "Test agent-shell prompt submission records request-local skills."

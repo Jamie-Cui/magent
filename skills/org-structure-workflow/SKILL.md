@@ -1,8 +1,18 @@
 ---
 name: org-structure-workflow
+title: Org Structure Workflow
 description: Work with org-mode headings, subtrees, drawers, lists, todo keywords, and source blocks as structured editor objects.
 type: instruction
 tools: emacs_eval, read_file, edit_file
+capability: true
+source: package
+package: org
+modes: org-mode
+features: org
+files: "*.org"
+keywords: org, heading, subtree, drawer, todo, agenda, src block, property drawer
+disclosure: active
+risk: low
 ---
 
 # Org Structure Workflow

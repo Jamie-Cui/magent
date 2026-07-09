@@ -22,15 +22,15 @@ Opening input file: No such file or directory, /workspace/pkg/prompt.org
 #+end_src
 
 *Cause:* MELPA-style packaging copies only files matched by the recipe.
-Magent needs bundled runtime data (~prompt.org~, ~skills/~, and
-~capabilities/~) after packaging.
+Magent needs bundled runtime data (~prompt.org~ and ~skills/~) after
+packaging.
 
 *Solution:* Keep ~.github/workflows/melpazoid.yml~ aligned with this recipe
 shape:
 
 #+begin_src elisp
 (magent :fetcher github :repo "Jamie-Cui/magent"
-        :files (:defaults "prompt.org" "skills" "capabilities"))
+        :files (:defaults "prompt.org" "skills"))
 #+end_src
 
 *** package-lint reports ineffective ~Package-Requires~

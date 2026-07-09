@@ -322,7 +322,7 @@ Tool availability is controlled by:
 
 4. *Permission System* (~magent-permission.el~): Rule-based tool access control per agent with file-pattern matching (glob syntax).
 
-5. *Capability System* (~magent-capability.el~): File-backed capability definitions score each request context and attach matching instruction skills.
+5. *Capability System* (~magent-capability.el~): Capability metadata scores each request context and attaches matching instruction skills.  Built-in same-name skill capabilities live in ~SKILL.md~ frontmatter; standalone ~CAPABILITY.md~ files remain supported for separate metadata and project overlays.
 
 6. *Agent Loop*: ~magent-agent.el~ starts the Magent-owned loop in ~magent-agent-loop.el~. ~magent-llm.el~ defines normalized request/events, and ~magent-llm-gptel.el~ calls ~gptel-request~ for one sampling request while hiding gptel callback/FSM details. The loop owns tool dispatch, serial queueing, visible tool rendering, abort cleanup, permission audit hooks, and tool-result session recording; ~magent-agent-process~ owns continuation policy across sampling requests. Reasoning is recorded separately from assistant text, and a tool-output continuation that completes with empty assistant text gets one no-tool final-response retry.
 
@@ -330,7 +330,16 @@ Tool availability is controlled by:
 
 8. *Tools* (~magent-tools.el~): 14 tool implementations registered as ~gptel-tool~ structs, filtered per agent based on permission rules. The durable child-agent lifecycle tools are ~spawn_agent~, ~send_agent_message~, ~wait_agent~, ~list_agents~, and ~close_agent~.
 
-9. *Skills* (~magent-skills.el~): Two skill types -- ~instruction~ (markdown injected into the system prompt) and ~tool~ (invoked via ~skill_invoke~). Instruction skills can be selected from agent-shell as one-shot request context, and skills that declare ~default-prompt~ can be run as command-like agent-shell actions such as ~init~ for project instruction initialization. The module contains the registry, built-in ~skill-creator~ definition, file-based skill loading, and interactive inspection commands. Skills load in priority order from: (1) built-in ~skills/~ directory bundled with magent, (2) user directory =~/.emacs.d/magent-skills/<name>/SKILL.md=, (3) project-local ~.magent/skills/<name>/SKILL.md~.
+9. *Skills* (~magent-skills.el~): Two skill types -- ~instruction~ (markdown injected into the system prompt) and ~tool~ (invoked via ~skill_invoke~). Instruction skills can be selected from agent-shell as one-shot request context, skills that declare ~default-prompt~ can be run as command-like agent-shell actions such as ~init~, and skills that declare ~capability: true~ can auto-activate through the capability resolver. The module contains the registry, built-in ~skill-creator~ definition, file-based skill loading, and interactive inspection commands. Skills load from: (1) built-in ~skills/~ directory bundled with magent, (2) user directory =~/.emacs.d/magent/skills=, (3) legacy =~/.emacs.d/magent-skills= when present, and (4) project-local ~.magent/skills/<name>/SKILL.md~.
+
+   In short: a ~skill~ is the instruction payload or command surface that the
+   agent actually receives. A ~capability~ is resolver metadata that decides
+   when to auto-enable one or more skills for the current turn. Default
+   same-name capabilities are therefore skill-backed capabilities: their
+   trigger metadata lives in the corresponding ~SKILL.md~, but not every
+   built-in skill is a capability. For example, ~init~, ~review~, ~fix~,
+   ~test~, and ~explain~ are command-style skills without automatic capability
+   activation.
 
 10. *Session* (~magent-ledger.el~, ~magent-session.el~): Thread-ledger backed conversation history with per-project active sessions, global fallback outside projects, JSON persistence, and durable restore from ledger snapshots plus journals.
 
@@ -384,24 +393,21 @@ magent/
 |-- magent-pkg.el                  # Package descriptor
 |-- prompt.org                     # Default system prompt
 |-- Makefile                       # Build, test, and clean targets
-|-- skills/                        # Built-in skills (loaded automatically)
-|   |-- brainstorming/SKILL.md
-|   |-- systematic-debugging/SKILL.md
-|   |-- test-driven-development/SKILL.md
-|   |-- writing-plans/SKILL.md
-|   |-- executing-plans/SKILL.md
-|   |-- subagent-driven-development/SKILL.md
-|   |-- verification-before-completion/SKILL.md
-|   |-- git-workflow/SKILL.md
-|   |-- requesting-code-review/SKILL.md
-|   |-- receiving-code-review/SKILL.md
-|   |-- finishing-a-development-branch/SKILL.md
-|   |-- dispatching-parallel-agents/SKILL.md
-|   |-- research/SKILL.md
-|   |-- research-add/SKILL.md
-|   |-- research-batch/SKILL.md
-|   |-- research-explore/SKILL.md
-|   `-- research-report/SKILL.md
+|-- skills/                        # Built-in product skills (loaded automatically)
+|   |-- emacs-buffer-editing/SKILL.md
+|   |-- emacs-command-variable-introspection/SKILL.md
+|   |-- emacs-config-reload/SKILL.md
+|   |-- emacs-hook-debugging/SKILL.md
+|   |-- emacs-runtime-inspection/SKILL.md
+|   |-- explain/SKILL.md
+|   |-- fix/SKILL.md
+|   |-- init/SKILL.md
+|   |-- lsp-workspace-workflow/SKILL.md
+|   |-- magit-workflow/SKILL.md
+|   |-- org-structure-workflow/SKILL.md
+|   |-- project-workflow/SKILL.md
+|   |-- review/SKILL.md
+|   `-- test/SKILL.md
 `-- test/
     |-- coverage.el                # Batch testcover runner
     |-- magent-live-test.el        # Live Emacs smoke and real-provider tests
@@ -452,8 +458,8 @@ GitHub Actions runs three workflows:
 - ~coverage.yml~ runs ~make coverage~ and uploads
   ~coverage/testcover-summary.tsv~ as an artifact.
 - ~melpazoid.yml~ runs MELPA-style package checks. The recipe includes
-  ~prompt.org~, ~skills/~, and ~capabilities/~ because those files are runtime
-  package data, not optional repository extras.
+  ~prompt.org~ and ~skills/~ because those files are runtime package data,
+  not optional repository extras.
 
 Keep package metadata centralized in ~magent.el~ and ~magent-pkg.el~. Non-main
 module files carry SPDX license identifiers but should not declare

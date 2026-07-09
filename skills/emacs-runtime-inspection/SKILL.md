@@ -1,8 +1,16 @@
 ---
 name: emacs-runtime-inspection
+title: Emacs Runtime Inspection
 description: Inspect live Emacs runtime state such as buffers, variables, hooks, keymaps, features, warnings, and backtraces.
 type: instruction
 tools: emacs_eval
+capability: true
+source: builtin
+feature: emacs
+modes: emacs-lisp-mode, lisp-interaction-mode
+keywords: emacs, runtime, hook, keymap, advice, command, variable, warning, backtrace, diagnose, debug, messages
+disclosure: active
+risk: low
 ---
 
 # Emacs Runtime Inspection

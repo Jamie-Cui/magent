@@ -22,13 +22,13 @@
 Opening input file: No such file or directory, /workspace/pkg/prompt.org
 #+end_src
 
-*原因：* MELPA-style packaging 只复制 recipe 匹配的文件。Magent 打包后仍然需要 bundled runtime data： ~prompt.org~ 、 ~skills/~ 和 ~capabilities/~ 。
+*原因：* MELPA-style packaging 只复制 recipe 匹配的文件。Magent 打包后仍然需要 bundled runtime data： ~prompt.org~ 和 ~skills/~ 。
 
 *解决：* 保持 ~.github/workflows/melpazoid.yml~ 的 recipe 形状类似：
 
 #+begin_src elisp
 (magent :fetcher github :repo "Jamie-Cui/magent"
-        :files (:defaults "prompt.org" "skills" "capabilities"))
+        :files (:defaults "prompt.org" "skills"))
 #+end_src
 
 *** package-lint 报告 ineffective ~Package-Requires~

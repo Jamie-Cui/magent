@@ -160,7 +160,18 @@ define ~default-prompt~ can also be run as command-like actions; built-in
 ~/init~, and accepts optional extra instructions. Compose buffers are plain
 prompt text and no longer parse ~@skill~ or ~@clear~ control syntax.
 
-Skills load from: (1) built-in ~skills/~, (2) user ~~/.emacs.d/magent-skills/~, (3) project ~.magent/skills/~.
+Skills load from: (1) built-in ~skills/~, (2) user ~~/.emacs.d/magent/skills~, (3) legacy ~~/.emacs.d/magent-skills/~ when present, and (4) project ~.magent/skills/~.  A skill can also declare ~capability: true~ with resolver metadata such as ~modes~, ~features~, ~files~, ~keywords~, and ~disclosure~; Magent turns that metadata into a capability that activates the same skill.
+
+Keep the terms separate when adding or reviewing defaults:
+
+- Use a ~skill~ for reusable instructions, command-style prompts, or tool-type
+  operations that can be selected explicitly.
+- Use a ~capability~ when the skill should be selected automatically from live
+  context or prompt text.
+- Co-locate the capability metadata in ~SKILL.md~ when the capability only
+  exists to activate that same skill. Use standalone ~CAPABILITY.md~ only when
+  the trigger metadata is separate from a single skill or belongs to a project
+  overlay.
 
 ** Session Scoping
 
@@ -275,10 +286,11 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 - *.github/workflows/melpazoid.yml* — MELPA-style package checks
 - *test/coverage.el* — Coverage runner used by ~make coverage~
 
-Magent packages runtime data as well as Elisp. ~prompt.org~, ~skills/~, and
-~capabilities/~ must remain included in the melpazoid/MELPA recipe because
-~magent-config.el~, ~magent-skills.el~, and ~magent-capability.el~ resolve
-those paths at runtime.
+Magent packages runtime data as well as Elisp. ~prompt.org~ and ~skills/~
+must remain included in the melpazoid/MELPA recipe because ~magent-config.el~,
+~magent-skills.el~, and built-in skill-backed capabilities resolve those paths
+at runtime.  If standalone bundled ~CAPABILITY.md~ files are added, include
+~capabilities/~ as runtime data too.
 
 * Complexity Hotspots
 

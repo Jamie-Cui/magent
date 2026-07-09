@@ -300,6 +300,29 @@ Return non-nil when SKILL-NAME is selected after toggling."
   (advice-add 'shell-maker-submit :around
               #'magent-agent-shell--shell-maker-submit))
 
+(defun magent-agent-shell--blank-current-line-p ()
+  "Return non-nil when the current buffer line is blank."
+  (string-blank-p
+   (buffer-substring-no-properties
+    (line-beginning-position)
+    (line-end-position))))
+
+(defun magent-agent-shell--get-current-line-context (orig &rest args)
+  "Suppress empty current-line context before delegating to ORIG.
+
+`agent-shell--get-current-line-context' builds line context by
+temporarily activating the current line as a region.  On a blank
+line this creates an empty BOL region, which agent-shell 0.57.1
+formats as an inverted range such as README.org:3-2.  Blank line
+context is not useful for Magent, so skip it."
+  (unless (magent-agent-shell--blank-current-line-p)
+    (apply orig args)))
+
+(unless (advice-member-p #'magent-agent-shell--get-current-line-context
+                         'agent-shell--get-current-line-context)
+  (advice-add 'agent-shell--get-current-line-context :around
+              #'magent-agent-shell--get-current-line-context))
+
 (defun magent-agent-shell--buffers ()
   "Return live Magent agent-shell buffers without creating side effects."
   (seq-filter #'magent-agent-shell--magent-buffer-p (buffer-list)))

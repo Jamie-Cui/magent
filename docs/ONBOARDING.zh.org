@@ -157,7 +157,13 @@ Skill 有两类：
 
 Instruction skills 可以作为下一次请求的一次性上下文。Agent-shell backend 提供 ~magent-agent-shell-toggle-skill-for-next-request~ 和 ~magent-agent-shell-run-skill-command~ 等命令；legacy transient Skills submenu 保留同类 workflow。带 ~default-prompt~ 的 skills 也可作为 command-like actions 运行，例如 built-in ~init~ 用于初始化或刷新项目根目录 ~AGENTS.md~ 。Compose buffers 是普通 prompt text，不再解析 ~@skill~ 或 ~@clear~ 控制语法。
 
-Skills 加载顺序：内置 ~skills/~ ，用户 ~~/.emacs.d/magent-skills/~ ，项目 ~.magent/skills/~ 。
+Skills 加载来源：内置 ~skills/~ ，用户 ~~/.emacs.d/magent/skills~ ，存在时兼容 legacy ~~/.emacs.d/magent-skills/~ ，以及项目 ~.magent/skills/~ 。Skill 也可以通过 ~capability: true~ 声明 resolver metadata，例如 ~modes~ 、~features~ 、~files~ 、~keywords~ 和 ~disclosure~；Magent 会把这些 metadata 注册成激活同一个 skill 的 capability。
+
+新增或 review 默认能力时保持这两个概念分开：
+
+- 需要可复用 instruction、command-style prompt 或 tool-type operation 时，用 ~skill~。
+- 需要根据 live context 或 prompt text 自动选择某个 skill 时，用 ~capability~。
+- 如果 capability 只是为了激活同一个 skill，就把 metadata 和说明共址在 ~SKILL.md~。只有当触发 metadata 不属于单个 skill，或属于 project overlay 时，才使用独立 ~CAPABILITY.md~。
 
 ** Session Scoping
 

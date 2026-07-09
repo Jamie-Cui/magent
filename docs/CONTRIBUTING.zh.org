@@ -127,7 +127,7 @@ GitHub Actions 运行：
 - ~coverage.yml~ ：运行 ~make coverage~ 并上传 ~coverage/testcover-summary.tsv~ 。
 - ~melpazoid.yml~ ：运行 MELPA-style package checks。
 
-melpazoid recipe 包含 ~prompt.org~ 、 ~skills/~ 和 ~capabilities/~ 。这些是 bundled runtime data；只要 ~magent-config.el~ 、 ~magent-skills.el~ 或 ~magent-capability.el~ 继续依赖这些路径，就必须保留在 package recipe 里。
+melpazoid recipe 包含 ~prompt.org~ 和 ~skills/~ 。这些是 bundled runtime data；~magent-config.el~ 、~magent-skills.el~ 和内置 skill-backed capabilities 会在运行时解析这些路径，因此必须保留在 package recipe 里。
 
 Package metadata 保持集中在 ~magent.el~ 和 ~magent-pkg.el~ 。不要在 secondary modules 中添加 ~Package-Requires~ headers；package-lint 会把 main file 之外的这些 headers 视为 ineffective。每个 Elisp 文件都应包含 SPDX license identifier。
 

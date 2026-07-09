@@ -33,6 +33,7 @@
 (require 'magent-config)
 (require 'magent-file-loader)
 (require 'magent-runtime)
+(require 'magent-skills)
 
 (declare-function magent-log "magent-ui")
 
@@ -195,6 +196,14 @@ Each directory can contain subdirectories with CAPABILITY.md files."
     ('user 'user)
     (_ 'external-metadata)))
 
+(defun magent-capability--source-owner-from-layer (source-layer)
+  "Return capability metadata owner for SOURCE-LAYER."
+  (pcase source-layer
+    ('builtin 'maintainer)
+    ('project 'project)
+    ('user 'user)
+    (_ 'external-metadata)))
+
 (defun magent-capability--list-files (&optional directories)
   "List all capability files in DIRECTORIES."
   (if directories
@@ -273,6 +282,59 @@ Each directory can contain subdirectories with CAPABILITY.md files."
     (magent-capability--parse-risk
      (plist-get frontmatter :risk))))
 
+(cl-defun magent-capability--from-frontmatter
+    (frontmatter body filepath source owner &key default-name default-skills)
+  "Create a capability from FRONTMATTER and BODY.
+FILEPATH is the source file path.  SOURCE is a plist from the file
+loader.  OWNER controls which policy fields are trusted.
+DEFAULT-NAME and DEFAULT-SKILLS are used for skill-declared
+capabilities."
+  (let* ((name (or (plist-get frontmatter :name)
+                   default-name
+                   (file-name-nondirectory
+                    (directory-file-name
+                     (file-name-directory filepath)))))
+         (source-kind (magent-capability--parse-source-kind
+                       (plist-get frontmatter :source)))
+         (source-name (or (plist-get frontmatter :source-name)
+                          (plist-get frontmatter :feature)
+                          (plist-get frontmatter :package)))
+         (skills (magent-capability--parse-string-list
+                  (or (plist-get frontmatter :capability-skills)
+                      (plist-get frontmatter :skills)
+                      default-skills))))
+    (magent-capability-create
+     :name name
+     :title (or (plist-get frontmatter :title) name)
+     :description (plist-get frontmatter :description)
+     :family (magent-capability--policy-family
+              frontmatter source-kind source-name owner)
+     :source-kind source-kind
+     :source-layer (plist-get source :layer)
+     :source-scope (plist-get source :scope)
+     :source-name (when source-name
+                    (format "%s" source-name))
+     :skills skills
+     :modes (magent-capability--parse-symbol-list
+             (plist-get frontmatter :modes))
+     :features (magent-capability--parse-symbol-list
+                (or (plist-get frontmatter :features)
+                    (plist-get frontmatter :feature)))
+     :files (magent-capability--parse-string-list
+             (plist-get frontmatter :files))
+     :prompt-keywords (magent-capability--parse-string-list
+                       (or (plist-get frontmatter :prompt-keywords)
+                           (plist-get frontmatter :keywords)))
+     :disclosure (magent-capability--policy-disclosure frontmatter owner)
+     :risk (magent-capability--policy-risk frontmatter owner)
+     :notes (unless (string-empty-p body) body)
+     :file-path filepath)))
+
+(defun magent-capability--frontmatter-capability-p (frontmatter)
+  "Return non-nil when FRONTMATTER declares an embedded capability."
+  (and (plist-member frontmatter :capability)
+       (plist-get frontmatter :capability)))
+
 (defun magent-capability-load-file (filepath)
   "Load a capability definition from FILEPATH."
   (condition-case err
@@ -285,53 +347,60 @@ Each directory can contain subdirectories with CAPABILITY.md files."
                       :user-dirs magent-capability-directories
                       :project-relative-dir ".magent/capabilities")))
         (when frontmatter
+          (let* ((owner (magent-capability--source-owner filepath))
+                 (capability (magent-capability--from-frontmatter
+                              frontmatter body filepath source owner)))
+            (magent-capability-register capability)
+            (magent-log "INFO loaded capability: %s owner=%s"
+                        (magent-capability-name capability) owner)
+            capability)))
+    (error
+     (magent-log "ERROR loading capability file %s: %s"
+                 filepath (error-message-string err))
+     nil)))
+
+(defun magent-capability-load-skill-file (filepath)
+  "Load capability metadata embedded in SKILL.md FILEPATH."
+  (condition-case err
+      (let* ((definition (magent-file-loader-read-definition filepath))
+             (frontmatter (plist-get definition :frontmatter))
+             (source (magent-skills-classify-source filepath)))
+        (when (and frontmatter
+                   (magent-capability--frontmatter-capability-p frontmatter))
           (let* ((name (or (plist-get frontmatter :name)
                            (file-name-nondirectory
                             (directory-file-name
                              (file-name-directory filepath)))))
-                 (source-kind (magent-capability--parse-source-kind
-                               (plist-get frontmatter :source)))
-                 (source-name (or (plist-get frontmatter :source-name)
-                                  (plist-get frontmatter :feature)
-                                  (plist-get frontmatter :package)))
-                 (owner (magent-capability--source-owner filepath))
-                 (capability
-                  (magent-capability-create
-                   :name name
-                   :title (or (plist-get frontmatter :title) name)
-                   :description (plist-get frontmatter :description)
-                   :family (magent-capability--policy-family
-                            frontmatter source-kind source-name owner)
-                   :source-kind source-kind
-                   :source-layer (plist-get source :layer)
-                   :source-scope (plist-get source :scope)
-                   :source-name (when source-name
-                                  (format "%s" source-name))
-                   :skills (magent-capability--parse-string-list
-                            (plist-get frontmatter :skills))
-                   :modes (magent-capability--parse-symbol-list
-                           (plist-get frontmatter :modes))
-                   :features (magent-capability--parse-symbol-list
-                              (or (plist-get frontmatter :features)
-                                  (plist-get frontmatter :feature)))
-                   :files (magent-capability--parse-string-list
-                           (plist-get frontmatter :files))
-                   :prompt-keywords (magent-capability--parse-string-list
-                                     (or (plist-get frontmatter :prompt-keywords)
-                                         (plist-get frontmatter :keywords)))
-                   :disclosure (magent-capability--policy-disclosure
-                                frontmatter owner)
-                   :risk (magent-capability--policy-risk
-                          frontmatter owner)
-                   :notes (unless (string-empty-p body) body)
-                   :file-path filepath)))
+                 (owner (magent-capability--source-owner-from-layer
+                         (plist-get source :layer)))
+                 (capability (magent-capability--from-frontmatter
+                              frontmatter
+                              ""
+                              filepath
+                              source
+                              owner
+                              :default-name name
+                              :default-skills (list name))))
             (magent-capability-register capability)
-            (magent-log "INFO loaded capability: %s owner=%s" name owner)
+            (magent-log "INFO loaded skill capability: %s owner=%s"
+                        (magent-capability-name capability) owner)
             capability)))
-(error
-     (magent-log "ERROR loading capability file %s: %s"
+    (error
+     (magent-log "ERROR loading skill capability file %s: %s"
                  filepath (error-message-string err))
      nil)))
+
+(defun magent-capability-load-skill-capabilities (&optional directories)
+  "Load capability metadata embedded in skill files from DIRECTORIES."
+  (let* ((files (magent-file-loader-list-named-files
+                 (or directories (magent-skills-definition-directories))
+                 magent-skill-file-name))
+         (count (magent-file-loader-load-all
+                 files
+                 #'magent-capability-load-skill-file)))
+    (when (> count 0)
+      (magent-log "INFO loaded %d skill capability file(s)" count))
+    count))
 
 (defun magent-capability-load-all (&optional directories)
   "Load all capability files from DIRECTORIES."
@@ -345,12 +414,16 @@ Each directory can contain subdirectories with CAPABILITY.md files."
 
 (defun magent-capability-initialize-static ()
   "Load built-in and user-global capability definitions."
+  (magent-capability-load-skill-capabilities
+   (magent-skills-definition-directories))
   (magent-capability-load-all
    (append (list magent-capability--builtin-dir)
            magent-capability-directories)))
 
 (defun magent-capability-load-project-scope (scope)
   "Load project-local capability definitions for SCOPE."
+  (magent-capability-load-skill-capabilities
+   (magent-file-loader-project-subdir-for-scope ".magent/skills" scope))
   (magent-capability-load-all
    (magent-file-loader-project-subdir-for-scope ".magent/capabilities" scope)))
 

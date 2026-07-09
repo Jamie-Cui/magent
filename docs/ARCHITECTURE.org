@@ -88,10 +88,23 @@ The product is therefore more than a prompt box with tools. It turns Emacs workf
 Magent has three file-backed extension layers:
 
 - Custom agents under ~.magent/agent/*.md~.
-- Skills under bundled ~skills/~, user ~~/.emacs.d/magent-skills/~, and project ~.magent/skills/~.
-- Capabilities under bundled ~capabilities/~ and project ~.magent/capabilities/~.
+- Skills under bundled ~skills/~, user ~~/.emacs.d/magent/skills~, legacy ~~/.emacs.d/magent-skills/~ when present, and project ~.magent/skills/~.
+- Capability metadata embedded in skills with ~capability: true~, plus standalone ~CAPABILITY.md~ files under user capability directories and project ~.magent/capabilities/~ when trigger metadata should live outside one skill.
 
-Instruction skills are injected into the system prompt. Tool skills are invoked through ~skill_invoke~. Capabilities score the current context and activate a small number of instruction skills. This progressive disclosure model keeps the base prompt smaller while still giving the agent Emacs-specific workflow knowledge when the current request needs it.
+Instruction skills are injected into the system prompt. Tool skills are invoked through ~skill_invoke~. Capabilities score the current context and activate a small number of instruction skills. Built-in same-name workflow capabilities are co-located with their skills, so the trigger metadata and injected instruction stay in one file. This progressive disclosure model keeps the base prompt smaller while still giving the agent Emacs-specific workflow knowledge when the current request needs it.
+
+The distinction is:
+
+- A ~skill~ is the content or command surface: instruction text injected into
+  the prompt, a command-like ~default-prompt~, or a tool-type operation.
+- A ~capability~ is an automatic activation rule: resolver metadata such as
+  ~modes~, ~features~, ~files~, ~keywords~, ~disclosure~, and ~risk~ that says
+  when one or more skills should be selected for this turn.
+- A skill-backed capability is the common built-in case: a ~SKILL.md~ declares
+  ~capability: true~, and the resolver auto-activates that same skill when the
+  current buffer or prompt matches. Command-style built-in skills such as
+  ~init~, ~review~, ~fix~, ~test~, and ~explain~ remain skills only unless they
+  opt into ~capability: true~.
 
 * Product Tradeoffs
 

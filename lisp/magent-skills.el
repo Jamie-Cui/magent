@@ -54,6 +54,7 @@ description: When to trigger and what this skill does
 type: instruction        # 'instruction' or 'tool'
 tools: bash, read        # optional: tools this skill needs
 default-prompt: Optional prompt used when user submits only @skill-name
+capability: true         # optional: auto-activate this instruction skill by context
 ---
 
 Markdown body: instructions for the AI...
@@ -71,9 +72,16 @@ submits only `@skill-name`.
 Requires a companion `.el` file defining `magent-skill-<name>-invoke`.
 Use for structured operations with discrete inputs/outputs.
 
+**capability metadata**: Instruction skills can also declare `capability: true`
+plus fields such as `modes`, `features`, `files`, `keywords`, `disclosure`, and
+`risk`.  Magent uses those fields to auto-activate the skill when the current
+buffer or prompt matches the context.  Keep this metadata on the skill when the
+capability only exists to activate that same skill.
+
 ## Skill Locations
 
-- User global: `magent-skills/<name>/SKILL.md` under `user-emacs-directory`
+- User global: `magent/skills/<name>/SKILL.md` under `user-emacs-directory`
+- Legacy user global: `magent-skills/<name>/SKILL.md` under `user-emacs-directory`
 - Project-local: `.magent/skills/<name>/SKILL.md`
 
 Place each skill in its own subdirectory named after the skill.
@@ -101,7 +109,7 @@ Key principles:
 
 Write the SKILL.md using `write_file`:
 ```
-`magent-skills/<name>/SKILL.md` under `user-emacs-directory`
+`magent/skills/<name>/SKILL.md` under `user-emacs-directory`
 ```
 
 ### 3. Test in Emacs
@@ -310,9 +318,9 @@ If SKILL-NAMES is a list, only include those skills."
 (defcustom magent-skill-directories
   (let ((new-dir (expand-file-name "magent/skills" user-emacs-directory))
         (old-dir (expand-file-name "magent-skills" user-emacs-directory)))
-    (if (file-directory-p old-dir)
-        (list new-dir old-dir)
-      (list new-dir)))
+    (append (list new-dir)
+            (when (file-directory-p old-dir)
+              (list old-dir))))
   "List of directories to scan for skill files.
 Each directory can contain subdirectories with SKILL.md files."
   :type '(repeat directory)
@@ -323,13 +331,27 @@ Each directory can contain subdirectories with SKILL.md files."
   :type 'string
   :group 'magent)
 
-(defun magent-skills--classify-source (filepath)
+(defun magent-skills-definition-directories (&optional scope)
+  "Return skill definition directories for static loading and SCOPE.
+When SCOPE is non-nil, include that project's `.magent/skills'
+directory if it exists."
+  (append (list magent-skills--builtin-dir)
+          magent-skill-directories
+          (when scope
+            (magent-file-loader-project-subdir-for-scope
+             ".magent/skills" scope))))
+
+(defun magent-skills-classify-source (filepath)
   "Return a plist describing the source classification for FILEPATH."
   (magent-file-loader-classify-source
    filepath
    :builtin-dirs (list magent-skills--builtin-dir)
    :user-dirs magent-skill-directories
    :project-relative-dir ".magent/skills"))
+
+(defun magent-skills--classify-source (filepath)
+  "Return a plist describing the source classification for FILEPATH."
+  (magent-skills-classify-source filepath))
 
 (defun magent-skills--list-files (&optional directories)
   "List all SKILL.md files in DIRECTORIES or `magent-skill-directories'."
@@ -458,9 +480,7 @@ Returns number of skills loaded."
 (defun magent-skills-initialize-static ()
   "Load built-in and user-global skill definitions."
   (magent-skills--register-builtin)
-  (magent-skills-load-all
-   (append (list magent-skills--builtin-dir)
-           magent-skill-directories)))
+  (magent-skills-load-all (magent-skills-definition-directories)))
 
 (defun magent-skills-load-project-scope (scope)
   "Load project-local skill definitions for SCOPE."

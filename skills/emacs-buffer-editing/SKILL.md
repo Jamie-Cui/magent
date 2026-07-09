@@ -1,8 +1,15 @@
 ---
 name: emacs-buffer-editing
+title: Emacs Buffer Editing
 description: Work with live Emacs buffers, regions, point, narrowing, and window-local editing state.
 type: instruction
 tools: emacs_eval
+capability: true
+source: builtin
+feature: emacs
+keywords: buffer, region, point, mark, window, narrow, selected text
+disclosure: suggested
+risk: low
 ---
 
 # Emacs Buffer Editing
