@@ -94,19 +94,19 @@ allowing the caller to fall back to a full YAML parser."
 
 (defun magent-file-loader-project-subdir (relative-dir)
   "Return project-local RELATIVE-DIR as a one-item list when it exists."
-  (when-let ((dir (magent-file-loader-project-directory relative-dir)))
+  (when-let* ((dir (magent-file-loader-project-directory relative-dir)))
     (list dir)))
 
 (defun magent-file-loader-project-directory (relative-dir &optional scope)
   "Return project-local RELATIVE-DIR under SCOPE or current project root."
-  (when-let ((root (or scope (magent-project-root))))
+  (when-let* ((root (or scope (magent-project-root))))
     (let ((dir (expand-file-name relative-dir root)))
       (when (file-directory-p dir)
         dir))))
 
 (defun magent-file-loader-project-subdir-for-scope (relative-dir scope)
   "Return project-local RELATIVE-DIR for SCOPE as a one-item list."
-  (when-let ((dir (magent-file-loader-project-directory relative-dir scope)))
+  (when-let* ((dir (magent-file-loader-project-directory relative-dir scope)))
     (list dir)))
 
 (defun magent-file-loader-file-under-directory-p (filepath directory)

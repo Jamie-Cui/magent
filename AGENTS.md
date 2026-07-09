@@ -110,7 +110,6 @@ magent.el (entry point: magent-mode, global-magent-mode)
   ├─ magent-agent-info.el        (agent metadata struct and helpers)
   ├─ magent-agent-builtins.el    (7 built-in agent definitions)
   ├─ magent-agent-registry.el    (hash-table registry and project overlays)
-  ├─ magent-agent-types.el       (legacy feature-name compatibility shim)
   ├─ magent-agent-file.el        (loads custom agents from .magent/agent/*.md)
   ├─ magent-permission.el        (rule-based tool access control per agent)
   ├─ magent-acp.el               (in-process ACP adapter for agent-shell)
@@ -174,7 +173,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
 
 ### Agent Definitions
 
-Built-in agents: `build` (default), `plan`, `explore`, `general`, `compaction`, `title`, `summary`. Defined in `magent-agent-builtins.el` with `cl-defstruct magent-agent-info` in `magent-agent-info.el` (fields: name, description, mode, native, hidden, temperature, top-p, color, model, prompt, options, steps, permission). `magent-agent-types.el` is a compatibility shim for older `require` forms. Agent modes: `primary` (user-facing), `subagent` (internal), `all` (either).
+Built-in agents: `build` (default), `plan`, `explore`, `general`, `compaction`, `title`, `summary`. Defined in `magent-agent-builtins.el` with `cl-defstruct magent-agent-info` in `magent-agent-info.el` (fields: name, description, mode, native, hidden, temperature, top-p, color, model, prompt, options, steps, permission). Agent modes: `primary` (user-facing), `subagent` (internal), `all` (either).
 
 Custom agents: `.magent/agent/*.md` files with YAML frontmatter + markdown body (system prompt). Frontmatter is parsed by `magent-file-loader.el` (supports booleans, numbers, quoted strings, comma-separated lists; converts underscores to hyphens in keys).
 
@@ -212,7 +211,6 @@ legacy/compatibility command surface:
 | `C-c m a` | `magent-ask-at-point` |
 | `C-c m ?` | `magent-transient-menu` |
 
-Former direct bindings (`C-c m d`, `C-c m c`, `C-c m A`, etc.) remain obsolete.
 Lower-frequency legacy commands are still reachable from `magent-transient-menu`.
 
 Transient top-level keys:
@@ -241,4 +239,4 @@ In legacy `magent-output-mode`: `TAB` fold/unfold turn sections, `?` transient m
 - Use Conventional Commits for commit messages.
 - System prompt loaded from `prompt.org` adjacent to `magent-config.el`
 - Tool implementations follow pattern: `magent-tools--<name>` (internal fn) + `magent-tools--<name>-tool` (gptel-tool var)
-- Byte-compile warnings suppressed: `cl-functions`, `obsolete`
+- Byte-compile warnings suppressed: `cl-functions`

@@ -676,7 +676,7 @@
                  (magent-thread-turn-input turn)))
          (magent-thread--update-timestamp thread now)))
       ('turn-status-changed
-       (when-let ((turn (magent-thread--find-turn
+       (when-let* ((turn (magent-thread--find-turn
                          thread
                          (magent-thread-event-turn-id event))))
          (setf (magent-thread-turn-status turn)
@@ -687,7 +687,7 @@
                 "turn"))
          (magent-thread--update-timestamp thread now)))
       ((or 'turn-completed 'turn-failed 'turn-interrupted 'turn-dropped)
-       (when-let ((turn (magent-thread--find-turn
+       (when-let* ((turn (magent-thread--find-turn
                          thread
                          (magent-thread-event-turn-id event))))
          (setf (magent-thread-turn-status turn)
@@ -703,7 +703,7 @@
                (magent-thread-turn-usage turn)
                (or (magent-thread--event-payload-value :usage payload)
                    (magent-thread-turn-usage turn)))
-         (when-let ((started (magent-thread-turn-started-at turn)))
+         (when-let* ((started (magent-thread-turn-started-at turn)))
            (setf (magent-thread-turn-duration-ms turn)
                  (round (* 1000 (- now started)))))
          (setf (magent-thread-status thread)
@@ -713,7 +713,7 @@
        (let* ((item (magent-thread--event-payload-item payload))
               (turn-id (or (magent-thread-event-turn-id event)
                            (and item (magent-thread-item-turn-id item)))))
-         (when-let ((turn (magent-thread--find-turn thread turn-id)))
+         (when-let* ((turn (magent-thread--find-turn thread turn-id)))
            (unless (magent-thread-item-p item)
              (setq item
                    (magent-thread-item-create
@@ -731,7 +731,7 @@
            (magent-thread--replace-item turn item)
            (magent-thread--update-timestamp thread now))))
       ('item-updated
-       (when-let ((item (magent-thread--find-item
+       (when-let* ((item (magent-thread--find-item
                          thread
                          (magent-thread-event-item-id event))))
          (let ((incoming (magent-thread--event-payload-item payload)))
@@ -740,7 +740,7 @@
            (setf (magent-thread-item-updated-at item) now)
            (magent-thread--update-timestamp thread now))))
       ((or 'item-completed 'item-failed 'item-cancelled)
-       (when-let ((item (magent-thread--find-item
+       (when-let* ((item (magent-thread--find-item
                          thread
                          (magent-thread-event-item-id event))))
          (let ((incoming (magent-thread--event-payload-item payload)))
@@ -964,7 +964,7 @@ Return the new `magent-thread-item'."
   "Cancel all in-progress items for THREAD turn TURN-ID.
 Return the number of cancelled items."
   (let ((count 0))
-    (when-let ((turn (magent-thread--find-turn thread turn-id)))
+    (when-let* ((turn (magent-thread--find-turn thread turn-id)))
       (dolist (item (copy-sequence (magent-thread-turn-items turn)))
         (when (eq (magent-thread-item-status item) 'in-progress)
           (magent-thread-cancel-item thread item error)
@@ -1209,7 +1209,7 @@ When CONTENT is non-nil, require an `equal' content match."
     (thread turn-id content &optional phase metadata)
   "Record CONTENT as TURN-ID's user message unless one already exists.
 Return the existing or newly created item."
-  (when-let ((turn (magent-thread--find-turn thread turn-id)))
+  (when-let* ((turn (magent-thread--find-turn thread turn-id)))
     (unless (magent-thread-turn-input turn)
       (setf (magent-thread-turn-input turn)
             (if (stringp content) content (format "%s" content))))
@@ -1221,7 +1221,7 @@ Return the existing or newly created item."
     (thread turn-id role &optional phase metadata)
   "Return an in-progress message item for ROLE in TURN-ID.
 Create it when needed."
-  (when-let ((turn (magent-thread--find-turn thread turn-id)))
+  (when-let* ((turn (magent-thread--find-turn thread turn-id)))
     (or (cl-find-if
          (lambda (item)
            (and (eq (magent-thread-item-type item) 'message)

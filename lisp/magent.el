@@ -169,17 +169,8 @@ redefined on reload without needing to update `global-mode-string'.")
     ("C-c m ?" . magent-transient-menu))
   "Declarative keybinding table for `magent-mode'.")
 
-(defconst magent--obsolete-mode-binding-keys
-  '("C-c m d" "C-c m D" "C-c m c" "C-c m R"
-    "C-c m x" "C-c m e" "C-c m k" "C-c m l"
-    "C-c m L" "C-c m t" "C-c m A" "C-c m T"
-    "C-c m j" "C-c m i" "C-c m v")
-  "Former direct command bindings now routed through `magent-transient-menu'.")
-
 (defun magent--populate-mode-map (map)
   "Install `magent-mode' bindings into MAP."
-  (dolist (key magent--obsolete-mode-binding-keys)
-    (define-key map (kbd key) nil))
   (dolist (binding magent--mode-bindings map)
     (define-key map (kbd (car binding)) (cdr binding))))
 
@@ -215,7 +206,7 @@ Called on first use of any magent command.  Loads agents and skills."
 (provide 'magent)
 
 ;; Local Variables:
-;; byte-compile-warnings: (not cl-functions obsolete)
+;; byte-compile-warnings: (not cl-functions)
 ;; no-byte-compile: nil
 ;; no-native-compile: nil
 ;; End:

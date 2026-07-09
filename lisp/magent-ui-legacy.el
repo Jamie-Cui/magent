@@ -2287,7 +2287,7 @@ Captures the current request generation so stale callbacks are discarded."
     (magent-ui-render-history t scope)
     (magent-log "INFO processing [%s] gen=%d: %s"
                 (magent-ui--request-source item) gen input)
-    (when-let ((summary
+    (when-let* ((summary
                 (and (require 'magent-capability nil t)
                      (magent-capability-resolution-summary
                       (magent-ui--request-capability-resolution item)))))
@@ -2482,7 +2482,7 @@ the buffer flag is cleared."
           (magent-agent-job-id job)
           (symbol-name (magent-agent-job-status job))
           (or (magent-agent-job-agent-name job) "?")
-          (if-let ((task (magent-agent-job-task-name job)))
+          (if-let* ((task (magent-agent-job-task-name job)))
               (format ": %s" task)
             "")))
 
@@ -2512,14 +2512,14 @@ the buffer flag is cleared."
     (insert (format "Agent: %s\n" (or (magent-agent-job-agent-name job) "?")))
     (insert (format "Task: %s\n" (or (magent-agent-job-task-name job) "")))
     (insert (format "Status: %s\n" (symbol-name (magent-agent-job-status job))))
-    (when-let ((result (magent-agent-job-result job)))
+    (when-let* ((result (magent-agent-job-result job)))
       (insert (format "Result: %s\n" result)))
-    (when-let ((error (magent-agent-job-error job)))
+    (when-let* ((error (magent-agent-job-error job)))
       (insert (format "Error: %s\n" error)))
-    (when-let ((prompt (magent-agent-job-prompt job)))
+    (when-let* ((prompt (magent-agent-job-prompt job)))
       (insert "\nPrompt\n")
       (insert prompt "\n"))
-    (when-let ((metadata (magent-agent-job-metadata job)))
+    (when-let* ((metadata (magent-agent-job-metadata job)))
       (insert "\nMetadata\n")
       (dolist (entry metadata)
         (insert (format "%s: %s\n"

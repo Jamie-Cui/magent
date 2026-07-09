@@ -209,10 +209,5 @@ Your output must be:
    (magent-agent-builtins--title)
    (magent-agent-builtins--summary)))
 
-(define-obsolete-function-alias
-  'magent-agent-types-initialize
-  #'magent-agent-builtins-list
-  "0.1.0")
-
 (provide 'magent-agent-builtins)
 ;;; magent-agent-builtins.el ends here

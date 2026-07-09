@@ -370,7 +370,6 @@ magent/
 |-- magent-tool-runtime.el         # Runtime-facing tool metadata adapter
 |-- magent-tool-orchestrator.el    # Permission, approval, audit, and tool-call orchestration
 |-- magent-agent.el                # Agent logic (gptel integration)
-|-- magent-agent-types.el          # Compatibility shim for older agent-types feature
 |-- magent-agent-info.el           # Agent metadata struct and helpers
 |-- magent-agent-builtins.el       # Built-in agent definitions
 |-- magent-agent-registry.el       # Agent registry and custom overlays

@@ -94,7 +94,7 @@ old `delegate` tool — do not reintroduce a wrapper). Stored under session `age
 
 - Every source file starts with `;;; -*- lexical-binding: t; -*-` and carries an SPDX license header.
 - Tool pattern: `magent-tools--<name>` (internal fn) + `magent-tools--<name>-tool` (gptel-tool var).
-- Byte-compile warnings suppressed only for `cl-functions` and `obsolete`; everything else must be clean.
+- Byte-compile warnings suppressed only for `cl-functions`; everything else must be clean.
 - `magent-log` is a **stub** in `magent-config.el` until `magent-ui` loads — batch-test logs go nowhere unless you load `magent-ui`.
 - Keep Evil-specific code in `magent-evil.el` (optional, not loaded by default); no `evil-*` calls in core UI.
 - Package metadata stays centralized in `magent.el` / `magent-pkg.el`; non-main modules must NOT carry `Package-Requires` headers (package-lint treats them as ineffective).

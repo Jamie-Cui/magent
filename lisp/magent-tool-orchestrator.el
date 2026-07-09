@@ -43,7 +43,7 @@
 (defun magent-tool-orchestrator--call-audit
     (orchestrator tool-spec arg-values decision source)
   "Call ORCHESTRATOR audit hook."
-  (when-let ((fn (magent-tool-orchestrator-audit-function orchestrator)))
+  (when-let* ((fn (magent-tool-orchestrator-audit-function orchestrator)))
     (funcall fn tool-spec arg-values decision source
              (magent-tool-orchestrator-request-context orchestrator))))
 
@@ -55,7 +55,7 @@
 (defun magent-tool-orchestrator--finish-one
     (orchestrator tool-spec arg-values raw-call result)
   "Record one tool RESULT through ORCHESTRATOR callbacks."
-  (when-let ((fn (magent-tool-orchestrator-result-callback orchestrator)))
+  (when-let* ((fn (magent-tool-orchestrator-result-callback orchestrator)))
     (funcall fn tool-spec arg-values raw-call result)))
 
 (defun magent-tool-orchestrator--annotate-approval
@@ -68,18 +68,18 @@
 
 (defun magent-tool-orchestrator--file-arg-index (orchestrator args-spec)
   "Return file arg index for ARGS-SPEC using ORCHESTRATOR."
-  (when-let ((fn (magent-tool-orchestrator-file-arg-index-function orchestrator)))
+  (when-let* ((fn (magent-tool-orchestrator-file-arg-index-function orchestrator)))
     (funcall fn args-spec)))
 
 (defun magent-tool-orchestrator--args-plist (orchestrator args-spec arg-values)
   "Return plist args via ORCHESTRATOR."
-  (if-let ((fn (magent-tool-orchestrator-args-to-plist-function orchestrator)))
+  (if-let* ((fn (magent-tool-orchestrator-args-to-plist-function orchestrator)))
       (funcall fn args-spec arg-values)
     arg-values))
 
 (defun magent-tool-orchestrator--summary (orchestrator arg-values args-spec)
   "Return approval summary via ORCHESTRATOR."
-  (if-let ((fn (magent-tool-orchestrator-summarize-function orchestrator)))
+  (if-let* ((fn (magent-tool-orchestrator-summarize-function orchestrator)))
       (funcall fn arg-values args-spec)
     (format "%S" arg-values)))
 

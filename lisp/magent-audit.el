@@ -329,7 +329,7 @@ refresh.  The first two arguments follow `revert-buffer'."
 
 (defun magent-audit--current-agent-name (session)
   "Return the current agent name for SESSION, or nil."
-  (when-let ((agent (and session (magent-session-agent session))))
+  (when-let* ((agent (and session (magent-session-agent session))))
     (if (fboundp 'magent-agent-info-name)
         (magent-agent-info-name agent)
       (format "%s" agent))))
@@ -624,7 +624,7 @@ refresh.  The first two arguments follow `revert-buffer'."
   (let ((field (magent-audit--filter-field key))
         values)
     (dolist (record magent-audit--all-records)
-      (when-let ((value (alist-get field record)))
+      (when-let* ((value (alist-get field record)))
         (push value values)))
     (sort (delete-dups values) #'string-lessp)))
 
@@ -705,7 +705,7 @@ When EXPANDED is non-nil, include the expanded marker."
                                session_id request_id call_id tool_name perm_key
                                decision decision_source status title summary detail
                                args_preview result_preview))
-      (when-let ((value (alist-get field record)))
+      (when-let* ((value (alist-get field record)))
         (push (magent-audit--detail-line field value) lines)))
     (concat
      (mapconcat #'identity (nreverse lines) "\n")

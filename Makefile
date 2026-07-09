@@ -32,7 +32,7 @@ LOADPATH = -L lisp \
 
 # Compilation flags
 BYTE_COMPILE_FLAGS = --eval "(setq byte-compile-error-on-warn nil)" \
-	--eval "(setq byte-compile-warnings '(not cl-functions obsolete))"
+	--eval "(setq byte-compile-warnings '(not cl-functions))"
 
 SRCS = lisp/magent-config.el \
        lisp/magent-json.el \
@@ -45,32 +45,26 @@ SRCS = lisp/magent-config.el \
        lisp/magent-llm.el \
        lisp/magent-llm-gptel.el \
        lisp/magent-agent-loop.el \
-       lisp/magent-events.el \
        lisp/magent-approval.el \
        lisp/magent-file-loader.el \
        lisp/magent-session.el \
        lisp/magent-transcript-context.el \
-       lisp/magent-context.el \
        lisp/magent-runtime.el \
        lisp/magent-runtime-queue.el \
        lisp/magent-tools.el \
        lisp/magent-tool-runtime.el \
-       lisp/magent-tool-registry.el \
        lisp/magent-tool-orchestrator.el \
        lisp/magent-legacy-queue.el \
-       lisp/magent-turn.el \
        lisp/magent-agent-info.el \
        lisp/magent-agent-builtins.el \
        lisp/magent-agent.el \
        lisp/magent-runtime-api.el \
        lisp/magent-acp.el \
        lisp/magent-agent-shell.el \
-       lisp/magent-agent-types.el \
        lisp/magent-agent-registry.el \
        lisp/magent-agent-file.el \
        lisp/magent-permission.el \
        lisp/magent-markdown-to-org.el \
-       lisp/magent-md2org.el \
        lisp/magent-ui.el \
        lisp/magent-ui-legacy.el \
        lisp/magent-evil.el \

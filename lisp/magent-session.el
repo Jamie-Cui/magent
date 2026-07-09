@@ -75,8 +75,8 @@ If CONTENT is a list of content blocks, concatenate their text fields."
 
 (defun magent-session--assistant-response-reusable-p (content)
   "Return non-nil when assistant CONTENT should be reused in prompts.
-Empty assistant replies and synthetic failure text are preserved in the
-saved transcript, but should not be fed back into later requests."
+Empty assistant replies and synthetic failure text are preserved in the saved
+transcript, but should not be fed back into later requests."
   (let ((text (string-trim (magent-session--content-to-string content))))
     (and (not (string-empty-p text))
          (not (magent-session--assistant-response-error-p content)))))
@@ -104,7 +104,7 @@ saved transcript, but should not be fed back into later requests."
       (let ((role (cdr (assq 'role msg)))
             (content (cdr (assq 'content msg))))
         (when (member role '(user assistant "user" "assistant"))
-          (when-let ((title (magent-session--clean-summary-title
+          (when-let* ((title (magent-session--clean-summary-title
                              (magent-session--content-to-string content))))
             (throw 'title title)))))
     nil))
@@ -224,12 +224,12 @@ saved transcript, but should not be fed back into later requests."
                        (list (magent-session--message-item-from-legacy
                               role content
                               (magent-thread-turn-id current-turn)))))
-          (setf (magent-thread-turn-status current-turn)
-                (if (magent-session--assistant-response-error-p content)
-                    'failed
-                  'completed)
-                (magent-thread-turn-completed-at current-turn) (float-time)
-                (magent-thread-turn-duration-ms current-turn) 0)))))
+	          (setf (magent-thread-turn-status current-turn)
+	                (if (magent-session--assistant-response-error-p content)
+	                    'failed
+	                  'completed)
+	                (magent-thread-turn-completed-at current-turn) (float-time)
+	                (magent-thread-turn-duration-ms current-turn) 0)))))
     thread))
 
 (defun magent-session-refresh-projections (session)
@@ -339,7 +339,7 @@ Return JOB."
     (session id status &optional result error)
   "Set SESSION child-agent job ID to STATUS.
 Optionally record RESULT or ERROR.  Return the updated job, or nil."
-  (when-let ((job (magent-session-agent-job session id)))
+  (when-let* ((job (magent-session-agent-job session id)))
     (magent-agent-job-set-status job status result error)))
 
 (defun magent-session-activate (&optional scope)
@@ -670,6 +670,25 @@ before the timer fires."
     (setq magent-session--save-timer timer)
     magent-session--save-timer))
 
+(defun magent-session-save-deferred-for-session (session &optional scope delay)
+  "Schedule SESSION to be saved for SCOPE after Emacs is idle.
+SCOPE defaults to SESSION's ledger scope, falling back to the active scope.
+The active session and scope are restored before returning."
+  (let ((previous-session magent--current-session)
+        (previous-scope magent-session--current-scope)
+        (target-scope (or scope
+                          (magent-session--scope-for-thread session)
+                          magent-session--current-scope)))
+    (unwind-protect
+        (progn
+          (setq magent--current-session session
+                magent-session--current-scope target-scope)
+          (if delay
+              (magent-session-save-deferred delay)
+            (magent-session-save-deferred)))
+      (setq magent--current-session previous-session
+            magent-session--current-scope previous-scope))))
+
 (defun magent-session-read-file (filepath)
   "Read session data from FILEPATH without changing active session state.
 Return a plist with keys `:scope', `:session', and `:id', or nil on error."
@@ -739,7 +758,7 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
   "Refresh SESSION's agent pointer from the current registry.
 When the session references a custom agent that is no longer active for the
 current scope, clear it so Magent falls back to the default agent."
-  (when-let ((agent (magent-session-agent session)))
+  (when-let* ((agent (magent-session-agent session)))
     (when (fboundp 'magent-agent-registry-get)
       (setf (magent-session-agent session)
             (magent-agent-registry-get (magent-agent-info-name agent)))))

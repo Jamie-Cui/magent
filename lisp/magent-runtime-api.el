@@ -132,7 +132,7 @@
 
 (defun magent-runtime-api--notify-submission (submission type &rest props)
   "Notify SUBMISSION's observer of TYPE with PROPS."
-  (when-let ((observer (magent-runtime-submission-observer submission)))
+  (when-let* ((observer (magent-runtime-submission-observer submission)))
     (let ((event (append
                   (list :type type
                         :time (float-time)
@@ -152,7 +152,11 @@
 (defun magent-runtime-api--prepare-turn (runtime-session prompt)
   "Create a queued ledger turn for PROMPT in RUNTIME-SESSION."
   (let* ((session (magent-runtime-session-magent-session runtime-session))
-         (thread (magent-session-thread-ledger session))
+         (scope (or (magent-runtime-session-scope runtime-session)
+                    (magent-session-current-scope)))
+         (thread (let ((magent--current-session session)
+                       (magent-session--current-scope scope))
+                   (magent-session-thread-ledger session)))
          (turn (magent-thread-queue-turn
                 thread prompt nil (list :source 'runtime-queue))))
     (magent-thread-record-user-message-if-needed
@@ -183,7 +187,7 @@
                      (magent-runtime-queue-active-submission))))
     (magent-runtime-queue-finish-active
      status result #'magent-runtime-api--start-submission))
-  (when-let ((fn (magent-runtime-submission-on-complete submission)))
+  (when-let* ((fn (magent-runtime-submission-on-complete submission)))
     (condition-case err
         (funcall fn status result)
       (error
@@ -197,9 +201,49 @@
      (magent-runtime-session-scope runtime-session)
      (magent-runtime-session-magent-session runtime-session))))
 
+(defun magent-runtime-api--mark-submission-turn-started (submission)
+  "Mark SUBMISSION's ledger turn in progress, when it has one."
+  (when-let* ((runtime-session (magent-runtime-submission-session submission))
+              (session (magent-runtime-session-magent-session runtime-session))
+              (thread (magent-session-thread-ledger session))
+              (turn-id (magent-runtime-submission-turn-id submission))
+              (turn (magent-thread-find-turn thread turn-id)))
+    (unless (magent-thread-terminal-turn-p turn)
+      (magent-thread-start-turn thread turn-id)
+      (magent-session-refresh-projections session)
+      (magent-session-save-deferred-for-session
+       session (magent-runtime-session-scope runtime-session)))))
+
+(defun magent-runtime-api--mark-submission-turn-dropped (submission detail)
+  "Mark queued SUBMISSION's ledger turn dropped with DETAIL."
+  (when-let* ((runtime-session (magent-runtime-submission-session submission))
+              (session (magent-runtime-session-magent-session runtime-session))
+              (thread (magent-session-thread-ledger session))
+              (turn-id (magent-runtime-submission-turn-id submission))
+              (turn (magent-thread-find-turn thread turn-id)))
+    (unless (magent-thread-terminal-turn-p turn)
+      (magent-thread-drop-turn thread turn-id detail)
+      (magent-session-refresh-projections session)
+      (magent-session-save-deferred-for-session
+       session (magent-runtime-session-scope runtime-session)))))
+
+(defun magent-runtime-api--mark-submission-turn-interrupted (submission detail)
+  "Mark active SUBMISSION's ledger turn interrupted with DETAIL."
+  (when-let* ((runtime-session (magent-runtime-submission-session submission))
+              (session (magent-runtime-session-magent-session runtime-session))
+              (thread (magent-session-thread-ledger session))
+              (turn-id (magent-runtime-submission-turn-id submission))
+              (turn (magent-thread-find-turn thread turn-id)))
+    (unless (magent-thread-terminal-turn-p turn)
+      (magent-thread-interrupt-turn thread turn-id detail)
+      (magent-session-refresh-projections session)
+      (magent-session-save-deferred-for-session
+       session (magent-runtime-session-scope runtime-session)))))
+
 (defun magent-runtime-api--start-submission (submission)
   "Start executing SUBMISSION."
   (magent-runtime-api--activate-submission-session submission)
+  (magent-runtime-api--mark-submission-turn-started submission)
   (magent-runtime-api--notify-submission submission 'turn-start)
   (magent-runtime-api--notify-submission
    submission 'user-message
@@ -286,18 +330,22 @@ OBSERVER receives request-local Magent-native events."
          (removed (magent-runtime-queue-remove-session session-id))
          (active (magent-runtime-queue-active-submission)))
     (dolist (submission removed)
+      (magent-runtime-api--mark-submission-turn-dropped
+       submission "Queued turn cancelled")
       (magent-runtime-api--notify-submission submission 'turn-cancelled
                                         :status 'cancelled
                                         :result "Queued turn cancelled")
-      (when-let ((fn (magent-runtime-submission-on-complete submission)))
+      (when-let* ((fn (magent-runtime-submission-on-complete submission)))
         (funcall fn 'cancelled "Queued turn cancelled")))
     (when (and active
                (equal (magent-runtime-submission-session-id active)
                       session-id))
       (setf (magent-runtime-submission-status active) 'cancelled)
-      (when-let ((handle (magent-runtime-submission-handle active)))
+      (when-let* ((handle (magent-runtime-submission-handle active)))
         (when (magent-agent-loop-p handle)
           (magent-agent-loop-abort handle)))
+      (magent-runtime-api--mark-submission-turn-interrupted
+       active "Active turn cancelled")
       (magent-runtime-api--finish-submission
        active 'cancelled "Active turn cancelled"))
     (+ (length removed)

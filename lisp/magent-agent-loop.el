@@ -220,7 +220,7 @@ Recognized keys are `:request', `:sampler', `:status', and
            ((string= name "list_agents")
             "child jobs")
            ((string= name "bash")
-            (if-let ((cmd (plist-get args :command)))
+            (if-let* ((cmd (plist-get args :command)))
                 (truncate-string-to-width
                  cmd magent-ui-tool-input-max-length nil nil "...")
               "?"))
@@ -233,7 +233,7 @@ Recognized keys are `:request', `:sampler', `:status', and
            ((string= name "glob")
             (or (plist-get args :pattern) "?"))
            ((string= name "emacs_eval")
-            (if-let ((sexp (plist-get args :sexp)))
+            (if-let* ((sexp (plist-get args :sexp)))
                 (truncate-string-to-width
                  sexp magent-ui-tool-input-max-length nil nil "...")
               "?"))
@@ -392,7 +392,7 @@ Recognized keys are `:request', `:sampler', `:status', and
   "Process the next queued tool in QUEUE when idle."
   (unless (or (magent-agent-loop-tool-queue-aborted queue)
               (magent-agent-loop-tool-queue-busy queue))
-    (when-let ((item (pop (magent-agent-loop-tool-queue-items queue))))
+    (when-let* ((item (pop (magent-agent-loop-tool-queue-items queue))))
       (magent-agent-loop--execute-tool-item queue item))))
 
 (defun magent-agent-loop-run-tool
@@ -558,7 +558,7 @@ Recognized keys are `:request', `:sampler', `:status', and
   "Record TOOL-SPEC RESULT for LOOP's session and return LOOP.
 ARG-VALUES are stored as the model-visible tool arguments.  RAW-CALL can
 carry provider-specific ids and names."
-  (when-let ((session (magent-agent-loop-session loop)))
+  (when-let* ((session (magent-agent-loop-session loop)))
     (let* ((thread (magent-session-thread-ledger session))
            (turn-id (magent-agent-loop--ensure-turn-id loop thread))
            (call-id (or (plist-get raw-call :id)
@@ -691,7 +691,7 @@ request after model-visible tool output has been recorded."
          unknown-results)
     (setf (magent-agent-loop-tool-calls loop) nil)
     (dolist (event events)
-      (if-let ((call (magent-agent-loop-tool-event-to-call loop event)))
+      (if-let* ((call (magent-agent-loop-tool-event-to-call loop event)))
           (progn
             (magent-agent-loop--record-tool-start
              loop
@@ -748,7 +748,7 @@ session, the existing request prompt is reused."
     (unless (magent-llm-request-p request)
       (error "Agent loop requires a magent-llm-request"))
     (magent-llm-request-create
-     :prompt (if-let ((session (magent-agent-loop-session loop)))
+     :prompt (if-let* ((session (magent-agent-loop-session loop)))
                  (magent-session-to-gptel-prompt-list
                   session
                   (magent-agent-loop-turn-id loop))
@@ -779,7 +779,7 @@ session, the existing request prompt is reused."
 
 (defun magent-agent-loop--cancel-request-timeout (loop)
   "Cancel LOOP's active provider request timeout timer."
-  (when-let ((timer (magent-agent-loop-request-timeout-timer loop)))
+  (when-let* ((timer (magent-agent-loop-request-timeout-timer loop)))
     (cancel-timer timer)
     (setf (magent-agent-loop-request-timeout-timer loop) nil)))
 
@@ -836,16 +836,29 @@ provider request exceeds `magent-request-timeout'."
       (when-let* ((session (magent-agent-loop-session loop))
                   (thread (magent-session-thread-ledger session))
                   (turn-id (magent-agent-loop-turn-id loop)))
-        (magent-thread-cancel-in-progress-items
-         thread turn-id "User aborted")
-        (magent-session-refresh-projections session))
-      (when-let ((request-context (magent-agent-loop-request-context loop)))
+        (let ((changed nil))
+          (when (> (magent-thread-cancel-in-progress-items
+                    thread turn-id "User aborted")
+                   0)
+            (setq changed t))
+          (when-let* ((turn (magent-thread-find-turn thread turn-id)))
+            (unless (magent-thread-terminal-turn-p turn)
+              (magent-thread-interrupt-turn thread turn-id "User aborted")
+              (setq changed t)))
+          (when changed
+            (magent-session-refresh-projections session)
+            (magent-session-save-deferred-for-session
+             session
+             (when-let* ((request-context
+                          (magent-agent-loop-request-context loop)))
+               (magent-request-context-scope request-context))))))
+      (when-let* ((request-context (magent-agent-loop-request-context loop)))
         (when (eq (magent-request-context-abort-controller request-context)
                   (magent-agent-loop-abort-controller loop))
           (setf (magent-request-context-abort-controller request-context)
                 nil)))
       (unless already-aborted
-        (when-let ((context (magent-agent-loop--event-context
+        (when-let* ((context (magent-agent-loop--event-context
                              (magent-agent-loop-request-context loop))))
           (magent-lifecycle-events-end-turn context 'cancelled "User aborted")))))
   loop)
@@ -866,7 +879,7 @@ the sampler return value."
     (unless sampler
       (error "Agent loop requires a sampler"))
     (setf (magent-agent-loop-status loop) 'running)
-    (when-let ((request-context (magent-agent-loop-request-context loop)))
+    (when-let* ((request-context (magent-agent-loop-request-context loop)))
       (setf (magent-request-context-abort-controller request-context)
             (magent-agent-loop-abort-controller loop))
       (unless (magent-agent-loop-turn-id loop)

@@ -260,13 +260,6 @@ wire-protocol configuration."
   "Return EFFORT option as an ACP/frontmatter string."
   (symbol-name (magent-effort-option-or-auto effort)))
 
-(defvaralias 'magent-always-bypass-permission 'magent-bypass-permission)
-(make-obsolete-variable 'magent-always-bypass-permission
-                        'magent-bypass-permission "0.1.0")
-(defvaralias 'magent-by-pass-permission 'magent-bypass-permission)
-(make-obsolete-variable 'magent-by-pass-permission
-                        'magent-bypass-permission "0.1.0")
-
 (defcustom magent-bypass-permission nil
   "DANGEROUS: Bypass permission checks for all tools.
 When non-nil, all tool calls are executed without confirmation,
@@ -515,14 +508,6 @@ In other words, `ignore' means \"hidden but kept\", while nil means
                  (const :tag "Discard reasoning entirely" nil))
   :group 'magent)
 
-(defcustom magent-ui-wrap-reasoning-in-think-block t
-  "Legacy compatibility flag for the old `#+begin_think' UI.
-The current workspace renders reasoning as compact status rows and
-does not display raw reasoning text.  This option is retained so
-older configurations do not fail when loaded."
-  :type 'boolean
-  :group 'magent)
-
 (defcustom magent-auto-context t
   "Whether to automatically attach calling buffer context in `magent-dwim'.
 When non-nil, buffer name, file path, major mode, line number,
@@ -587,7 +572,7 @@ and project.el.  Unless NO-FALLBACK is non-nil, return DIRECTORY
           (ignore-errors (projectile-project-root)))
         (when (fboundp 'project-current)
           (ignore-errors
-            (when-let ((proj (project-current nil)))
+            (when-let* ((proj (project-current nil)))
               (if (fboundp 'project-root)
                   (project-root proj)
                 (car (with-no-warnings (project-roots proj)))))))

@@ -418,14 +418,14 @@ Each handler runs inside the CLIENT's context buffer (via
       (lambda (event)
         (pcase (plist-get event :type)
           ('assistant-delta
-           (when-let ((text (stream-text 'assistant (plist-get event :text))))
+           (when-let* ((text (stream-text 'assistant (plist-get event :text))))
              (magent-acp--session-update
               client session-id
               `((sessionUpdate . "agent_message_chunk")
                 (content . ,(magent-acp--content-block text))))))
           ('reasoning-delta
            (when (eq magent-include-reasoning t)
-             (when-let ((text (stream-text 'reasoning
+             (when-let* ((text (stream-text 'reasoning
                                            (plist-get event :text))))
                (magent-acp--session-update
                 client session-id
@@ -580,7 +580,7 @@ Each handler runs inside the CLIENT's context buffer (via
 (defun magent-acp--runtime-session-by-id (session-id)
   "Return runtime session SESSION-ID, loading it from disk if needed."
   (or (magent-runtime-session-from-id session-id)
-      (when-let ((file (magent-acp--session-file-by-id session-id)))
+      (when-let* ((file (magent-acp--session-file-by-id session-id)))
         (magent-runtime-load-session-file file))))
 
 (defun magent-acp--session-list-response ()
@@ -808,6 +808,9 @@ active message running forever)."
        (when-let* ((session-id (map-elt params 'sessionId))
                    (runtime-session
                     (magent-acp--runtime-session-by-id session-id)))
+         (magent-log "INFO ACP session cancel: session=%s reason=%s"
+                     session-id
+                     (or (map-elt params 'reason) ""))
          (magent-runtime-cancel runtime-session)))
       (_
        (magent-log "WARN unsupported ACP notification: %s" method)))))

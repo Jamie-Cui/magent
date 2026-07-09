@@ -186,7 +186,7 @@ bindings.  Loading `magent' alone does not enable this mode."
 (provide 'magent-evil)
 
 ;; Local Variables:
-;; byte-compile-warnings: (not cl-functions obsolete)
+;; byte-compile-warnings: (not cl-functions)
 ;; no-byte-compile: nil
 ;; no-native-compile: nil
 ;; End:

@@ -60,11 +60,6 @@ permission rules."
            (if magent-bypass-permission "enabled" "disabled"))
   magent-bypass-permission)
 
-(define-obsolete-function-alias
-  'magent-toggle-by-pass-permission
-  #'magent-toggle-bypass-permission
-  "0.1.0")
-
 (defun magent-permission-bypass-p ()
   "Return non-nil when Magent should bypass permission checks."
   magent-bypass-permission)
@@ -207,18 +202,18 @@ Returns t if ask, nil otherwise."
 
 (defun magent-permission-session-override (perm-key &optional session)
   "Return session override for PERM-KEY in SESSION, or nil if none."
-  (when-let ((target (magent-permission--target-session session)))
+  (when-let* ((target (magent-permission--target-session session)))
     (magent-session-approval-override target perm-key)))
 
 (defun magent-permission-set-session-override (perm-key value &optional session)
   "Set session override for PERM-KEY to VALUE in SESSION.
 VALUE must be \\='allow or \\='deny."
-  (when-let ((target (magent-permission--target-session session)))
+  (when-let* ((target (magent-permission--target-session session)))
     (magent-session-set-approval-override target perm-key value)))
 
 (defun magent-permission-clear-session-overrides (&optional session)
   "Clear all session-level permission overrides in SESSION."
-  (when-let ((target (magent-permission--target-session session)))
+  (when-let* ((target (magent-permission--target-session session)))
     (magent-session-clear-approval-overrides target)))
 
 ;;; Tool availability

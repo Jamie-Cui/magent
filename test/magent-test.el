@@ -228,7 +228,6 @@
         (gptel-tools nil)
         (gptel-use-tools nil)
         (magent-include-reasoning t)
-        (magent-ui-wrap-reasoning-in-think-block t)
         (response nil))
     (magent-session-reset)
     (magent-ui-clear-buffer)
@@ -800,22 +799,6 @@
       (should-not magent-bypass-permission)
       (should (equal (car messages) "Magent permission bypass disabled")))))
 
-(ert-deftest magent-test-toggle-bypass-permission-command-clears-obsolete-alias-state ()
-  "Test the toggle command clears bypass enabled through the obsolete alias."
-  (require 'magent-permission)
-  (let ((magent-bypass-permission nil)
-        (messages nil))
-    (cl-letf (((symbol-function 'message)
-               (lambda (fmt &rest args)
-                 (push (apply #'format fmt args) messages))))
-      (setq magent-always-bypass-permission t)
-      (should magent-bypass-permission)
-      (should (magent-permission-bypass-p))
-      (should (eq (magent-toggle-bypass-permission 0) nil))
-      (should-not magent-bypass-permission)
-      (should-not (magent-permission-bypass-p))
-      (should (equal (car messages) "Magent permission bypass disabled")))))
-
 (ert-deftest magent-test-permission-merge-simple ()
   "Test merging two simple rulesets."
   (require 'magent-permission)
@@ -1170,13 +1153,6 @@
     ;; all matches both
     (should (magent-agent-info-mode-p all-agent 'primary))
     (should (magent-agent-info-mode-p all-agent 'subagent))))
-
-(ert-deftest magent-test-agent-types-legacy-feature-remains-requireable ()
-  "Test old agent-types feature name loads through its explicit shim file."
-  (require 'magent-agent-types)
-  (should (featurep 'magent-agent-types))
-  (should (featurep 'magent-agent-registry))
-  (should (functionp #'magent-agent-types-initialize)))
 
 (ert-deftest magent-test-agent-registry-register-and-get ()
   "Test agent registration and retrieval."
@@ -1751,6 +1727,19 @@
                                           ""))))
       (should (string-match-p "AGENTS.md"
                               (or (magent-skill-default-prompt skill) ""))))))
+
+(ert-deftest magent-test-skills-load-all-includes-command-skills ()
+  "Test bundled slash command skills have default prompts."
+  (require 'magent-skills)
+  (let ((magent-skills--registry nil))
+    (cl-letf (((symbol-function 'magent-log) #'ignore))
+      (magent-skills-load-all (list magent-skills--builtin-dir)))
+    (dolist (name '("init" "review" "fix" "test" "explain"))
+      (let ((skill (magent-skills-get name)))
+        (should skill)
+        (should (eq (magent-skill-type skill) 'instruction))
+        (should-not (string-blank-p
+                     (or (magent-skill-default-prompt skill) "")))))))
 
 (ert-deftest magent-test-skill-reload-restores-builtin-skill ()
   "Test skill reload restores code-defined built-ins even from an empty registry."
@@ -4991,6 +4980,38 @@
     (should (eq (magent-agent-loop-status loop) 'cancelled))
     (should-not (magent-request-context-abort-controller context))))
 
+(ert-deftest magent-test-agent-loop-abort-interrupts-ledger-turn ()
+  "Test loop abort marks its ledger turn interrupted and schedules a save."
+  (require 'magent-agent-loop)
+  (let* ((magent-session--current-scope "/tmp/project")
+         (session (magent-session-create :id "session-1"))
+         (thread (magent-session-thread-ledger session))
+         (turn (magent-thread-create-turn thread "hello"))
+         (item (magent-thread-start-item
+                thread (magent-thread-turn-id turn) 'reasoning))
+         (context (magent-request-context-create
+                   :scope "/tmp/project"
+                   :session session
+                   :turn-id (magent-thread-turn-id turn)))
+         (loop (magent-agent-loop-create
+                :session session
+                :turn-id (magent-thread-turn-id turn)
+                :request-context context))
+         saved)
+    (setf (magent-request-context-abort-controller context)
+          (magent-agent-loop-abort-controller loop))
+    (cl-letf (((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
+              ((symbol-function 'magent-session-save-deferred)
+               (lambda ()
+                 (setq saved
+                       (list magent--current-session
+                             magent-session--current-scope)))))
+      (magent-agent-loop-abort loop))
+    (should (eq (magent-thread-turn-status turn) 'interrupted))
+    (should (eq (magent-thread-item-status item) 'cancelled))
+    (should (eq (car saved) session))
+    (should (equal (cadr saved) "/tmp/project"))))
+
 (ert-deftest magent-test-ui-interrupt-aborts-agent-loop ()
   "Test UI interrupt aborts the active Magent-owned loop."
   (require 'magent-ui)
@@ -7904,29 +7925,43 @@ tolerate leading whitespace."
   (require 'magent-runtime-api)
   (let ((magent-runtime-queue--active nil)
         (magent-runtime-queue--pending nil)
-        callbacks notifications started)
+        (magent--current-session nil)
+        (magent-session--current-scope 'global)
+        callbacks notifications started save-calls)
     (cl-labels
         ((make-runtime-session
-          (id)
-          (magent-runtime-session-create :id id))
+          (id scope)
+          (magent-runtime-session-create
+           :id id
+           :scope scope
+           :magent-session (magent-session-create :id id)))
          (make-submission
           (id session)
-          (let ((session-id (magent-runtime-session-id session)))
+          (let* ((session-id (magent-runtime-session-id session))
+                 (magent-session
+                  (magent-runtime-session-magent-session session))
+                 (thread (magent-session-thread-ledger magent-session))
+                 (turn (magent-thread-queue-turn
+                        thread id nil (list :source 'test))))
             (magent-runtime-submission-create
              :id id
              :session session
              :session-id session-id
+             :turn-id (magent-thread-turn-id turn)
              :observer
              (lambda (event)
                (push (list id (plist-get event :type)) notifications))
              :on-complete
              (lambda (status result)
                (push (list id status result) callbacks))))))
-      (let* ((session-a (make-runtime-session "session-a"))
-             (session-b (make-runtime-session "session-b"))
+      (let* ((session-a (make-runtime-session "session-a" "/tmp/project-a"))
+             (session-b (make-runtime-session "session-b" "/tmp/project-b"))
              (active-a (make-submission "active-a" session-a))
              (queued-a (make-submission "queued-a" session-a))
              (queued-b (make-submission "queued-b" session-b)))
+        (setq magent--current-session
+              (magent-runtime-session-magent-session session-b)
+              magent-session--current-scope "/tmp/project-b")
         (magent-runtime-queue-submit active-a #'ignore)
         (magent-runtime-queue-submit queued-a #'ignore)
         (magent-runtime-queue-submit queued-b #'ignore)
@@ -7935,7 +7970,12 @@ tolerate leading whitespace."
                      (push (magent-runtime-submission-id submission)
                            started)
                      (setf (magent-runtime-submission-status submission)
-                           'running))))
+                           'running)))
+                  ((symbol-function 'magent-session-save-deferred)
+                   (lambda ()
+                     (push (list magent--current-session
+                                 magent-session--current-scope)
+                           save-calls))))
           (should (= (magent-runtime-cancel session-a) 2)))
         (should (eq (magent-runtime-submission-status active-a)
                     'cancelled))
@@ -7951,13 +7991,42 @@ tolerate leading whitespace."
         (should (assoc "queued-a" callbacks))
         (should-not (assoc "queued-b" callbacks))
         (should (assoc "active-a" notifications))
-        (should (assoc "queued-a" notifications))))))
+        (should (assoc "queued-a" notifications))
+        (let* ((thread-a
+                (magent-session-thread-ledger
+                 (magent-runtime-session-magent-session session-a)))
+               (active-turn
+                (magent-thread-find-turn
+                 thread-a (magent-runtime-submission-turn-id active-a)))
+               (queued-turn
+                (magent-thread-find-turn
+                 thread-a (magent-runtime-submission-turn-id queued-a))))
+          (should (eq (magent-thread-turn-status active-turn)
+                      'interrupted))
+          (should (eq (magent-thread-turn-status queued-turn)
+                      'dropped)))
+        (should (= (cl-count
+                    (magent-runtime-session-magent-session session-a)
+                    save-calls
+                    :key #'car
+                    :test #'eq)
+                   2))
+        (should-not
+         (cl-find (magent-runtime-session-magent-session session-b)
+                  save-calls
+                  :key #'car
+                  :test #'eq))
+        (should (cl-every
+                 (lambda (call)
+                   (equal (cadr call) "/tmp/project-a"))
+                 save-calls))))))
 
 (ert-deftest magent-test-runtime-submit-carries-session-effort ()
   "Test runtime submissions copy session effort into request context."
   (require 'magent-runtime-api)
   (let* ((magent-runtime-queue--active nil)
          (magent-runtime-queue--pending nil)
+         (magent-session--current-scope 'global)
          (session (magent-session-create :id "session-1"))
          (runtime-session
           (magent-runtime-session-create
@@ -7971,10 +8040,19 @@ tolerate leading whitespace."
                  (setq captured-context (plist-get args :request-context))
                  'loop))
               ((symbol-function 'magent-runtime-api--finish-submission)
+               #'ignore)
+              ((symbol-function 'magent-session-save-deferred)
                #'ignore))
       (magent-runtime-submit runtime-session "hello"))
     (should (magent-request-context-p captured-context))
-    (should (eq (magent-request-context-effort captured-context) 'xhigh))))
+    (should (eq (magent-request-context-effort captured-context) 'xhigh))
+    (should (eq (magent-thread-turn-status
+                 (car (magent-thread-turns
+                       (magent-session-thread-ledger session))))
+                'in-progress))
+    (should (equal (magent-thread-scope
+                    (magent-session-thread-ledger session))
+                   "/tmp/project"))))
 
 (ert-deftest magent-test-runtime-submit-omits-unset-session-effort ()
   "Test unset runtime session effort leaves agent/default effort available."
@@ -7994,6 +8072,8 @@ tolerate leading whitespace."
                  (setq captured-context (plist-get args :request-context))
                  'loop))
               ((symbol-function 'magent-runtime-api--finish-submission)
+               #'ignore)
+              ((symbol-function 'magent-session-save-deferred)
                #'ignore))
       (magent-runtime-submit runtime-session "hello"))
     (should (magent-request-context-p captured-context))
@@ -8348,8 +8428,7 @@ tolerate leading whitespace."
 (ert-deftest magent-test-ui-reasoning-block-stays-expanded ()
   "Test reasoning renders as a compact status row."
   (require 'magent-ui)
-  (let ((fold-call nil)
-        (magent-ui-wrap-reasoning-in-think-block t))
+  (let ((fold-call nil))
     (magent-ui-clear-buffer)
     (cl-letf (((symbol-function 'magent-ui--fold-block-at)
                (lambda (pos block-re)
@@ -8361,19 +8440,6 @@ tolerate leading whitespace."
     (with-current-buffer (magent-ui-get-buffer)
       (should (equal (buffer-string)
                      "Reasoning [done] 5 chars\n"))
-      (should (null magent-ui--reasoning-start))
-      (should magent-ui--streaming-has-text))))
-
-(ert-deftest magent-test-ui-reasoning-ignores-think-block-wrapper-setting ()
-  "Test reasoning status rows ignore the legacy think-block setting."
-  (require 'magent-ui)
-  (let ((magent-ui-wrap-reasoning-in-think-block nil))
-    (magent-ui-clear-buffer)
-    (magent-ui-insert-reasoning-start)
-    (magent-ui-insert-reasoning-text "alpha")
-    (magent-ui-insert-reasoning-end)
-    (with-current-buffer (magent-ui-get-buffer)
-      (should (equal (buffer-string) "Reasoning [done] 5 chars\n"))
       (should (null magent-ui--reasoning-start))
       (should magent-ui--streaming-has-text))))
 
@@ -8483,18 +8549,6 @@ tolerate leading whitespace."
                  "C-c m L" "C-c m t" "C-c m A" "C-c m T"
                  "C-c m j" "C-c m i" "C-c m v"))
     (should-not (lookup-key magent-mode-map (kbd key)))))
-
-(ert-deftest magent-test-populate-mode-map-removes-obsolete-bindings ()
-  "Test reloading `magent' removes old direct formal-command bindings."
-  (require 'magent)
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c m d") #'magent-diagnose-emacs)
-    (define-key map (kbd "C-c m A") #'magent-select-agent)
-    (magent--populate-mode-map map)
-    (should-not (lookup-key map (kbd "C-c m d")))
-    (should-not (lookup-key map (kbd "C-c m A")))
-    (should (eq (lookup-key map (kbd "C-c m ?"))
-                'magent-transient-menu))))
 
 (ert-deftest magent-test-list-agents-loads-project-scope-before-first-prompt ()
   "Test listing agents loads project-local agents without a prior prompt."

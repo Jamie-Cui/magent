@@ -54,7 +54,7 @@ is the current pending/completed entry when applicable."
 (defun magent-approval--local-clear-prompt-timer (request-id)
   "Cancel and forget the local prompt timer for REQUEST-ID."
   (when request-id
-    (when-let ((timer (gethash request-id magent-approval--local-prompt-timers)))
+    (when-let* ((timer (gethash request-id magent-approval--local-prompt-timers)))
       (cancel-timer timer))
     (remhash request-id magent-approval--local-prompt-timers)))
 
@@ -74,12 +74,12 @@ REQUEST-ID and ENTRY follow `magent-approval-state-change-functions'."
 
 (defun magent-approval-pending-request (request-id)
   "Return the pending request plist for REQUEST-ID, or nil."
-  (when-let ((entry (gethash request-id magent-approval--pending-requests)))
+  (when-let* ((entry (gethash request-id magent-approval--pending-requests)))
     (plist-get entry :request)))
 
 (defun magent-approval-request-provider (request-id)
   "Return the provider function recorded for REQUEST-ID, or nil."
-  (when-let ((entry (gethash request-id magent-approval--pending-requests)))
+  (when-let* ((entry (gethash request-id magent-approval--pending-requests)))
     (plist-get entry :provider)))
 
 (defun magent-approval-completed-request (request-id)
@@ -113,7 +113,7 @@ When PREDICATE is non-nil, count only requests for which
 (defun magent-approval-resolve-request (request-id decision)
   "Resolve REQUEST-ID with DECISION and invoke its callback.
 Return non-nil when a pending request was found."
-  (when-let ((entry (gethash request-id magent-approval--pending-requests)))
+  (when-let* ((entry (gethash request-id magent-approval--pending-requests)))
     (let* ((callback (plist-get entry :callback))
            (completed-entry (list :request (plist-get entry :request)
                                   :provider (plist-get entry :provider)
@@ -143,7 +143,7 @@ When PREDICATE is nil, clear all completed approvals."
                    (push request-id request-ids)))
                magent-approval--completed-requests)
       (dolist (request-id request-ids)
-        (when-let ((entry (gethash request-id magent-approval--completed-requests)))
+        (when-let* ((entry (gethash request-id magent-approval--completed-requests)))
           (remhash request-id magent-approval--completed-requests)
           (magent-approval--notify-state-change 'cleared request-id entry))))))
 
@@ -176,7 +176,7 @@ Return the number of dropped requests."
                  (push request-id request-ids)))
              magent-approval--pending-requests)
     (dolist (request-id request-ids)
-      (when-let ((entry (gethash request-id magent-approval--pending-requests)))
+      (when-let* ((entry (gethash request-id magent-approval--pending-requests)))
         (remhash request-id magent-approval--pending-requests)
         (setq dropped (1+ dropped))
         (magent-approval--notify-state-change 'dropped request-id entry)))

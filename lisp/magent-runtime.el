@@ -96,7 +96,7 @@
 
 (defun magent-request-context-session-id (context)
   "Return CONTEXT's session id, if available."
-  (when-let ((session (and context
+  (when-let* ((session (and context
                            (magent-request-context-session context))))
     (magent-session-get-id session)))
 
@@ -104,7 +104,7 @@
   "Notify CONTEXT's request-local observer of TYPE with PROPS.
 The observer receives a Magent-native plist event.  Observer errors are
 isolated so UI/backend rendering cannot break the active agent turn."
-  (when-let ((observer (and context
+  (when-let* ((observer (and context
                             (magent-request-context-observer context))))
     (setf (magent-request-context-observer-seq context)
           (1+ (or (magent-request-context-observer-seq context) 0)))
@@ -144,9 +144,9 @@ Nil means only static definitions are loaded.")
 (defun magent-runtime--run-static-initializers ()
   "Run all static definition initializers in dependency order."
   (dolist (spec magent-runtime--overlay-specs)
-    (when-let ((feature (plist-get spec :static-feature)))
+    (when-let* ((feature (plist-get spec :static-feature)))
       (require feature))
-    (when-let ((fn (plist-get spec :static)))
+    (when-let* ((fn (plist-get spec :static)))
       (funcall fn))))
 
 (defun magent-runtime--phase-feature-key (phase)
@@ -163,7 +163,7 @@ Nil means only static definitions are loaded.")
       (when-let* ((feature-key (magent-runtime--phase-feature-key phase))
                   (feature (plist-get spec feature-key)))
         (require feature))
-      (when-let ((fn (plist-get spec phase)))
+      (when-let* ((fn (plist-get spec phase)))
         (funcall fn scope)))))
 
 (defun magent-runtime-initialize-static ()
@@ -220,11 +220,11 @@ When FORCE is non-nil, reload the overlay even if SCOPE is unchanged."
       (when target-project-scope
         (magent-runtime--load-project-overlay target-project-scope)
         (setq magent-runtime--active-project-scope target-project-scope))))
-  (when-let ((session (and (not (eq scope 'global))
+  (when-let* ((session (and (not (eq scope 'global))
                            (magent-session-get-if-present scope))))
     (magent-session-refresh-agent session))
   (when (eq scope 'global)
-    (when-let ((session (magent-session-get-if-present 'global)))
+    (when-let* ((session (magent-session-get-if-present 'global)))
       (magent-session-refresh-agent session)))
   scope)
 

@@ -21,7 +21,7 @@ Follow this workflow:
    - workflow and verification notes
    - repository conventions
    - important gotchas
-5. Preserve project-specific instructions already present unless they are clearly obsolete.
+5. Preserve project-specific instructions already present unless they are clearly stale.
 6. Avoid large copied excerpts from docs. Summarize and link paths instead.
 7. Verify the edited file is readable and focused before reporting completion.
 

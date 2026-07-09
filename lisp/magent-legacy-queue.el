@@ -192,7 +192,7 @@ Return the next queued submission id when one is started."
                          :detail detail)))
   (setq magent-legacy-queue--active nil
         magent-legacy-queue--current-request-handle nil)
-  (when-let ((next (pop magent-legacy-queue--pending)))
+  (when-let* ((next (pop magent-legacy-queue--pending)))
     (magent-legacy-queue--start next)
     (magent-legacy-queue-submission-id next)))
 

@@ -77,7 +77,6 @@
     "lisp/magent-json.el"
     "lisp/magent-approval.el"
     "lisp/magent-lifecycle-events.el"
-    "lisp/magent-events.el"
     "lisp/magent-protocol.el"
     "lisp/magent-ledger.el"
     "lisp/magent-thread.el"
@@ -91,21 +90,16 @@
     "lisp/magent-agent-info.el"
     "lisp/magent-agent-builtins.el"
     "lisp/magent-agent-registry.el"
-    "lisp/magent-agent-types.el"
     "lisp/magent-agent-file.el"
     "lisp/magent-llm.el"
     "lisp/magent-llm-gptel.el"
     "lisp/magent-tools.el"
     "lisp/magent-tool-runtime.el"
-    "lisp/magent-tool-registry.el"
     "lisp/magent-tool-orchestrator.el"
     "lisp/magent-agent-loop.el"
     "lisp/magent-legacy-queue.el"
-    "lisp/magent-turn.el"
     "lisp/magent-transcript-context.el"
-    "lisp/magent-context.el"
     "lisp/magent-markdown-to-org.el"
-    "lisp/magent-md2org.el"
     "lisp/magent-agent.el"
     "lisp/magent-runtime-api.el"
     "lisp/magent-acp.el"
@@ -191,7 +185,7 @@ the same dispatcher directly."
 
 (defun magent-live-test--buffer-tail (name &optional limit)
   "Return redacted tail text from buffer NAME, or nil when absent."
-  (when-let ((buffer (get-buffer name)))
+  (when-let* ((buffer (get-buffer name)))
     (with-current-buffer buffer
       (magent-live-test--redact-sensitive-text
        (buffer-substring-no-properties
@@ -200,7 +194,7 @@ the same dispatcher directly."
 
 (defun magent-live-test--gptel-error-summary ()
   "Return a redacted, filtered `*gptel-log*' diagnostic summary."
-  (when-let ((tail (magent-live-test--buffer-tail "*gptel-log*" 6000)))
+  (when-let* ((tail (magent-live-test--buffer-tail "*gptel-log*" 6000)))
     (let* ((lines (split-string tail "\n" t))
            (interesting
             (cl-remove-if-not
@@ -1068,7 +1062,7 @@ while a live gptel run continues inside the target Emacs."
   (interactive)
   (let* ((selector (or selector '(tag :magent-live)))
          (file (or status-file (magent-live-test--async-status-path))))
-    (if-let ((kind (magent-live-test--async-real-kind selector)))
+    (if-let* ((kind (magent-live-test--async-real-kind selector)))
         (magent-live-test-run-real-async kind file)
       (setq magent-live-test--async-status-file file)
       (magent-live-test--write-async-status

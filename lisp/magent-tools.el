@@ -38,11 +38,18 @@
 (declare-function magent-ui-insert-agent-job-event "magent-ui")
 (declare-function magent-ui--snapshot-buffer-content "magent-ui")
 (declare-function gptel-backend-name "gptel")
+(declare-function dom-inner-text "dom")
 
 (defvar magent--current-session)
 (defvar magent-session--current-scope)
 
 ;;; Tool implementations
+
+(defun magent-tools--dom-inner-text (dom)
+  "Return the rendered text content of DOM."
+  (if (fboundp 'dom-inner-text)
+      (dom-inner-text dom)
+    (funcall (symbol-function (intern (concat "dom" "-text"))) dom)))
 
 (defvar magent-tools--request-context nil
   "Dynamically bound `magent-request-context' for the current tool call.")
@@ -227,7 +234,7 @@ Evaluation runs in the user's context buffer when known
              worker
              ;; Capture user's buffer at invocation time so the deferred
              ;; evaluator runs in the right context, not the magent output buffer.
-             (ctx-buffer (when-let ((buffer-name (magent-tools--origin-buffer-name)))
+             (ctx-buffer (when-let* ((buffer-name (magent-tools--origin-buffer-name)))
                            (get-buffer buffer-name))))
         (cl-labels
             ((finish (result)
@@ -584,7 +591,7 @@ When INCLUDE-PROMPT is non-nil, include a prompt preview."
     (status . ,(magent-tools--agent-job-status-string job))
     ,@(when include-prompt
         `((prompt_preview
-           . ,(when-let ((prompt (magent-agent-job-prompt job)))
+           . ,(when-let* ((prompt (magent-agent-job-prompt job)))
                 (truncate-string-to-width prompt 200 nil nil "...")))))
     (result . ,(magent-agent-job-result job))
     (error . ,(magent-agent-job-error job))
@@ -651,7 +658,7 @@ Return the child loop handle when startup succeeds."
          (parent-scope (or (and parent-context
                                 (magent-request-context-scope parent-context))
                            (magent-session-current-scope)))
-         (title (if-let ((task-name (magent-agent-job-task-name job)))
+         (title (if-let* ((task-name (magent-agent-job-task-name job)))
                     (format "Agent %s: %s" agent-name task-name)
                   (format "Agent %s" agent-name)))
          (subagent-context
@@ -835,7 +842,7 @@ Return the child loop handle when startup succeeds."
           (let ((child-loop
                  (magent-tools--agent-job-start
                   job agent prompt child-session parent-context parent-session)))
-            (when-let ((runtime (magent-tools--agent-job-runtime
+            (when-let* ((runtime (magent-tools--agent-job-runtime
                                  (magent-agent-job-id job))))
               (setf (magent-agent-job-metadata job)
                     (magent-tools--agent-inheritance-metadata
@@ -886,7 +893,7 @@ Return the child loop handle when startup succeeds."
         (magent-tools--agent-job-start
          job agent message child-session
          parent-context parent-session)
-        (when-let ((runtime (magent-tools--agent-job-runtime job-id)))
+        (when-let* ((runtime (magent-tools--agent-job-runtime job-id)))
           (setf (magent-agent-job-metadata job)
                 (magent-tools--agent-inheritance-metadata
                  parent-context
@@ -994,7 +1001,7 @@ When INCLUDE-CLOSED is non-nil, include terminal closed/cancelled jobs."
         `((status . "already_closed")
           (job . ,(magent-tools--agent-job-summary job))))))
      (t
-      (when-let ((loop (and (memq (magent-agent-job-status job)
+      (when-let* ((loop (and (memq (magent-agent-job-status job)
                                   '(queued running waiting))
                             (plist-get runtime :loop))))
         (when (and (fboundp 'magent-agent-loop-p)
@@ -1033,7 +1040,7 @@ MAX-RESULTS is the maximum number of results to return (default 5)."
                  nil t t))
           (magent-tools--register-cancel-cleanup
            (lambda ()
-             (when-let ((proc (and request-buffer
+             (when-let* ((proc (and request-buffer
                                    (get-buffer-process request-buffer))))
                (delete-process proc))
              (when (buffer-live-p request-buffer)
@@ -1070,7 +1077,7 @@ Returns list of plists with :title and :url keys, limited to MAX-RESULTS."
         (count 0))
     (dolist (result (dom-by-class dom "result__a"))
       (when (< count max-results)
-        (let ((title (dom-text result))
+        (let ((title (magent-tools--dom-inner-text result))
               (url (dom-attr result 'href)))
           (when (and title url (not (string-blank-p title)))
             (push (list :title (string-trim title) :url url) results)

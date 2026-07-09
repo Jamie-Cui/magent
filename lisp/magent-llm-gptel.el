@@ -72,7 +72,7 @@
 
 (defun magent-llm-gptel--sanitize-tool-use (info)
   "Sanitize gptel INFO's `:tool-use' values in place."
-  (when-let ((tool-use (and (listp info) (plist-get info :tool-use))))
+  (when-let* ((tool-use (and (listp info) (plist-get info :tool-use))))
     (dolist (tool-call tool-use)
       (magent-llm-gptel--sanitize-tool-call tool-call))))
 
@@ -119,7 +119,7 @@ requests, so Magent normalizes this boundary before curl serializes it."
 
 (defun magent-llm-gptel--reset-reasoning-block-a (fsm)
   "Reset managed gptel FSM reasoning state before a request starts."
-  (when-let ((info (and (fboundp 'gptel-fsm-info)
+  (when-let* ((info (and (fboundp 'gptel-fsm-info)
                         (gptel-fsm-info fsm))))
     (when (and (magent-llm-gptel--managed-info-p info)
                (plist-get info :reasoning-block))
@@ -179,7 +179,7 @@ requests, so Magent normalizes this boundary before curl serializes it."
 
 (defun magent-llm-gptel--emit (request event)
   "Emit EVENT through REQUEST's callback."
-  (when-let ((callback (magent-llm-request-callback request)))
+  (when-let* ((callback (magent-llm-request-callback request)))
     (funcall callback event)))
 
 (defun magent-llm-gptel--emit-terminal (request state event)
@@ -240,7 +240,7 @@ that put the final answer only in a reasoning field."
   "Return adapter metadata extracted from gptel INFO."
   (let ((metadata (list :provider 'gptel)))
     (dolist (key '(:status :http-status :error :tokens :stop-reason))
-      (when-let ((value (plist-get info key)))
+      (when-let* ((value (plist-get info key)))
         (setq metadata (append metadata (list key value)))))
     metadata))
 
@@ -479,7 +479,7 @@ executing tools or continuing the tool loop."
        ((magent-llm-gptel--backend-openai-responses-p backend)
         `(:reasoning (:effort ,(symbol-name normalized))))
        ((magent-llm-gptel--backend-openai-chat-p backend)
-        (when-let ((chat-effort
+        (when-let* ((chat-effort
                     (magent-llm-gptel--chat-effort normalized)))
           `(:reasoning_effort ,(symbol-name chat-effort))))
        (t
@@ -513,7 +513,7 @@ Return the request buffer as the abort handle.  REQUEST must be a
       (when (and (plist-member metadata :temperature)
                  (boundp 'gptel-temperature))
         (setq-local gptel-temperature (plist-get metadata :temperature)))
-      (when-let ((effort-params
+      (when-let* ((effort-params
                   (magent-llm-gptel--effort-request-params
                    gptel-backend
                    (plist-get metadata :effort))))
