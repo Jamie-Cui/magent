@@ -7909,49 +7909,20 @@ active, so an activated input method (e.g. rime) stayed on after submit."
                       'magent-ui-compose-from-output)))
       (magent-evil-mode -1))))
 
-(ert-deftest magent-test-evil-agent-shell-tab-toggles-magent-fragment ()
-  "Test Evil TAB toggles fragments in Magent agent-shell buffers."
+(ert-deftest magent-test-evil-does-not-modify-agent-shell-keymap ()
+  "Test optional Evil integration only modifies Magent-owned keymaps."
   (require 'magent-evil)
   (let ((magent-evil--enabled t)
-        toggled
-        next-called)
-    (cl-letf (((symbol-function 'agent-shell-ui-toggle-fragment)
-               (lambda ()
-                 (interactive)
-                 (setq toggled t)))
-              ((symbol-function 'agent-shell-next-item)
-               (lambda ()
-                 (interactive)
-                 (setq next-called t))))
-      (with-temp-buffer
-        (setq major-mode 'agent-shell-mode)
-        (setq-local agent-shell--state
-                    '((:agent-config . ((:identifier . magent)))))
-        (magent-evil--agent-shell-tab)))
-    (should toggled)
-    (should-not next-called)))
-
-(ert-deftest magent-test-evil-agent-shell-tab-preserves-other-shells ()
-  "Test Evil TAB keeps next-item behavior for non-Magent agent-shell buffers."
-  (require 'magent-evil)
-  (let ((magent-evil--enabled t)
-        toggled
-        next-called)
-    (cl-letf (((symbol-function 'agent-shell-ui-toggle-fragment)
-               (lambda ()
-                 (interactive)
-                 (setq toggled t)))
-              ((symbol-function 'agent-shell-next-item)
-               (lambda ()
-                 (interactive)
-                 (setq next-called t))))
-      (with-temp-buffer
-        (setq major-mode 'agent-shell-mode)
-        (setq-local agent-shell--state
-                    '((:agent-config . ((:identifier . codex)))))
-        (magent-evil--agent-shell-tab)))
-    (should-not toggled)
-    (should next-called)))
+        touched-keymaps)
+    (cl-letf (((symbol-function 'evil-define-key*)
+               (lambda (_state keymap _key _definition &rest _bindings)
+                 (push keymap touched-keymaps))))
+      (magent-evil--setup-keys)
+      (magent-evil--unset-keys))
+    (should touched-keymaps)
+    (should (seq-every-p (lambda (keymap)
+                           (eq keymap magent-output-mode-map))
+                         touched-keymaps))))
 
 (ert-deftest magent-test-config-reload-preserves-ui-logger ()
   "Test reloading config does not clobber the UI log implementation."

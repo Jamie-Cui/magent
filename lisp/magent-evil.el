@@ -20,16 +20,12 @@
 (declare-function evil-local-mode "evil-core")
 (declare-function evil-normal-state "evil-states")
 (declare-function evil-visual-state-p "evil-states")
-(declare-function magent-agent-shell--magent-buffer-p "magent-agent-shell")
-(declare-function agent-shell-next-item "agent-shell")
-(declare-function agent-shell-ui-toggle-fragment "agent-shell-ui")
 
 (defvar evil-mode)
 (defvar evil-mode-hook)
 (defvar evil-input-method)
 (defvar evil-local-mode)
 (defvar evil-move-beyond-eol)
-(defvar agent-shell-mode-map)
 
 (defvar magent-evil--enabled nil
   "Non-nil when `magent-evil-mode' is enabled.")
@@ -48,12 +44,7 @@
     (evil-define-key* 'normal magent-output-mode-map
       (kbd "C-c C-c") #'magent-ui-submit-or-interrupt)
     (evil-define-key* 'normal magent-output-mode-map
-      (kbd "i") #'magent-ui-compose-from-output)
-    (when (boundp 'agent-shell-mode-map)
-      (evil-define-key* 'normal agent-shell-mode-map
-        (kbd "TAB") #'magent-evil--agent-shell-tab)
-      (evil-define-key* 'normal agent-shell-mode-map
-        (kbd "<tab>") #'magent-evil--agent-shell-tab))))
+      (kbd "i") #'magent-ui-compose-from-output)))
 
 (defun magent-evil--unset-keys ()
   "Remove Evil-specific Magent bindings when possible."
@@ -68,12 +59,7 @@
         magent-output-mode-map
       (kbd "C-g") nil)
     (evil-define-key* 'normal magent-output-mode-map
-      (kbd "C-c C-c") nil)
-    (when (boundp 'agent-shell-mode-map)
-      (evil-define-key* 'normal agent-shell-mode-map
-        (kbd "TAB") nil)
-      (evil-define-key* 'normal agent-shell-mode-map
-        (kbd "<tab>") nil))))
+      (kbd "C-c C-c") nil)))
 
 (defun magent-evil--menu ()
   "Open the Magent menu in Evil normal state."
@@ -86,21 +72,6 @@
   "Configure buffer-local Evil behavior for Magent output buffers."
   (when magent-evil--enabled
     (setq-local evil-move-beyond-eol t)))
-
-(defun magent-evil--agent-shell-tab ()
-  "Handle TAB in Evil normal state for Magent agent-shell buffers."
-  (interactive)
-  (cond
-   ((and magent-evil--enabled
-         (derived-mode-p 'agent-shell-mode)
-         (fboundp 'magent-agent-shell--magent-buffer-p)
-         (magent-agent-shell--magent-buffer-p (current-buffer))
-         (fboundp 'agent-shell-ui-toggle-fragment))
-    (call-interactively #'agent-shell-ui-toggle-fragment))
-   ((fboundp 'agent-shell-next-item)
-    (call-interactively #'agent-shell-next-item))
-   (t
-    (call-interactively #'indent-for-tab-command))))
 
 (defun magent-evil--reset-input-method-state ()
   "Clear Evil's input method state for Magent compose buffers.
