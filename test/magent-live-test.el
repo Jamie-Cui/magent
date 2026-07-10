@@ -75,6 +75,7 @@
 (defconst magent-live-test--source-files
   '("lisp/magent-config.el"
     "lisp/magent-json.el"
+    "lisp/magent-redaction.el"
     "lisp/magent-approval.el"
     "lisp/magent-lifecycle-events.el"
     "lisp/magent-protocol.el"
@@ -102,6 +103,9 @@
     "lisp/magent-markdown-to-org.el"
     "lisp/magent-agent.el"
     "lisp/magent-runtime-api.el"
+    "lisp/magent-command.el"
+    "lisp/magent-memory.el"
+    "lisp/magent-doctor.el"
     "lisp/magent-acp.el"
     "lisp/magent-skills.el"
     "lisp/magent-agent-shell.el"

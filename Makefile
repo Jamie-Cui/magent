@@ -36,6 +36,7 @@ BYTE_COMPILE_FLAGS = --eval "(setq byte-compile-error-on-warn nil)" \
 
 SRCS = lisp/magent-config.el \
        lisp/magent-json.el \
+       lisp/magent-redaction.el \
        lisp/magent-lifecycle-events.el \
        lisp/magent-audit.el \
        lisp/magent-protocol.el \
@@ -44,6 +45,8 @@ SRCS = lisp/magent-config.el \
        lisp/magent-thread.el \
        lisp/magent-llm.el \
        lisp/magent-llm-gptel.el \
+       lisp/magent-command.el \
+       lisp/magent-doctor.el \
        lisp/magent-memory.el \
        lisp/magent-agent-loop.el \
        lisp/magent-approval.el \

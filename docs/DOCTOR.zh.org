@@ -1,0 +1,99 @@
+#+title: Magent Doctor
+#+magent_lang: zh
+#+magent_alt_url: /DOCTOR.html
+#+options: toc:2 num:nil
+
+* 用途
+
+~M-x magent-run-doctor~ 用于诊断 Magent、Emacs runtime 和当前项目状态，
+但不会把通用 Emacs 或 shell 工具交给 LLM。每次运行都会在
+~magent-session-directory/internal/doctor~ 下创建独立 internal session。
+它不会作为 agent-shell slash command 暴露。
+
+使用 ~C-u M-x magent-run-doctor~ 可以在 minibuffer 中审查适用的 probes；
+core runtime probe 始终保留。
+
+* 信任边界
+
+Doctor 分为两个阶段：
+
+1. 受信任、只读的 Elisp probes 采集有界结构化事实。
+2. 一次无工具的 ~gptel-request~ 分析脱敏后的诊断 bundle。
+
+Provider request 不包含工具，也不进入普通 Magent agent loop 或 runtime
+queue。它可以和普通对话并发，但不会把 internal session 安装成用户当前
+session。
+
+Doctor 不会主动采集 gptel backend 对象、API key、~auth-source~、环境变量、
+HTTP headers 或原始 ~*gptel-log*~。绝对路径会被规范化为 ~$PROJECT~、
+~$HOME~ 和 ~$TMP~。Probe 原始返回值不会持久化或写日志；只有经过递归
+脱敏和限长的数据会进入 internal session 和 provider request。
+
+脱敏属于纵深防御，不是 sandbox。自定义 probe 是受信任 Emacs Lisp，
+权限等同于安装的 package。Magent 无法阻止恶意 Elisp 读取或修改用户状态；
+扩展作者必须遵守只读契约。不支持或循环的数据结构会 fail closed，并在
+发送 provider request 前终止。
+
+* 内置 Probes
+
+- ~core-runtime~：Magent source、mode、session、queue、approval、provider
+  名称和 model 名称；不会序列化 provider backend 对象。
+- ~current-buffer~：不含 buffer 内容的 metadata。
+- ~project~：项目标识文件和只读 Git status。
+- ~diagnostics~：已有 Flymake、Flycheck 和 Eglot 状态。
+- ~compilation~：已有项目 compilation buffer 的有界尾部。
+- ~magent-logs~：有界 Magent log，以及过滤后的相关 warnings/messages；
+  不读取原始 provider traffic。
+- ~source-context~：point 附近的有界源码片段，仅允许手动选择。
+
+Probes 默认串行运行。普通 probe error 或 timeout 会安全记录并继续；输出
+校验或脱敏失败会终止整个运行，且不联系 provider。
+
+* 扩展 Doctor
+
+使用 ~magent-doctor-register-probe~ 注册受信任 probe：
+
+#+begin_src emacs-lisp
+(magent-doctor-register-probe
+ "my-runtime-check"
+ :description "Read-only status for my package"
+ :predicate (lambda (context)
+              (buffer-live-p
+               (magent-command-context-origin-buffer context)))
+ :collector (lambda (_context _state)
+              `((feature-loaded . ,(featurep 'my-package))))
+ :timeout 2
+ :data-categories '(runtime))
+#+end_src
+
+Probe ID 只能包含小写字母、数字、连字符和下划线，最长 64 字符。Collector
+必须返回 JSON-safe 的字符串、数字、布尔值、symbol、vector、list、plist、
+alist 或 hash table。Live buffer、process、backend struct 和循环值会被拒绝。
+
+固定外部诊断可以使用 ~magent-doctor-run-process~ 并传递 executable 与 argv；
+它不会启动 shell，并参与 Doctor timeout 和取消清理。Probe 不得 configure、
+build、test、编辑或以其他方式修改项目。
+
+* Session 与取消
+
+使用 ~M-x magent-list-internal-sessions~ 查看结果。Viewer 会优先显示最终诊断，
+默认折叠 probe activity；~TAB~ 切换当前 section，~S-TAB~ 切换全部 activity。
+
+使用 ~M-x magent-cancel-internal-command~ 取消活动 Doctor。取消会终止 probe
+process 或 abort 直接 gptel request，将 internal session 标记为 cancelled，
+并保持用户当前 session 不变。
+
+* 配置
+
+主要限制项包括：
+
+- ~magent-doctor-probe-timeout~
+- ~magent-doctor-process-timeout~
+- ~magent-doctor-total-timeout~
+- ~magent-doctor-max-diagnostic-chars~
+- ~magent-doctor-max-probe-chars~
+- ~magent-doctor-source-context-max-chars~
+- ~magent-doctor-log-max-lines~
+
+~magent-bypass-permission~ 只跳过 preflight confirmation，不会关闭采集限制、
+路径规范化、脱敏或 provider 无工具边界。

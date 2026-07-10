@@ -335,7 +335,7 @@ magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
 
 ** Self-Check
 #+begin_src elisp
-M-x magent-doctor
+M-x magent-run-doctor
 #+end_src
 Runs comprehensive self-check and reports issues.
 
@@ -355,7 +355,7 @@ M-x describe-variable RET gptel-api-key
 * Getting Help
 
 If issues persist:
-1. Run ~M-x magent-doctor~ and save output
+1. Run ~M-x magent-run-doctor~ and save output
 2. Check ~*magent-log*~ and ~*Messages*~ buffers
 3. Open GitHub issue with reproduction steps
 4. Include Emacs version: ~M-x emacs-version~

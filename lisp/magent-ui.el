@@ -265,12 +265,6 @@ SCOPE is ignored.  This remains as a cheap compatibility hook for core code."
   (magent-ui--legacy-call-interactively 'magent-diagnose-emacs))
 
 ;;;###autoload
-(defun magent-doctor ()
-  "Run Magent self-check and diagnose Magent-related issues."
-  (interactive)
-  (magent-ui--legacy-call-interactively 'magent-doctor))
-
-;;;###autoload
 (defun magent-interrupt ()
   "Interrupt the active Magent request."
   (interactive)

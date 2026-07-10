@@ -18,8 +18,10 @@
 (require 'subr-x)
 (require 'gptel)
 (require 'magent-config)
+(require 'magent-command)
 (require 'magent-llm)
 (require 'magent-llm-gptel)
+(require 'magent-redaction)
 
 (declare-function gptel-backend-name "gptel")
 
@@ -48,25 +50,6 @@
     "Cautions And Skipped Sensitive Areas"
     "Source Index")
   "Fixed second-level Org headings under `magent-memory--managed-heading'.")
-
-(defconst magent-memory--local-command-specs
-  '(("magent-memory-init" . "Initialize Magent Emacs profile memory.")
-    ("magent-memory-refresh" . "Refresh Magent Emacs profile memory.")
-    ("magent-memory-clear" . "Clear active Magent Emacs profile memory."))
-  "Local slash commands managed without sending a model prompt.")
-
-(defconst magent-memory--sensitive-path-regexp
-  (regexp-opt '("authinfo" ".authinfo" ".netrc" ".env" "envrc" "secret"
-                "secrets" "credential" "credentials" "token" "oauth"
-                "password" "passwd" "private-key" "id_rsa" "id_ed25519"
-                ".gpg" ".age" ".pem" ".p12" ".pfx"))
-  "Regexp matching file names that should not be read.")
-
-(defconst magent-memory--sensitive-line-regexp
-  (regexp-opt '("password" "passwd" "token" "secret" "credential"
-                "credentials" "oauth" "api-key" "apikey" "auth")
-              'words)
-  "Regexp matching lines that should be redacted after a file is read.")
 
 (cl-defstruct (magent-memory-scan-plan
                (:constructor magent-memory-scan-plan--create)
@@ -214,12 +197,12 @@
     (or (magent-memory--path-matches-any-p
          normalized
          magent-memory-exclude-patterns)
-        (string-match-p magent-memory--sensitive-path-regexp
+        (string-match-p magent-redaction-sensitive-path-regexp
                         (file-name-nondirectory path)))))
 
 (defun magent-memory--sensitive-path-p (path)
   "Return non-nil when PATH appears to contain secrets."
-  (string-match-p magent-memory--sensitive-path-regexp
+  (string-match-p magent-redaction-sensitive-path-regexp
                   (file-name-nondirectory path)))
 
 (defun magent-memory--top-level-readme-p (file root)
@@ -322,8 +305,6 @@ The return value is a plist with `:files', `:sensitive', and `:excluded'."
          gptel-backend
          (fboundp 'gptel-backend-name))
     (ignore-errors (gptel-backend-name gptel-backend)))
-   ((and (boundp 'gptel-backend) gptel-backend)
-    (format "%s" gptel-backend))
    (t "gptel")))
 
 (defun magent-memory-build-scan-plan ()
@@ -432,13 +413,13 @@ The return value is a plist with `:files', `:sensitive', and `:excluded'."
 
 (defun magent-memory--redact-content (content)
   "Return CONTENT with sensitive-looking lines redacted."
-  (mapconcat
-   (lambda (line)
-     (if (string-match-p magent-memory--sensitive-line-regexp line)
-         "[REDACTED sensitive line]"
-       line))
-   (split-string content "\n")
-   "\n"))
+  (magent-redaction-string content t))
+
+(defun magent-memory--sanitize-outbound (content)
+  "Return CONTENT sanitized for an outbound memory request."
+  (magent-redaction-string
+   (magent-redaction-normalize-paths content)
+   t))
 
 (defun magent-memory--read-file-excerpt (file)
   "Return sanitized excerpt from FILE."
@@ -689,14 +670,14 @@ Return the backup path or nil."
         (copy-file file backup t t t t)
         backup))))
 
-(defun magent-memory--write-profile (plan managed-org user-notes &optional active)
+(cl-defun magent-memory--write-profile
+    (plan managed-org user-notes &key (active t))
   "Write managed memory Org for PLAN.
 MANAGED-ORG is the fixed managed subtree.  USER-NOTES are preserved under
 the user-owned heading.  ACTIVE defaults to t."
   (make-directory magent-memory-directory t)
   (let* ((file (magent-memory-file))
          (backup (magent-memory--backup-active-file))
-         (active (if (null active) t active))
          (body (concat
                 (magent-memory--format-header plan active)
                 (string-trim-right managed-org)
@@ -751,20 +732,21 @@ the user-owned heading.  ACTIVE defaults to t."
 
 (defun magent-memory--summarizer-user-prompt (plan bundle)
   "Return user prompt for summarizing BUNDLE according to PLAN."
-  (format
-   (concat "Summarize this sanitized Emacs configuration bundle for future "
-           "Magent assistance.\n\nScan roots:\n%s\n\nEntry files:\n%s\n\n"
-           "Custom file path: %s\n\nSanitized bundle:\n\n%s")
-   (mapconcat (lambda (root) (format "- %s" root))
-              (magent-memory-scan-plan-roots plan)
-              "\n")
-   (if (magent-memory-scan-plan-entry-files plan)
-       (mapconcat (lambda (file) (format "- %s" file))
-                  (magent-memory-scan-plan-entry-files plan)
-                  "\n")
-     "- none")
-   (or (magent-memory-scan-plan-custom-file plan) "none")
-   bundle))
+  (magent-memory--sanitize-outbound
+   (format
+    (concat "Summarize this sanitized Emacs configuration bundle for future "
+            "Magent assistance.\n\nScan roots:\n%s\n\nEntry files:\n%s\n\n"
+            "Custom file path: %s\n\nSanitized bundle:\n\n%s")
+    (mapconcat (lambda (root) (format "- %s" root))
+               (magent-memory-scan-plan-roots plan)
+               "\n")
+    (if (magent-memory-scan-plan-entry-files plan)
+        (mapconcat (lambda (file) (format "- %s" file))
+                   (magent-memory-scan-plan-entry-files plan)
+                   "\n")
+      "- none")
+    (or (magent-memory-scan-plan-custom-file plan) "none")
+    bundle)))
 
 (cl-defun magent-memory--summarize-with-llm (plan bundle callback)
   "Summarize BUNDLE for PLAN, then call CALLBACK with text or nil."
@@ -785,10 +767,19 @@ the user-owned heading.  ACTIVE defaults to t."
            (lambda (event)
              (pcase (magent-llm-event-type event)
                ('completed
-                (funcall callback (magent-llm-event-text event)))
+                (funcall
+                 callback
+                 (condition-case nil
+                     (magent-memory--sanitize-outbound
+                      (or (magent-llm-event-text event) ""))
+                   (magent-redaction-unsafe-value nil))))
                ('error
-                (magent-log "WARN magent memory summarization failed: %s"
-                            (magent-llm-event-message event))
+                (magent-log
+                 "WARN magent memory summarization failed: %s"
+                 (condition-case nil
+                     (magent-redaction-string
+                      (format "%s" (magent-llm-event-message event)) t)
+                   (magent-redaction-unsafe-value "redacted error")))
                 (funcall callback nil)))))))
     (magent-llm-gptel-sample request)))
 
@@ -812,7 +803,7 @@ NOTIFY-FN receives progress strings.  ON-COMPLETE receives status and message."
             (let* ((managed (magent-memory--managed-org-or-skeleton
                              (or text "") plan bundle))
                    (result (magent-memory--write-profile
-                            plan managed user-notes t))
+                            plan managed user-notes :active t))
                    (message (format "Magent memory %s complete: %s"
                                     operation
                                     (plist-get result :file))))
@@ -862,7 +853,7 @@ with a plan and continuation for scan-based operations."
                                     (magent-memory--empty-plan)
                                     (magent-memory--empty-managed-org)
                                     user-notes
-                                    nil))
+                                    :active nil))
                            (message (format "Magent memory cleared: %s"
                                             (plist-get result :file))))
                       (when notify-fn
@@ -886,40 +877,30 @@ with a plan and continuation for scan-based operations."
   "Interactively confirm PLAN, then call CONTINUE with non-nil on approval."
   (if (null plan)
       (funcall continue
-               (yes-or-no-p "Clear active Magent Emacs profile memory? "))
+               (yes-or-no-p
+                "Deactivate and clear managed Magent profile memory? "))
     (magent--with-display-buffer "*Magent Memory Scan Plan*"
       (insert (magent-memory-scan-plan-details plan)))
     (funcall continue
              (yes-or-no-p "Proceed with Magent memory scan? "))))
 
 ;;;###autoload
-(defun magent-memory-init ()
-  "Initialize Magent Emacs profile memory."
+(defun magent-run-memory-init ()
+  "Initialize Magent Emacs profile memory in an internal command session."
   (interactive)
-  (magent-memory-run
-   'init
-   :confirm-fn #'magent-memory--interactive-confirm
-   :notify-fn #'message
-   :open-after-write t))
+  (magent-command-run "memory-init"))
 
 ;;;###autoload
-(defun magent-memory-refresh ()
-  "Refresh Magent Emacs profile memory, preserving user notes."
+(defun magent-run-memory-refresh ()
+  "Refresh Magent Emacs profile memory in an internal command session."
   (interactive)
-  (magent-memory-run
-   'refresh
-   :confirm-fn #'magent-memory--interactive-confirm
-   :notify-fn #'message
-   :open-after-write t))
+  (magent-command-run "memory-refresh"))
 
 ;;;###autoload
-(defun magent-memory-clear ()
-  "Clear active Magent Emacs profile memory, preserving snapshots."
+(defun magent-run-memory-clear ()
+  "Deactivate and clear managed profile memory in an internal session."
   (interactive)
-  (magent-memory-run
-   'clear
-   :confirm-fn #'magent-memory--interactive-confirm
-   :notify-fn #'message))
+  (magent-command-run "memory-clear"))
 
 ;;;###autoload
 (defun magent-memory-open ()
@@ -1045,21 +1026,52 @@ with a plan and continuation for scan-based operations."
   (magent--with-display-buffer "*Magent Memory Status*"
     (insert (magent-memory-status-text))))
 
-(defun magent-memory-local-command-names ()
-  "Return local slash command names for memory management."
-  (mapcar #'car magent-memory--local-command-specs))
+(defun magent-memory--command-confirm-provider (context operation)
+  "Return confirmation function for memory OPERATION in command CONTEXT."
+  (lambda (plan continue)
+    (magent-command-record-tool
+     context "memory_scan_plan"
+     (if plan
+         (magent-memory-scan-plan-approval-input plan)
+       (list :operation operation))
+     (if plan
+         (magent-memory-scan-plan-details plan)
+       (concat "Deactivate and clear managed Magent Emacs profile memory. "
+               "User notes and a snapshot are kept."))
+     (list :operation operation))
+    (if magent-bypass-permission
+        (progn
+          (magent-command-record-tool
+           context "memory_approval"
+           (list :operation operation)
+           "approved by magent-bypass-permission"
+           (list :operation operation
+                 :approved t
+                 :bypass t))
+          (funcall continue t))
+      (magent-memory--interactive-confirm
+       plan
+       (lambda (approved)
+         (magent-command-record-tool
+          context "memory_approval"
+          (list :operation operation)
+          (if approved "approved" "cancelled")
+          (list :operation operation
+                :approved approved))
+         (funcall continue approved))))))
 
-(defun magent-memory-local-command-description (name)
-  "Return local memory command description for NAME."
-  (cdr (assoc name magent-memory--local-command-specs)))
-
-(defun magent-memory-local-command-operation (name)
-  "Return memory operation symbol for local command NAME."
-  (pcase name
-    ("magent-memory-init" 'init)
-    ("magent-memory-refresh" 'refresh)
-    ("magent-memory-clear" 'clear)
-    (_ nil)))
+(defun magent-memory--command-runner (operation)
+  "Return a command runner for memory OPERATION."
+  (lambda (context)
+    (magent-memory-run
+     operation
+     :confirm-fn (magent-memory--command-confirm-provider context operation)
+     :notify-fn (lambda (message)
+                  (message "%s" message)
+                  (magent-command-notify context message))
+     :on-complete (lambda (status message)
+                    (magent-command-complete context status message))
+     :open-after-write (memq operation '(init refresh)))))
 
 (defun magent-memory--load-text ()
   "Return active memory file text, or nil."
@@ -1222,9 +1234,13 @@ with a plan and continuation for scan-based operations."
              (budgeted (magent-memory--truncate-sections-to-budget
                         (plist-get selection :sections)
                         magent-memory-injection-max-chars))
-             (included-text (plist-get budgeted :text))
+             (included-text
+              (condition-case nil
+                  (magent-memory--sanitize-outbound
+                   (plist-get budgeted :text))
+                (magent-redaction-unsafe-value nil)))
              (headings (mapcar #'car (plist-get selection :sections))))
-        (unless (string-empty-p included-text)
+        (unless (or (null included-text) (string-empty-p included-text))
           (setq magent-memory--last-selection
                 (list :prompt prompt
                       :headings headings
@@ -1234,6 +1250,27 @@ with a plan and continuation for scan-based operations."
                       :selected-at (current-time)))
           (concat "# Magent Emacs Profile Memory\n\n"
                   included-text))))))
+
+(magent-command-register
+ "memory-init"
+ :description "Initialize Magent Emacs profile memory."
+ :title "Initialize Magent Emacs profile memory"
+ :runner-type 'pipeline
+ :runner (magent-memory--command-runner 'init))
+
+(magent-command-register
+ "memory-refresh"
+ :description "Refresh Magent Emacs profile memory."
+ :title "Refresh Magent Emacs profile memory"
+ :runner-type 'pipeline
+ :runner (magent-memory--command-runner 'refresh))
+
+(magent-command-register
+ "memory-clear"
+ :description "Deactivate and clear managed Magent Emacs profile memory."
+ :title "Deactivate and clear Magent Emacs profile memory"
+ :runner-type 'pipeline
+ :runner (magent-memory--command-runner 'clear))
 
 (provide 'magent-memory)
 ;;; magent-memory.el ends here

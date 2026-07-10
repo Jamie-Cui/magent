@@ -79,7 +79,7 @@ Emacs 不只是宿主进程。Magent 依赖活的编辑器状态：buffer、majo
 #+caption: Magent functional layers
 [[file:assets/img/diagrams/functional-layers.svg]]
 
-从功能面看，Magent 可以按三条主线使用。第一条是 coding assistant：读代码、搜代码、改文件、跑测试、解释错误、生成 commit/PR 风格总结。第二条是 Emacs runtime assistant：通过 ~emacs_eval~ 查询 buffer、mode、window、project、Magit、Org、LSP 等活状态，把已有编辑器上下文转成模型可用的局部事实。第三条是 agent workflow：用 skills 固化工作流，用 capabilities 自动选择上下文说明，用 child-agent jobs 拆分探索、审查或总结任务。
+从功能面看，Magent 可以按四条主线使用。第一条是 coding assistant：读代码、搜代码、改文件、跑测试、解释错误、生成 commit/PR 风格总结。第二条是 Emacs runtime assistant：通过 ~emacs_eval~ 查询 buffer、mode、window、project、Magit、Org、LSP 等活状态，把已有编辑器上下文转成模型可用的局部事实。第三条是 agent workflow：用 skills 固化工作流，用 capabilities 自动选择上下文说明，用 child-agent jobs 拆分探索、审查或总结任务。第四条是 internal command workflow：~magent-run-doctor~ 和 ~magent-run-memory-init~ 这类 Emacs 命令在独立 durable session 中执行 Magent 维护任务，而不是作为 agent-shell slash command。
 
 因此 Magent 的功能设计不只是“一个聊天框和若干工具”。它把 Emacs 工作流切成可被 agent 调用、审计、恢复并投影回 UI 的动作。
 
@@ -90,6 +90,20 @@ Magent 有三层 file-backed 扩展：
 - ~.magent/agent/*.md~ 下的 custom agents。
 - bundled ~skills/~ 、用户 ~~/.emacs.d/magent/skills~ 、存在时兼容 legacy ~~/.emacs.d/magent-skills/~ 、以及项目 ~.magent/skills/~ 下的 skills。
 - 带 ~capability: true~ 的 skill frontmatter 中的 capability metadata，以及用户 capability 目录和项目 ~.magent/capabilities/~ 下的独立 ~CAPABILITY.md~。独立文件只用于触发 metadata 不应该归属于单个 skill 的场景。
+
+Magent 还有一层 Elisp-level internal command registry，实现在
+~magent-command.el~。通过 ~magent-command-register~ 注册的命令由显式
+~magent-run-*~ 用户命令调用，会在 ~magent-session-directory/internal~
+下创建独立 internal session，并且既可以走直接 pipeline runner，也可以
+复用普通 Magent agent loop。它们刻意不作为 agent-shell slash command
+暴露；agent-shell 的 command surface 仍然只由 skill 支撑。
+
+~magent-run-doctor~ 是安全敏感的 direct-pipeline 场景。~magent-doctor.el~
+中的受信任只读 probes 采集有界 JSON-safe 数据；数据在持久化或发送一次
+无工具 provider request 前，会经过 ~magent-redaction.el~ 的路径规范化和
+脱敏。Doctor 不进入通用 agent loop，也不会暴露 ~emacs_eval~、shell 或
+文件工具。自定义 probe 属于受信任 Elisp，不是 sandboxed code；详见
+[[file:DOCTOR.zh.org][DOCTOR.zh.org]]。
 
 Instruction skill 会注入 system prompt。Tool skill 通过 ~skill_invoke~ 调用。Capability 会根据当前上下文打分，激活少量 instruction skills。内置同名 workflow capability 和对应 skill 放在同一个 ~SKILL.md~ 里，触发 metadata 和注入说明不再分散成两份文件。这种 progressive disclosure 能保持基础 prompt 更小，同时在需要时注入 Emacs-specific workflow 知识。
 

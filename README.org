@@ -305,6 +305,26 @@ Tool availability is controlled by:
 1. Global ~magent-enable-tools~ setting
 2. Per-agent permission rules
 
+* Internal Maintenance Commands
+
+Magent-owned maintenance workflows are explicit Emacs commands, not
+agent-shell slash commands:
+
+- ~M-x magent-run-memory-init~ initializes Emacs profile memory.
+- ~M-x magent-run-memory-refresh~ refreshes the managed profile while keeping
+  user notes.
+- ~M-x magent-run-memory-clear~ deactivates and clears the managed profile
+  while retaining user notes and a snapshot.
+- ~M-x magent-run-doctor~ collects bounded local diagnostics and sends one
+  sanitized, tool-free analysis request.  ~C-u~ allows manual probe selection.
+- ~M-x magent-list-internal-sessions~ opens the progressive internal-session
+  viewer; ~M-x magent-cancel-internal-command~ cancels active work.
+
+Doctor never gives the model ~emacs_eval~, shell, or file tools.  Its probes
+are trusted read-only Elisp extensions, and only path-normalized, recursively
+redacted data is persisted or sent.  See [[file:docs/DOCTOR.org][docs/DOCTOR.org]] for the
+trust boundary and probe API.
+
 * Architecture
 
 ** Core Flow
@@ -341,15 +361,17 @@ Tool availability is controlled by:
    ~test~, and ~explain~ are command-style skills without automatic capability
    activation.
 
-10. *Session* (~magent-ledger.el~, ~magent-session.el~): Thread-ledger backed conversation history with per-project active sessions, global fallback outside projects, JSON persistence, and durable restore from ledger snapshots plus journals.
+10. *Internal Commands* (~magent-command.el~, ~magent-doctor.el~, ~magent-redaction.el~): Session-backed Magent maintenance workflows invoked from Emacs commands such as ~magent-run-doctor~ and ~magent-run-memory-init~. These commands are intentionally not exposed as agent-shell slash commands; each run gets an isolated internal session under ~magent-session-directory/internal~ and records only a compact breadcrumb in the parent session. Doctor uses trusted local probes followed by one sanitized request with no provider tools.
 
-11. *Audit* (~magent-audit.el~): Persistent JSONL audit logging for permission prompts and decisions plus sensitive actions such as ~bash~, ~emacs_eval~, ~write_file~, ~edit_file~, and child-agent lifecycle tools. Payloads are redacted to metadata and truncated previews.
+11. *Session* (~magent-ledger.el~, ~magent-session.el~): Thread-ledger backed conversation history with per-project active sessions, global fallback outside projects, JSON persistence, internal command session storage, and durable restore from ledger snapshots plus journals.
 
-12. *UI backend* (~magent-ui.el~, ~magent-agent-shell.el~, ~magent-acp.el~): ~magent-ui.el~ is a thin command router and compatibility layer. The recommended backend is agent-shell through an in-process ACP adapter; ACP prompt requests submit to the runtime API and stay pending until the turn completes. See [[file:docs/UI_BACKENDS.org][docs/UI_BACKENDS.org]].
+12. *Audit* (~magent-audit.el~): Persistent JSONL audit logging for permission prompts and decisions plus sensitive actions such as ~bash~, ~emacs_eval~, ~write_file~, ~edit_file~, and child-agent lifecycle tools. Payloads are redacted to metadata and truncated previews.
 
-13. *Evil Integration* (~magent-evil.el~): Optional feature for Evil users. It is not loaded by ~magent~ and is enabled explicitly with ~magent-evil-mode~.
+13. *UI backend* (~magent-ui.el~, ~magent-agent-shell.el~, ~magent-acp.el~): ~magent-ui.el~ is a thin command router and compatibility layer. The recommended backend is agent-shell through an in-process ACP adapter; ACP prompt requests submit to the runtime API and stay pending until the turn completes. See [[file:docs/UI_BACKENDS.org][docs/UI_BACKENDS.org]].
 
-14. *File Loader* (~magent-file-loader.el~): Shared definition loader for agent, skill, and capability files. It includes frontmatter parsing and supports booleans, numbers, quoted strings, and comma-separated lists.
+14. *Evil Integration* (~magent-evil.el~): Optional feature for Evil users. It is not loaded by ~magent~ and is enabled explicitly with ~magent-evil-mode~.
+
+15. *File Loader* (~magent-file-loader.el~): Shared definition loader for agent, skill, and capability files. It includes frontmatter parsing and supports booleans, numbers, quoted strings, and comma-separated lists.
 
 ** File Structure
 
@@ -362,11 +384,14 @@ magent/
 |-- magent.el                      # Main entry point and mode definition
 |-- magent-config.el               # Configuration (customize group, defcustom vars, faces)
 |-- magent-json.el                 # JSON-safe serialization helpers
+|-- magent-redaction.el            # Fail-closed outbound sensitive-data redaction
 |-- magent-lifecycle-events.el     # Structured lifecycle event hooks
 |-- magent-ledger.el               # Thread/turn/item ledger and transitions
 |-- magent-runtime.el              # Static initialization and project overlay activation
 |-- magent-runtime-api.el          # UI/backend-facing runtime session API
 |-- magent-runtime-queue.el        # Runtime queue and session-scoped cancellation
+|-- magent-command.el              # Session-backed internal Magent workflows
+|-- magent-doctor.el               # Safe local probes and one tool-free analysis request
 |-- magent-session.el              # Session and message history (JSON persistence)
 |-- magent-transcript-context.el   # Transcript context projection helpers
 |-- magent-agent-job.el            # Durable child-agent job state

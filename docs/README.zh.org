@@ -19,6 +19,7 @@
 - [[file:../AGENT_WORKFLOW.zh.html][AGENT_WORKFLOW.zh.org]] ： ~thread -> turn -> item~ 状态机、循环流程、 ~snapshot + journal~ 持久化、UI 投影和 Codex 差异。
 - [[file:../AGENT_JOBS.zh.html][AGENT_JOBS.zh.org]] ：durable child-agent job 生命周期、工具面、持久化、UI 和边界。
 - [[file:../UI_BACKENDS.zh.html][UI_BACKENDS.zh.org]] ：UI backend 边界、推荐的 agent-shell + ACP 流程和 runtime API。
+- [[file:../DOCTOR.zh.html][DOCTOR.zh.org]] ：Doctor probe API、信任边界、脱敏、session 和取消。
 
 ** 贡献
 
@@ -43,7 +44,7 @@
 
 1. [[https://github.com/jamie-cui/magent/blob/master/README.org][../README.org]]：安装和配置。
 2. [[file:../TROUBLESHOOTING.zh.html][TROUBLESHOOTING.zh.org]]：常见问题。
-3. 运行 ~M-x magent-doctor~ 做自诊断。
+3. 运行 ~M-x magent-run-doctor~ 做自诊断。
 4. 使用 ~C-c m p~ 打开推荐的 agent-shell UI。
 
 ** 开发者
@@ -54,6 +55,7 @@
 4. [[file:../ONBOARDING.zh.html][ONBOARDING.zh.org]]：代码导览和复杂点。
 5. [[file:../AGENT_JOBS.zh.html][AGENT_JOBS.zh.org]]：child-agent job 架构。
 6. [[file:../UI_BACKENDS.zh.html][UI_BACKENDS.zh.org]]：UI backend 架构。
+7. [[file:../DOCTOR.zh.html][DOCTOR.zh.org]]：Doctor 数据边界和扩展契约。
 
 ** CI 与打包
 

@@ -91,7 +91,9 @@
 (require 'magent-agent-job)
 (require 'magent-llm)
 (require 'magent-llm-gptel)
+(require 'magent-command)
 (require 'magent-memory)
+(require 'magent-doctor)
 (require 'magent-agent-loop)
 (require 'magent-session)
 (require 'magent-transcript-context)
@@ -114,7 +116,7 @@
 (require 'magent-skills)
 (require 'magent-capability)
 
-(declare-function magent-doctor "magent-ui")
+(declare-function magent-run-doctor "magent-doctor")
 (declare-function magent-list-capabilities-for-current-context "magent-capability")
 (declare-function magent-explain-last-capability-resolution "magent-capability")
 (declare-function magent-toggle-capability-locally "magent-capability")

@@ -39,10 +39,6 @@
   '("explain" "fix" "init" "review" "test")
   "Bundled instruction skills that are exposed as slash commands.")
 
-(defconst magent-test--local-slash-command-names
-  '("magent-memory-clear" "magent-memory-init" "magent-memory-refresh")
-  "Local slash commands exposed by Magent without skill prompts.")
-
 (defun magent-test--load-builtin-skills-only ()
   "Load bundled skill files into the caller's test skill registry."
   (require 'magent-skills)
@@ -2222,6 +2218,632 @@
                  text))
         (should (file-directory-p
                  (magent-memory-snapshots-directory)))))))
+
+(ert-deftest magent-test-redaction-removes-labeled-and-unlabeled-secrets ()
+  "Test outbound redaction removes secrets while retaining stable ids."
+  (require 'magent-redaction)
+  (let* ((secret "sk-DoctorCanaryAbCdEf1234567890")
+         (sha "abcdef0123456789abcdef0123456789abcdef01")
+         (uuid "123e4567-e89b-12d3-a456-426614174000")
+         (text (format
+                (concat "Authorization: Bearer %s\nraw=%s\n"
+                        "OPENAI_API_KEY=short-value\nsha=%s\nuuid=%s")
+                secret secret sha uuid))
+         (redacted (magent-redaction-string text t)))
+    (should-not (string-match-p (regexp-quote secret) redacted))
+    (should (string-match-p "<redacted:authorization>" redacted))
+    (should (string-match-p "<redacted:token>" redacted))
+    (should-not (string-match-p "short-value" redacted))
+    (should (string-match-p "OPENAI_API_KEY: <redacted:key>" redacted))
+    (should (string-match-p (regexp-quote sha) redacted))
+    (should (string-match-p (regexp-quote uuid) redacted))))
+
+(ert-deftest magent-test-redaction-value-fails-closed-on-live-object ()
+  "Test structured redaction rejects non-JSON-safe live objects."
+  (require 'magent-redaction)
+  (should-error
+   (magent-redaction-value (list :buffer (current-buffer)) t)
+   :type 'magent-redaction-unsafe-value))
+
+(ert-deftest magent-test-redaction-value-redacts-compound-secret-key ()
+  "Test recursive redaction recognizes provider-prefixed secret keys."
+  (require 'magent-redaction)
+  (should
+   (equal (magent-redaction-value
+           '((OPENAI_API_KEY . "short-value") (safe . "visible")) t)
+          '((OPENAI_API_KEY . "<redacted:key>") (safe . "visible")))))
+
+(ert-deftest magent-test-memory-clear-deactivates-and-preserves-user-notes ()
+  "Test memory clear writes inactive metadata and keeps local user notes."
+  (require 'magent-memory)
+  (let* ((root (file-name-as-directory
+                (make-temp-file "magent-memory-root" t)))
+         (memory-dir (file-name-as-directory
+                      (make-temp-file "magent-memory-store" t)))
+         (init-file (expand-file-name "init.el" root))
+         (user-emacs-directory root)
+         (user-init-file init-file)
+         (early-init-file nil)
+         (custom-file nil)
+         (magent-memory-directory memory-dir)
+         (magent-memory-use-llm nil)
+         (magent-memory-open-after-write nil)
+         (magent-memory-extra-scan-roots nil))
+    (unwind-protect
+        (progn
+          (with-temp-file init-file
+            (insert "(use-package project)\n"))
+          (magent-memory-run
+           'init :confirm-fn
+           (lambda (_plan continue) (funcall continue t)))
+          (with-temp-buffer
+            (insert-file-contents (magent-memory-file))
+            (goto-char (point-max))
+            (insert "Keep minibuffer confirmations.\n")
+            (write-region (point-min) (point-max) (magent-memory-file)))
+          (magent-memory-run
+           'clear :confirm-fn
+           (lambda (_plan continue) (funcall continue t)))
+          (let ((text (with-temp-buffer
+                        (insert-file-contents (magent-memory-file))
+                        (buffer-string))))
+            (should (string-match-p
+                     (regexp-quote "#+magent-active: false") text))
+            (should (string-match-p
+                     (regexp-quote "Keep minibuffer confirmations.") text))
+            (should-not (magent-memory-active-p))
+            (should-not (magent-memory-system-message "help with Emacs"))
+            (should (directory-files
+                     (magent-memory-snapshots-directory) nil "\\.org$"))))
+      (delete-directory root t)
+      (delete-directory memory-dir t))))
+
+(ert-deftest magent-test-memory-outbound-injection-redacts-user-secret ()
+  "Test prompt-time memory injection never emits a user-note secret."
+  (require 'magent-memory)
+  (let* ((memory-dir (file-name-as-directory
+                      (make-temp-file "magent-memory-store" t)))
+         (magent-memory-directory memory-dir)
+         (magent-memory-enable-auto-injection t)
+         (magent-memory-injection-max-chars 6000)
+         (secret "sk-MemoryCanaryAbCdEf1234567890"))
+    (unwind-protect
+        (progn
+          (with-temp-file (magent-memory-file)
+            (insert "#+magent-active: true\n\n"
+                    "* Magent Managed Profile\n"
+                    "** Overview\nUse Emacs daily.\n"
+                    "* User Notes\n"
+                    "api-key: " secret "\n"))
+          (cl-letf (((symbol-function 'magent-memory--relevant-request-p)
+                     (lambda (&rest _) t)))
+            (let ((message (magent-memory-system-message "Emacs api-key")))
+              (should message)
+              (should-not (string-match-p (regexp-quote secret) message))
+              (should (string-match-p "<redacted:key>" message)))))
+      (delete-directory memory-dir t))))
+
+(ert-deftest magent-test-run-memory-init-creates-internal-session ()
+  "Test `magent-run-memory-init' runs through the internal command layer."
+  (require 'magent-memory)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-command-session-directory nil)
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         operation)
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
+                   #'ignore)
+                  ((symbol-function 'magent-runtime-command-scope)
+                   (lambda () 'global))
+                  ((symbol-function 'magent-runtime-prepare-command-context)
+                   (lambda (&optional scope) (or scope 'global)))
+                  ((symbol-function 'magent-memory-run)
+                   (lambda (op &rest args)
+                     (setq operation op)
+                     (funcall (plist-get args :notify-fn)
+                              "memory init progress")
+                     (funcall (plist-get args :on-complete)
+                              'completed
+                              "memory init complete"))))
+          (magent-run-memory-init)
+          (let* ((files (magent-session-list-internal-files "memory-init"))
+                 (meta (magent-session--read-file-metadata-cached
+                        (car files))))
+            (should (eq operation 'init))
+            (should (= (length files) 1))
+            (should (equal (plist-get meta :kind) "internal-command"))
+            (should (equal (plist-get meta :command) "memory-init"))
+            (should (equal (plist-get meta :status) "completed"))
+            (should (equal (plist-get meta :title)
+                           "Initialize Magent Emacs profile memory"))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-memory-command-confirm-respects-bypass-permission ()
+  "Test memory command confirmation reuses `magent-bypass-permission'."
+  (require 'magent-memory)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-command-session-directory nil)
+         (magent-bypass-permission t)
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (session (magent-session-create))
+         (id (magent-session-get-id session))
+         (scope (magent-session-internal-scope id "memory-init" 'global))
+         (spec (magent-command-spec-create
+                :name "memory-init"
+                :title "Initialize Magent Emacs profile memory"))
+         (context (magent-command-context-create
+                   :spec spec
+                   :session session
+                   :scope scope
+                   :origin-scope 'global))
+         approved)
+    (unwind-protect
+        (progn
+          (magent-session-install scope session)
+          (cl-letf (((symbol-function 'magent-memory--interactive-confirm)
+                     (lambda (&rest _)
+                       (error "interactive confirm should be bypassed"))))
+            (funcall (magent-memory--command-confirm-provider context 'init)
+                     nil
+                     (lambda (value)
+                       (setq approved value))))
+          (let* ((thread (magent-session-thread-ledger session))
+                 (items (apply #'append
+                               (mapcar #'magent-thread-turn-items
+                                       (magent-thread-turns thread))))
+                 (approval (cl-find
+                            "memory_approval" items
+                            :key #'magent-thread-item-name
+                            :test #'equal)))
+            (should approved)
+            (should approval)
+            (should (string-match-p
+                     "magent-bypass-permission"
+                     (or (magent-thread-item-output approval) "")))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-command-quit-cancels-and-restores-parent-session ()
+  "Test `quit' cancels an internal command and restores its parent session."
+  (require 'magent-command)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-command-session-directory nil)
+         (magent-command--registry (make-hash-table :test #'equal))
+         (magent-command--active-contexts (make-hash-table :test #'equal))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (parent (magent-session-create :id "session-parent"))
+         quit-signalled)
+    (unwind-protect
+        (progn
+          (magent-session-install 'global parent)
+          (magent-command-register
+           "quit-test"
+           :title "Quit test"
+           :runner-type 'pipeline
+           :runner (lambda (_context) (signal 'quit nil)))
+          (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
+                     #'ignore)
+                    ((symbol-function 'magent-runtime-command-scope)
+                     (lambda () 'global))
+                    ((symbol-function 'magent-runtime-prepare-command-context)
+                     (lambda (&optional scope) (or scope 'global)))
+                    ((symbol-function
+                      'magent-session-save-deferred-for-session)
+                     #'ignore))
+            (condition-case nil
+                (magent-command-run "quit-test")
+              (quit (setq quit-signalled t))))
+          (should quit-signalled)
+          (should (eq magent--current-session parent))
+          (should (eq magent-session--current-scope 'global))
+          (should (= (hash-table-count magent-command--active-contexts) 0))
+          (let* ((files (magent-session-list-internal-files "quit-test"))
+                 (file (car files))
+                 (meta (magent-session--read-file-metadata-cached file))
+                 (loaded (magent-session-read-file file))
+                 (session (plist-get loaded :session))
+                 (turn (car (magent-thread-turns
+                             (magent-session-thread-ledger session)))))
+            (should (= (length files) 1))
+            (should (equal (plist-get meta :status) "cancelled"))
+            (should (eq (magent-thread-turn-status turn) 'interrupted))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-command-async-completion-preserves-current-session ()
+  "Test late command completion does not restore an invocation-time session."
+  (require 'magent-command)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-command-session-directory nil)
+         (magent-command--registry (make-hash-table :test #'equal))
+         (magent-command--active-contexts (make-hash-table :test #'equal))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (parent (magent-session-create :id "session-parent"))
+         (new-current (magent-session-create :id "session-new-current"))
+         captured-context)
+    (unwind-protect
+        (progn
+          (magent-session-install 'global parent)
+          (magent-command-register
+           "async-test"
+           :title "Async test"
+           :runner-type 'pipeline
+           :runner (lambda (context) (setq captured-context context)))
+          (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
+                     #'ignore)
+                    ((symbol-function 'magent-runtime-command-scope)
+                     (lambda () 'global))
+                    ((symbol-function 'magent-runtime-prepare-command-context)
+                     (lambda (&optional scope) (or scope 'global)))
+                    ((symbol-function
+                      'magent-session-save-deferred-for-session)
+                     #'ignore))
+            (magent-command-run "async-test")
+            (should (eq magent--current-session parent))
+            (magent-session-install "/tmp/magent-other-project" new-current)
+            (magent-command-complete
+             captured-context 'completed "Async test complete")
+            (should (eq magent--current-session new-current))
+            (should (equal magent-session--current-scope
+                           "/tmp/magent-other-project"))
+            (should (= (hash-table-count
+                        magent-command--active-contexts)
+                       0))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-command-agent-loop-session-is-cancellable ()
+  "Test agent-loop commands retain a registered runtime cancellation handle."
+  (require 'magent-command)
+  (require 'magent-runtime-api)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-command-session-directory nil)
+         (magent-command--registry (make-hash-table :test #'equal))
+         (magent-command--active-contexts (make-hash-table :test #'equal))
+         (magent-runtime-api--sessions (make-hash-table :test #'equal))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (parent (magent-session-create :id "session-parent"))
+         completion
+         captured-context
+         cancelled-runtime)
+    (unwind-protect
+        (progn
+          (magent-session-install 'global parent)
+          (magent-command-register
+           "agent-loop-test"
+           :title "Agent loop test"
+           :runner-type 'agent-loop
+           :runner (magent-command--agent-loop-runner "diagnose"))
+          (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
+                     #'ignore)
+                    ((symbol-function 'magent-runtime-command-scope)
+                     (lambda () 'global))
+                    ((symbol-function 'magent-runtime-prepare-command-context)
+                     (lambda (&optional scope) (or scope 'global)))
+                    ((symbol-function 'magent-agent-registry-get)
+                     (lambda (_name) nil))
+                    ((symbol-function 'magent-agent-registry-get-default)
+                     (lambda () nil))
+                    ((symbol-function 'magent-runtime-submit)
+                     (lambda (runtime-session _prompt &rest args)
+                       (setq captured-context
+                             (gethash (magent-runtime-session-id runtime-session)
+                                      magent-command--active-contexts)
+                             completion (plist-get args :on-complete))
+                       "submission-test"))
+                    ((symbol-function 'magent-runtime-cancel)
+                     (lambda (runtime-session)
+                       (setq cancelled-runtime runtime-session)
+                       (funcall completion 'cancelled "Active turn cancelled")
+                       1))
+                    ((symbol-function
+                      'magent-session-save-deferred-for-session)
+                     #'ignore))
+            (magent-command-run "agent-loop-test")
+            (let* ((session-id
+                    (magent-command--context-session-id captured-context))
+                   (runtime-session
+                    (magent-command-context-runtime-session captured-context)))
+              (should (eq magent--current-session parent))
+              (should (eq (magent-runtime-session-from-id session-id)
+                          runtime-session))
+              (should (equal
+                       (magent-command-context-submission-id captured-context)
+                       "submission-test"))
+              (should (= (magent-command-cancel session-id) 1))
+              (should (eq cancelled-runtime runtime-session))
+              (should (eq magent--current-session parent))
+              (should (= (hash-table-count
+                          magent-command--active-contexts)
+                         0)))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-command-session-label-disambiguates-same-second-runs ()
+  "Test internal session labels include their unique session ids."
+  (require 'magent-command)
+  (let ((file-a "/tmp/session-20260710-120000.json")
+        (file-b "/tmp/session-20260710-120000-01.json"))
+    (cl-letf (((symbol-function 'magent-session--read-file-metadata-cached)
+               (lambda (_file)
+                 '(:command "doctor" :status "completed" :title "Doctor")))
+              ((symbol-function 'magent-session--format-display-timestamp)
+               (lambda (_file) "2026-07-10 12:00:00")))
+      (let ((label-a (magent-command--session-label file-a))
+            (label-b (magent-command--session-label file-b)))
+        (should-not (equal label-a label-b))
+        (should (string-match-p "session-20260710-120000>" label-a))
+        (should (string-match-p "session-20260710-120000-01>" label-b))))))
+
+(ert-deftest magent-test-command-session-viewer-folds-activity-after-result ()
+  "Test internal session viewer leads with result and hides activity details."
+  (require 'magent-command)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-command-session-directory nil)
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (session (magent-session-create))
+         (id (magent-session-get-id session))
+         (scope (magent-session-internal-scope id "viewer-test" 'global))
+         (spec (magent-command-spec-create
+                :name "viewer-test" :title "Viewer test"))
+         (context (magent-command-context-create
+                   :spec spec :session session :scope scope
+                   :origin-scope 'global))
+         buffer)
+    (unwind-protect
+        (progn
+          (dolist (entry '((kind . "internal-command")
+                           (command . "viewer-test")
+                           (title . "Viewer test")
+                           (status . "running")
+                           (origin-scope . global)))
+            (magent-session-set-metadata-value session (car entry) (cdr entry)))
+          (magent-session-install scope session)
+          (magent-command-record-tool
+           context "doctor_probe" '(:probe "core") "bounded detail")
+          (magent-command-record-message
+           context 'assistant "* Diagnosis\n** Summary\nVisible result" nil
+           (list :source 'magent-doctor-final))
+          (magent-command-complete
+           context 'completed "Viewer complete" :record-message nil)
+          (let ((file (car (magent-session-list-internal-files "viewer-test"))))
+            (cl-letf (((symbol-function 'display-buffer)
+                       (lambda (value &rest _args) value)))
+              (magent-command-show-session file))
+            (setq buffer
+                  (get-buffer
+                   (format "*Magent Internal Session: %s*"
+                           (file-name-base file)))))
+          (should (buffer-live-p buffer))
+          (with-current-buffer buffer
+            (should (derived-mode-p 'magent-command-session-mode))
+            (should (< (save-excursion
+                         (goto-char (point-min))
+                         (search-forward "* Result"))
+                       (save-excursion
+                         (goto-char (point-min))
+                         (search-forward "* Activity"))))
+            (let ((detail-position
+                   (save-excursion
+                     (goto-char (point-min))
+                     (search-forward "bounded detail")
+                     (1- (point)))))
+              (should (invisible-p detail-position))
+              (magent-command-session-toggle-all)
+              (should-not (invisible-p detail-position)))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-doctor-probe-registration-validates-public-contract ()
+  "Test public Doctor probes require stable ids, callables, and timeouts."
+  (require 'magent-doctor)
+  (let ((magent-doctor--registry (make-hash-table :test #'equal)))
+    (should-error
+     (magent-doctor-register-probe
+      "Unsafe Probe" :collector #'ignore))
+    (should-error
+     (magent-doctor-register-probe
+      "valid" :collector #'ignore :timeout 0))
+    (should
+     (magent-doctor-register-probe
+      "valid-probe" :collector #'ignore :timeout 1))))
+
+(ert-deftest magent-test-doctor-sends-one-sanitized-tool-free-request ()
+  "Test Doctor never exposes probe or backend secrets to its request/session."
+  (require 'magent-doctor)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-command-session-directory nil)
+         (magent-command--registry (make-hash-table :test #'equal))
+         (magent-command--active-contexts (make-hash-table :test #'equal))
+         (magent-doctor--registry (make-hash-table :test #'equal))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (magent-bypass-permission t)
+         (secret "sk-DoctorProbeCanaryAbCdEf1234567890")
+         (backend-secret "sk-DoctorBackendCanaryAbCdEf1234567890")
+         (gptel-backend (list :name "unsafe-test-backend"
+                              :key backend-secret))
+         (gptel-model 'doctor-test-model)
+         (parent (magent-session-create :id "session-parent"))
+         request
+         (sample-count 0)
+         context)
+    (unwind-protect
+        (progn
+          (magent-session-install 'global parent)
+          (magent-doctor-register-probe
+           "canary"
+           :description "Canary security probe"
+           :collector
+           (lambda (_context _state)
+             `((authorization . ,secret)
+               (safe . "diagnostic value")))
+           :data-categories '(runtime)
+           :required t)
+          (magent-command-register
+           "doctor"
+           :title "Run Magent Doctor"
+           :runner-type 'diagnostic-pipeline
+           :runner #'magent-doctor--runner)
+          (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
+                     #'ignore)
+                    ((symbol-function 'magent-runtime-command-scope)
+                     (lambda () 'global))
+                    ((symbol-function 'magent-runtime-prepare-command-context)
+                     (lambda (&optional scope) (or scope 'global)))
+                    ((symbol-function 'magent-runtime-submit)
+                     (lambda (&rest _)
+                       (error "Doctor must not use runtime agent loop")))
+                    ((symbol-function 'magent-session-save-deferred-for-session)
+                     #'ignore)
+                    ((symbol-function 'magent-llm-gptel-sample)
+                     (lambda (value)
+                       (setq request value)
+                       (cl-incf sample-count)
+                       (funcall
+                        (magent-llm-request-callback value)
+                        (magent-llm-completed-event
+                         (concat
+                          "* Diagnosis\n"
+                          "** Summary\nNo credential exposure.\n"
+                          "** Findings\n- low [canary] Safe.\n"
+                          "** Recommended Actions\n- None.\n"
+                          "** Limitations\n- Synthetic probe.")))
+                       (generate-new-buffer " *doctor-finished-test*"))))
+            (setq context (magent-command-run "doctor")))
+          (should (= sample-count 1))
+          (should-not (magent-llm-request-tools request))
+          (should (plist-get (magent-llm-request-metadata request)
+                             :disable-provider-tools))
+          (should-not (string-match-p
+                       (regexp-quote secret)
+                       (magent-llm-request-prompt request)))
+          (should-not (string-match-p
+                       (regexp-quote backend-secret)
+                       (magent-llm-request-prompt request)))
+          (should (string-match-p
+                   "<redacted:authorization>"
+                   (magent-llm-request-prompt request)))
+          (should (magent-command-context-completed-p context))
+          (should (eq magent--current-session parent))
+          (let* ((file (car (magent-session-list-internal-files "doctor")))
+                 (text (with-temp-buffer
+                         (insert-file-contents file)
+                         (buffer-string)))
+                 (meta (magent-session--read-file-metadata-cached file)))
+            (should (equal (plist-get meta :status) "completed"))
+            (should-not (string-match-p (regexp-quote secret) text))
+            (should-not (string-match-p (regexp-quote backend-secret) text)))
+          (should-not
+           (string-match-p
+            (regexp-quote secret)
+            (format "%S" (magent-session-messages parent)))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-doctor-unsafe-probe-fails-closed-before-sampling ()
+  "Test a live object from a probe prevents any provider request."
+  (require 'magent-doctor)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-command-session-directory nil)
+         (magent-command--registry (make-hash-table :test #'equal))
+         (magent-command--active-contexts (make-hash-table :test #'equal))
+         (magent-doctor--registry (make-hash-table :test #'equal))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (magent-bypass-permission t)
+         (parent (magent-session-create :id "session-parent"))
+         sampled)
+    (unwind-protect
+        (progn
+          (magent-session-install 'global parent)
+          (magent-doctor-register-probe
+           "unsafe"
+           :collector (lambda (_context _state) (current-buffer))
+           :required t)
+          (magent-command-register
+           "doctor" :title "Run Magent Doctor"
+           :runner-type 'diagnostic-pipeline
+           :runner #'magent-doctor--runner)
+          (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
+                     #'ignore)
+                    ((symbol-function 'magent-runtime-command-scope)
+                     (lambda () 'global))
+                    ((symbol-function 'magent-runtime-prepare-command-context)
+                     (lambda (&optional scope) (or scope 'global)))
+                    ((symbol-function 'magent-session-save-deferred-for-session)
+                     #'ignore)
+                    ((symbol-function 'magent-llm-gptel-sample)
+                     (lambda (_request) (setq sampled t))))
+            (magent-command-run "doctor"))
+          (should-not sampled)
+          (let* ((file (car (magent-session-list-internal-files "doctor")))
+                 (meta (magent-session--read-file-metadata-cached file)))
+            (should (equal (plist-get meta :status) "failed"))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-doctor-active-request-is-cancellable ()
+  "Test Doctor retains and aborts its direct gptel request handle."
+  (require 'magent-doctor)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-command-session-directory nil)
+         (magent-command--registry (make-hash-table :test #'equal))
+         (magent-command--active-contexts (make-hash-table :test #'equal))
+         (magent-doctor--registry (make-hash-table :test #'equal))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (magent-bypass-permission t)
+         (parent (magent-session-create :id "session-parent"))
+         (request-buffer (generate-new-buffer " *doctor-cancel-test*"))
+         aborted
+         context)
+    (unwind-protect
+        (progn
+          (magent-session-install 'global parent)
+          (magent-doctor-register-probe
+           "safe" :collector (lambda (_context _state) '((ok . t)))
+           :required t)
+          (magent-command-register
+           "doctor" :title "Run Magent Doctor"
+           :runner-type 'diagnostic-pipeline
+           :runner #'magent-doctor--runner)
+          (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
+                     #'ignore)
+                    ((symbol-function 'magent-runtime-command-scope)
+                     (lambda () 'global))
+                    ((symbol-function 'magent-runtime-prepare-command-context)
+                     (lambda (&optional scope) (or scope 'global)))
+                    ((symbol-function 'magent-session-save-deferred-for-session)
+                     #'ignore)
+                    ((symbol-function 'magent-llm-gptel-sample)
+                     (lambda (_request) request-buffer))
+                    ((symbol-function 'gptel-abort)
+                     (lambda (buffer) (setq aborted buffer))))
+            (setq context (magent-command-run "doctor"))
+            (should-not (magent-command-context-completed-p context))
+            (should (gethash (magent-command--context-session-id context)
+                             magent-command--active-contexts))
+            (should (magent-command-cancel
+                     (magent-command--context-session-id context))))
+          (should (eq aborted request-buffer))
+          (should-not (buffer-live-p request-buffer))
+          (should (magent-command-context-completed-p context))
+          (should (eq magent--current-session parent))
+          (let* ((file (car (magent-session-list-internal-files "doctor")))
+                 (meta (magent-session--read-file-metadata-cached file)))
+            (should (equal (plist-get meta :status) "cancelled"))))
+      (when (buffer-live-p request-buffer) (kill-buffer request-buffer))
+      (delete-directory magent-session-directory t))))
 
 (ert-deftest magent-test-memory-system-message-selects-relevant-sections ()
   "Test prompt-time memory injection selects bounded relevant sections."
@@ -4521,6 +5143,55 @@
     (should (equal signaled '(fake-thread quit nil)))
     (should (equal callback-result "Error: Evaluation timed out"))))
 
+(ert-deftest magent-test-emacs-eval-worker-suppresses-debugger-settings ()
+  "Test worker errors are tool results even when caller debugging is enabled."
+  (require 'magent-tools)
+  (let (worker callback-result timeout-timer)
+    (cl-letf (((symbol-function 'make-thread)
+               (lambda (function &optional _name)
+                 (setq worker function)
+                 'fake-thread))
+              ((symbol-function 'thread-live-p) (lambda (_thread) nil))
+              ((symbol-function 'run-at-time)
+               (lambda (seconds _repeat function &rest _args)
+                 (if (zerop seconds)
+                     (funcall function)
+                   (setq timeout-timer function))
+                 'fake-timer))
+              ((symbol-function 'cancel-timer) #'ignore))
+      (let ((debug-on-error t)
+            (debug-on-quit t)
+            (debug-on-signal t))
+        (magent-tools--emacs-eval
+         (lambda (result) (setq callback-result result))
+         "(error \"worker boom\")")
+        (should (functionp worker))
+        (funcall worker)))
+    (should (functionp timeout-timer))
+    (should (string-match-p "worker boom" callback-result))))
+
+(ert-deftest magent-test-emacs-eval-fallback-suppresses-debugger-settings ()
+  "Test fallback evaluation also ignores interactive debugger variables."
+  (require 'magent-tools)
+  (let ((real-fboundp (symbol-function 'fboundp))
+        callback-result)
+    (cl-letf (((symbol-function 'fboundp)
+               (lambda (symbol)
+                 (and (not (eq symbol 'make-thread))
+                      (funcall real-fboundp symbol))))
+              ((symbol-function 'run-at-time)
+               (lambda (seconds _repeat function &rest _args)
+                 (when (zerop seconds) (funcall function))
+                 'fake-timer))
+              ((symbol-function 'cancel-timer) #'ignore))
+      (let ((debug-on-error t)
+            (debug-on-quit t)
+            (debug-on-signal t))
+        (magent-tools--emacs-eval
+         (lambda (result) (setq callback-result result))
+         "(error \"fallback boom\")")))
+    (should (string-match-p "fallback boom" callback-result))))
+
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; UI/session regression tests
 ;; ──────────────────────────────────────────────────────────────────────
@@ -4935,6 +5606,45 @@
           (magent-session-add-message (magent-session-get) 'user "hello")
           (magent-session-save)
           (should (= (length (directory-files magent-session-directory nil "\\.json$")) 1)))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-internal-session-saves-outside-normal-session-list ()
+  "Test internal command sessions persist under the internal namespace."
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-command-session-directory nil)
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (session (magent-session-create))
+         (id (magent-session-get-id session))
+         (scope (magent-session-internal-scope id "memory-init" 'global)))
+    (unwind-protect
+        (progn
+          (dolist (entry '((kind . "internal-command")
+                           (command . "memory-init")
+                           (status . "completed")
+                           (title . "Memory Init")
+                           (origin-scope . global)))
+            (magent-session-set-metadata-value session (car entry) (cdr entry)))
+          (setq magent--current-session session
+                magent-session--current-scope scope)
+          (magent-session-add-message session 'user "run memory init")
+          (magent-session-save)
+          (let* ((internal-files
+                  (magent-session-list-internal-files "memory-init"))
+                 (file (car internal-files))
+                 (meta (magent-session--read-file-metadata-cached file))
+                 (loaded (magent-session-read-file file))
+                 (loaded-session (plist-get loaded :session)))
+            (should (= (length internal-files) 1))
+            (should (string-match-p "/internal/memory-init/" file))
+            (should-not (member file (magent-session-list-files)))
+            (should (equal (plist-get meta :kind) "internal-command"))
+            (should (equal (plist-get meta :command) "memory-init"))
+            (should (equal (plist-get meta :status) "completed"))
+            (should (equal (magent-session-metadata-value
+                            loaded-session 'command)
+                           "memory-init"))))
       (delete-directory magent-session-directory t))))
 
 (ert-deftest magent-test-session-save-load-preserves-approval-overrides ()
@@ -8263,34 +8973,15 @@ tolerate leading whitespace."
     (should (eq (nth 4 captured) t))
     (should (eq (nth 5 captured) agent))))
 
-(ert-deftest magent-test-doctor-dispatches-magent-self-check-prompt ()
-  "Test `magent-doctor' dispatches a Magent-specific diagnosis request."
-  (require 'magent-ui)
-  (let ((agent (magent-agent-info-create :name "build" :mode 'primary))
-        captured)
-    (cl-letf (((symbol-function 'magent-ui--capture-buffer-context)
-               (lambda ()
-                 "[Context: buffer=\"*magent*\" mode=magent-output-mode line=1]"))
-              ((symbol-function 'magent-agent-registry-get)
-               (lambda (name)
-                 (and (equal name "build") agent)))
-              ((symbol-function 'magent-agent-registry-get-default)
-               (lambda ()
-                 agent))
-              ((symbol-function 'magent-ui-dispatch-prompt)
-               (lambda (prompt &optional source display skills activate-context agent-info)
-                 (setq captured (list prompt source display skills activate-context agent-info)))))
-      (magent-doctor))
-    (should (string-match-p "Run a Magent self-check and diagnose Magent-related problems"
-                            (nth 0 captured)))
-    (should (string-match-p "\\*magent-log\\*" (nth 0 captured)))
-    (should (string-match-p "magent-mode" (nth 0 captured)))
-    (should (string-match-p "\\[Context: buffer=\"\\*magent\\*\"" (nth 0 captured)))
-    (should (equal (nth 1 captured) 'doctor))
-    (should (equal (nth 2 captured) "Run Magent doctor."))
-    (should (equal (nth 3 captured) '("emacs-runtime-inspection")))
-    (should (eq (nth 4 captured) t))
-    (should (eq (nth 5 captured) agent))))
+(ert-deftest magent-test-run-doctor-dispatches-internal-command ()
+  "Test `magent-run-doctor' dispatches the doctor internal command."
+  (require 'magent-command)
+  (let (captured)
+    (cl-letf (((symbol-function 'magent-command-run)
+               (lambda (name &rest args)
+                 (setq captured (cons name args)))))
+      (magent-run-doctor))
+    (should (equal (car captured) "doctor"))))
 
 (ert-deftest magent-test-ui-dispatch-prompt-forwards-agent-override ()
   "Test `magent-ui-dispatch-prompt' forwards per-request agent overrides."
@@ -8391,7 +9082,7 @@ tolerate leading whitespace."
                    magent-default-agent))))
 
 (ert-deftest magent-test-acp-available-commands-list-command-skills ()
-  "Test ACP available commands expose local and command-like skills."
+  "Test ACP available commands expose command-like skills."
   (require 'magent-acp)
   (let ((magent-skills--registry nil))
     (magent-skills-register
@@ -8415,14 +9106,11 @@ tolerate leading whitespace."
                                 (append commands nil))))
       (should (equal names
                      (sort (copy-sequence
-                            (append magent-test--local-slash-command-names
-                                    '("init")))
+                            '("init"))
                            #'string<)))
       (should command)
       (should (equal (map-elt command 'description)
-                     "Initialize project instructions, similar to Codex /init."))
-      (dolist (name magent-test--local-slash-command-names)
-        (should (member name names))))))
+                     "Initialize project instructions, similar to Codex /init.")))))
 
 (ert-deftest magent-test-acp-available-commands-lists-all-bundled-slash-commands ()
   "Test ACP available commands expose every bundled slash command skill."
@@ -8435,17 +9123,15 @@ tolerate leading whitespace."
                           commands)))
       (should (equal names
                      (sort (copy-sequence
-                            (append magent-test--local-slash-command-names
-                                    magent-test--builtin-slash-command-names))
+                            magent-test--builtin-slash-command-names)
                            #'string<)))
       (dolist (command commands)
         (let* ((name (map-elt command 'name))
                (skill (magent-skills-get name)))
-          (if skill
-              (should (equal (map-elt command 'description)
-                             (magent-acp--metadata-string
-                              (magent-skill-description skill))))
-            (should (member name magent-test--local-slash-command-names))))))))
+          (should skill)
+          (should (equal (map-elt command 'description)
+                         (magent-acp--metadata-string
+                          (magent-skill-description skill)))))))))
 
 (ert-deftest magent-test-acp-slash-command-expands-all-bundled-commands ()
   "Test every bundled slash command expands to its default prompt."
@@ -8675,25 +9361,22 @@ tolerate leading whitespace."
                    '("existing-skill")))
     (should (equal (map-elt response 'stopReason) "end_turn"))))
 
-(ert-deftest magent-test-acp-session-prompt-runs-local-memory-command ()
-  "Test memory slash commands run locally and do not submit a model prompt."
+(ert-deftest magent-test-acp-session-prompt-does-not-run-memory-slash-locally ()
+  "Test memory slash text is submitted as a normal prompt."
   (require 'magent-acp)
   (let ((runtime-session (magent-runtime-session-create
                           :id "session-1"))
-        operation submitted response failure notifications)
+        submitted response failure notifications)
     (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
                (lambda (session-id)
                  (and (equal session-id "session-1")
                       runtime-session)))
               ((symbol-function 'magent-runtime-submit)
-               (lambda (&rest _args)
-                 (setq submitted t)))
-              ((symbol-function 'magent-memory-run)
-               (lambda (op &rest args)
-                 (setq operation op)
+               (lambda (session prompt &rest args)
+                 (setq submitted (list session prompt))
                  (funcall (plist-get args :on-complete)
                           'completed
-                          "memory cleared"))))
+                          "ok"))))
       (magent-acp--handle-request
        `((:notification-handlers
           . (,(lambda (value) (push value notifications))))
@@ -8705,77 +9388,10 @@ tolerate leading whitespace."
        (lambda (value) (setq response value))
        (lambda (err &optional _raw) (setq failure err))))
     (should-not failure)
-    (should-not submitted)
-    (should (eq operation 'clear))
+    (should (equal submitted
+                   (list runtime-session "/magent-memory-clear")))
     (should (equal (map-elt response 'stopReason) "end_turn"))
-    (let* ((updates (mapcar (lambda (notification)
-                              (map-nested-elt notification
-                                              '(params update)))
-                            notifications))
-           (kinds (mapcar (lambda (update)
-                            (map-elt update 'sessionUpdate))
-                          updates)))
-      (should (member "tool_call" kinds))
-      (should (member "tool_call_update" kinds))
-      (should-not (member "agent_message_chunk" kinds)))))
-
-(ert-deftest magent-test-acp-local-memory-command-uses-one-tool-card ()
-  "Test local memory command progress updates one tool card."
-  (require 'magent-acp)
-  (let ((runtime-session (magent-runtime-session-create
-                          :id "session-1"))
-        response failure notifications)
-    (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
-               (lambda (session-id)
-                 (and (equal session-id "session-1")
-                      runtime-session)))
-              ((symbol-function 'magent-memory-run)
-               (lambda (_op &rest args)
-                 (funcall (plist-get args :notify-fn)
-                          "memory init complete")
-                 (funcall (plist-get args :on-complete)
-                          'completed
-                          "memory init complete"))))
-      (magent-acp--handle-request
-       `((:notification-handlers
-          . (,(lambda (value) (push value notifications))))
-         (:request-handlers . nil))
-       '((:method . "session/prompt")
-         (:params . ((sessionId . "session-1")
-                     (prompt . [((type . "text")
-                                 (text . "/magent-memory-init"))]))))
-       (lambda (value) (setq response value))
-       (lambda (err &optional _raw) (setq failure err))))
-    (should-not failure)
-    (should (equal (map-elt response 'stopReason) "end_turn"))
-    (let* ((updates (nreverse
-                     (mapcar (lambda (notification)
-                               (map-nested-elt notification
-                                               '(params update)))
-                             notifications)))
-           (session-updates (mapcar (lambda (update)
-                                      (map-elt update 'sessionUpdate))
-                                    updates))
-           (tool-call-ids
-            (delq nil
-                  (mapcar (lambda (update)
-                            (map-elt update 'toolCallId))
-                          updates)))
-           (tool-updates
-            (cl-remove-if-not
-             (lambda (update)
-               (equal (map-elt update 'sessionUpdate)
-                      "tool_call_update"))
-             updates))
-           (statuses (mapcar (lambda (update)
-                               (map-elt update 'status))
-                             tool-updates)))
-      (should-not (member "agent_message_chunk" session-updates))
-      (should (equal (car session-updates) "tool_call"))
-      (should (cl-every (lambda (id)
-                          (equal id (car tool-call-ids)))
-                        tool-call-ids))
-      (should (equal statuses '("in_progress" "completed"))))))
+    (should-not notifications)))
 
 (ert-deftest magent-test-acp-call-failure-supports-rest-wrapper ()
   "Test ACP failures preserve two-argument callbacks through wrapper layers."

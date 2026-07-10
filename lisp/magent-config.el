@@ -338,6 +338,14 @@ Should match one of the registered agent names."
   :type 'directory
   :group 'magent)
 
+(defcustom magent-command-session-directory nil
+  "Directory where Magent internal command session files are stored.
+When nil, internal command sessions are stored under
+`magent-session-directory'/internal."
+  :type '(choice (const :tag "Use magent-session-directory/internal" nil)
+                 directory)
+  :group 'magent)
+
 (defcustom magent-audit-directory nil
   "Directory where persistent audit log files are stored.
 When nil, audit logs are written under `magent-session-directory'/audit."
@@ -620,6 +628,41 @@ When nil, the custom file path is recorded but its contents are not read."
 
 (defcustom magent-memory-max-injected-sections 3
   "Maximum number of memory sections injected into one prompt."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-doctor-probe-timeout 2
+  "Default timeout in seconds for one Magent doctor probe."
+  :type 'number
+  :group 'magent)
+
+(defcustom magent-doctor-process-timeout 10
+  "Default timeout in seconds for a doctor probe subprocess."
+  :type 'number
+  :group 'magent)
+
+(defcustom magent-doctor-total-timeout 30
+  "Maximum seconds spent collecting local Magent doctor diagnostics."
+  :type 'number
+  :group 'magent)
+
+(defcustom magent-doctor-max-diagnostic-chars 24000
+  "Maximum characters sent in one Magent doctor diagnostic bundle."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-doctor-max-probe-chars 8000
+  "Maximum encoded characters retained from one Magent doctor probe."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-doctor-source-context-max-chars 6000
+  "Maximum source characters included by the manual doctor source probe."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-doctor-log-max-lines 100
+  "Maximum recent lines read from one allowlisted doctor log buffer."
   :type 'integer
   :group 'magent)
 

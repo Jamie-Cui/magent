@@ -228,7 +228,10 @@ CALLBACK is called with success message or error."
 CALLBACK is called with the result as a readable string, or an error message.
 Evaluation runs in the user's context buffer when known
 \(see `magent-tools--request-context'), falling back to current buffer."
-  (condition-case err
+  (let ((debug-on-error nil)
+        (debug-on-quit nil)
+        (debug-on-signal nil))
+    (condition-case err
       (let* ((timeout (or timeout magent-emacs-eval-timeout))
              (form (car (read-from-string sexp)))
              (cancelled nil)
@@ -259,47 +262,53 @@ Evaluation runs in the user's context buffer when known
                     ;; signal it even when the form is busy in Lisp.
                     (make-thread
                      (lambda ()
-                       (condition-case worker-err
-                           (let ((result
-                                  (if (and ctx-buffer (buffer-live-p ctx-buffer))
-                                      (with-current-buffer ctx-buffer
-                                        (eval form t))
-                                    (eval form t))))
-                             (run-at-time 0 nil
-                                          (lambda ()
-                                            (finish (prin1-to-string result)))))
-                         (quit
-                          (run-at-time 0 nil
-                                       (lambda ()
-                                         (unless (or completed cancelled)
-                                           (finish "Error: Evaluation interrupted")))))
-                         (error
-                          (run-at-time 0 nil
-                                       (lambda ()
-                                         (unless (or completed cancelled)
-                                           (finish
-                                            (format "Error evaluating sexp: %s"
-                                                    (error-message-string worker-err)))))))))
+                       (let ((debug-on-error nil)
+                             (debug-on-quit nil)
+                             (debug-on-signal nil))
+                         (condition-case worker-err
+                             (let ((result
+                                    (if (and ctx-buffer (buffer-live-p ctx-buffer))
+                                        (with-current-buffer ctx-buffer
+                                          (eval form t))
+                                      (eval form t))))
+                               (run-at-time 0 nil
+                                            (lambda ()
+                                              (finish (prin1-to-string result)))))
+                           (quit
+                            (run-at-time 0 nil
+                                         (lambda ()
+                                           (unless (or completed cancelled)
+                                             (finish "Error: Evaluation interrupted")))))
+                           (error
+                            (run-at-time 0 nil
+                                         (lambda ()
+                                           (unless (or completed cancelled)
+                                             (finish
+                                              (format "Error evaluating sexp: %s"
+                                                      (error-message-string worker-err))))))))))
                      "magent-emacs-eval")
                   (progn
                     (run-at-time
                      0 nil
                      (lambda ()
-                       (condition-case sync-err
-                           (let ((result
-                                  (if (and ctx-buffer (buffer-live-p ctx-buffer))
-                                      (with-current-buffer ctx-buffer
-                                        (eval form t))
-                                    (eval form t))))
-                             (finish (prin1-to-string result)))
-                         (quit
-                          (unless (or completed cancelled)
-                            (finish "Error: Evaluation interrupted")))
-                         (error
-                          (unless (or completed cancelled)
-                            (finish
-                             (format "Error evaluating sexp: %s"
-                                     (error-message-string sync-err))))))))
+                       (let ((debug-on-error nil)
+                             (debug-on-quit nil)
+                             (debug-on-signal nil))
+                         (condition-case sync-err
+                             (let ((result
+                                    (if (and ctx-buffer (buffer-live-p ctx-buffer))
+                                        (with-current-buffer ctx-buffer
+                                          (eval form t))
+                                      (eval form t))))
+                               (finish (prin1-to-string result)))
+                           (quit
+                            (unless (or completed cancelled)
+                              (finish "Error: Evaluation interrupted")))
+                           (error
+                            (unless (or completed cancelled)
+                              (finish
+                               (format "Error evaluating sexp: %s"
+                                       (error-message-string sync-err)))))))))
                     nil)))
           (when (and timeout (> timeout 0))
             (setq timer
@@ -316,7 +325,10 @@ Evaluation runs in the user's context buffer when known
                (cancel-timer timer)
                (setq timer nil))
              (interrupt-worker)))))
-    (error (funcall callback (format "Error evaluating sexp: %s" (error-message-string err))))))
+      (error
+       (funcall callback
+                (format "Error evaluating sexp: %s"
+                        (error-message-string err)))))))
 
 (defun magent-tools--bash (callback command &optional timeout)
   "Execute shell COMMAND asynchronously with optional TIMEOUT in seconds.

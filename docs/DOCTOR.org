@@ -1,0 +1,107 @@
+#+title: Magent Doctor
+#+magent_lang: en
+#+magent_alt_url: /DOCTOR.zh.html
+#+options: toc:2 num:nil
+
+* Purpose
+
+~M-x magent-run-doctor~ diagnoses Magent, Emacs runtime, and current-project
+state without giving an LLM general Emacs or shell access.  Each run creates an
+isolated internal session under ~magent-session-directory/internal/doctor~.
+It is intentionally not an agent-shell slash command.
+
+With a prefix argument, ~C-u M-x magent-run-doctor~ lets the user review the
+applicable probe selection.  Core runtime diagnostics are always included.
+
+* Trust Boundary
+
+Doctor uses two phases:
+
+1. Trusted, read-only Elisp probes collect bounded structured facts.
+2. One tool-free ~gptel-request~ analyzes the sanitized diagnostic bundle.
+
+The provider request has no tools and does not enter the normal Magent agent
+loop or runtime queue.  It may run concurrently with an ordinary conversation,
+but it does not install its internal session as the user's current session.
+
+Doctor never intentionally collects a gptel backend object, API keys,
+~auth-source~, environment variables, HTTP headers, or raw ~*gptel-log*~
+content.  Absolute paths are normalized to ~$PROJECT~, ~$HOME~, and ~$TMP~.
+Raw probe return values are not persisted or logged; only bounded, recursively
+redacted output enters the internal session and provider request.
+
+Redaction is defense in depth, not a sandbox.  Custom probes are trusted Emacs
+Lisp with the same authority as any installed package.  They must follow the
+read-only probe contract, but Magent cannot prevent malicious Elisp from
+reading or modifying user state.  Unsupported or circular probe output fails
+closed before any provider request is made.
+
+* Built-In Probes
+
+- ~core-runtime~: Magent source, mode, session, queue, approvals, provider name,
+  and model name.  It never serializes the provider backend object.
+- ~current-buffer~: buffer metadata without contents.
+- ~project~: project indicators and a read-only Git status when available.
+- ~diagnostics~: existing Flymake, Flycheck, and Eglot state.
+- ~compilation~: bounded tails from existing project compilation buffers.
+- ~magent-logs~: bounded Magent log tail and filtered Magent-related warning and
+  message lines.  Raw provider traffic is excluded.
+- ~source-context~: a bounded excerpt around point.  This probe is manual-only.
+
+Probes run serially.  Ordinary probe errors and timeouts are recorded safely
+and collection continues.  Output validation or redaction failure terminates
+the entire run without contacting the provider.
+
+* Extending Doctor
+
+Register trusted probes with ~magent-doctor-register-probe~:
+
+#+begin_src emacs-lisp
+(magent-doctor-register-probe
+ "my-runtime-check"
+ :description "Read-only status for my package"
+ :predicate (lambda (context)
+              (buffer-live-p
+               (magent-command-context-origin-buffer context)))
+ :collector (lambda (_context _state)
+              `((feature-loaded . ,(featurep 'my-package))))
+ :timeout 2
+ :data-categories '(runtime))
+#+end_src
+
+Probe ids use lowercase letters, digits, hyphens, or underscores and are at
+most 64 characters.  Collectors must return JSON-safe strings, numbers,
+booleans, symbols, vectors, lists, plists, alists, or hash tables.  Live
+buffers, processes, backend structs, and circular values are rejected.
+
+For fixed external diagnostics, use ~magent-doctor-run-process~ with an
+executable and argument list.  It never invokes a shell and participates in
+Doctor timeout and cancellation cleanup.  Probes must not configure, build,
+test, edit, or otherwise mutate a project.
+
+* Sessions And Cancellation
+
+Use ~M-x magent-list-internal-sessions~ to inspect results.  The viewer shows
+the final diagnosis first and folds probe activity by default; ~TAB~ toggles a
+section and ~S-TAB~ toggles all activity details.
+
+Use ~M-x magent-cancel-internal-command~ to cancel an active Doctor request.
+Cancellation terminates an active probe process or aborts the direct gptel
+request, marks the internal session cancelled, and leaves the user's current
+session unchanged.
+
+* Configuration
+
+The main limits are:
+
+- ~magent-doctor-probe-timeout~
+- ~magent-doctor-process-timeout~
+- ~magent-doctor-total-timeout~
+- ~magent-doctor-max-diagnostic-chars~
+- ~magent-doctor-max-probe-chars~
+- ~magent-doctor-source-context-max-chars~
+- ~magent-doctor-log-max-lines~
+
+~magent-bypass-permission~ skips the preflight confirmation only.  It never
+disables collection bounds, path normalization, redaction, or the no-tools
+provider boundary.

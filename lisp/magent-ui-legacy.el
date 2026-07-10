@@ -37,6 +37,8 @@
 (defvar magent-enable-logging)
 (defvar magent-log-level)
 
+(declare-function magent-run-doctor "magent-command")
+
 (defvar magent--current-request-handle nil
   "Current active request handle, if any.")
 
@@ -1524,7 +1526,7 @@ Skips keys already reserved by `magent-transient-agent-menu'."
   "Magent health menu."
   ["Diagnostics"
    [("d" "diagnose Emacs" magent-diagnose-emacs)
-    ("D" "Magent doctor" magent-doctor)]])
+    ("D" "Magent doctor" magent-run-doctor)]])
 
 (transient-define-prefix magent-transient-buffer-menu ()
   "Magent buffer menu."
@@ -2128,23 +2130,6 @@ Returns a context string or nil if context should not be captured."
    "Do not edit files or make state-changing changes until you have a concrete hypothesis.")
   "Base instructions used by `magent-diagnose-emacs'.")
 
-(defconst magent-ui--doctor-display
-  "Run Magent doctor."
-  "Display text used for `magent-doctor' user messages.")
-
-(defconst magent-ui--doctor-instructions
-  (concat
-   "Run a Magent self-check and diagnose Magent-related problems in the current Emacs session.\n\n"
-   "Start by collecting evidence instead of guessing.\n"
-   "Focus on Magent's own runtime state, commands, buffers, and logs.\n"
-   "Inspect the live Emacs state with emacs_eval when useful.\n"
-   "Check whether Magent features are loaded, whether `magent-mode' is enabled, the current session scope and agent, queue/request state, and whether there are pending approvals or recent errors.\n"
-   "Inspect the relevant `*magent:*` buffer, `*magent-log*`, `*Messages*`, `*Warnings*`, and `*Backtrace*` when available.\n"
-   "If the problem seems request-specific, inspect the latest Magent conversation and log entries to identify the failing step.\n"
-   "If no concrete failure is visible yet, summarize the suspicious signals you can observe and ask for the smallest missing reproduction detail.\n"
-   "Do not edit files or make state-changing changes until you have a concrete hypothesis.")
-  "Base instructions used by `magent-doctor'.")
-
 (defun magent-ui--diagnosis-agent ()
   "Return the preferred agent for `magent-diagnose-emacs'."
   (or (magent-agent-registry-get "build")
@@ -2224,15 +2209,6 @@ inserted into compose as editable text."
    magent-ui--emacs-diagnosis-instructions
    'diagnose-emacs
    magent-ui--emacs-diagnosis-display))
-
-;;;###autoload
-(defun magent-doctor ()
-  "Run Magent self-check and diagnose Magent-related issues."
-  (interactive)
-  (magent-ui--dispatch-diagnosis
-   magent-ui--doctor-instructions
-   'doctor
-   magent-ui--doctor-display))
 
 ;;; Processing
 

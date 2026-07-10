@@ -37,7 +37,8 @@
   (approval-overrides nil)   ; Session-scoped approval memory
   (context-items nil)        ; Structured Codex-like transcript items
   (agent-jobs nil)           ; Durable child-agent job state
-  (thread nil))              ; Canonical thread/turn/item ledger
+  (thread nil)               ; Canonical thread/turn/item ledger
+  (metadata nil))            ; Top-level session metadata alist
 
 ;;; Message helpers
 
@@ -87,6 +88,84 @@ transcript, but should not be fed back into later requests."
 (defvar magent-session--metadata-cache (make-hash-table :test #'equal)
   "Cached lightweight metadata for saved session files.")
 
+(defvar magent-session--current-scope)
+
+(defun magent-session-metadata-value (session key)
+  "Return SESSION metadata value for KEY, or nil."
+  (cdr (assq key (and session
+                      (magent-session-metadata session)))))
+
+(defun magent-session-set-metadata-value (session key value)
+  "Set SESSION metadata KEY to VALUE.
+When VALUE is nil, remove KEY.  Return SESSION metadata."
+  (when session
+    (let ((metadata (assq-delete-all
+                     key (copy-sequence
+                          (magent-session-metadata session)))))
+      (when value
+        (push (cons key value) metadata))
+      (setf (magent-session-metadata session) metadata)
+      metadata)))
+
+(defun magent-session--metadata-string (session key)
+  "Return SESSION metadata KEY as a string, or nil."
+  (when-let* ((value (magent-session-metadata-value session key)))
+    (cond
+     ((stringp value) value)
+     ((symbolp value) (symbol-name value))
+     (t (format "%s" value)))))
+
+(defun magent-session--internal-kind-p (kind)
+  "Return non-nil when KIND denotes an internal command session."
+  (or (eq kind 'internal-command)
+      (equal kind "internal-command")))
+
+(defun magent-session-internal-scope-p (scope)
+  "Return non-nil when SCOPE is an internal command scope."
+  (and (listp scope)
+       (magent-session--internal-kind-p (plist-get scope :kind))))
+
+(defun magent-session-internal-scope
+    (session-id command origin-scope)
+  "Return an internal command scope for SESSION-ID, COMMAND, and ORIGIN-SCOPE."
+  (list :kind 'internal-command
+        :id session-id
+        :command command
+        :origin-scope origin-scope))
+
+(defun magent-session--scope-origin (scope)
+  "Return ordinary project/global origin for SCOPE."
+  (if (magent-session-internal-scope-p scope)
+      (or (plist-get scope :origin-scope) 'global)
+    scope))
+
+(defun magent-session--origin-scope-for-session (session scope)
+  "Return ordinary project/global origin for SESSION saved under SCOPE."
+  (or (magent-session-metadata-value session 'origin-scope)
+      (magent-session--scope-origin scope)
+      'global))
+
+(defun magent-session--command-name-for-storage (name)
+  "Return safe internal command NAME for storage paths."
+  (let ((raw (cond
+              ((stringp name) name)
+              ((symbolp name) (symbol-name name))
+              ((null name) "unknown")
+              (t (format "%s" name)))))
+    (replace-regexp-in-string
+     "[^[:alnum:]_.-]+" "-"
+     (string-trim raw))))
+
+(defun magent-session-internal-directory (&optional command)
+  "Return internal command session directory, optionally for COMMAND."
+  (let ((root (or magent-command-session-directory
+                  (expand-file-name "internal" magent-session-directory))))
+    (if command
+        (expand-file-name
+         (magent-session--command-name-for-storage command)
+         root)
+      root)))
+
 (defun magent-session--clean-summary-title (text)
   "Normalize TEXT into a single-line summary title."
   (when (stringp text)
@@ -116,6 +195,9 @@ transcript, but should not be fed back into later requests."
   (or (and session
            (magent-thread-p (magent-session-thread session))
            (magent-thread-scope (magent-session-thread session)))
+      (and session
+           (magent-session-metadata-value session 'origin-scope))
+      (magent-session--scope-origin magent-session--current-scope)
       magent-session--current-scope))
 
 (defun magent-session--ensure-thread (session)
@@ -128,9 +210,13 @@ transcript, but should not be fed back into later requests."
                         (magent-session-get-id session))
                 :session-id (or (magent-session-id session)
                                 (magent-session-get-id session))
-                :scope magent-session--current-scope
+                :scope (magent-session--scope-for-thread session)
                 :status 'idle
-                :metadata (list :source 'magent))))
+                :metadata (append (list :source 'magent)
+                                  (and (magent-session-metadata session)
+                                       (list :session-metadata
+                                             (magent-session-metadata
+                                              session)))))))
           (setf (magent-session-thread session) thread)
           thread))))
 
@@ -267,7 +353,7 @@ This is either the symbol `global' or a normalized project root path.")
 (defvar magent-session--save-timer nil
   "Idle timer used for deferred UI session saves.")
 
-(defconst magent-session-schema-version 3
+(defconst magent-session-schema-version 4
   "Current schema version written to session JSON files.")
 
 (defun magent-session--normalize-project-root (root)
@@ -368,11 +454,15 @@ SCOPE must be either `global' or a normalized project root string."
 
 (defun magent-session--scope-storage-directory (scope)
   "Return the storage directory for SCOPE."
-  (if (eq scope 'global)
-      magent-session-directory
+  (cond
+   ((magent-session-internal-scope-p scope)
+    (magent-session-internal-directory (plist-get scope :command)))
+   ((eq scope 'global)
+    magent-session-directory)
+   (t
     (expand-file-name
      (concat "projects/" (secure-hash 'sha1 scope))
-     magent-session-directory)))
+     magent-session-directory))))
 
 (defun magent-session--infer-file-scope (filepath)
   "Infer the session scope for FILEPATH."
@@ -428,6 +518,13 @@ Fall back to the file modification time for legacy filenames."
       (magent-session--sort-files-by-time
        (directory-files-recursively projects-dir "\\.json$")))))
 
+(defun magent-session-list-internal-files (&optional command)
+  "Return internal command session JSON files, optionally limited to COMMAND."
+  (let ((directory (magent-session-internal-directory command)))
+    (when (file-directory-p directory)
+      (magent-session--sort-files-by-time
+       (directory-files-recursively directory "\\.json$")))))
+
 (defun magent-session--read-file-metadata (filepath)
   "Read lightweight metadata from session FILEPATH."
   (condition-case nil
@@ -436,19 +533,39 @@ Fall back to the file modification time for legacy filenames."
         (let* ((json-object-type 'alist)
                (json-array-type 'list)
                (data (json-read))
+               (kind (cdr (assq 'kind data)))
+               (command (cdr (assq 'command data)))
+               (status (cdr (assq 'status data)))
+               (title (cdr (assq 'title data)))
+               (parent-session-id (cdr (assq 'parent-session-id data)))
+               (metadata (cdr (assq 'metadata data)))
                (scope-name (cdr (assq 'scope data)))
                (project-root (cdr (assq 'project-root data)))
                (summary-title (or (magent-session--clean-summary-title
+                                   title)
+                                  (magent-session--clean-summary-title
                                    (cdr (assq 'summary-title data)))
                                   (magent-session--summary-title-from-messages
                                    (cdr (assq 'messages data))))))
           (list :scope (if (equal scope-name "project") 'project 'global)
                 :project-root (magent-session--normalize-project-root project-root)
-                :summary-title summary-title)))
+                :summary-title summary-title
+                :kind kind
+                :command command
+                :status status
+                :title title
+                :parent-session-id parent-session-id
+                :metadata metadata)))
     (error
      (list :scope (magent-session--file-scope-kind filepath)
            :project-root nil
-           :summary-title nil))))
+           :summary-title nil
+           :kind nil
+           :command nil
+           :status nil
+           :title nil
+           :parent-session-id nil
+           :metadata nil))))
 
 (defun magent-session--metadata-cache-key (filepath)
   "Return a cache key for FILEPATH based on current file attributes."
@@ -606,7 +723,17 @@ before calling this function."
                (thread (magent-session-thread session))
                (id (magent-session-get-id session))
                (filepath (expand-file-name (concat id ".json") storage-dir))
-               (summary-title (magent-session--summary-title-from-messages messages))
+               (origin-scope (magent-session--origin-scope-for-session
+                              session scope))
+               (kind (magent-session--metadata-string session 'kind))
+               (command (magent-session--metadata-string session 'command))
+               (status (magent-session--metadata-string session 'status))
+               (title (magent-session--metadata-string session 'title))
+               (parent-session-id
+                (magent-session--metadata-string session 'parent-session-id))
+               (summary-title (or (magent-session--clean-summary-title title)
+                                  (magent-session--summary-title-from-messages
+                                   messages)))
                (approval-overrides
                 (mapcar (lambda (entry)
                           `((tool . ,(symbol-name (car entry)))
@@ -614,9 +741,24 @@ before calling this function."
                         (magent-session-approval-overrides session)))
                (data `((id . ,id)
                        (schema-version . ,magent-session-schema-version)
-                       (scope . ,(if (eq scope 'global) "global" "project"))
-                       ,@(unless (eq scope 'global)
-                           `((project-root . ,scope)))
+                       ,@(when kind
+                           `((kind . ,kind)))
+                       ,@(when command
+                           `((command . ,command)))
+                       ,@(when status
+                           `((status . ,status)))
+                       ,@(when title
+                           `((title . ,title)))
+                       ,@(when parent-session-id
+                           `((parent-session-id . ,parent-session-id)))
+                       ,@(when (magent-session-metadata session)
+                           `((metadata . ,(magent-json-safe-value
+                                           (magent-session-metadata session)))))
+                       (scope . ,(if (eq origin-scope 'global)
+                                     "global"
+                                   "project"))
+                       ,@(unless (eq origin-scope 'global)
+                           `((project-root . ,origin-scope)))
                        ,@(when summary-title
                            `((summary-title . ,summary-title)))
                        (messages . ,(vconcat (mapcar #'magent-session--msg-to-alist messages)))
@@ -699,6 +841,12 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
                (json-array-type 'list)
                (data (json-read))
                (id (cdr (assq 'id data)))
+               (kind (cdr (assq 'kind data)))
+               (command (cdr (assq 'command data)))
+               (status (cdr (assq 'status data)))
+               (title (cdr (assq 'title data)))
+               (parent-session-id (cdr (assq 'parent-session-id data)))
+               (metadata-raw (cdr (assq 'metadata data)))
                (scope-name (cdr (assq 'scope data)))
                (project-root (cdr (assq 'project-root data)))
                (msgs-raw (cdr (assq 'messages data)))
@@ -731,8 +879,18 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
                    (cons (intern (cdr (assq 'tool entry)))
                          (intern (cdr (assq 'decision entry)))))
                  approval-raw))
+               (metadata (append metadata-raw
+                                 (delq nil
+                                       `((kind . ,kind)
+                                         (command . ,command)
+                                         (status . ,status)
+                                         (title . ,title)
+                                         (parent-session-id
+                                          . ,parent-session-id)
+                                         (origin-scope . ,scope)))))
                (session (magent-session-create
                          :id id
+                         :metadata metadata
                          :messages messages
                          :context-items context-items
                          :agent-jobs agent-jobs

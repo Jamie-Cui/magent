@@ -79,7 +79,7 @@ This continuation model is Codex-style in the sense that tool results feed a fol
 #+caption: Magent functional layers
 [[file:assets/img/diagrams/functional-layers.svg]]
 
-Magent can be understood through three user-facing workflows. The first is a coding assistant workflow: read code, search code, edit files, run tests, explain failures, and produce commit or PR-style summaries. The second is an Emacs runtime assistant workflow: use ~emacs_eval~ to inspect buffers, modes, windows, projects, Magit, Org, LSP, and other live editor state. The third is an agent workflow: use skills to encode repeatable procedures, capabilities to activate contextual instructions, and child-agent jobs to split exploration, review, or summarization work.
+Magent can be understood through four user-facing workflows. The first is a coding assistant workflow: read code, search code, edit files, run tests, explain failures, and produce commit or PR-style summaries. The second is an Emacs runtime assistant workflow: use ~emacs_eval~ to inspect buffers, modes, windows, projects, Magit, Org, LSP, and other live editor state. The third is an agent workflow: use skills to encode repeatable procedures, capabilities to activate contextual instructions, and child-agent jobs to split exploration, review, or summarization work. The fourth is an internal command workflow: Emacs commands such as ~magent-run-doctor~ and ~magent-run-memory-init~ run Magent maintenance tasks in isolated durable sessions rather than as agent-shell slash commands.
 
 The product is therefore more than a prompt box with tools. It turns Emacs workflows into actions that can be invoked, audited, resumed, and projected back into the UI.
 
@@ -90,6 +90,20 @@ Magent has three file-backed extension layers:
 - Custom agents under ~.magent/agent/*.md~.
 - Skills under bundled ~skills/~, user ~~/.emacs.d/magent/skills~, legacy ~~/.emacs.d/magent-skills/~ when present, and project ~.magent/skills/~.
 - Capability metadata embedded in skills with ~capability: true~, plus standalone ~CAPABILITY.md~ files under user capability directories and project ~.magent/capabilities/~ when trigger metadata should live outside one skill.
+
+Magent also has an Elisp-level internal command registry in ~magent-command.el~.
+Commands registered with ~magent-command-register~ are invoked by explicit
+~magent-run-*~ user commands, create isolated internal sessions under
+~magent-session-directory/internal~, and may use either direct pipeline runners
+or the normal Magent agent loop. They are intentionally separate from
+agent-shell slash commands, whose command surface remains skill-backed.
+
+~magent-run-doctor~ is the security-sensitive direct-pipeline case.  Trusted,
+read-only probes in ~magent-doctor.el~ collect bounded JSON-safe data, which is
+normalized and redacted through ~magent-redaction.el~ before persistence or one
+tool-free provider request.  Doctor never enters the general agent loop and
+never exposes ~emacs_eval~, shell, or file tools.  Custom probes are trusted
+Elisp rather than sandboxed code; see [[file:DOCTOR.org][DOCTOR.org]].
 
 Instruction skills are injected into the system prompt. Tool skills are invoked through ~skill_invoke~. Capabilities score the current context and activate a small number of instruction skills. Built-in same-name workflow capabilities are co-located with their skills, so the trigger metadata and injected instruction stay in one file. This progressive disclosure model keeps the base prompt smaller while still giving the agent Emacs-specific workflow knowledge when the current request needs it.
 
