@@ -344,7 +344,7 @@ trust boundary and probe API.
 
 5. *Capability System* (~magent-capability.el~): Capability metadata scores each request context and attaches matching instruction skills.  Built-in same-name skill capabilities live in ~SKILL.md~ frontmatter; standalone ~CAPABILITY.md~ files remain supported for separate metadata and project overlays.
 
-6. *Agent Loop*: ~magent-agent.el~ starts the Magent-owned loop in ~magent-agent-loop.el~. ~magent-llm.el~ defines normalized request/events, and ~magent-llm-gptel.el~ calls ~gptel-request~ for one sampling request while hiding gptel callback/FSM details. The loop owns tool dispatch, serial queueing, visible tool rendering, abort cleanup, permission audit hooks, and tool-result session recording; ~magent-agent-process~ owns continuation policy across sampling requests. Reasoning is recorded separately from assistant text, and a tool-output continuation that completes with empty assistant text gets one no-tool final-response retry.
+6. *Agent Loop*: ~magent-agent.el~ starts the Magent-owned loop in ~magent-agent-loop.el~. ~magent-llm.el~ defines normalized request/events, and ~magent-llm-gptel.el~ calls ~gptel-request~ for one sampling request while hiding gptel callback/FSM details. The loop owns tool dispatch, serial queueing, structured lifecycle events, abort cleanup, permission audit hooks, and tool-result session recording; UI sinks render visible events, while ~magent-agent-process~ owns continuation policy across sampling requests. Reasoning is recorded separately from assistant text, and a tool-output continuation that completes with empty assistant text gets one no-tool final-response retry.
 
 7. *LLM Integration* (via gptel): All LLM communication is handled by [[https://github.com/karthink/gptel][gptel]]. Provider, model, and API key configuration is managed entirely by gptel.
 
@@ -363,7 +363,7 @@ trust boundary and probe API.
 
 10. *Internal Commands* (~magent-command.el~, ~magent-doctor.el~, ~magent-redaction.el~): Session-backed Magent maintenance workflows invoked from Emacs commands such as ~magent-run-doctor~ and ~magent-run-memory-init~. These commands are intentionally not exposed as agent-shell slash commands; each run gets an isolated internal session under ~magent-session-directory/internal~ and records only a compact breadcrumb in the parent session. Doctor uses trusted local probes followed by one sanitized request with no provider tools.
 
-11. *Session* (~magent-ledger.el~, ~magent-session.el~): Thread-ledger backed conversation history with per-project active sessions, global fallback outside projects, JSON persistence, internal command session storage, and durable restore from ledger snapshots plus journals.
+11. *Session* (~magent-ledger.el~, ~magent-session.el~): Thread-ledger backed conversation history with per-project active sessions, global fallback outside projects, atomic JSON persistence, internal command session storage, and durable restore from ledger snapshots plus bounded journal tails.
 
 12. *Audit* (~magent-audit.el~): Persistent JSONL audit logging for permission prompts and decisions plus sensitive actions such as ~bash~, ~emacs_eval~, ~write_file~, ~edit_file~, and child-agent lifecycle tools. Payloads are redacted to metadata and truncated previews.
 
@@ -382,6 +382,7 @@ magent/
 |   |-- coverage.yml
 |   `-- melpazoid.yml
 |-- magent.el                      # Main entry point and mode definition
+|-- magent-log.el                  # UI-neutral logging mechanism and sinks
 |-- magent-config.el               # Configuration (customize group, defcustom vars, faces)
 |-- magent-json.el                 # JSON-safe serialization helpers
 |-- magent-redaction.el            # Fail-closed outbound sensitive-data redaction
@@ -504,7 +505,7 @@ Sessions are automatically saved to =~/.emacs.d/magent/sessions/= (configurable)
 - Conversation history
 - Assigned agent
 - Message metadata
-- Ledger snapshot and journal data for durable restore
+- Atomically saved ledger snapshots plus a bounded journal tail for durable restore
 - Durable child-agent job metadata, results, errors, and transcripts
 
 * Troubleshooting

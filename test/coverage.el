@@ -14,6 +14,10 @@
                     (file-name-directory (or load-file-name buffer-file-name)))
   "Repository root for the batch coverage run.")
 
+(load (expand-file-name "test/magent-source-files.el"
+                        magent-coverage--root-directory)
+      nil t)
+
 (defvar magent--prompt-file
   (expand-file-name "prompt.org" magent-coverage--root-directory)
   "Prompt file used while instrumenting `magent-config'.")
@@ -25,42 +29,7 @@
   "Directory where batch coverage reports are written.")
 
 (defconst magent-coverage--source-files
-  '("lisp/magent-config.el"
-    "lisp/magent-json.el"
-    "lisp/magent-redaction.el"
-    "lisp/magent-approval.el"
-    "lisp/magent-lifecycle-events.el"
-    "lisp/magent-protocol.el"
-    "lisp/magent-ledger.el"
-    "lisp/magent-thread.el"
-    "lisp/magent-agent-job.el"
-    "lisp/magent-session.el"
-    "lisp/magent-audit.el"
-    "lisp/magent-file-loader.el"
-    "lisp/magent-runtime.el"
-    "lisp/magent-permission.el"
-    "lisp/magent-agent-info.el"
-    "lisp/magent-agent-builtins.el"
-    "lisp/magent-agent-registry.el"
-    "lisp/magent-agent-file.el"
-    "lisp/magent-llm.el"
-    "lisp/magent-llm-gptel.el"
-    "lisp/magent-tools.el"
-    "lisp/magent-tool-runtime.el"
-    "lisp/magent-tool-orchestrator.el"
-    "lisp/magent-agent-loop.el"
-    "lisp/magent-legacy-queue.el"
-    "lisp/magent-transcript-context.el"
-    "lisp/magent-markdown-to-org.el"
-    "lisp/magent-agent.el"
-    "lisp/magent-command.el"
-    "lisp/magent-memory.el"
-    "lisp/magent-doctor.el"
-    "lisp/magent-skills.el"
-    "lisp/magent-capability.el"
-    "lisp/magent-ui.el"
-    "lisp/magent-evil.el"
-    "lisp/magent.el")
+  (magent-test-source-files magent-coverage--root-directory)
   "Source files instrumented by the batch coverage run.")
 
 (defconst magent-coverage--test-files
@@ -184,7 +153,10 @@
 
 (defun magent-coverage-run ()
   "Run ERT tests under `testcover' and write a coverage summary."
-  (setq magent-coverage--instrumented nil)
+  (setq magent-coverage--instrumented nil
+        magent-coverage-directory
+        (expand-file-name magent-coverage-directory
+                          magent-coverage--root-directory))
   (dolist (file magent-coverage--source-files)
     (magent-coverage--instrument-file file))
   (when (boundp 'magent-skills--builtin-dir)

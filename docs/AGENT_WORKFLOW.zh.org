@@ -85,7 +85,7 @@ Tool call 和 tool result 是同一个 item lifecycle，不是两条持久记录
 
 持久化格式是 ~snapshot + journal~ 。
 
-- ~journal~ ：append-only event log，记录 ~turn-queued~ 、 ~turn-started~ 、 ~item-started~ 、 ~item-completed~ 、 ~turn-completed~ 等生命周期事件。它是审计记录，即使事件已经反映在 snapshot 中也会保留。
+- ~journal~ ：内存中的 append-only event log，记录 ~turn-queued~ 、 ~turn-started~ 、 ~item-started~ 、 ~item-completed~ 、 ~turn-completed~ 等生命周期事件。Session 文件只保留由 ~magent-session-journal-max-events~ 控制的最近有界尾部；tool/permission 审计由 ~magent-audit.el~ 单独负责。
 - ~snapshot~ ：materialized full thread state。它保存当前 thread、turns 和 items，避免每次 resume 都从头 replay。
 
 Session JSON 同时写入两者：
@@ -102,10 +102,10 @@ Session JSON 同时写入两者：
 Replay 语义：
 
 1. 把 ~snapshot~ 载入 materialized thread state。
-2. 附加全部 ~journal~ events，保留 audit/history 可见性。
+2. 附加持久化保留的 ~journal~ 尾部，供恢复和 history 检查。
 3. 只应用 ~seq > snapshot.last-event-seq~ 的事件。
 
-因此 ~snapshot~ 是快速恢复点， ~journal~ 是 append-only record，两者不可互换。
+因此 ~snapshot~ 是快速恢复点，持久化 ~journal~ 是有界恢复尾部，两者不可互换。
 
 * Loop Flow
 

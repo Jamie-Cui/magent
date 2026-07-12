@@ -7,7 +7,7 @@ Magent 现在把 UI 明确当作 backend boundary。默认 backend 是 ~agent-sh
 
 * 模块
 
-- ~magent-ui.el~ 是公共命令 router、logger、compatibility shim 和 ~magent-ui-backend~ 切换点。
+- ~magent-ui.el~ 是公共命令 router、log/event sink、compatibility shim 和 ~magent-ui-backend~ 切换点。
 - ~magent-agent-shell.el~ 注册 Magent ~agent-shell~ 配置，并创建进程内 ACP client。
 - ~magent-acp.el~ 实现进程内 ACP request、notification、response、permission 和 session/update adapter。
 - ~magent-runtime-api.el~ 是 UI-neutral runtime/session API，供 UI backends 调用。

@@ -81,7 +81,65 @@ whose status moves from `in-progress' to `completed' or `failed'."
   name
   output
   (success t)
+  status
+  error
+  exit-code
   metadata)
+
+(defun magent-tool-result--legacy-status (value)
+  "Infer a tool status from legacy string VALUE."
+  (if (and (stringp value)
+           (or (string-match-p "\\`Error\\b" value)
+               (string-match-p "\\`HTTP error\\b" value)
+               (string-match-p "\\`Command timed out\\b" value)))
+      'failed
+    'completed))
+
+(defun magent-tool-result-status-value (result)
+  "Return normalized status for tool RESULT."
+  (cond
+   ((magent-tool-result-p result)
+    (or (magent-tool-result-status result)
+        (if (magent-tool-result-success result) 'completed 'failed)))
+   (t (magent-tool-result--legacy-status result))))
+
+(defun magent-tool-result-success-p (result)
+  "Return non-nil when tool RESULT represents successful execution."
+  (eq (magent-tool-result-status-value result) 'completed))
+
+(defun magent-tool-result-output-string (result)
+  "Return model/UI-visible output string for tool RESULT."
+  (let ((value (if (magent-tool-result-p result)
+                   (or (magent-tool-result-output result)
+                       (magent-tool-result-error result)
+                       "")
+                 result)))
+    (cond
+     ((stringp value) value)
+     ((null value) "")
+     (t (format "%s" value)))))
+
+(defun magent-tool-result-normalize (value &optional name call-id)
+  "Return VALUE as a structured tool result with optional NAME and CALL-ID."
+  (if (magent-tool-result-p value)
+      (progn
+        (unless (magent-tool-result-name value)
+          (setf (magent-tool-result-name value) name))
+        (unless (magent-tool-result-call-id value)
+          (setf (magent-tool-result-call-id value) call-id))
+        (unless (magent-tool-result-status value)
+          (setf (magent-tool-result-status value)
+                (if (magent-tool-result-success value) 'completed 'failed)))
+        value)
+    (let ((status (magent-tool-result--legacy-status value)))
+      (magent-tool-result-create
+       :call-id call-id
+       :name name
+       :output (if (stringp value) value (magent-json-safe-value value))
+       :success (eq status 'completed)
+       :status status
+       :error (and (eq status 'failed)
+                   (magent-tool-result-output-string value))))))
 
 (cl-defstruct (magent-agent-result
                (:constructor magent-agent-result-create)
@@ -165,7 +223,7 @@ normal assistant string."
    :name (magent-tool-result-name result)
    :call-id (magent-tool-result-call-id result)
    :output (magent-tool-result-output result)
-   :status (if (magent-tool-result-success result) 'completed 'failed)
+   :status (magent-tool-result-status-value result)
    :metadata (magent-tool-result-metadata result)))
 
 (defun magent-protocol--symbol-name-or-nil (value)

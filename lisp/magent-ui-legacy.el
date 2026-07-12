@@ -388,25 +388,6 @@ minor modes that hit buffer edges."
            ((beginning-of-buffer end-of-buffer beginning-of-line end-of-line)
             nil))))))
 
-(unless (fboundp 'magent-log)
-  (defun magent-log (format-string &rest args)
-    "Log a message to the Magent log buffer.
-FORMAT-STRING and ARGS are passed to `format'.
-Uses a simple insert rather than `magent-ui--with-insert' because
-the log buffer already has `buffer-read-only' and should not get
-per-character `read-only' text properties (they would travel with
-yanked text)."
-    (let ((message (apply #'format format-string args)))
-      (when (magent-ui--loggable-message-p message)
-        (let ((buf (magent-ui-get-log-buffer)))
-          (with-current-buffer buf
-            (let ((inhibit-read-only t))
-              (goto-char (point-max))
-              (let ((timestamp (format-time-string "%Y-%m-%d %H:%M:%S")))
-                (insert (format "[%s] %s\n"
-                                timestamp
-                                message))))))))))
-
 (defun magent-ui-get-buffer (&optional scope)
   "Get or create the Magent output buffer for SCOPE."
   (magent-ui--scope-buffer scope))

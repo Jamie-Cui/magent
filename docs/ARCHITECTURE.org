@@ -38,7 +38,7 @@ The old workspace/compose UI lives in ~magent-ui-legacy.el~. It is loaded lazily
 
 ** Ledger And Persistence
 
-The durable source of truth is a ~thread -> turn -> item~ ledger. ~magent-ledger.el~ defines the state objects, transitions, and journal events. ~magent-runtime-api.el~ creates user submissions, while ~magent-runtime-queue.el~ schedules active execution. ~magent-session.el~ stores a materialized ~snapshot~ plus an append-only ~journal~.
+The durable source of truth is a ~thread -> turn -> item~ ledger. ~magent-ledger.el~ defines the state objects, transitions, and journal events. ~magent-runtime-api.el~ creates user submissions, while ~magent-runtime-queue.el~ schedules active execution. ~magent-session.el~ atomically stores a materialized ~snapshot~ plus a bounded tail of the in-memory append-only ~journal~. The snapshot records ~last-event-seq~, so retained events at or below that watermark remain inspectable but are not replayed twice.
 
 Legacy ~messages~, ~context-items~, and ~buffer-content~ are projections or migration data. They are not the canonical UI source of truth.
 

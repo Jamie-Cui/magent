@@ -47,9 +47,10 @@ matters more than any single file:
    activates/unloads project-local `.magent/` overlays as session scope changes.
 
 2. **Ledger** (`magent-thread.el`, `magent-session.el`): The canonical workflow state is an
-   explicit **thread → turn → item** state machine, NOT the message list. Session JSON persists
-   an append-only `journal` (audit log) plus a materialized `snapshot`; restore replays only
-   events after `snapshot.last-event-seq`. Legacy `messages`/`context-items`/`buffer-content`
+   explicit **thread → turn → item** state machine, NOT the message list. Session JSON is
+   atomically replaced with a materialized `snapshot` plus a bounded tail of the in-memory
+   append-only `journal`; restore replays only events after `snapshot.last-event-seq`. The
+   separate JSONL audit subsystem retains tool and permission audit records. Legacy `messages`/`context-items`/`buffer-content`
    are derived projections kept for gptel prompt reuse — the UI renders from the ledger.
 
 3. **Agent processing + loop** (`magent-agent.el` → `magent-agent-loop.el`, with
@@ -58,7 +59,7 @@ matters more than any single file:
    gptel prompt, applies per-agent overrides (model/temperature via `default-value`, intentionally
    avoiding buffer-local gptel state), exposes permission-filtered tools, then starts the
    Magent-owned loop. The loop owns tool dispatch (through `magent-tool-orchestrator`), serial tool queueing,
-   permission/audit hooks, visible tool rendering, abort cleanup, and continuation policy.
+   permission/audit hooks, structured lifecycle events, abort cleanup, and continuation policy; UI sinks render visible tool events.
    `magent-llm-gptel.el` may touch gptel's private FSM internally for one sampling request, but
    nothing above it sees gptel details.
 
@@ -95,7 +96,7 @@ old `delegate` tool — do not reintroduce a wrapper). Stored under session `age
 - Every source file starts with `;;; -*- lexical-binding: t; -*-` and carries an SPDX license header.
 - Tool pattern: `magent-tools--<name>` (internal fn) + `magent-tools--<name>-tool` (gptel-tool var).
 - Byte-compile warnings suppressed only for `cl-functions`; everything else must be clean.
-- `magent-log` is a **stub** in `magent-config.el` until `magent-ui` loads — batch-test logs go nowhere unless you load `magent-ui`.
+- `magent-log.el` is UI-neutral. It dispatches to registered sinks and reports headless warnings/errors through `message`; `magent-ui.el` supplies the optional log-buffer sink.
 - Keep Evil-specific code in `magent-evil.el` (optional, not loaded by default); no `evil-*` calls in core UI.
 - Package metadata stays centralized in `magent.el` / `magent-pkg.el`; non-main modules must NOT carry `Package-Requires` headers (package-lint treats them as ineffective).
 - **Out of scope:** Codex sandbox/seatbelt/bubblewrap/shell isolation. Preserve the Emacs-native workflow (live buffers, `emacs_eval`, compose/workspace buffers, project-scoped sessions, gptel transport).

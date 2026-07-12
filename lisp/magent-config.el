@@ -16,6 +16,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'magent-log)
 (require 'subr-x)
 
 (defgroup magent nil
@@ -428,6 +429,15 @@ Explicit calls to `magent-session-save' remain synchronous."
   :type 'number
   :group 'magent)
 
+(defcustom magent-session-journal-max-events 2000
+  "Maximum recent ledger events persisted beside a session snapshot.
+The in-memory journal remains append-only.  Saved session files retain a
+bounded replay/audit tail because the materialized snapshot already contains
+all state through its `last-event-seq'.  Nil keeps the full journal."
+  :type '(choice (const :tag "Keep the full journal" nil)
+                 (natnum :tag "Recent events"))
+  :group 'magent)
+
 (defcustom magent-child-agent-max-depth 1
   "Maximum depth for recursive child-agent spawning.
 A value of 1 allows the visible root agent to spawn direct child agents,
@@ -701,17 +711,6 @@ and project.el.  Unless NO-FALLBACK is non-nil, return DIRECTORY
                 (car (with-no-warnings (project-roots proj)))))))
         (unless no-fallback
           default-directory))))
-
-;;; Logging stub
-;; Defined here so all modules can call magent-log unconditionally.
-;; magent-ui.el overrides this with the real implementation that writes
-;; to *magent-log*.  Guard the stub so reloading this file later does not
-;; clobber the real logger in live Emacs sessions.
-
-(unless (fboundp 'magent-log)
-  (defun magent-log (format-string &rest args)
-    "Log FORMAT-STRING with ARGS.  No-op until magent-ui is loaded."
-    (ignore format-string args)))
 
 (provide 'magent-config)
 ;;; magent-config.el ends here

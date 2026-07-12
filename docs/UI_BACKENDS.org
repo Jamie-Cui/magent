@@ -10,7 +10,7 @@ removed later without breaking the agent-shell + ACP + runtime path.
 
 * Modules
 
-- ~magent-ui.el~ is the thin public command router, logger, compatibility shim,
+- ~magent-ui.el~ is the thin public command router, log/event sink, compatibility shim,
   and ~magent-ui-backend~ switch point.
 - ~magent-agent-shell.el~ registers the Magent ~agent-shell~ config and creates
   an in-process ACP client.

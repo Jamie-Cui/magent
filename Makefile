@@ -2,7 +2,8 @@ EMACS ?= emacs
 EMACSCLIENT ?= emacsclient
 EMACS_BATCH = $(EMACS) -Q --batch
 COVERAGE_DIR ?= coverage
-COVERAGE_MIN ?= 0
+COVERAGE_MIN ?= 65
+SOURCE_MANIFEST ?= source-files.txt
 
 # Auto-detect dependency paths
 GPTEL_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'gptel-[0-9]*' -type d 2>/dev/null | head -1)
@@ -34,47 +35,7 @@ LOADPATH = -L lisp \
 BYTE_COMPILE_FLAGS = --eval "(setq byte-compile-error-on-warn nil)" \
 	--eval "(setq byte-compile-warnings '(not cl-functions))"
 
-SRCS = lisp/magent-config.el \
-       lisp/magent-json.el \
-       lisp/magent-redaction.el \
-       lisp/magent-lifecycle-events.el \
-       lisp/magent-audit.el \
-       lisp/magent-protocol.el \
-       lisp/magent-ledger.el \
-       lisp/magent-agent-job.el \
-       lisp/magent-thread.el \
-       lisp/magent-llm.el \
-       lisp/magent-llm-gptel.el \
-       lisp/magent-command.el \
-       lisp/magent-doctor.el \
-       lisp/magent-memory.el \
-       lisp/magent-agent-loop.el \
-       lisp/magent-approval.el \
-       lisp/magent-file-loader.el \
-       lisp/magent-session.el \
-       lisp/magent-transcript-context.el \
-       lisp/magent-runtime.el \
-       lisp/magent-runtime-queue.el \
-       lisp/magent-tools.el \
-       lisp/magent-tool-runtime.el \
-       lisp/magent-tool-orchestrator.el \
-       lisp/magent-legacy-queue.el \
-       lisp/magent-agent-info.el \
-       lisp/magent-agent-builtins.el \
-       lisp/magent-agent.el \
-       lisp/magent-runtime-api.el \
-       lisp/magent-acp.el \
-       lisp/magent-agent-shell.el \
-       lisp/magent-agent-registry.el \
-       lisp/magent-agent-file.el \
-       lisp/magent-permission.el \
-       lisp/magent-markdown-to-org.el \
-       lisp/magent-ui.el \
-       lisp/magent-ui-legacy.el \
-       lisp/magent-evil.el \
-       lisp/magent-skills.el \
-       lisp/magent-capability.el \
-       lisp/magent.el
+SRCS = $(shell sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$$/d' $(SOURCE_MANIFEST))
 
 COMPILED = $(SRCS:.el=.elc)
 

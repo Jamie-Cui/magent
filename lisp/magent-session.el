@@ -139,6 +139,10 @@ When VALUE is nil, remove KEY.  Return SESSION metadata."
       (or (plist-get scope :origin-scope) 'global)
     scope))
 
+(defun magent-session-scope-origin (scope)
+  "Return the public project/global origin represented by SCOPE."
+  (magent-session--scope-origin scope))
+
 (defun magent-session--origin-scope-for-session (session scope)
   "Return ordinary project/global origin for SESSION saved under SCOPE."
   (or (magent-session-metadata-value session 'origin-scope)
@@ -241,12 +245,12 @@ When VALUE is nil, remove KEY.  Return SESSION metadata."
      :id call-id
      :turn-id turn-id
      :type 'tool
-     :status (if (string-prefix-p "Error:" safe-result) 'failed 'completed)
+     :status (if (magent-tool-result-success-p safe-result) 'completed 'failed)
      :name safe-name
      :call-id call-id
      :input safe-args
      :output safe-result
-     :error (and (string-prefix-p "Error:" safe-result) safe-result)
+     :error (and (not (magent-tool-result-success-p safe-result)) safe-result)
      :completed-at (float-time)
      :metadata (list :legacy t))))
 
@@ -353,8 +357,36 @@ This is either the symbol `global' or a normalized project root path.")
 (defvar magent-session--save-timer nil
   "Idle timer used for deferred UI session saves.")
 
-(defconst magent-session-schema-version 4
+(defconst magent-session-schema-version 5
   "Current schema version written to session JSON files.")
+
+(defun magent-session--persisted-journal (thread)
+  "Return the bounded journal tail persisted for THREAD."
+  (let ((journal (and thread (magent-thread-journal thread)))
+        (limit magent-session-journal-max-events))
+    (if (and (integerp limit)
+             (>= limit 0)
+             (> (length journal) limit))
+        (last journal limit)
+      journal)))
+
+(defun magent-session--write-json-atomic (filepath data)
+  "Atomically encode DATA as JSON and replace FILEPATH."
+  (let* ((directory (file-name-directory filepath))
+         (prefix (expand-file-name ".magent-session-" directory))
+         (tempfile (make-temp-file prefix nil ".json.tmp")))
+    (unwind-protect
+        (progn
+          (with-temp-buffer
+            (let ((json-null :null)
+                  (json-false :json-false)
+                  (coding-system-for-write 'utf-8-unix))
+              (insert (json-encode data))
+              (write-region (point-min) (point-max) tempfile nil 'silent)))
+          (rename-file tempfile filepath t)
+          (setq tempfile nil))
+      (when (and tempfile (file-exists-p tempfile))
+        (delete-file tempfile)))))
 
 (defun magent-session--normalize-project-root (root)
   "Normalize project ROOT for use as a stable scope key."
@@ -770,18 +802,15 @@ before calling this function."
                                          (magent-thread-snapshot-to-alist thread)))
                        (journal . ,(vconcat
                                     (mapcar #'magent-thread-event-to-alist
-                                            (and thread
-                                                 (magent-thread-journal thread)))))
+                                            (magent-session--persisted-journal
+                                             thread))))
                        (agent-jobs . ,(vconcat
                                        (mapcar
                                         #'magent-agent-job-to-alist
                                         (magent-session-agent-jobs session))))
                        (approval-overrides . ,(vconcat approval-overrides))
                        (buffer-content . ,(or (magent-session-buffer-content session) "")))))
-          (with-temp-file filepath
-            (let ((json-null :null)
-                  (json-false :json-false))
-              (insert (json-encode data))))
+          (magent-session--write-json-atomic filepath data)
           (remhash filepath magent-session--metadata-cache)
           (magent-log "INFO session saved to %s (%d messages) scope=%s"
                       id (length messages) scope)))))))

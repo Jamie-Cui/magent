@@ -243,7 +243,8 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 
 ** Core Entry & Configuration
 - *magent.el* — Mode definition, keybindings, lazy initialization
-- *magent-config.el* — All customization variables, faces, logging stub
+- *magent-log.el* — UI-neutral logging mechanism and sink registry
+- *magent-config.el* — All customization variables and faces
 - *magent-json.el* — JSON-safe serialization helpers
 
 ** State Management
@@ -271,7 +272,7 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 - *magent-llm-gptel.el* — ~gptel-request~ adapter
 
 ** User Interface
-- *magent-ui.el* — Thin backend router, logger, and compatibility shims
+- *magent-ui.el* — Thin backend router, log/event sinks, and compatibility shims
 - *magent-agent-shell.el* — agent-shell backend config and prompt routing
 - *magent-acp.el* — In-process ACP adapter
 - *magent-runtime-api.el* — UI/backend-facing runtime API

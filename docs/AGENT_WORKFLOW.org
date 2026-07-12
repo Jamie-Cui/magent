@@ -114,10 +114,11 @@ turn parent.
 
 Persistence is ~snapshot + journal~.
 
-- ~journal~: append-only event log. It records lifecycle transitions such
+- ~journal~: append-only in-memory event log. It records lifecycle transitions such
   as ~turn-queued~, ~turn-started~, ~item-started~, ~item-completed~, and
-  ~turn-completed~. It is the audit log and is preserved even when its
-  events are already reflected in the current snapshot.
+  ~turn-completed~. Session files retain a bounded recent tail controlled by
+  ~magent-session-journal-max-events~. Tool and permission audit retention is
+  owned separately by ~magent-audit.el~.
 - ~snapshot~: materialized full thread state. It stores the current
   thread, turns, and items so resume does not need to replay from the
   beginning every time.
@@ -140,11 +141,11 @@ ledger.
 Replay semantics:
 
 1. Load ~snapshot~ into materialized thread state.
-2. Attach all ~journal~ events for audit/history visibility.
+2. Attach the retained ~journal~ tail for recovery/history visibility.
 3. Apply only events with ~seq > snapshot.last-event-seq~.
 
-This means ~snapshot~ is the fast restore point and ~journal~ is the
-append-only record. The two are not interchangeable.
+This means ~snapshot~ is the fast restore point and the persisted ~journal~
+is a bounded recovery tail. The two are not interchangeable.
 
 * Loop Flow
 

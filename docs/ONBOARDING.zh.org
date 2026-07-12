@@ -101,7 +101,7 @@ Magent 拥有 Magent-owned agent loop 和 durable child-agent lifecycle。Root a
 
 *关键文件：*
 
-- ~magent-ui.el~ ：thin public command router、logger、backend switch 和 compatibility shims。
+- ~magent-ui.el~ ：thin public command router、log/event sinks、backend switch 和 compatibility shims。
 - ~magent-agent-shell.el~ ：Magent agent-shell config 和 prompt routing。
 - ~magent-acp.el~ ：in-process ACP adapter。
 - ~magent-runtime-api.el~ ：UI/backend-facing runtime API。

@@ -1158,9 +1158,12 @@ Return the number of cancelled items."
 
 (defun magent-thread--model-visible-tool-result (result)
   "Return RESULT bounded for model-visible tool history."
-  (let* ((safe-result (if (stringp result)
-                          result
-                        (magent-json-safe-value result)))
+  (let* ((value (if (magent-tool-result-p result)
+                    (magent-tool-result-output result)
+                  result))
+         (safe-result (if (stringp value)
+                          value
+                        (magent-json-safe-value value)))
          (text (if (stringp safe-result)
                    safe-result
                  (format "%s" safe-result)))
@@ -1257,7 +1260,15 @@ fail the item with a terminal journal event containing the final content."
   "Record a merged tool call/result lifecycle item in THREAD."
   (let* ((safe-name (magent-json-safe-name name))
          (safe-args (magent-json-safe-tool-args args))
-         (safe-result (magent-thread--model-visible-tool-result result))
+         (normalized (magent-tool-result-normalize result safe-name call-id))
+         (status (magent-tool-result-status-value normalized))
+         (safe-result (magent-thread--model-visible-tool-result normalized))
+         (result-metadata
+          (append
+           (when (magent-tool-result-exit-code normalized)
+             (list :exit-code (magent-tool-result-exit-code normalized)))
+           (magent-tool-result-metadata normalized)
+           metadata))
          (item (or (magent-thread--find-item thread call-id)
                    (magent-thread-start-item
                     thread turn-id 'tool
@@ -1265,23 +1276,22 @@ fail the item with a terminal journal event containing the final content."
                     :call-id call-id
                     :name safe-name
                     :input safe-args
-                    :metadata metadata))))
-    (if (and (stringp safe-result)
-             (string-prefix-p "Error:" safe-result))
+                    :metadata result-metadata))))
+    (if (not (eq status 'completed))
         (magent-thread-fail-item
-         thread item safe-result
+         thread item (or (magent-tool-result-error normalized) safe-result)
          :call-id call-id
          :name safe-name
          :input safe-args
          :output safe-result
-         :metadata metadata)
+         :metadata result-metadata)
       (magent-thread-complete-item
        thread item
        :call-id call-id
        :name safe-name
        :input safe-args
        :output safe-result
-       :metadata metadata))
+       :metadata result-metadata))
     item))
 
 (provide 'magent-ledger)

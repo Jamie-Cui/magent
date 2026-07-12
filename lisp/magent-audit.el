@@ -21,6 +21,7 @@
 (require 'magent-config)
 (require 'magent-approval)
 (require 'magent-lifecycle-events)
+(require 'magent-protocol)
 (require 'magent-session)
 
 (declare-function magent-agent-info-name "magent-agent-registry")
@@ -409,12 +410,11 @@ refresh.  The first two arguments follow `revert-buffer'."
 
 (defun magent-audit--tool-status (result)
   "Return a compact status string for RESULT."
-  (let ((text (magent-audit--stringify result)))
-    (cond
-     ((null text) nil)
-     ((string-match-p "\\`Error\\b" text) "error")
-     ((string-match-p "\\`Command timed out\\b" text) "timeout")
-     (t "ok"))))
+  (pcase (magent-tool-result-status-value result)
+    ('completed "ok")
+    ('timeout "timeout")
+    ((or 'failed 'cancelled) "error")
+    (_ nil)))
 
 (defun magent-audit--approval-request-data (entry)
   "Extract the request plist from approval ENTRY."
@@ -472,7 +472,12 @@ refresh.  The first two arguments follow `revert-buffer'."
         :tool-name (plist-get event :tool-name)
         :call-id (plist-get event :call-id)
         :status (and (eq (plist-get event :type) 'tool-call-end)
-                     (magent-audit--tool-status (plist-get event :result)))
+                     (pcase (plist-get event :status)
+                       ('completed "ok")
+                       ('timeout "timeout")
+                       ((or 'failed 'cancelled) "error")
+                       (_ (magent-audit--tool-status
+                           (plist-get event :result)))))
         :summary (or (plist-get event :summary)
                      (plist-get event :description))
         :args (plist-get event :args)

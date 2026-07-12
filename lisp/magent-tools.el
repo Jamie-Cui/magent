@@ -35,8 +35,6 @@
 (declare-function magent-lifecycle-events-stop-subagent "magent-lifecycle-events")
 (declare-function magent-agent-loop-abort "magent-agent-loop")
 (declare-function magent-agent-loop-p "magent-agent-loop")
-(declare-function magent-ui-insert-agent-job-event "magent-ui")
-(declare-function magent-ui--snapshot-buffer-content "magent-ui")
 (declare-function gptel-backend-name "gptel")
 (declare-function dom-inner-text "dom")
 
@@ -155,13 +153,38 @@ CALLBACK is called with matching lines or error message."
              (when (memq (process-status proc) '(exit signal))
                (let ((output (if (buffer-live-p buf)
                                  (with-current-buffer buf (buffer-string))
-                               "")))
+                               ""))
+                     (exit-code (process-exit-status proc)))
                  (when (buffer-live-p buf)
                    (kill-buffer buf))
                  (funcall callback
-                          (if (string-blank-p output)
-                              "No matches found"
-                            (string-trim-right output))))))))
+                          (cond
+                           ((= exit-code 0)
+                            (magent-tool-result-create
+                             :status 'completed
+                             :success t
+                             :exit-code exit-code
+                             :output (if (string-blank-p output)
+                                         "No matches found"
+                                       (string-trim-right output))))
+                           ((= exit-code 1)
+                            (magent-tool-result-create
+                             :status 'completed
+                             :success t
+                             :exit-code exit-code
+                             :output "No matches found"))
+                           (t
+                            (let ((message
+                                   (if (string-blank-p output)
+                                       (format "grep failed with exit code %d"
+                                               exit-code)
+                                     (string-trim-right output))))
+                              (magent-tool-result-create
+                               :status 'failed
+                               :success nil
+                               :exit-code exit-code
+                               :output message
+                               :error message))))))))))
     (magent-tools--register-cancel-cleanup
      (lambda ()
        (when (process-live-p proc)
@@ -360,10 +383,18 @@ CALLBACK is called with the command output (stdout + stderr)."
                      (let ((output (buffer-string)))
                        (funcall cleanup)
                        (funcall callback
-                                (if (string-blank-p output)
-                                    "Command timed out with no output"
-                                  (format "Command timed out. Partial output:\n%s"
-                                          (string-trim-right output)))))))))))
+                                (let ((message
+                                       (if (string-blank-p output)
+                                           "Command timed out with no output"
+                                         (format
+                                          "Command timed out. Partial output:\n%s"
+                                          (string-trim-right output)))))
+                                  (magent-tool-result-create
+                                   :status 'failed
+                                   :success nil
+                                   :error message
+                                   :output message
+                                   :metadata (list :timeout t)))))))))))
       (condition-case err
           (let ((process-environment
                  (append '("PAGER=cat"
@@ -386,12 +417,26 @@ CALLBACK is called with the command output (stdout + stderr)."
                        (let ((output (if (buffer-live-p buf)
                                          (with-current-buffer buf
                                            (buffer-string))
-                                       "")))
+                                       ""))
+                             (exit-code (process-exit-status p)))
                          (funcall cleanup)
                          (funcall callback
-                                  (if (string-blank-p output)
-                                      "Command completed with no output"
-                                    (string-trim-right output)))))))))
+                                  (let* ((success (and (eq (process-status p) 'exit)
+                                                       (= exit-code 0)))
+                                         (message
+                                          (if (string-blank-p output)
+                                              (if success
+                                                  "Command completed with no output"
+                                                (format
+                                                 "Command failed with exit code %d and no output"
+                                                 exit-code))
+                                            (string-trim-right output))))
+                                    (magent-tool-result-create
+                                     :status (if success 'completed 'failed)
+                                     :success success
+                                     :exit-code exit-code
+                                     :output message
+                                     :error (unless success message))))))))))
         (error
          (funcall cleanup)
          (funcall callback (format "Error starting process: %s"
@@ -414,16 +459,20 @@ CALLBACK is called with the command output (stdout + stderr)."
 
 (defun magent-tools--render-agent-job-event
     (event job &optional detail context scope deferred)
-  "Render child-agent EVENT for JOB when the parent request is UI-visible."
-  (when (and (magent-request-context-ui-visible-p
-              (or context magent-tools--request-context))
-             (require 'magent-ui nil t))
-    (let ((render (lambda ()
-                    (magent-ui-insert-agent-job-event
-                     event job detail scope))))
+  "Emit child-agent EVENT for JOB for optional deferred UI projection."
+  (let ((emit (lambda ()
+                (magent-lifecycle-events-emit
+                 'agent-job-event
+                 :event event
+                 :job job
+                 :detail detail
+                 :scope scope
+                 :ui-visible
+                 (magent-request-context-ui-visible-p
+                  (or context magent-tools--request-context))))))
       (if deferred
-          (run-at-time 0 nil render)
-        (funcall render)))))
+          (run-at-time 0 nil emit)
+        (funcall emit))))
 
 (defun magent-tools--persist-parent-session (&optional session scope)
   "Persist SESSION for SCOPE after child-agent job state changes."
@@ -436,8 +485,6 @@ CALLBACK is called with the command output (stdout + stderr)."
           (progn
             (setq magent-session--current-scope target-scope
                   magent--current-session session)
-            (when (fboundp 'magent-ui--snapshot-buffer-content)
-              (magent-ui--snapshot-buffer-content session target-scope))
             (magent-session-save))
         (setq magent-session--current-scope previous-scope
               magent--current-session previous-session)))))

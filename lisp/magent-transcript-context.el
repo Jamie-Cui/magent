@@ -69,7 +69,7 @@
                   (magent-tool-result-call-id result)
                   (magent-tool-result-name result)
                   nil
-                  (magent-tool-result-output result)
+                  result
                   (magent-tool-result-metadata result))))
       (magent-session-refresh-projections session)
       (magent-thread-item-to-response-item item))))

@@ -28,13 +28,15 @@
   observer
   approval-provider
   on-complete
+  scope
   status
   submitted-at
   started-at
   finished-at
   turn-id
   handle
-  detail)
+  detail
+  finalized)
 
 (defvar magent-runtime-queue--active nil
   "Currently running `magent-runtime-submission'.")

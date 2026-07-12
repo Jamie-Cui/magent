@@ -19,6 +19,10 @@
                     (file-name-directory (or load-file-name buffer-file-name)))
   "Repository root for the live test suite.")
 
+(load (expand-file-name "test/magent-source-files.el"
+                        magent-live-test--root-directory)
+      nil t)
+
 (defvar magent-live-test--latest-results nil
   "Result records from the most recent live ERT run.")
 
@@ -73,45 +77,7 @@
   (load (expand-file-name file magent-live-test--root-directory) nil t t))
 
 (defconst magent-live-test--source-files
-  '("lisp/magent-config.el"
-    "lisp/magent-json.el"
-    "lisp/magent-redaction.el"
-    "lisp/magent-approval.el"
-    "lisp/magent-lifecycle-events.el"
-    "lisp/magent-protocol.el"
-    "lisp/magent-ledger.el"
-    "lisp/magent-thread.el"
-    "lisp/magent-agent-job.el"
-    "lisp/magent-session.el"
-    "lisp/magent-audit.el"
-    "lisp/magent-file-loader.el"
-    "lisp/magent-runtime.el"
-    "lisp/magent-runtime-queue.el"
-    "lisp/magent-permission.el"
-    "lisp/magent-agent-info.el"
-    "lisp/magent-agent-builtins.el"
-    "lisp/magent-agent-registry.el"
-    "lisp/magent-agent-file.el"
-    "lisp/magent-llm.el"
-    "lisp/magent-llm-gptel.el"
-    "lisp/magent-tools.el"
-    "lisp/magent-tool-runtime.el"
-    "lisp/magent-tool-orchestrator.el"
-    "lisp/magent-agent-loop.el"
-    "lisp/magent-legacy-queue.el"
-    "lisp/magent-transcript-context.el"
-    "lisp/magent-markdown-to-org.el"
-    "lisp/magent-agent.el"
-    "lisp/magent-runtime-api.el"
-    "lisp/magent-command.el"
-    "lisp/magent-memory.el"
-    "lisp/magent-doctor.el"
-    "lisp/magent-acp.el"
-    "lisp/magent-skills.el"
-    "lisp/magent-agent-shell.el"
-    "lisp/magent-capability.el"
-    "lisp/magent-ui.el"
-    "lisp/magent.el")
+  (magent-test-source-files magent-live-test--root-directory)
   "Magent source files that live tests must load from this checkout.")
 
 (defun magent-live-test--feature-source (feature)

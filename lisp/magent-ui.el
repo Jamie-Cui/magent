@@ -19,6 +19,8 @@
 (require 'subr-x)
 (require 'magent-agent-shell)
 (require 'magent-config)
+(require 'magent-lifecycle-events)
+(require 'magent-log)
 (require 'magent-runtime)
 (require 'magent-runtime-api)
 (require 'magent-session)
@@ -28,6 +30,9 @@
 (defvar magent-log-level)
 
 (declare-function magent--ensure-initialized "magent")
+(declare-function magent-ui-insert-agent-job-event "magent-ui-legacy")
+(declare-function magent-ui-insert-tool-call "magent-ui-legacy")
+(declare-function magent-ui-insert-tool-result "magent-ui-legacy")
 
 (defvar magent--current-request-handle nil
   "Current active legacy request handle, if any.")
@@ -87,21 +92,10 @@
     (error . 40))
   "Priority order for `magent-log' filtering.")
 
-(defun magent-ui--log-message-level (message)
-  "Return normalized severity symbol for log MESSAGE."
-  (let ((prefix (and (string-match "\\`\\([A-Z]+\\)\\(?:\\s-\\|:\\|$\\)" message)
-                     (match-string 1 message))))
-    (pcase prefix
-      ("DEBUG" 'debug)
-      ((or "INFO" "PERM") 'info)
-      ("WARN" 'warn)
-      ("ERROR" 'error)
-      (_ 'info))))
-
 (defun magent-ui--loggable-message-p (message)
   "Return non-nil when MESSAGE should be written to `*magent-log*'."
   (and magent-enable-logging
-       (>= (alist-get (magent-ui--log-message-level message)
+       (>= (alist-get (magent-log-message-level message)
                       magent-ui--log-level-order)
            (alist-get magent-log-level
                       magent-ui--log-level-order))))
@@ -118,18 +112,39 @@
         (magent-log-mode)))
     buffer))
 
-(defun magent-log (format-string &rest args)
-  "Log a message to the Magent log buffer.
-FORMAT-STRING and ARGS are passed to `format'."
-  (let ((message (apply #'format format-string args)))
-    (when (magent-ui--loggable-message-p message)
-      (let ((buffer (magent-ui-get-log-buffer)))
-        (with-current-buffer buffer
-          (let ((inhibit-read-only t))
-            (goto-char (point-max))
-            (insert (format "[%s] %s\n"
-                            (format-time-string "%Y-%m-%d %H:%M:%S")
-                            message))))))))
+(defun magent-ui--log-buffer-sink (message _level)
+  "Write MESSAGE to the configured Magent log buffer when enabled."
+  (when (magent-ui--loggable-message-p message)
+    (let ((buffer (magent-ui-get-log-buffer)))
+      (with-current-buffer buffer
+        (let ((inhibit-read-only t))
+          (goto-char (point-max))
+          (insert (format "[%s] %s\n"
+                          (format-time-string "%Y-%m-%d %H:%M:%S")
+                          message)))))))
+
+(magent-log-add-sink #'magent-ui--log-buffer-sink)
+
+(defun magent-ui--lifecycle-render-sink (event)
+  "Render UI-visible lifecycle EVENT through the legacy projection."
+  (when (plist-get event :ui-visible)
+    (pcase (plist-get event :type)
+      ('tool-call-start
+       (magent-ui-insert-tool-call
+        (plist-get event :tool-name)
+        (plist-get event :summary)))
+      ('tool-call-end
+       (magent-ui-insert-tool-result
+        (plist-get event :tool-name)
+        (plist-get event :result-summary)))
+      ('agent-job-event
+       (magent-ui-insert-agent-job-event
+        (plist-get event :event)
+        (plist-get event :job)
+        (plist-get event :detail)
+        (plist-get event :scope))))))
+
+(magent-lifecycle-events-add-sink #'magent-ui--lifecycle-render-sink)
 
 ;;; Backend routing
 

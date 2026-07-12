@@ -20,6 +20,7 @@
 (require 'magent-json)
 (require 'magent-lifecycle-events)
 (require 'magent-llm)
+(require 'magent-protocol)
 (require 'magent-runtime)
 (require 'magent-session)
 (require 'magent-ledger)
@@ -33,8 +34,6 @@
 (declare-function gptel-tool-function "gptel-request")
 (declare-function gptel-tool-name "gptel-request")
 (declare-function magent-audit-record-permission-decision "magent-audit")
-(declare-function magent-ui-insert-tool-call "magent-ui")
-(declare-function magent-ui-insert-tool-result "magent-ui")
 (declare-function magent-tools-permission-key "magent-tools")
 
 (defvar magent-tools--register-cancel)
@@ -247,7 +246,7 @@ Recognized keys are `:request', `:sampler', `:status', and
 
 (defun magent-agent-loop-tool-result-summary (result)
   "Return display summary for tool RESULT."
-  (let ((result-str (if (stringp result) result (format "%s" result))))
+  (let ((result-str (magent-tool-result-output-string result)))
     (if (> (length result-str) magent-ui-result-max-length)
         (format "%s... [%d bytes]"
                 (substring result-str 0 magent-ui-result-preview-length)
@@ -310,6 +309,7 @@ Recognized keys are `:request', `:sampler', `:status', and
             (args-plist (plist-get item :args-plist))
             (fn (plist-get item :fn))
             (async-p (plist-get item :async))
+            (structured-result-p (plist-get item :structured-result-p))
             (fn-args (plist-get item :args))
             (callback (plist-get item :callback)))
         (magent-lifecycle-events-emit 'tool-call-start
@@ -320,7 +320,9 @@ Recognized keys are `:request', `:sampler', `:status', and
                             :title name
                             :summary summary
                             :description summary
-                            :args args-plist)
+                            :args args-plist
+                            :ui-visible
+                            (magent-agent-loop--ui-visible-p request-context))
         (magent-request-context-notify
          request-context 'tool-call-start
          :tool-id call-id
@@ -330,42 +332,41 @@ Recognized keys are `:request', `:sampler', `:status', and
          :summary summary
          :input args-plist
          :raw-input args-plist)
-        (when (magent-agent-loop--ui-visible-p request-context)
-          (require 'magent-ui)
-          (magent-ui-insert-tool-call name summary))
         (cl-labels
             ((complete
               (result)
-              (setf (magent-agent-loop-tool-queue-busy queue) nil)
-              (unless (or (magent-agent-loop-tool-queue-aborted queue)
-                          (and abort-controller
-                               (magent-agent-loop-abort-controller-aborted
-                                abort-controller)))
-                (when (magent-agent-loop--ui-visible-p request-context)
-                  (require 'magent-ui)
-                  (magent-ui-insert-tool-result
-                   name
-                   (magent-agent-loop-tool-result-summary result)))
-                (magent-lifecycle-events-emit 'tool-call-end
-                                    :context
-                                    (magent-agent-loop--event-context
-                                     request-context)
-                                    :call-id call-id
-                                    :tool-name name
-                                    :result result)
-                (magent-request-context-notify
-                 request-context 'tool-call-complete
-                 :tool-id call-id
-                 :name name
-                 :status (if (and (stringp result)
-                                  (string-prefix-p "Error:" result))
-                             'failed
-                           'completed)
-                 :output result
-                 :output-preview
-                 (magent-agent-loop-tool-result-summary result))
-                (funcall callback result)
-                (magent-agent-loop-tool-queue-run queue))))
+              (let* ((result (magent-tool-result-normalize result name call-id))
+                     (status (magent-tool-result-status-value result))
+                     (output (magent-tool-result-output-string result)))
+                (setf (magent-agent-loop-tool-queue-busy queue) nil)
+                (unless (or (magent-agent-loop-tool-queue-aborted queue)
+                            (and abort-controller
+                                 (magent-agent-loop-abort-controller-aborted
+                                  abort-controller)))
+                  (magent-lifecycle-events-emit
+                   'tool-call-end
+                   :context
+                   (magent-agent-loop--event-context request-context)
+                   :call-id call-id
+                   :tool-name name
+                   :status status
+                   :exit-code (magent-tool-result-exit-code result)
+                   :result output
+                   :result-summary
+                   (magent-agent-loop-tool-result-summary result)
+                   :ui-visible
+                   (magent-agent-loop--ui-visible-p request-context))
+                  (magent-request-context-notify
+                   request-context 'tool-call-complete
+                   :tool-id call-id
+                   :name name
+                   :status (if (eq status 'completed) 'completed 'failed)
+                   :output output
+                   :exit-code (magent-tool-result-exit-code result)
+                   :output-preview
+                   (magent-agent-loop-tool-result-summary result))
+                  (funcall callback (if structured-result-p result output))
+                  (magent-agent-loop-tool-queue-run queue)))))
           (let ((magent-tools--register-cancel
                  (lambda (cleanup)
                    (magent-agent-loop-abort-controller-register
@@ -396,8 +397,10 @@ Recognized keys are `:request', `:sampler', `:status', and
       (magent-agent-loop--execute-tool-item queue item))))
 
 (defun magent-agent-loop-run-tool
-    (loop request-context tool-spec callback arg-values)
-  "Run TOOL-SPEC with ARG-VALUES and call CALLBACK with the result."
+    (loop request-context tool-spec callback arg-values &optional structured-result-p)
+  "Run TOOL-SPEC with ARG-VALUES and call CALLBACK with the result.
+When STRUCTURED-RESULT-P is non-nil, pass a `magent-tool-result'; otherwise
+preserve the historical string callback contract."
   (let* ((args-spec (and (fboundp 'gptel-tool-args)
                          (gptel-tool-args tool-spec)))
          (name (magent-agent-loop--tool-name tool-spec nil))
@@ -421,6 +424,7 @@ Recognized keys are `:request', `:sampler', `:status', and
              :args-plist args-plist
              :fn fn
              :async async-p
+             :structured-result-p structured-result-p
              :callback callback
              :args fn-args)))))
 
@@ -547,7 +551,7 @@ Recognized keys are `:request', `:sampler', `:status', and
    :request-context request-context
    :run-tool-function (lambda (tool-spec callback arg-values)
                         (magent-agent-loop-run-tool
-                         loop request-context tool-spec callback arg-values))
+                         loop request-context tool-spec callback arg-values t))
    :audit-function #'magent-agent-loop-audit-permission-decision
    :file-arg-index-function #'magent-agent-loop-find-file-arg-index
    :args-to-plist-function #'magent-agent-loop-args-to-plist
