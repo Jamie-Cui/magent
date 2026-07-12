@@ -53,7 +53,7 @@ emacs -Q --batch -L lisp -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'gptel-*' -
 CI is defined under `.github/workflows/`:
 - `test.yml`: installs Emacs 29.4 via Nix, installs package dependencies, runs `make compile`, `make test-unit`, and `make test-live-smoke` in a temporary daemon.
 - `coverage.yml`: runs `make coverage` and uploads `coverage/testcover-summary.tsv`.
-- `melpazoid.yml`: runs MELPA-style package checks. Its recipe must include `prompt.org`, `skills/`, and `capabilities/`, because `magent-config.el`, skills, and capabilities depend on bundled package data at runtime.
+- `melpazoid.yml`: runs MELPA-style package checks. Its recipe must include `prompt/`, `skills/`, and `capabilities/`, because `magent-config.el`, prompts, skills, and capabilities depend on bundled package data at runtime.
 
 Package metadata should stay centralized in `magent.el` and `magent-pkg.el`; non-main modules should not carry `Package-Requires` headers. Keep SPDX license identifiers in every Elisp source file so melpazoid can detect licensing consistently.
 
@@ -246,6 +246,6 @@ In legacy `magent-output-mode`: `TAB` fold/unfold turn sections, `?` transient m
 
 - All files use `;;; -*- lexical-binding: t; -*-`
 - Use Conventional Commits for commit messages.
-- System prompt loaded from `prompt.org` adjacent to `magent-config.el`
+- Core, built-in agent, and internal runtime prompts are editable Org files under `prompt/`; skill prompts remain self-contained in `skills/*/SKILL.md`
 - Tool implementations follow pattern: `magent-tools--<name>` (internal fn) + `magent-tools--<name>-tool` (gptel-tool var)
 - Byte-compile warnings suppressed: `cl-functions`

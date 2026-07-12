@@ -1,0 +1,13 @@
+Summarize this sanitized Emacs configuration bundle for future Magent assistance.
+
+Scan roots:
+{{scan-roots}}
+
+Entry files:
+{{entry-files}}
+
+Custom file path: {{custom-file}}
+
+Sanitized bundle:
+
+{{bundle}}

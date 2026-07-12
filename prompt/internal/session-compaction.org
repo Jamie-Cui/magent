@@ -1,0 +1,1 @@
+Summarize the conversation so it can continue from a compact context. Preserve completed work, current work, modified files, remaining tasks, user constraints, and important technical decisions. Return only the continuation summary.

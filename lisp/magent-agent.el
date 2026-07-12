@@ -28,6 +28,7 @@
 (require 'magent-ledger)
 (require 'magent-agent-registry)
 (require 'magent-permission)
+(require 'magent-prompt)
 
 ;; Forward declarations for UI functions
 (declare-function magent-ui-insert-streaming "magent-ui")
@@ -44,13 +45,13 @@
 
 ;;; Agent execution
 
-(defconst magent-agent--empty-final-response-retry-prompt
-  "The previous assistant response after tool execution was empty. Continue the task now. Use tools if additional inspection is required; otherwise write the final answer."
-  "User prompt appended when retrying an empty post-tool final response.")
+(defun magent-agent--empty-final-response-retry-prompt ()
+  "Return the prompt for retrying an empty post-tool final response."
+  (magent-prompt-read "internal/empty-final-response-retry.org"))
 
-(defconst magent-agent--strict-final-response-retry-prompt
-  "The previous final-response retry still produced no assistant text. Do not call tools or emit tool-call markup. Write the final answer now based only on the context already available."
-  "User prompt appended when strict final-response recovery is required.")
+(defun magent-agent--strict-final-response-retry-prompt ()
+  "Return the prompt for strict final-response recovery."
+  (magent-prompt-read "internal/strict-final-response-retry.org"))
 
 (defcustom magent-post-tool-reasoning-idle-retry-delay 5
   "Seconds to wait after post-tool reasoning ends with no assistant text.
@@ -166,9 +167,8 @@ was not already emitted as text deltas."
   "Return prompt context for PROJECT-ROOT."
   (when (and (stringp project-root)
              (not (string-empty-p project-root)))
-    (format
-     "Current project root: %s\nUse this as the current repository/workspace. When the user says \"this repo\", \"this repository\", or \"this project\", inspect this path. Resolve relative file tool paths against this root and do not invent unrelated absolute paths."
-     project-root)))
+    (magent-prompt-render "internal/project-context.org"
+                          `((project-root . ,project-root)))))
 
 (defun magent-agent--compose-system-message
     (base-system-message project-root memory-message skill-prompts)
@@ -179,8 +179,9 @@ Emacs profile memory block, and SKILL-PROMPTS are active skill prompts."
          (magent-agent--context-system-message project-root))
         (skills-message
          (when skill-prompts
-           (concat "# Active Skills\n\n"
-                   (mapconcat #'identity skill-prompts "\n\n")))))
+           (magent-prompt-render
+            "internal/active-skills.org"
+            `((skills . ,(mapconcat #'identity skill-prompts "\n\n")))))))
     (mapconcat #'identity
                (delq nil
                      (list base-system-message
@@ -572,7 +573,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                        (list
                         (cons
                          'prompt
-                         magent-agent--empty-final-response-retry-prompt)))
+                         (magent-agent--empty-final-response-retry-prompt))))
                       :system (magent-llm-request-system request)
                       :tools (magent-llm-request-tools request)
                       :model (magent-llm-request-model request)
@@ -595,7 +596,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                        (list
                         (cons
                          'prompt
-                         magent-agent--strict-final-response-retry-prompt)))
+                         (magent-agent--strict-final-response-retry-prompt))))
                       :system (magent-llm-request-system request)
                       :tools (magent-llm-request-tools request)
                       :model (magent-llm-request-model request)

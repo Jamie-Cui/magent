@@ -1,0 +1,2 @@
+Current project root: {{project-root}}
+Use this as the current repository/workspace. When the user says "this repo", "this repository", or "this project", inspect this path. Resolve relative file tool paths against this root and do not invent unrelated absolute paths.

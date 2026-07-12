@@ -17,6 +17,7 @@
 (require 'magent-agent-registry)
 (require 'magent-config)
 (require 'magent-protocol)
+(require 'magent-prompt)
 (require 'magent-runtime)
 (require 'magent-runtime-queue)
 (require 'magent-session)
@@ -130,6 +131,23 @@
   "Clear one-shot skills for RUNTIME-SESSION."
   (setf (magent-runtime-session-pending-skills runtime-session) nil))
 
+(defun magent-runtime-session-clear (runtime-session)
+  "Clear RUNTIME-SESSION while preserving its ACP-visible identity.
+Any active or queued work for the session is cancelled first."
+  (unless (magent-runtime-session-p runtime-session)
+    (error "Expected runtime session, got: %S" runtime-session))
+  (magent-runtime-cancel runtime-session)
+  (let ((session (magent-runtime-session-magent-session runtime-session))
+        (scope (magent-runtime-session-scope runtime-session)))
+    (magent-session-clear session scope)
+    (magent-runtime-session-clear-pending-skills runtime-session)
+    (magent-session-install scope session)
+    (when (fboundp 'magent-capability-clear-local-overrides)
+      (magent-capability-clear-local-overrides))
+    (magent-log "INFO runtime session cleared: %s"
+                (magent-runtime-session-id runtime-session))
+    runtime-session))
+
 (defun magent-runtime-api--notify-submission (submission type &rest props)
   "Notify SUBMISSION's observer of TYPE with PROPS."
   (when-let* ((observer (magent-runtime-submission-observer submission)))
@@ -149,7 +167,8 @@
          (magent-log "ERROR runtime observer failed: %s"
                      (error-message-string err)))))))
 
-(defun magent-runtime-api--prepare-turn (runtime-session prompt)
+(defun magent-runtime-api--prepare-turn
+    (runtime-session prompt &optional metadata)
   "Create a queued ledger turn for PROMPT in RUNTIME-SESSION."
   (let* ((session (magent-runtime-session-magent-session runtime-session))
          (scope (or (magent-runtime-session-scope runtime-session)
@@ -158,7 +177,8 @@
                        (magent-session--current-scope scope))
                    (magent-session-thread-ledger session)))
          (turn (magent-thread-queue-turn
-                thread prompt nil (list :source 'runtime-queue))))
+                thread prompt nil
+                (append (list :source 'runtime-queue) metadata))))
     (magent-thread-record-user-message-if-needed
      thread (magent-thread-turn-id turn) prompt nil
      (list :source 'runtime-queue))
@@ -325,7 +345,7 @@
 
 (cl-defun magent-runtime-submit
     (runtime-session prompt &key context skills agent observer approval-provider
-                     effort on-complete)
+                     effort turn-metadata on-complete)
   "Submit PROMPT to RUNTIME-SESSION.
 OBSERVER receives request-local Magent-native events."
   (unless (magent-runtime-session-p runtime-session)
@@ -335,7 +355,8 @@ OBSERVER receives request-local Magent-native events."
     (error "Prompt is empty"))
   (let* ((effective-skills
           (or skills (magent-runtime-session-pending-skills runtime-session)))
-         (turn-id (magent-runtime-api--prepare-turn runtime-session prompt))
+         (turn-id (magent-runtime-api--prepare-turn
+                   runtime-session prompt turn-metadata))
          (submission
           (magent-runtime-submission-create
            :id (magent-protocol-generate-id "submission")
@@ -355,6 +376,49 @@ OBSERVER receives request-local Magent-native events."
            :turn-id turn-id)))
     (magent-runtime-session-clear-pending-skills runtime-session)
     (magent-runtime-queue-submit submission #'magent-runtime-api--start-submission)))
+
+(cl-defun magent-runtime-session-compact
+    (runtime-session &key instruction observer approval-provider on-complete)
+  "Compact RUNTIME-SESSION with its hidden compaction agent.
+INSTRUCTION optionally refines the summary.  OBSERVER, APPROVAL-PROVIDER, and
+ON-COMPLETE have the same roles as in `magent-runtime-submit'.  The compaction
+turn is marked as a future prompt-history boundary while the session's selected
+user-facing agent is restored after the request finishes."
+  (unless (magent-runtime-session-p runtime-session)
+    (error "Expected runtime session, got: %S" runtime-session))
+  (let* ((session (magent-runtime-session-magent-session runtime-session))
+         (selected-agent (magent-session-agent session))
+         (compaction-agent (magent-agent-registry-get "compaction"))
+         (pending-skills
+          (magent-runtime-session-pending-skills runtime-session))
+         (extra (string-trim (or instruction "")))
+         (base-prompt (magent-prompt-read "internal/session-compaction.org"))
+         (prompt (if (string-empty-p extra)
+                     base-prompt
+                   (concat
+                    base-prompt "\n\n"
+                    (magent-prompt-render
+                     "internal/additional-instruction.org"
+                     `((instruction . ,extra)))))))
+    (unless compaction-agent
+      (error "Magent compaction agent is unavailable"))
+    (setf (magent-runtime-session-pending-skills runtime-session) nil)
+    (unwind-protect
+        (magent-runtime-submit
+         runtime-session prompt
+         :agent compaction-agent
+         :observer observer
+         :approval-provider approval-provider
+         :turn-metadata (list :compaction t)
+         :on-complete
+         (lambda (status result)
+           (magent-session-set-agent session selected-agent)
+           (magent-session-save-deferred-for-session
+            session (magent-runtime-session-scope runtime-session))
+           (when on-complete
+             (funcall on-complete status result))))
+      (setf (magent-runtime-session-pending-skills runtime-session)
+            pending-skills))))
 
 (defun magent-runtime-processing-p ()
   "Return non-nil when any runtime turn is active."

@@ -30,6 +30,7 @@
 (require 'magent-agent-loop)
 (require 'magent-json)
 (require 'magent-protocol)
+(require 'magent-prompt)
 (require 'magent-legacy-queue)
 
 (defvar magent-compose-close-after-submit)
@@ -2101,16 +2102,6 @@ Returns a context string or nil if context should not be captured."
   "Diagnose the current Emacs session."
   "Display text used for `magent-diagnose-emacs' user messages.")
 
-(defconst magent-ui--emacs-diagnosis-instructions
-  (concat
-   "Diagnose problems in the current Emacs session.\n\n"
-   "Start by collecting evidence instead of guessing.\n"
-   "Inspect the live Emacs state with emacs_eval when useful.\n"
-   "Check *Messages*, *Warnings*, *Backtrace*, the current buffer state, and minibuffer state when relevant.\n"
-   "If no concrete failure is visible yet, summarize the suspicious signals you can observe and ask for the smallest missing reproduction detail.\n"
-   "Do not edit files or make state-changing changes until you have a concrete hypothesis.")
-  "Base instructions used by `magent-diagnose-emacs'.")
-
 (defun magent-ui--diagnosis-agent ()
   "Return the preferred agent for `magent-diagnose-emacs'."
   (or (magent-agent-registry-get "build")
@@ -2187,7 +2178,7 @@ inserted into compose as editable text."
   "Launch a Magent diagnosis of the current Emacs session."
   (interactive)
   (magent-ui--dispatch-diagnosis
-   magent-ui--emacs-diagnosis-instructions
+   (magent-prompt-read "internal/emacs-diagnosis.org")
    'diagnose-emacs
    magent-ui--emacs-diagnosis-display))
 

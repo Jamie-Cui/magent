@@ -1,0 +1,167 @@
+#+title: 命令与 LLM 工作流
+#+magent_lang: zh
+#+magent_alt_url: /COMMANDS.html
+#+magent_permalink: /COMMANDS.zh.html
+#+options: toc:t num:nil
+
+Magent 为 LLM 辅助工作流提供两类不同的命令入口：
+
+- *Slash commands* 在当前 agent-shell 对话中运行可复用的 instruction skill 或
+  session control。
+- *Internal workflow commands* 是显式的 Emacs 命令，在独立、可持久化的
+  session 中执行 Magent 维护或诊断工作流。
+
+当前内置包提供 7 个 slash commands（5 个 skill commands 和 2 个 session
+controls）及 4 个 internal workflow commands，另有 4 个 Emacs 命令用于查看
+或管理 internal workflows。
+
+* Slash Commands
+
+在 Magent agent-shell buffer 中把 slash command 作为 prompt 输入：
+
+#+begin_example
+/review
+/fix 重点检查失败的 session persistence test
+/compact 保留准确的文件名和未解决的失败
+/clear
+#+end_example
+
+Skill command 或 ~/compact~ 后的文本会作为附加指令。Skill command 复用当前
+session 和 agent，并为本次请求附加对应的 instruction skill。未知 slash command
+不会在本地执行，而是作为普通 prompt text 提交。
+
+| 命令       | 用途                              | 预期效果 |
+|------------+-----------------------------------+----------|
+| ~/explain~ | 解释代码、diff、错误或当前上下文   | 只读检查，不修改文件 |
+| ~/fix~     | 诊断并修复 bug 或 regression       | 可能修改文件并运行针对性验证 |
+| ~/init~    | 创建或刷新项目 ~AGENTS.md~          | 检查仓库后可能更新项目指令 |
+| ~/review~  | 审查当前改动中的缺陷                | 只读审查，优先报告问题和测试缺口 |
+| ~/test~    | 运行并解释相关测试                  | 运行聚焦测试；适当时可修复范围内失败 |
+| ~/compact~ | 总结当前对话                        | 用续接摘要替换较早的模型上下文 |
+| ~/clear~   | 清理当前对话                        | 取消待处理工作，并移除 live 与 persisted session context |
+
+** ~/compact~
+
+使用隐藏且不带 tools 的 compaction agent 生成续接摘要。成功后，后续 turn 会复用
+该摘要而不是更早的模型上下文；当前 agent-shell buffer 中的可见 transcript 仍然
+保留。Compaction 失败时不会改变之前的上下文。
+
+** ~/clear~
+
+取消当前 runtime session 中 active 或 queued 的工作，清理 messages、tools、child
+jobs、approval、已选择的一次性 skills 及持久化 transcript，同时保持 agent-shell
+session handle 有效。该命令不接受参数。
+
+** ~/explain~
+
+检查相关 buffer、region、文件、diff、错误或项目上下文，解释入口点、数据流、状态
+变化和职责边界。它用于理解现有行为，不会进行编辑。
+
+#+begin_example
+/explain 为什么这个 callback 可能完成两次
+#+end_example
+
+** ~/fix~
+
+重建问题表现，定位最小且可信的根因，进行聚焦修改，在可行时补充 regression
+test，并运行本应捕获该问题的验证。
+
+#+begin_example
+/fix 复现并修复失败的 ledger replay test
+#+end_example
+
+** ~/init~
+
+检查仓库文档、manifest、测试和工作流，然后创建或刷新项目根目录的
+~AGENTS.md~。已有的有效说明应被保留，并避免无关改动。
+
+#+begin_example
+/init 加入 live Emacs 验证流程
+#+end_example
+
+** ~/review~
+
+以 senior code reviewer 的视角检查当前仓库状态和 diff，优先发现 correctness
+bug、regression、不安全的边界情况和缺失测试，并按严重程度输出 findings。除非
+用户明确要求，否则不会修改文件。
+
+#+begin_example
+/review 重点检查 cancellation 和 stale callbacks
+#+end_example
+
+** ~/test~
+
+从项目中找到相关测试命令，先运行最小但有意义的测试，只在必要时扩大范围。
+结果会记录通过、失败和跳过的检查，以及剩余风险。
+
+#+begin_example
+/test 运行当前分支改动文件相关的聚焦测试
+#+end_example
+
+** 其他调用方式与扩展
+
+~M-x magent-agent-shell-run-skill-command~ 可以通过推荐的 agent-shell backend
+选择并运行任意 command-like instruction skill。Legacy UI 提供等价的
+~M-x magent-ui-run-skill-command~。
+
+Slash command 清单中由 skill 支撑的部分是可扩展的。任何已加载且定义了
+~default-prompt~ 的 instruction skill 都会作为 slash command 发布给
+agent-shell。Skill 可以来自内置 ~skills/~、用户 skill 目录或项目本地
+~.magent/skills/~ overlay。因此除了上面两个固定的 session controls，本地安装
+还可以提供更多 skill commands。
+
+* Internal Workflow Commands
+
+Internal workflows 通过 ~M-x~ 调用，并刻意不作为 agent-shell slash command
+暴露。每次运行都会在 ~magent-session-directory/internal~ 下建立独立 session，
+在原始对话中只记录一条紧凑 breadcrumb。
+
+| Emacs 命令                     | 工作流 | LLM 行为 |
+|--------------------------------+--------+----------|
+| ~magent-run-memory-init~       | 建立初始 Emacs profile memory | ~magent-memory-use-llm~ 非 nil 时使用当前 gptel provider |
+| ~magent-run-memory-refresh~    | 刷新 managed profile memory | ~magent-memory-use-llm~ 非 nil 时使用当前 gptel provider |
+| ~magent-run-memory-clear~      | 停用并清理 managed memory | 本地操作，不请求 LLM 总结 |
+| ~magent-run-doctor~            | 诊断 Magent 和当前 runtime 状态 | 发送一次经过脱敏且不带 tools 的分析请求 |
+
+** Memory 初始化与刷新
+
+~M-x magent-run-memory-init~ 发现有边界的 Emacs 配置来源，展示 scan plan 供用户
+确认，然后写入 managed profile memory 文件。~M-x magent-run-memory-refresh~
+重新扫描并保留 user notes。
+
+默认情况下，init 和 refresh 使用当前 gptel provider 总结经过清理的 source
+excerpts。把 ~magent-memory-use-llm~ 自定义为 nil，可以在不向 provider 发送
+配置片段的情况下写入确定性的 skeleton 和 source index。
+
+** Memory 清理
+
+~M-x magent-run-memory-clear~ 经确认后停用 managed profile 并清理生成内容，
+同时保留 user notes 和 snapshot。该工作流不会发起 LLM 总结请求。
+
+** Doctor
+
+~M-x magent-run-doctor~ 通过可信的只读 probes 收集有边界的证据，递归脱敏后
+发送一次不包含 model tools 的请求。使用前缀参数
+~C-u M-x magent-run-doctor~ 可以先检查适用的 probe selection。Probe API 和
+安全边界见 [[file:DOCTOR.zh.html][DOCTOR.zh.org]]。
+
+* 查看与管理工作流
+
+| Emacs 命令                        | 用途 |
+|-----------------------------------+------|
+| ~magent-list-internal-sessions~   | 选择已保存的 internal session，查看最终结果和执行活动 |
+| ~magent-cancel-internal-command~  | 取消提供 cancellation 的活动 internal workflow |
+| ~magent-memory-open~              | 打开 managed Emacs profile memory 文件 |
+| ~magent-memory-status~            | 显示 memory 是否存在、是否活动以及是否可能过期 |
+
+Internal session viewer 优先显示最终结果，并默认折叠详细 activity。Cancellation
+按 session 隔离，不会取消其他 Magent 对话所属的工作。
+
+* 如何选择入口
+
+- 当任务属于当前 coding conversation，并需要复用其 agent、上下文和 transcript
+  时，使用 slash command。
+- 当任务是 Magent 自身维护、profile-memory 管理或需要独立 durable session 的
+  脱敏诊断时，使用 internal workflow command。
+- 对于不属于预定义工作流的自由请求，使用 ~magent-dwim~、
+  ~magent-prompt-region~ 和 ~magent-ask-at-point~ 等普通 Magent prompt commands。

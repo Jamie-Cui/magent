@@ -17,6 +17,7 @@
 (require 'cl-lib)
 (require 'json)
 (require 'magent-log)
+(require 'magent-prompt)
 (require 'subr-x)
 
 (defgroup magent nil
@@ -78,25 +79,13 @@
   :group 'magent)
 
 (defvar magent--prompt-file
-  (let ((dir (file-name-directory (or load-file-name buffer-file-name))))
-    ;; prompt.org lives at the package root.  In the git repo sources are
-    ;; under lisp/ (one level down); after MELPA install lisp/*.el files
-    ;; are flattened to the top level.  Try sibling first, then parent.
-    (or (let ((f (expand-file-name "prompt.org" dir)))
-          (and (file-exists-p f) f))
-        (let ((f (expand-file-name "prompt.org"
-                                   (expand-file-name ".." dir))))
-          (and (file-exists-p f) f))
-        ;; Fallback: original location (lets the error surface if missing).
-        (expand-file-name "prompt.org" dir)))
-  "Path to the system prompt file.")
+  (magent-prompt-path "system.org")
+  "Path to the bundled system prompt file.")
 
 (defcustom magent-system-prompt
-  (with-temp-buffer
-    (insert-file-contents magent--prompt-file)
-    (buffer-string))
+  (magent-prompt-read "system.org")
   "System prompt for the AI agent.
-Default value is read from prompt.txt next to this file."
+The default value is read from prompt/system.org in the package."
   :type 'string
   :group 'magent)
 

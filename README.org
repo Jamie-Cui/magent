@@ -103,6 +103,14 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-load-custom-agents~    | ~t~                           | Load custom agents from ~.magent/agent/*.md~                                            |
 | ~magent-enable-logging~        | ~t~                           | Enable logging to ~*magent-log*~ buffer                                                 |
 | ~magent-log-level~             | ~info~                        | Minimum displayed log level; ~PERM~ and unprefixed messages count as ~info~           |
+
+** Prompt Files
+
+Core, built-in agent, and internal runtime prompts live as editable Org files
+under ~prompt/~.  Files containing placeholders such as ~{{project-root}}~ or
+~{{instruction}}~ should keep those placeholders where the dynamic value is
+needed; ordinary percent signs need no escaping.  Skill prompts remain
+self-contained in ~skills/*/SKILL.md~.
 | ~magent-enable-audit-log~      | ~t~                           | Persist compact audit logs for permission and sensitive actions                       |
 | ~magent-agent-directory~       | ~".magent/agent"~             | Relative path to custom agent dir                                                     |
 | ~magent-session-directory~     | =~/.emacs.d/magent/sessions/= | Base directory for global sessions and per-project session subdirectories             |
@@ -186,7 +194,11 @@ Skills with a ~default-prompt~ can also be run as command-like actions.  In
 agent-shell, use ~M-x magent-agent-shell-run-skill-command~ or
 ~M-x magent-agent-shell-run-init-command~.  The ~init~ skill initializes or
 refreshes the project's root ~AGENTS.md~ and prompts for optional extra
-instructions such as focusing on tests.
+instructions such as focusing on tests.  Agent-shell also advertises seven
+bundled slash commands: the ~/explain~, ~/fix~, ~/init~, ~/review~, and ~/test~
+skill commands plus the ~/compact~ and ~/clear~ session controls.
+See [[file:docs/COMMANDS.org][docs/COMMANDS.org]] for command behavior, examples, and
+the extension rule for project-local command skills.
 
 * Agent System
 
@@ -323,7 +335,8 @@ agent-shell slash commands:
 Doctor never gives the model ~emacs_eval~, shell, or file tools.  Its probes
 are trusted read-only Elisp extensions, and only path-normalized, recursively
 redacted data is persisted or sent.  See [[file:docs/DOCTOR.org][docs/DOCTOR.org]] for the
-trust boundary and probe API.
+trust boundary and probe API, and [[file:docs/COMMANDS.org][docs/COMMANDS.org]] for the
+complete user-facing workflow command reference.
 
 * Architecture
 
@@ -413,11 +426,15 @@ magent/
 |-- magent-acp.el                  # In-process ACP adapter
 |-- magent-agent-shell.el          # agent-shell backend
 |-- magent-file-loader.el          # Shared definition loader and frontmatter parser
+|-- magent-prompt.el               # Bundled Org prompt resource loader
 |-- magent-skills.el               # Skill registry, built-in skills, file loading, and skill commands
 |-- magent-ui.el                   # UI backend router and compatibility shims
 |-- magent-evil.el                 # Optional Evil integration
 |-- magent-pkg.el                  # Package descriptor
-|-- prompt.org                     # Default system prompt
+|-- prompt/                        # Core, agent, and internal Org prompts
+|   |-- system.org                 # Default system prompt
+|   |-- agents/                    # Built-in agent prompts
+|   `-- internal/                  # Doctor, memory, retry, and runtime prompts
 |-- Makefile                       # Build, test, and clean targets
 |-- skills/                        # Built-in product skills (loaded automatically)
 |   |-- emacs-buffer-editing/SKILL.md
@@ -484,7 +501,7 @@ GitHub Actions runs three workflows:
 - ~coverage.yml~ runs ~make coverage~ and uploads
   ~coverage/testcover-summary.tsv~ as an artifact.
 - ~melpazoid.yml~ runs MELPA-style package checks. The recipe includes
-  ~prompt.org~ and ~skills/~ because those files are runtime package data,
+  ~prompt/~ and ~skills/~ because those files are runtime package data,
   not optional repository extras.
 
 Keep package metadata centralized in ~magent.el~ and ~magent-pkg.el~. Non-main

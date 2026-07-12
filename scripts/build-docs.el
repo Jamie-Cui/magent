@@ -36,6 +36,7 @@
 
 (defconst magent-docs--navigation
   '((en . (("Overview" . "/")
+           ("Commands" . "/COMMANDS.html")
            ("Architecture" . "/ARCHITECTURE.html")
            ("Onboarding" . "/ONBOARDING.html")
            ("Agent Workflow" . "/AGENT_WORKFLOW.html")
@@ -44,6 +45,7 @@
            ("Troubleshooting" . "/TROUBLESHOOTING.html")
            ("Contributing" . "/CONTRIBUTING.html")))
     (zh . (("总览" . "/zh/")
+           ("命令" . "/COMMANDS.zh.html")
            ("架构" . "/ARCHITECTURE.zh.html")
            ("入门导览" . "/ONBOARDING.zh.html")
            ("Agent 工作流" . "/AGENT_WORKFLOW.zh.html")
@@ -154,6 +156,8 @@ REPLACEMENTS is an alist of string placeholders to string values."
   (let ((files (directory-files magent-docs--docs-root t "\\.org\\'"))
         (order '("README.org"
                  "README.zh.org"
+                 "COMMANDS.org"
+                 "COMMANDS.zh.org"
                  "ARCHITECTURE.org"
                  "ARCHITECTURE.zh.org"
                  "ONBOARDING.org"

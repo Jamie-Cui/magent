@@ -21,6 +21,7 @@
 (require 'magent-command)
 (require 'magent-llm)
 (require 'magent-llm-gptel)
+(require 'magent-prompt)
 (require 'magent-redaction)
 
 (declare-function gptel-backend-name "gptel")
@@ -721,32 +722,30 @@ the user-owned heading.  ACTIVE defaults to t."
 
 (defun magent-memory--summarizer-system-prompt ()
   "Return system prompt for Emacs profile memory summarization."
-  (concat
-   "You summarize an Emacs configuration into Magent's local Emacs profile memory. "
-   "Use only the provided sanitized bundle. Do not infer secrets. Do not include "
-   "ordinary personal knowledge-base notes. Return only Org content with this exact "
-   "schema: a top-level '* " magent-memory--managed-heading "' heading and these "
-   "second-level headings, in order: "
-   (string-join magent-memory--managed-section-headings ", ")
-   ". Keep entries concise and operational. Include source file references where useful."))
+  (magent-prompt-render
+   "internal/memory-system.org"
+   `((managed-heading . ,magent-memory--managed-heading)
+     (section-headings
+      . ,(string-join magent-memory--managed-section-headings ", ")))))
 
 (defun magent-memory--summarizer-user-prompt (plan bundle)
   "Return user prompt for summarizing BUNDLE according to PLAN."
   (magent-memory--sanitize-outbound
-   (format
-    (concat "Summarize this sanitized Emacs configuration bundle for future "
-            "Magent assistance.\n\nScan roots:\n%s\n\nEntry files:\n%s\n\n"
-            "Custom file path: %s\n\nSanitized bundle:\n\n%s")
-    (mapconcat (lambda (root) (format "- %s" root))
-               (magent-memory-scan-plan-roots plan)
-               "\n")
-    (if (magent-memory-scan-plan-entry-files plan)
-        (mapconcat (lambda (file) (format "- %s" file))
-                   (magent-memory-scan-plan-entry-files plan)
-                   "\n")
-      "- none")
-    (or (magent-memory-scan-plan-custom-file plan) "none")
-    bundle)))
+   (magent-prompt-render
+    "internal/memory-user.org"
+    `((scan-roots
+       . ,(mapconcat (lambda (root) (format "- %s" root))
+                     (magent-memory-scan-plan-roots plan)
+                     "\n"))
+      (entry-files
+       . ,(if (magent-memory-scan-plan-entry-files plan)
+              (mapconcat (lambda (file) (format "- %s" file))
+                         (magent-memory-scan-plan-entry-files plan)
+                         "\n")
+            "- none"))
+      (custom-file
+       . ,(or (magent-memory-scan-plan-custom-file plan) "none"))
+      (bundle . ,bundle)))))
 
 (cl-defun magent-memory--summarize-with-llm (plan bundle callback)
   "Summarize BUNDLE for PLAN, then call CALLBACK with text or nil."
@@ -1248,8 +1247,9 @@ with a plan and continuation for scan-based operations."
                       (append (plist-get selection :omitted-headings)
                               (plist-get budgeted :omitted))
                       :selected-at (current-time)))
-          (concat "# Magent Emacs Profile Memory\n\n"
-                  included-text))))))
+          (magent-prompt-render
+           "internal/memory-injection.org"
+           `((memory . ,included-text))))))))
 
 (magent-command-register
  "memory-init"

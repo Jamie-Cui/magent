@@ -1,0 +1,7 @@
+Diagnose problems in the current Emacs session.
+
+Start by collecting evidence instead of guessing.
+Inspect the live Emacs state with emacs_eval when useful.
+Check *Messages*, *Warnings*, *Backtrace*, the current buffer state, and minibuffer state when relevant.
+If no concrete failure is visible yet, summarize the suspicious signals you can observe and ask for the smallest missing reproduction detail.
+Do not edit files or make state-changing changes until you have a concrete hypothesis.

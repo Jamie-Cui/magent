@@ -14,15 +14,15 @@ If you are debugging agent lifecycle or subagent behavior, first check ~docs/AGE
 :CUSTOM_ID: github-actions-failures
 :END:
 
-*** melpazoid cannot find ~prompt.org~
+*** melpazoid cannot find ~prompt/system.org~
 *Problem:* The melpazoid job fails with errors like:
 
 #+begin_src text
-Opening input file: No such file or directory, /workspace/pkg/prompt.org
+Opening input file: No such file or directory, /workspace/pkg/prompt/system.org
 #+end_src
 
 *Cause:* MELPA-style packaging copies only files matched by the recipe.
-Magent needs bundled runtime data (~prompt.org~ and ~skills/~) after
+Magent needs bundled runtime data (~prompt/~ and ~skills/~) after
 packaging.
 
 *Solution:* Keep ~.github/workflows/melpazoid.yml~ aligned with this recipe
@@ -30,7 +30,7 @@ shape:
 
 #+begin_src elisp
 (magent :fetcher github :repo "Jamie-Cui/magent"
-        :files (:defaults "prompt.org" "skills"))
+        :files (:defaults "prompt" "skills"))
 #+end_src
 
 *** package-lint reports ineffective ~Package-Requires~

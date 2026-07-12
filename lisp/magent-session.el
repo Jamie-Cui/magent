@@ -472,6 +472,35 @@ SCOPE must be either `global' or a normalized project root string."
   (or magent--current-session
       (magent-session-activate magent-session--current-scope)))
 
+(defun magent-session-clear (session &optional scope)
+  "Clear SESSION in place and remove its persisted transcript.
+SCOPE defaults to the active session scope.  SESSION keeps its identity,
+selected agent, and history limit so runtime UI handles remain valid."
+  (when session
+    (let* ((target-scope (or scope magent-session--current-scope))
+           (id (magent-session-id session))
+           (filepath
+            (and id
+                 (expand-file-name
+                  (concat id ".json")
+                  (magent-session--scope-storage-directory target-scope)))))
+      (setf (magent-session-messages session) nil
+            (magent-session-buffer-content session) nil
+            (magent-session-approval-overrides session) nil
+            (magent-session-context-items session) nil
+            (magent-session-agent-jobs session) nil
+            (magent-session-thread session) nil
+            (magent-session-metadata session) nil)
+      (when (and filepath (file-exists-p filepath))
+        (condition-case err
+            (progn
+              (delete-file filepath)
+              (remhash filepath magent-session--metadata-cache))
+          (error
+           (magent-log "WARN failed deleting cleared session %s: %s"
+                       filepath (error-message-string err)))))))
+  session)
+
 (defun magent-session-reset ()
   "Reset the current session, clearing all messages and permission overrides."
   (interactive)
@@ -1203,6 +1232,27 @@ Returns a condensed version of the conversation."
              (equal (magent-thread-turn-id turn) current-turn-id)
              (memq status '(queued in-progress))))))
 
+(defun magent-session--compaction-turn-p (turn)
+  "Return non-nil when TURN is a reusable completed compaction boundary."
+  (let ((metadata (magent-thread-turn-metadata turn))
+        (assistant-content
+         (magent-session--turn-message-content turn 'assistant)))
+    (and (eq (magent-thread-turn-status turn) 'completed)
+         (if (magent-json--plist-p metadata)
+             (plist-get metadata :compaction)
+           (cdr (assq 'compaction metadata)))
+         (magent-session--assistant-response-reusable-p assistant-content))))
+
+(defun magent-session--turns-from-last-compaction (turns)
+  "Return the tail of TURNS beginning with its last compaction boundary."
+  (let ((cursor turns)
+        (result turns))
+    (while cursor
+      (when (magent-session--compaction-turn-p (car cursor))
+        (setq result cursor))
+      (setq cursor (cdr cursor)))
+    result))
+
 (defun magent-session-to-gptel-prompt-list (session &optional current-turn-id)
   "Convert SESSION messages to a gptel-request prompt list.
 Returns a list in gptel's advanced format:
@@ -1219,7 +1269,8 @@ When CURRENT-TURN-ID is non-nil, prompt generation stops after that turn.
 This prevents later queued user submissions from leaking into the active
 sampling request."
   (let* ((thread (magent-session-thread-ledger session))
-         (turns (and thread (magent-thread-turns thread)))
+         (turns (magent-session--turns-from-last-compaction
+                 (and thread (magent-thread-turns thread))))
          (effective-current-turn-id
           (or current-turn-id
               (and (cl-find-if

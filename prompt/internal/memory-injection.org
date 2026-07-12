@@ -1,0 +1,3 @@
+* Magent Emacs Profile Memory
+
+{{memory}}

@@ -19,6 +19,7 @@
 (require 'magent-json)
 (require 'magent-llm)
 (require 'magent-llm-gptel)
+(require 'magent-prompt)
 (require 'magent-redaction)
 (require 'magent-session)
 
@@ -78,22 +79,6 @@
 
 (defvar magent-doctor--registry (make-hash-table :test #'equal)
   "Registered Magent doctor probes keyed by probe id.")
-
-(defconst magent-doctor--system-prompt
-  (concat
-   "You are Magent Doctor. Analyze only the provided sanitized diagnostic "
-   "bundle. You have no tools and must not request or infer credentials, "
-   "environment variables, authorization data, or omitted source content. "
-   "Distinguish observed facts from inference. Return concise Org content "
-   "with exactly these headings in order:\n"
-   "* Diagnosis\n"
-   "** Summary\n"
-   "** Findings\n"
-   "** Recommended Actions\n"
-   "** Limitations\n"
-   "Each finding must include a severity and the supporting probe id. If the "
-   "evidence is insufficient, say so instead of asserting a root cause.")
-  "System prompt for the tool-free Magent doctor analysis request.")
 
 (defconst magent-doctor--output-headings
   '("* Diagnosis" "** Summary" "** Findings"
@@ -786,16 +771,13 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
 (defun magent-doctor--start-analysis (context state results)
   "Start one tool-free provider analysis for CONTEXT over RESULTS."
   (let* ((bundle (magent-doctor--bounded-bundle results))
-         (prompt
-          (concat
-           "Analyze this sanitized Magent diagnostic bundle. Values in each "
-           "probe's data field are JSON strings produced by a fail-closed "
-           "collector. Do not infer omitted data.\n\n"
-           (magent-json-encode bundle)))
+         (prompt (concat (magent-prompt-read "internal/doctor-user.org")
+                         "\n\n"
+                         (magent-json-encode bundle)))
          (request
           (magent-llm-request-create
            :prompt prompt
-           :system magent-doctor--system-prompt
+           :system (magent-prompt-read "internal/doctor-system.org")
            :tools nil
            :stream nil
            :backend (and (boundp 'gptel-backend) gptel-backend)

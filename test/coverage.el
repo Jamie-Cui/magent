@@ -19,7 +19,7 @@
       nil t)
 
 (defvar magent--prompt-file
-  (expand-file-name "prompt.org" magent-coverage--root-directory)
+  (expand-file-name "prompt/system.org" magent-coverage--root-directory)
   "Prompt file used while instrumenting `magent-config'.")
 
 (defvar magent-coverage-min 0

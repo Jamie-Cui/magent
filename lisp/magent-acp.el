@@ -129,12 +129,28 @@
                        (and skill
                             (magent-skill-description skill)))))))
 
+(defconst magent-acp--control-commands
+  '(("clear" . "Clear the current conversation context.")
+    ("compact" . "Summarize and compact the current conversation context."))
+  "Magent-owned session control commands exposed through ACP.")
+
+(defun magent-acp--control-command-entry (entry)
+  "Return an ACP available command object for control command ENTRY."
+  `((name . ,(car entry))
+    (description . ,(cdr entry))))
+
 (defun magent-acp--available-commands ()
-  "Return ACP available command entries for command-like skills."
+  "Return ACP available entries for controls and command-like skills."
   (vconcat
    (sort
-    (mapcar #'magent-acp--skill-command-entry
-            (magent-acp--command-skill-names))
+    (append
+     (mapcar #'magent-acp--control-command-entry
+             magent-acp--control-commands)
+     (cl-remove-if
+      (lambda (entry)
+        (assoc (map-elt entry 'name) magent-acp--control-commands))
+      (mapcar #'magent-acp--skill-command-entry
+              (magent-acp--command-skill-names))))
     (lambda (a b)
       (string< (map-elt a 'name)
                (map-elt b 'name))))))
@@ -328,25 +344,75 @@ keywords."
               (cons name rest))))))))
 
 (defun magent-acp--slash-command (prompt)
-  "Return skill slash command plist parsed from PROMPT, or nil.
-Only command-like instruction skills are recognized."
+  "Return recognized slash command plist parsed from PROMPT, or nil."
   (when-let* ((parsed (magent-acp--slash-command-name prompt))
               (name (car parsed)))
-    (when (magent-skills-default-prompt name)
-      (list :name name
+    (cond
+     ((assoc name magent-acp--control-commands)
+      (list :kind 'control
+            :name name
+            :argument (string-trim (cdr parsed))))
+     ((magent-skills-default-prompt name)
+      (list :kind 'skill
+            :name name
             :prompt (magent-acp--skill-command-text name (cdr parsed))
-            :skills (list name)))))
+            :skills (list name))))))
 
 (defun magent-acp--apply-slash-command (runtime-session prompt)
   "Apply slash command PROMPT to RUNTIME-SESSION and return prompt text."
   (if-let* ((command (magent-acp--slash-command prompt)))
-      (let ((skills (plist-get command :skills)))
-        (setf (magent-runtime-session-pending-skills runtime-session)
-              (magent-acp--dedupe-string-list
-               (append (magent-runtime-session-pending-skills runtime-session)
-                       skills)))
-        (plist-get command :prompt))
+      (if (eq (plist-get command :kind) 'skill)
+          (let ((skills (plist-get command :skills)))
+            (setf (magent-runtime-session-pending-skills runtime-session)
+                  (magent-acp--dedupe-string-list
+                   (append
+                    (magent-runtime-session-pending-skills runtime-session)
+                    skills)))
+            (plist-get command :prompt))
+        prompt)
     prompt))
+
+(defun magent-acp--notify-agent-message (client session-id text)
+  "Send one agent message TEXT through CLIENT for SESSION-ID."
+  (magent-acp--session-update
+   client session-id
+   `((sessionUpdate . "agent_message_chunk")
+     (content . ,(magent-acp--content-block text)))))
+
+(defun magent-acp--complete-prompt-request (on-success status result)
+  "Complete ACP prompt callback ON-SUCCESS from runtime STATUS and RESULT."
+  (funcall
+   on-success
+   `((stopReason . ,(magent-acp--stop-reason status result))
+     ,@(unless (eq status 'completed)
+         `((error . ,(magent-agent-result-content-string result)))))))
+
+(defun magent-acp--handle-control-command
+    (client runtime-session command on-success)
+  "Handle parsed session control COMMAND for RUNTIME-SESSION."
+  (let ((name (plist-get command :name))
+        (argument (plist-get command :argument))
+        (session-id (magent-runtime-session-id runtime-session)))
+    (pcase name
+      ("clear"
+       (unless (string-empty-p argument)
+         (error "/clear does not accept an argument"))
+       (magent-runtime-session-clear runtime-session)
+       (magent-acp--notify-agent-message
+        client session-id "Conversation cleared.")
+       (magent-acp--complete-prompt-request on-success 'completed ""))
+      ("compact"
+       (magent-runtime-session-compact
+        runtime-session
+        :instruction argument
+        :observer (magent-acp--observer client session-id)
+        :approval-provider (magent-acp--approval-provider client session-id)
+        :on-complete
+        (lambda (status result)
+          (magent-acp--complete-prompt-request
+           on-success status result))))
+      (_
+       (error "Unknown Magent control command: %s" name)))))
 
 (defun magent-acp--notify (client method params)
   "Deliver incoming ACP notification METHOD PARAMS to CLIENT subscribers.
@@ -762,25 +828,24 @@ switching semantics."
            (let* ((session-id (map-elt params 'sessionId))
                   (runtime-session
                    (magent-acp--runtime-session-by-id session-id))
-                  (prompt (magent-acp--prompt-text (map-elt params 'prompt))))
+                  (prompt (magent-acp--prompt-text (map-elt params 'prompt)))
+                  (command (magent-acp--slash-command prompt)))
              (unless runtime-session
                (error "Unknown session: %s" session-id))
-             (setq prompt
-                   (magent-acp--apply-slash-command runtime-session prompt))
-             (magent-runtime-submit
-              runtime-session prompt
-              :observer (magent-acp--observer client session-id)
-              :approval-provider
-              (magent-acp--approval-provider client session-id)
-              :on-complete
-              (lambda (status result)
-                (funcall
-                 on-success
-                 `((stopReason . ,(magent-acp--stop-reason
-                                    status result))
-                   ,@(unless (eq status 'completed)
-                       `((error . ,(magent-agent-result-content-string
-                                    result))))))))))
+             (if (eq (plist-get command :kind) 'control)
+                 (magent-acp--handle-control-command
+                  client runtime-session command on-success)
+               (setq prompt
+                     (magent-acp--apply-slash-command runtime-session prompt))
+               (magent-runtime-submit
+                runtime-session prompt
+                :observer (magent-acp--observer client session-id)
+                :approval-provider
+                (magent-acp--approval-provider client session-id)
+                :on-complete
+                (lambda (status result)
+                  (magent-acp--complete-prompt-request
+                   on-success status result))))))
           (_
            (error "Unsupported ACP method: %s" method))))
     (error

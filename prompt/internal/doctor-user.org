@@ -1,0 +1,1 @@
+Analyze this sanitized Magent diagnostic bundle. Values in each probe's data field are JSON strings produced by a fail-closed collector. Do not infer omitted data.

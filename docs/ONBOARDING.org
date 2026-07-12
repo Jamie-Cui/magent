@@ -290,7 +290,7 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 - *.github/workflows/melpazoid.yml* — MELPA-style package checks
 - *test/coverage.el* — Coverage runner used by ~make coverage~
 
-Magent packages runtime data as well as Elisp. ~prompt.org~ and ~skills/~
+Magent packages runtime data as well as Elisp. ~prompt/~ and ~skills/~
 must remain included in the melpazoid/MELPA recipe because ~magent-config.el~,
 ~magent-skills.el~, and built-in skill-backed capabilities resolve those paths
 at runtime.  If standalone bundled ~CAPABILITY.md~ files are added, include

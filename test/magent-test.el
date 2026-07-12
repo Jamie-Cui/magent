@@ -61,6 +61,10 @@
   '("explain" "fix" "init" "review" "test")
   "Bundled instruction skills that are exposed as slash commands.")
 
+(defconst magent-test--builtin-control-command-names
+  '("clear" "compact")
+  "Magent-owned session controls exposed as slash commands.")
+
 (defun magent-test--load-builtin-skills-only ()
   "Load bundled skill files into the caller's test skill registry."
   (require 'magent-skills)
@@ -486,7 +490,7 @@
                              :args (:sexp "(+ 1 2)")
                              :result "eval:3")
                        (prompt
-                        . ,magent-agent--empty-final-response-retry-prompt)))))
+                        . ,(magent-agent--empty-final-response-retry-prompt))))))
     (let ((turn (car (magent-thread-turns
                       (magent-session-thread-ledger session)))))
       (should (eq (magent-thread-turn-status turn) 'completed)))))
@@ -565,7 +569,7 @@
       (should (equal (car (last final-prompt))
                      (cons
                       'prompt
-                      magent-agent--empty-final-response-retry-prompt))))))
+                      (magent-agent--empty-final-response-retry-prompt)))))))
 
 (ert-deftest magent-test-agent-metadata-without-retry-flags-drops-circular ()
   "Test retry metadata cleanup does not loop on circular metadata."
@@ -1075,7 +1079,7 @@
       (should (equal (car (last strict-prompt))
                      (cons
                       'prompt
-                      magent-agent--strict-final-response-retry-prompt))))))
+                      (magent-agent--strict-final-response-retry-prompt)))))))
 
 (ert-deftest magent-test-agent-process-fails-after-empty-strict-final-retry ()
   "Test an empty strict final-response retry fails with strict status."
@@ -1816,6 +1820,54 @@
       (should (string-match-p "Session Summary:" summary))
       (should (string-match-p "\\[USER\\]" summary))
       (should (string-match-p "\\[ASSISTANT\\]" summary)))))
+
+(ert-deftest magent-test-session-prompt-history-starts-at-last-compaction ()
+  "Test completed compaction turns replace older model-visible history."
+  (require 'magent-session)
+  (let* ((session (magent-session-create))
+         (thread (magent-session-thread-ledger session)))
+    (cl-labels
+        ((add-turn (prompt response &optional metadata)
+           (let ((turn (magent-thread-create-turn
+                        thread prompt nil metadata)))
+             (magent-thread-record-message
+              thread (magent-thread-turn-id turn) 'user prompt)
+             (magent-thread-record-message
+              thread (magent-thread-turn-id turn) 'assistant response)
+             (magent-thread-complete-turn
+              thread (magent-thread-turn-id turn)))))
+      (add-turn "old question" "old answer" '(:source runtime-queue))
+      (add-turn "compact this" "continuation summary"
+                '((compaction . t)))
+      (add-turn "new question" "new answer" '(:source runtime-queue)))
+    (should
+     (equal (magent-session-to-gptel-prompt-list session)
+            '((prompt . "compact this")
+              (response . "continuation summary")
+              (prompt . "new question")
+              (response . "new answer"))))))
+
+(ert-deftest magent-test-session-failed-compaction-keeps-earlier-history ()
+  "Test a failed compaction turn never becomes a prompt-history boundary."
+  (require 'magent-session)
+  (let* ((session (magent-session-create))
+         (thread (magent-session-thread-ledger session))
+         (first (magent-thread-create-turn thread "old question"))
+         (compact (magent-thread-create-turn
+                   thread "compact this" nil '(:compaction t))))
+    (magent-thread-record-message
+     thread (magent-thread-turn-id first) 'user "old question")
+    (magent-thread-record-message
+     thread (magent-thread-turn-id first) 'assistant "old answer")
+    (magent-thread-complete-turn thread (magent-thread-turn-id first))
+    (magent-thread-record-message
+     thread (magent-thread-turn-id compact) 'user "compact this")
+    (magent-thread-fail-turn
+     thread (magent-thread-turn-id compact) "provider failed")
+    (should
+     (equal (magent-session-to-gptel-prompt-list session)
+            '((prompt . "old question")
+              (response . "old answer"))))))
 
 (ert-deftest magent-test-session-get-creates-singleton ()
   "Test magent-session-get creates a single session."
@@ -2895,7 +2947,7 @@
                     "/tmp/magent")))
       (should message)
       (should (string-match-p
-               (regexp-quote "# Magent Emacs Profile Memory")
+               (regexp-quote "* Magent Emacs Profile Memory")
                message))
       (should (string-match-p (regexp-quote "User Notes") message))
       (should (<= (length message) 2100)))
@@ -3016,6 +3068,25 @@
         :metadata '(:effort xhigh)
         :callback #'ignore)))
     (should (equal captured-params '(:reasoning_effort "high")))))
+
+(ert-deftest magent-test-prompt-read-is-file-backed ()
+  "Test prompt resources are read from the configured directory on demand."
+  (require 'magent-prompt)
+  (let* ((directory (make-temp-file "magent-prompts-" t))
+         (magent-prompt-directory directory)
+         (file (expand-file-name "sample.org" directory)))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "first {{value}} 100%\n"))
+          (should (equal (magent-prompt-render
+                          "sample.org" '((value . "pass")))
+                         "first pass 100%"))
+          (with-temp-file file
+            (insert "second\n"))
+          (should (equal (magent-prompt-read "sample.org") "second"))
+          (should-error (magent-prompt-path "../outside.org")))
+      (delete-directory directory t))))
 
 (ert-deftest magent-test-builtin-agents-count ()
   "Test that all 7 built-in agents are created."
@@ -9149,7 +9220,7 @@ tolerate leading whitespace."
                                 (append commands nil))))
       (should (equal names
                      (sort (copy-sequence
-                            '("init"))
+                            '("clear" "compact" "init"))
                            #'string<)))
       (should command)
       (should (equal (map-elt command 'description)
@@ -9166,15 +9237,20 @@ tolerate leading whitespace."
                           commands)))
       (should (equal names
                      (sort (copy-sequence
-                            magent-test--builtin-slash-command-names)
+                            (append
+                             magent-test--builtin-control-command-names
+                             magent-test--builtin-slash-command-names))
                            #'string<)))
       (dolist (command commands)
         (let* ((name (map-elt command 'name))
                (skill (magent-skills-get name)))
-          (should skill)
-          (should (equal (map-elt command 'description)
-                         (magent-acp--metadata-string
-                          (magent-skill-description skill)))))))))
+          (if (member name magent-test--builtin-control-command-names)
+              (should-not (string-empty-p
+                           (map-elt command 'description)))
+            (should skill)
+            (should (equal (map-elt command 'description)
+                           (magent-acp--metadata-string
+                            (magent-skill-description skill))))))))))
 
 (ert-deftest magent-test-acp-slash-command-expands-all-bundled-commands ()
   "Test every bundled slash command expands to its default prompt."
@@ -9199,6 +9275,18 @@ tolerate leading whitespace."
                                    (format "/%s focus on tests" name))
                                   :skills)
                        (list name)))))))
+
+(ert-deftest magent-test-acp-slash-command-parses-session-controls ()
+  "Test ACP recognizes clear and compact independently of skills."
+  (require 'magent-acp)
+  (let ((magent-skills--registry nil))
+    (should (equal (magent-acp--slash-command "/clear")
+                   '(:kind control :name "clear" :argument "")))
+    (should (equal (magent-acp--slash-command
+                    "/compact preserve the failing test")
+                   '(:kind control
+                     :name "compact"
+                     :argument "preserve the failing test")))))
 
 (ert-deftest magent-test-acp-session-new-notifies-available-commands ()
   "Test ACP session creation notifies agent-shell of slash commands."
@@ -9402,6 +9490,63 @@ tolerate leading whitespace."
     (should (equal (cadr submitted) "/unknown focus on tests"))
     (should (equal (magent-runtime-session-pending-skills runtime-session)
                    '("existing-skill")))
+    (should (equal (map-elt response 'stopReason) "end_turn"))))
+
+(ert-deftest magent-test-acp-session-prompt-clears-without-model-submission ()
+  "Test /clear resets its runtime session and completes locally."
+  (require 'magent-acp)
+  (let ((runtime-session (magent-runtime-session-create :id "session-1"))
+        cleared submitted response failure notifications)
+    (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
+               (lambda (_session-id) runtime-session))
+              ((symbol-function 'magent-runtime-session-clear)
+               (lambda (session) (setq cleared session)))
+              ((symbol-function 'magent-runtime-submit)
+               (lambda (&rest _args) (setq submitted t))))
+      (magent-acp--handle-request
+       `((:notification-handlers
+          . (,(lambda (value) (push value notifications))))
+         (:request-handlers . nil))
+       '((:method . "session/prompt")
+         (:params . ((sessionId . "session-1")
+                     (prompt . [((type . "text")
+                                 (text . "/clear"))]))))
+       (lambda (value) (setq response value))
+       (lambda (err &optional _raw) (setq failure err))))
+    (should-not failure)
+    (should (eq cleared runtime-session))
+    (should-not submitted)
+    (should (equal (map-elt response 'stopReason) "end_turn"))
+    (should (equal
+             (map-nested-elt (car notifications)
+                             '(params update sessionUpdate))
+             "agent_message_chunk"))))
+
+(ert-deftest magent-test-acp-session-prompt-compacts-through-runtime ()
+  "Test /compact invokes runtime compaction and forwards its completion."
+  (require 'magent-acp)
+  (let ((runtime-session (magent-runtime-session-create :id "session-1"))
+        compact-args response failure)
+    (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
+               (lambda (_session-id) runtime-session))
+              ((symbol-function 'magent-runtime-session-compact)
+               (lambda (session &rest args)
+                 (setq compact-args (cons session args))
+                 (funcall (plist-get args :on-complete)
+                          'completed "summary"))))
+      (magent-acp--handle-request
+       '((:notification-handlers . nil)
+         (:request-handlers . nil))
+       '((:method . "session/prompt")
+         (:params . ((sessionId . "session-1")
+                     (prompt . [((type . "text")
+                                 (text . "/compact keep decisions"))]))))
+       (lambda (value) (setq response value))
+       (lambda (err &optional _raw) (setq failure err))))
+    (should-not failure)
+    (should (eq (car compact-args) runtime-session))
+    (should (equal (plist-get (cdr compact-args) :instruction)
+                   "keep decisions"))
     (should (equal (map-elt response 'stopReason) "end_turn"))))
 
 (ert-deftest magent-test-acp-session-prompt-does-not-run-memory-slash-locally ()
@@ -10039,6 +10184,105 @@ tolerate leading whitespace."
                  (lambda (call)
                    (equal (cadr call) "/tmp/project-a"))
                  save-calls))))))
+
+(ert-deftest magent-test-runtime-session-clear-preserves-runtime-identity ()
+  "Test runtime clear replaces conversation state without changing its id."
+  (require 'magent-runtime-api)
+  (let* ((magent-session-directory
+          (make-temp-file "magent-runtime-clear-test-" t))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (agent (magent-agent-info-create :name "build"))
+         (old-session (magent-session-create
+                       :id "session-1" :agent agent :max-history 42))
+         (runtime-session
+          (magent-runtime-session-create
+           :id "session-1"
+           :scope 'global
+           :magent-session old-session
+           :pending-skills '("review")))
+         (persisted (expand-file-name "session-1.json"
+                                      magent-session-directory))
+         cancelled overrides-cleared)
+    (unwind-protect
+        (progn
+          (magent-session-add-message old-session 'user "old context")
+          (with-temp-file persisted (insert "old transcript"))
+          (cl-letf (((symbol-function 'magent-runtime-cancel)
+                     (lambda (session)
+                       (setq cancelled session)
+                       0))
+                    ((symbol-function
+                      'magent-capability-clear-local-overrides)
+                     (lambda () (setq overrides-cleared t))))
+            (magent-runtime-session-clear runtime-session))
+          (let ((new-session
+                 (magent-runtime-session-magent-session runtime-session)))
+            (should (eq cancelled runtime-session))
+            (should overrides-cleared)
+            (should (eq old-session new-session))
+            (should (equal (magent-runtime-session-id runtime-session)
+                           "session-1"))
+            (should (equal (magent-session-id new-session) "session-1"))
+            (should (eq (magent-session-agent new-session) agent))
+            (should (= (magent-session-max-history new-session) 42))
+            (should-not (magent-session-messages new-session))
+            (should-not
+             (magent-runtime-session-pending-skills runtime-session))
+            (should-not (file-exists-p persisted))
+            (should (eq (magent-session-get-if-present 'global)
+                        new-session))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-runtime-session-compact-marks-turn-and-restores-agent ()
+  "Test runtime compaction uses the hidden agent and a history boundary."
+  (require 'magent-runtime-api)
+  (let* ((selected-agent (magent-agent-info-create :name "build"))
+         (compaction-agent (magent-agent-info-create :name "compaction"))
+         (session (magent-session-create
+                   :id "session-1" :agent selected-agent))
+         (runtime-session
+          (magent-runtime-session-create
+           :id "session-1" :scope 'global :magent-session session
+           :pending-skills '("review")))
+         submitted completion saved pending-during-submit)
+    (cl-letf (((symbol-function 'magent-agent-registry-get)
+               (lambda (name)
+                 (and (equal name "compaction") compaction-agent)))
+              ((symbol-function 'magent-runtime-submit)
+               (lambda (_runtime prompt &rest args)
+                 (setq submitted (cons prompt args)
+                       pending-during-submit
+                       (magent-runtime-session-pending-skills
+                        runtime-session))
+                 "submission-1"))
+              ((symbol-function 'magent-session-save-deferred-for-session)
+               (lambda (saved-session scope &optional _delay)
+                 (setq saved (list saved-session scope)))))
+      (magent-runtime-session-compact
+       runtime-session
+       :instruction "keep exact filenames"
+       :on-complete
+       (lambda (status result)
+         (setq completion (list status result))))
+      (should (eq (plist-get (cdr submitted) :agent) compaction-agent))
+      (should (equal (plist-get (cdr submitted) :turn-metadata)
+                     '(:compaction t)))
+      (should-not (plist-get (cdr submitted) :skills))
+      (should-not pending-during-submit)
+      (should (equal (magent-runtime-session-pending-skills runtime-session)
+                     '("review")))
+      (should (string-match-p
+               (regexp-quote
+                "Additional instruction:\nkeep exact filenames")
+               (car submitted)))
+      (magent-session-set-agent session compaction-agent)
+      (funcall (plist-get (cdr submitted) :on-complete)
+               'completed "summary"))
+    (should (eq (magent-session-agent session) selected-agent))
+    (should (equal completion '(completed "summary")))
+    (should (equal saved (list session 'global)))))
 
 (ert-deftest magent-test-runtime-submit-carries-session-effort ()
   "Test runtime submissions copy session effort into request context."
