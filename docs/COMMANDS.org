@@ -121,7 +121,10 @@ the Magent option is nil. The directory must already exist. The writer owns the
 Org ID, repository path, analyzed Git commit, filename, and atomic update. New
 notes are created through the noninteractive Org-roam capture API when it is
 available; the canonical file-level property drawer always precedes Org
-keywords so Org-roam can recognize and index the node.
+keywords so Org-roam can recognize and index the node. New filenames follow
+~YYYY-MM-DDtHHMM.org~, matching the default Org-roam capture convention.
+Subsequent runs locate the note by its file-level ~REPO_PATH~, so timestamped,
+legacy, and manually renamed files still receive single-file updates.
 
 #+begin_example
 /summarize

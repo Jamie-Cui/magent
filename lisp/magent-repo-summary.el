@@ -7,7 +7,7 @@
 
 ;; Deterministic storage for the `/summarize' skill.  The model supplies an
 ;; Org fragment; this module owns repository identity, org-roam metadata,
-;; canonical filenames, subtree upserts, and atomic writes.
+;; timestamp filenames, subtree upserts, and atomic writes.
 
 ;;; Code:
 
@@ -77,32 +77,58 @@
            preamble)
       (string-trim (match-string 1 preamble)))))
 
-(defun magent-repo-summary--note-path (directory repository-name root)
-  "Return canonical note path in DIRECTORY for REPOSITORY-NAME at ROOT."
-  (let* ((canonical
-          (expand-file-name (format "%s-summary.org" repository-name)
-                            directory))
-         (suffix (substring (secure-hash 'sha256 root) 0 12))
-         (collision
-          (expand-file-name
-           (format "%s-%s-summary.org" repository-name suffix)
-           directory)))
+(defun magent-repo-summary--file-metadata-value (path property)
+  "Return document-level PROPERTY from the beginning of Org file PATH."
+  (condition-case nil
+      (with-temp-buffer
+        ;; File-level properties must live in the preamble.  A bounded read
+        ;; avoids loading every complete note while resolving repository
+        ;; identity in a large Org-roam directory.
+        (insert-file-contents path nil 0 16384)
+        (magent-repo-summary--metadata-value (buffer-string) property))
+    (file-error nil)))
+
+(defun magent-repo-summary--existing-note-paths (directory root)
+  "Return Org files in DIRECTORY whose file-level REPO_PATH is ROOT."
+  (let (matches)
+    (dolist (path (directory-files directory t "\\.org\\'" t))
+      (when (and (file-regular-p path)
+                 (equal (magent-repo-summary--file-metadata-value
+                         path "REPO_PATH")
+                        root))
+        (push path matches)))
+    (nreverse matches)))
+
+(defun magent-repo-summary--new-note-path (directory)
+  "Return an unused timestamp-style Org note path in DIRECTORY.
+The filename follows the user's Org-roam convention
+`YYYY-MM-DDtHHMM.org'.  If that minute is occupied, use the next free minute."
+  (let ((time (current-time))
+        path)
+    (while
+        (progn
+          (setq path
+                (expand-file-name
+                 (format-time-string "%Y-%m-%dt%H%M.org" time)
+                 directory))
+          (when (file-exists-p path)
+            (setq time (time-add time 60))
+            t)))
+    path))
+
+(defun magent-repo-summary--note-path (directory _repository-name root)
+  "Return the single summary note path in DIRECTORY for repository ROOT.
+Existing notes are identified by their file-level REPO_PATH rather than by
+filename.  New notes use the normal Org-roam timestamp naming convention."
+  (let ((matches (magent-repo-summary--existing-note-paths directory root)))
     (cond
-     ((and (file-exists-p canonical)
-           (equal (magent-repo-summary--metadata-value
-                   (magent-repo-summary--read-file canonical) "REPO_PATH")
-                  root))
-      canonical)
-     ((and (file-exists-p collision)
-           (equal (magent-repo-summary--metadata-value
-                   (magent-repo-summary--read-file collision) "REPO_PATH")
-                  root))
-      collision)
-     ((not (file-exists-p canonical)) canonical)
-     ((not (file-exists-p collision)) collision)
+     ((null matches) (magent-repo-summary--new-note-path directory))
+     ((null (cdr matches)) (car matches))
      (t
-      (user-error "Org-roam summary filename collision for %s"
-                  repository-name)))))
+      (user-error
+       "Multiple Org-roam summaries claim repository %s: %s"
+       root
+       (mapconcat #'file-name-nondirectory matches ", "))))))
 
 (defun magent-repo-summary--document-parts (content)
   "Return CONTENT as (PREAMBLE . TOP-LEVEL-CONTENT)."

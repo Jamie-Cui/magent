@@ -199,7 +199,8 @@ instructions such as focusing on tests.  Agent-shell also advertises eight
 bundled slash commands: the ~/explain~, ~/fix~, ~/init~, ~/review~,
 ~/summarize~, and ~/test~ skill commands plus the ~/compact~ and ~/clear~
 session controls. ~/summarize~ writes one canonical Org note for the current
-Git project and accepts an optional path or semantic scope.
+Git project and accepts an optional path or semantic scope. New notes use the
+normal org-roam timestamp filename format, ~YYYY-MM-DDtHHMM.org~.
 See [[file:docs/COMMANDS.org][docs/COMMANDS.org]] for command behavior, examples, and
 the extension rule for project-local command skills.
 

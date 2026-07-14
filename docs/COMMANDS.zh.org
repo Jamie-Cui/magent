@@ -111,7 +111,10 @@ session 会在创建 LLM turn 之前直接拒绝。
 ~org-roam-directory~，且目录必须已经存在。文件名、Org ID、仓库路径、分析时的
 Git commit 和原子更新均由专用 writer 管理。org-roam 可用时，新 note 会通过
 非交互式 org-roam capture API 创建；规范的 file-level property drawer 总是位于
-Org keywords 之前，确保 org-roam 能识别并索引该 node。
+Org keywords 之前，确保 org-roam 能识别并索引该 node。新文件名遵循默认的
+org-roam capture 约定 ~YYYY-MM-DDtHHMM.org~。后续运行通过 file-level
+~REPO_PATH~ 找回 note，因此时间戳文件名、旧文件名和手工改名的文件都仍只更新
+同一篇。
 
 #+begin_example
 /summarize

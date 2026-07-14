@@ -4687,6 +4687,10 @@
                     repository "full"
                     "The repository exists to exercise summary writing.\n\n** Architecture\nA small test fixture.")
                    :path))
+            (should
+             (string-match-p
+              "\\`[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}t[0-9]\\{4\\}\\.org\\'"
+              (file-name-nondirectory first-path)))
             (should (= (length (directory-files roam-directory nil
                                                  "\\.org\\'"))
                        1))
@@ -4741,6 +4745,36 @@
                (re-search-forward "Only the parser is summarized" nil t))))
         (delete-directory repository t)
         (delete-directory roam-directory t)))))
+
+(ert-deftest magent-test-repo-summary-note-path-follows-org-roam-timestamps ()
+  "Test new paths follow Org-roam timestamps and existing notes use metadata."
+  (require 'magent-repo-summary)
+  (let* ((roam-directory (make-temp-file "magent-summary-path-roam-" t))
+         (root "/tmp/example-repository")
+         (time (encode-time 0 48 23 4 6 2026))
+         (occupied (expand-file-name "2026-06-04t2348.org" roam-directory))
+         (existing (expand-file-name "legacy-summary.org" roam-directory)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'current-time) (lambda () time)))
+          (should
+           (equal (magent-repo-summary--note-path
+                   roam-directory "example-repository" root)
+                  occupied))
+          (with-temp-file occupied
+            (insert ":PROPERTIES:\n:ID: unrelated\n:END:\n"))
+          (should
+           (equal (magent-repo-summary--note-path
+                   roam-directory "example-repository" root)
+                  (expand-file-name "2026-06-04t2349.org" roam-directory)))
+          (with-temp-file existing
+            (insert (format
+                     ":PROPERTIES:\n:ID: existing\n:REPO_PATH: %s\n:END:\n"
+                     root)))
+          (should
+           (equal (magent-repo-summary--note-path
+                   roam-directory "example-repository" root)
+                  existing)))
+      (delete-directory roam-directory t))))
 
 (ert-deftest magent-test-repo-summary-migrates-legacy-preamble-to-file-node ()
   "Test updates repair summaries whose property drawer follows Org keywords."
