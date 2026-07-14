@@ -18,8 +18,7 @@
 (require 'subr-x)
 (require 'yaml)
 (require 'magent-config)
-
-(declare-function magent-log "magent-ui")
+(require 'magent-log)
 
 ;;; Frontmatter parsing
 

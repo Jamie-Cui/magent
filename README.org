@@ -415,7 +415,7 @@ complete user-facing workflow command reference.
 
 12. *Audit* (~magent-audit.el~): Persistent JSONL audit logging for permission prompts and decisions plus sensitive actions such as ~bash~, ~emacs_eval~, ~write_file~, ~write_repo_summary~, ~edit_file~, and child-agent lifecycle tools. Free-text command, prompt, source, message, and result bodies are never persisted; records contain scalar request attribution, lengths, statuses, and normalized path markers only.
 
-13. *UI backend* (~magent-ui.el~, ~magent-agent-shell.el~, ~magent-acp.el~): ~magent-ui.el~ is a thin command router and compatibility layer. The recommended backend is agent-shell through an in-process ACP adapter; ACP prompt requests submit to the runtime API and stay pending until the turn completes. See [[file:docs/UI_BACKENDS.org][docs/UI_BACKENDS.org]].
+13. *UI backend* (~magent-ui.el~, ~magent-agent-shell.el~, ~magent-acp.el~): ~magent-ui.el~ owns UI customization/faces plus the thin command router and compatibility layer. The recommended backend is agent-shell through an in-process ACP adapter; ACP prompt requests submit to the runtime API and stay pending until the turn completes. See [[file:docs/UI_BACKENDS.org][docs/UI_BACKENDS.org]].
 
 14. *Evil Integration* (~magent-evil.el~): Optional feature for Evil users. It is not loaded by ~magent~ and is enabled explicitly with ~magent-evil-mode~.
 
@@ -432,7 +432,7 @@ magent/
 |-- lisp/                          # Emacs Lisp implementation
 |   |-- magent.el                  # Main entry point and mode definition
 |   |-- magent-log.el              # UI-neutral logging mechanism and sinks
-|   |-- magent-config.el           # Configuration (customize group, defcustom vars, faces)
+|   |-- magent-config.el           # UI-neutral runtime and feature configuration
 |   |-- magent-json.el             # JSON-safe serialization helpers
 |   |-- magent-redaction.el        # Fail-closed outbound sensitive-data redaction
 |   |-- magent-lifecycle-events.el # Structured lifecycle event hooks
@@ -465,7 +465,9 @@ magent/
 |   |-- magent-file-loader.el      # Shared definition loader and frontmatter parser
 |   |-- magent-prompt.el           # Bundled Org prompt resource loader
 |   |-- magent-skills.el           # Skill registry, file loading, and commands
-|   |-- magent-ui.el               # UI backend router and compatibility shims
+|   |-- magent-ui.el               # UI configuration/faces, backend router, and shims
+|   |-- magent-modeline.el         # Mode-line formatting and status installation
+|   |-- magent-ui-legacy.el        # Legacy workspace, compose buffer, and private queue
 |   |-- magent-evil.el             # Optional Evil integration
 |   `-- magent-pkg.el              # Package descriptor
 |-- prompt/                        # Core, agent, and internal Org prompts

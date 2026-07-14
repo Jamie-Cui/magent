@@ -25,6 +25,7 @@
 (defvar gptel-model)
 (defvar agent-shell--state)
 (defvar agent-shell-session-strategy)
+(defvar magent-agent-shell-session-strategy)
 (defvar comint-last-prompt)
 (defvar shell-maker--busy)
 (defvar shell-maker--request-process)

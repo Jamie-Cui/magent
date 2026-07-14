@@ -143,7 +143,52 @@
                  (setq captured prompt))))
       (magent-ui-dispatch-prompt "hello" 'prompt nil nil t))
     (should (equal captured "hello"))
-    (should-not (featurep 'magent-ui-legacy))))
+    (should-not (featurep 'magent-ui-legacy))
+    (should-not (featurep 'magent-legacy-queue))))
+
+(ert-deftest magent-test-aa-ui-owns-ui-configuration ()
+  "Test core config no longer owns UI customization declarations."
+  (let ((config-file (expand-file-name "lisp/magent-config.el"
+                                       magent-test--root-directory))
+        (ui-file (expand-file-name "lisp/magent-ui.el"
+                                   magent-test--root-directory))
+        (symbols '(magent-ui-backend
+                   magent-agent-shell-session-strategy
+                   magent-buffer-name
+                   magent-compose-window-height
+                   magent-enable-logging
+                   magent-assistant-prompt
+                   magent-ui-result-max-length
+                   magent-auto-context
+                   magent-user-header
+                   magent-tool-header)))
+    (dolist (symbol symbols)
+      (let ((regexp
+             (format "^(\\(?:defcustom\\|defface\\) %s\\_>"
+                     (regexp-quote (symbol-name symbol)))))
+        (with-temp-buffer
+          (insert-file-contents config-file)
+          (should-not (re-search-forward regexp nil t)))
+        (with-temp-buffer
+          (insert-file-contents ui-file)
+          (should (re-search-forward regexp nil t)))))))
+
+(ert-deftest magent-test-aa-core-does-not-name-legacy-ui-state ()
+  "Test runtime modules do not depend on legacy UI implementation state."
+  (dolist (spec '(("lisp/magent-runtime.el"
+                   "magent-output-mode\\|magent-ui--buffer-scope")
+                  ("lisp/magent-capability.el"
+                   "magent-output-mode")
+                  ("lisp/magent-agent-loop.el"
+                   "magent-ui-\\(?:result-max-length\\|result-preview-length\\|tool-input-max-length\\)")
+                  ("lisp/magent-runtime-queue.el"
+                   "magent-legacy-queue")
+                  ("lisp/magent-agent.el" "magent-ui")
+                  ("lisp/magent-doctor.el" "magent-ui")))
+    (with-temp-buffer
+      (insert-file-contents
+       (expand-file-name (car spec) magent-test--root-directory))
+      (should-not (re-search-forward (cadr spec) nil t)))))
 
 (ert-deftest magent-test-aa-ui-router-region-submits-agent-shell-prompt ()
   "Test region prompts submit selected text through Magent's agent-shell path."
@@ -5553,13 +5598,23 @@
 
 (ert-deftest magent-test-mode-line-lighter-renders-from-processing-state ()
   "Test the mode-line lighter depends only on processing-state APIs."
-  (require 'magent)
+  (require 'magent-modeline)
   (cl-letf (((symbol-function 'magent-ui-processing-p) (lambda () nil)))
-    (let ((lighter (eval (cadr magent--lighter))))
+    (let ((lighter (eval (cadr magent-modeline-lighter))))
       (should (string-match-p "\\[M/" lighter))
       (should-not (string-match-p "\\[busy\\]" lighter))))
   (cl-letf (((symbol-function 'magent-ui-processing-p) (lambda () t)))
-    (should (string-match-p "\\[busy\\]" (eval (cadr magent--lighter))))))
+    (should (string-match-p "\\[busy\\]"
+                            (eval (cadr magent-modeline-lighter))))))
+
+(ert-deftest magent-test-modeline-install-is-idempotent ()
+  "Test installing the legacy output construct does not duplicate it."
+  (require 'magent-modeline)
+  (let ((global-mode-string nil))
+    (should (magent-modeline-install))
+    (should-not (magent-modeline-install))
+    (should (equal global-mode-string
+                   (list magent-modeline--legacy-output-construct)))))
 
 (ert-deftest magent-test-tools-gptel-to-magent-tool ()
   "Test conversion from gptel-tool to magent tool plist."
@@ -5837,7 +5892,7 @@
 (ert-deftest magent-test-ui-interrupt-does-not-double-abort-turn-loop ()
   "Test interrupt aborts the active turn loop only once."
   (require 'magent-agent-loop)
-  (require 'magent-legacy-queue)
+  (require 'magent-ui-legacy)
   (let* ((buffer (magent-ui-get-buffer))
          (loop (magent-agent-loop-create))
          (magent--current-request-handle loop)
@@ -8381,7 +8436,7 @@
 (ert-deftest magent-test-ui-interrupt-aborts-agent-loop ()
   "Test UI interrupt aborts the active Magent-owned loop."
   (require 'magent-ui)
-  (require 'magent-legacy-queue)
+  (require 'magent-ui-legacy)
   (let ((buffer (magent-ui-get-buffer))
         (loop (magent-agent-loop-create))
         (magent-legacy-queue--current-request-handle nil)
@@ -8832,6 +8887,7 @@
   (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
          (magent-session--current-scope 'global)
          (magent--current-session nil)
+         (magent--current-request-handle nil)
          (project-a (make-temp-file "magent-project-a-" t))
          (project-b (make-temp-file "magent-project-b-" t))
          (buffer-a nil)
@@ -9253,7 +9309,6 @@
   (dolist (command '(magent-transient-menu
                      magent-transient-agent-menu
                      magent-transient-skill-menu
-                     magent-transient-capability-menu
                      magent-transient-session-menu
                      magent-transient-log-menu
                      magent-transient-health-menu
@@ -12502,7 +12557,7 @@ tolerate leading whitespace."
       (delete-directory project-root t))))
 
 (ert-deftest magent-test-list-capabilities-loads-project-scope-before-first-prompt ()
-  "Test current-context capability listing loads project-local capabilities."
+  "Test capability listing loads project-local capabilities."
   (require 'magent)
   (let* ((project-root (file-truename
                         (directory-file-name
@@ -12536,11 +12591,11 @@ tolerate leading whitespace."
                          project-root))
                       ((symbol-function 'magent-log) #'ignore)
                       ((symbol-function 'display-buffer) #'ignore))
-              (magent-list-capabilities-for-current-context)))
-          (with-current-buffer "*Magent Capability Resolution*"
+              (magent-list-capabilities)))
+          (with-current-buffer "*Magent Capabilities*"
             (should (string-match-p "project-capability" (buffer-string)))))
-      (when (get-buffer "*Magent Capability Resolution*")
-        (kill-buffer "*Magent Capability Resolution*"))
+      (when (get-buffer "*Magent Capabilities*")
+        (kill-buffer "*Magent Capabilities*"))
       (delete-directory project-root t))))
 
 (ert-deftest magent-test-describe-skill-completion-loads-project-scope ()
@@ -12595,7 +12650,7 @@ tolerate leading whitespace."
 
 (ert-deftest magent-test-turn-runtime-queues-submissions ()
   "Test turn runtime queues submissions and starts the next one on finish."
-  (require 'magent-legacy-queue)
+  (require 'magent-ui-legacy)
   (let ((magent-legacy-queue--active nil)
         (magent-legacy-queue--pending nil)
         (magent-legacy-queue--current-request-handle nil)
@@ -14036,7 +14091,7 @@ tolerate leading whitespace."
 
 (ert-deftest magent-test-global-arbiter-preserves-cross-backend-fifo ()
   "Legacy and runtime submissions share one arrival-ordered global FIFO."
-  (require 'magent-legacy-queue)
+  (require 'magent-ui-legacy)
   (let ((magent-runtime-queue--active nil)
         (magent-runtime-queue--pending nil)
         (magent-runtime-queue--arbiter-active nil)
@@ -14082,7 +14137,7 @@ tolerate leading whitespace."
 
 (ert-deftest magent-test-legacy-interrupt-invalidates-deferred-dispatch ()
   "An interrupted legacy submission's zero-delay timer cannot dispatch."
-  (require 'magent-legacy-queue)
+  (require 'magent-ui-legacy)
   (let ((magent-runtime-queue--active nil)
         (magent-runtime-queue--pending nil)
         (magent-runtime-queue--arbiter-active nil)
@@ -14169,7 +14224,7 @@ tolerate leading whitespace."
 
 (ert-deftest magent-test-legacy-starter-error-rolls-back-backend-and-ledger ()
   "A synchronous legacy startup error leaves neither backend nor turn active."
-  (require 'magent-legacy-queue)
+  (require 'magent-ui-legacy)
   (let* ((magent-runtime-queue--active nil)
          (magent-runtime-queue--pending nil)
          (magent-runtime-queue--arbiter-active nil)
@@ -14199,7 +14254,7 @@ tolerate leading whitespace."
 
 (ert-deftest magent-test-legacy-queue-start-and-finish-use-captured-session ()
   "Legacy start and finish never mutate another ambient session's ledger."
-  (require 'magent-legacy-queue)
+  (require 'magent-ui-legacy)
   (let* ((magent-runtime-queue--active nil)
          (magent-runtime-queue--pending nil)
          (magent-runtime-queue--arbiter-active nil)
@@ -14264,7 +14319,7 @@ tolerate leading whitespace."
 
 (ert-deftest magent-test-legacy-stale-zero-timer-cannot-touch-new-active ()
   "An old zero-delay timer cannot dispatch or finish a replacement submission."
-  (require 'magent-legacy-queue)
+  (require 'magent-ui-legacy)
   (let ((magent-runtime-queue--active nil)
         (magent-runtime-queue--pending nil)
         (magent-runtime-queue--arbiter-active nil)
@@ -14507,7 +14562,7 @@ tolerate leading whitespace."
 
 (ert-deftest magent-test-legacy-finish-is-reentrant-safe ()
   "A finishing lifecycle sink cannot advance twice and clobber its successor."
-  (require 'magent-legacy-queue)
+  (require 'magent-ui-legacy)
   (let ((magent-runtime-queue--active nil)
         (magent-runtime-queue--pending nil)
         (magent-runtime-queue--arbiter-active nil)
@@ -14544,7 +14599,7 @@ tolerate leading whitespace."
 
 (ert-deftest magent-test-legacy-received-reentry-preserves-fifo ()
   "A received sink may submit more work without overtaking its current token."
-  (require 'magent-legacy-queue)
+  (require 'magent-ui-legacy)
   (let ((magent-runtime-queue--active nil)
         (magent-runtime-queue--pending nil)
         (magent-runtime-queue--arbiter-active nil)
@@ -14580,7 +14635,7 @@ tolerate leading whitespace."
 
 (ert-deftest magent-test-legacy-interrupt-invalidates-before-sync-abort-callback ()
   "A synchronous abort callback observes the interrupted token as stale."
-  (require 'magent-legacy-queue)
+  (require 'magent-ui-legacy)
   (let ((magent-runtime-queue--active nil)
         (magent-runtime-queue--pending nil)
         (magent-runtime-queue--arbiter-active nil)
@@ -15003,7 +15058,7 @@ tolerate leading whitespace."
 
 (ert-deftest magent-test-legacy-clear-terminalizes-all-before-drop-sinks ()
   "The first dropped sink observes every detached token as terminal."
-  (require 'magent-legacy-queue)
+  (require 'magent-ui-legacy)
   (let* ((magent-legacy-queue--submission-metadata
           (make-hash-table :test #'eq :weakness 'key))
          (magent-legacy-queue--active nil)
@@ -15064,7 +15119,7 @@ tolerate leading whitespace."
 
 (ert-deftest magent-test-queue-finish-public-contract-returns-id-or-nil ()
   "Public finish APIs never leak the arbiter's internal handled sentinel."
-  (require 'magent-legacy-queue)
+  (require 'magent-ui-legacy)
   (let ((magent-runtime-queue--active nil)
         (magent-runtime-queue--pending nil)
         (magent-runtime-queue--arbiter-active nil)
@@ -15113,7 +15168,7 @@ tolerate leading whitespace."
 (ert-deftest magent-test-live-reload-struct-layouts-remain-stable ()
   "Runtime side metadata must not invalidate objects created before reload."
   (require 'magent-agent-loop)
-  (require 'magent-legacy-queue)
+  (require 'magent-ui-legacy)
   (should (= (length (magent-lifecycle-events-context-create)) 5))
   (should (= (length (magent-request-context-create)) 27))
   (should (= (length (magent-agent-loop-create)) 19))

@@ -39,6 +39,15 @@
 (defvar magent-tools--register-cancel)
 (defvar magent-tools--request-context)
 
+(defconst magent-agent-loop--tool-input-summary-max-length 60
+  "Maximum width of tool input summaries emitted by the runtime.")
+
+(defconst magent-agent-loop--tool-result-summary-max-length 200
+  "Maximum tool result length emitted without a summary preview.")
+
+(defconst magent-agent-loop--tool-result-summary-preview-length 150
+  "Tool result preview length used by runtime lifecycle events.")
+
 (cl-defstruct
     (magent-agent-loop-abort-controller
      (:constructor magent-agent-loop-abort-controller-create))
@@ -249,7 +258,8 @@ SAMPLER is a function called with REQUEST by `magent-agent-loop-start'."
            ((string= name "bash")
             (if-let* ((cmd (plist-get args :command)))
                 (truncate-string-to-width
-                 cmd magent-ui-tool-input-max-length nil nil "...")
+                 cmd magent-agent-loop--tool-input-summary-max-length
+                 nil nil "...")
               "?"))
            ((member name '("read_file" "write_file" "edit_file"))
             (or (plist-get args :path) "?"))
@@ -266,11 +276,15 @@ SAMPLER is a function called with REQUEST by `magent-agent-loop-start'."
            ((string= name "emacs_eval")
             (if-let* ((sexp (plist-get args :sexp)))
                 (truncate-string-to-width
-                 sexp magent-ui-tool-input-max-length nil nil "...")
+                 sexp magent-agent-loop--tool-input-summary-max-length
+                 nil nil "...")
               "?"))
            (t
             (if args
-                (truncate-string-to-width (format "%s" args) 60 nil nil "...")
+                (truncate-string-to-width
+                 (format "%s" args)
+                 magent-agent-loop--tool-input-summary-max-length
+                 nil nil "...")
               "")))))
     (if (and reason (not (string-empty-p reason)))
         (format "[%s] %s" reason base)
@@ -279,9 +293,12 @@ SAMPLER is a function called with REQUEST by `magent-agent-loop-start'."
 (defun magent-agent-loop-tool-result-summary (result)
   "Return display summary for tool RESULT."
   (let ((result-str (magent-tool-result-output-string result)))
-    (if (> (length result-str) magent-ui-result-max-length)
+    (if (> (length result-str)
+           magent-agent-loop--tool-result-summary-max-length)
         (format "%s... [%d bytes]"
-                (substring result-str 0 magent-ui-result-preview-length)
+                (substring
+                 result-str 0
+                 magent-agent-loop--tool-result-summary-preview-length)
                 (length result-str))
       result-str)))
 

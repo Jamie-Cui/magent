@@ -17,8 +17,8 @@
 (require 'org-id)
 (require 'subr-x)
 (require 'magent-config)
+(require 'magent-log)
 
-(declare-function magent-log "magent-ui")
 (declare-function org-roam-capture- "org-roam-capture" (&rest args))
 (declare-function org-roam-db-update-file "org-roam-db")
 (declare-function org-roam-node-create "org-roam-node" (&rest args))

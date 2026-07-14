@@ -7,12 +7,12 @@ Magent 现在把 UI 明确当作 backend boundary。默认 backend 是 ~agent-sh
 
 * 模块
 
-- ~magent-ui.el~ 是公共命令 router、log/event sink、compatibility shim 和 ~magent-ui-backend~ 切换点。
+- ~magent-ui.el~ 负责 UI customization/faces，同时也是公共命令 router、log/event sink、compatibility shim 和 ~magent-ui-backend~ 切换点。
 - ~magent-agent-shell.el~ 注册 Magent ~agent-shell~ 配置，并创建进程内 ACP client。
 - ~magent-acp.el~ 实现进程内 ACP request、notification、response、permission 和 session/update adapter。
 - ~magent-runtime-api.el~ 是 UI-neutral runtime/session API，供 UI backends 调用。
 - ~magent-runtime-queue.el~ 负责全局单执行队列和 session-scoped cancellation。
-- ~magent-ui-legacy.el~ 包含旧 special-mode workspace、compose buffer、timeline rendering、transient menu 和 legacy prompt dispatch。
+- ~magent-ui-legacy.el~ 包含旧 special-mode workspace、compose buffer、timeline rendering、transient menu、legacy prompt dispatch 及其私有 submission queue。
 
 * 默认流程
 
@@ -27,6 +27,8 @@ Magent 现在把 UI 明确当作 backend boundary。默认 backend 是 ~agent-sh
 * Legacy 边界
 
 ~magent-ui-legacy.el~ 按需懒加载。普通 agent-shell 使用不应该加载它。legacy-only 命令仍然按需加载它，包括旧 workspace/compose buffer、legacy transient menu variants，以及依赖 per-request agent override 的命令。
+
+不再保留独立的 legacy queue 模块。通用全局 arbiter 仍在 ~magent-runtime-queue.el~ ，legacy submission state 和 serialization 则全部留在 ~magent-ui-legacy.el~ 内。
 
 核心 runtime 路径不能依赖 ~magent-ui-legacy.el~ 。新的 backend-facing 行为应放在 ~magent-runtime-api.el~ 或 ~magent-acp.el~ ，agent-shell-specific 行为应放在 ~magent-agent-shell.el~ 。
 

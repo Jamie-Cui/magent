@@ -18,9 +18,8 @@
 (require 'magent-agent-registry)
 (require 'magent-config)
 (require 'magent-file-loader)
+(require 'magent-log)
 (require 'magent-permission)
-
-(declare-function magent-log "magent-ui")
 
 (defconst magent-agent-file--tool-permission-aliases
   '((read_file . read)

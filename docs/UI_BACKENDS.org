@@ -10,8 +10,8 @@ removed later without breaking the agent-shell + ACP + runtime path.
 
 * Modules
 
-- ~magent-ui.el~ is the thin public command router, log/event sink, compatibility shim,
-  and ~magent-ui-backend~ switch point.
+- ~magent-ui.el~ owns UI customization/faces and is the thin public command
+  router, log/event sink, compatibility shim, and ~magent-ui-backend~ switch point.
 - ~magent-agent-shell.el~ registers the Magent ~agent-shell~ config and creates
   an in-process ACP client.
 - ~magent-acp.el~ implements the in-process ACP request, notification, response,
@@ -20,7 +20,8 @@ removed later without breaking the agent-shell + ACP + runtime path.
 - ~magent-runtime-queue.el~ owns the global single-execution queue and
   session-scoped cancellation.
 - ~magent-ui-legacy.el~ contains the old special-mode workspace, compose buffer,
-  timeline rendering, transient menu, and legacy prompt dispatch.
+  timeline rendering, transient menu, legacy prompt dispatch, and its private
+  submission queue.
 
 * Default Flow
 
@@ -45,6 +46,10 @@ removed later without breaking the agent-shell + ACP + runtime path.
 it.  Legacy-only commands still load it on demand, including the old
 workspace/compose buffer, legacy transient menu variants, and commands that
 depend on per-request agent overrides.
+
+There is no standalone legacy queue module.  The generic global arbiter stays
+in ~magent-runtime-queue.el~; legacy submission state and serialization stay
+inside ~magent-ui-legacy.el~.
 
 The core runtime path must not depend on ~magent-ui-legacy.el~.  Keep new
 backend-facing behavior in ~magent-runtime-api.el~ or ~magent-acp.el~, and keep

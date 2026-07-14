@@ -86,14 +86,13 @@ Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and perm
 ```
 magent.el (entry point: magent-mode, global-magent-mode)
   ├─ magent-log.el               (UI-neutral logging sinks and headless fallback)
-  ├─ magent-config.el            (defcustoms and deffaces)
+  ├─ magent-config.el            (UI-neutral runtime and feature defcustoms)
   ├─ magent-json.el              (JSON-safe serialization helpers)
   ├─ magent-redaction.el         (fail-closed Magent-owned outbound redaction)
   ├─ magent-runtime.el           (static init + project overlay activation)
   ├─ magent-protocol.el          (wire protocol types and event normalization)
   ├─ magent-lifecycle-events.el  (lifecycle event sinks and context helpers)
   ├─ magent-ledger.el            (thread/turn/item state machine, journal, snapshot)
-  ├─ magent-legacy-queue.el      (legacy UI submission queue compatibility)
   ├─ magent-session.el           (thread ledger projections, JSON persistence)
   ├─ magent-transcript-context.el (structured transcript context helpers)
   ├─ magent-agent-job.el         (durable child-agent job state and JSON shape)
@@ -120,8 +119,9 @@ magent.el (entry point: magent-mode, global-magent-mode)
   ├─ magent-permission.el        (rule-based tool access control per agent)
   ├─ magent-acp.el               (in-process ACP adapter for agent-shell)
   ├─ magent-agent-shell.el       (agent-shell backend registration and routing)
-  ├─ magent-ui.el                (thin UI backend router, log/event sinks, compatibility shims)
-  ├─ magent-ui-legacy.el         (legacy special-mode workspace, compose buffer, ledger projection)
+  ├─ magent-ui.el                (UI config/faces, backend router, sinks, compatibility shims)
+  ├─ magent-modeline.el          (mode-line formatting and status construct installation)
+  ├─ magent-ui-legacy.el         (legacy workspace, compose buffer, queue, ledger projection)
   ├─ magent-file-loader.el       (shared file-backed definition loader and frontmatter parser)
   ├─ magent-markdown-to-org.el   (legacy markdown → org-mode compatibility helpers)
   ├─ magent-evil.el              (optional Evil integration; not loaded by magent by default)
@@ -150,7 +150,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
    - The workspace `header-line` is the single status surface for scope, agent, thread status, request state, queue length, session id, and selected one-shot skills
    - Compose buffers are plain prompt text and do not parse `@clear`, `@init`, `@skill`, `$command`, or slash-style control syntax
    - Streaming uses chunk batching (`magent-ui-batch-insert-delay`) and does not convert markdown to org in the live path
-   - Request serialization is owned by `magent-legacy-queue`; `magent-ui--processing` remains a compatibility flag
+   - Request serialization is private to `magent-ui-legacy.el`; `magent-ui--processing` remains a compatibility flag
 
 6. **Agent processing** (`magent-agent.el`): `magent-agent-run-turn` is the UI-neutral low-level entry point for runtime backends. `magent-agent-process` builds a gptel prompt list from the session, applies per-agent overrides (model, temperature via `default-value` — intentionally avoids buffer-local gptel settings), exposes filtered tools to the provider, then starts `magent-agent-loop`.
 
@@ -205,7 +205,7 @@ Tool-type skills can have companion `.el` files defining `magent-skill-<name>-in
 
 ### Configuration
 
-All `defcustom` variables are in `magent-config.el` under `customize-group magent`. LLM provider/model/key settings are managed entirely by gptel.
+UI-neutral `defcustom` variables live in `magent-config.el` under `customize-group magent`. UI options and faces live in `magent-ui.el` under `customize-group magent-ui`, so a future UI package can move without pulling presentation state out of core. LLM provider/model/key settings are managed entirely by gptel.
 
 Key settings: `magent-default-agent` (`"build"`), `magent-enable-tools` (list of enabled tool symbols), `magent-org-roam-directory` (repository summary destination; nil falls back to `org-roam-directory`), `magent-include-reasoning` (`t`/`ignore`/`nil`), `magent-request-timeout` (120s), `magent-bash-timeout` (30s), `magent-emacs-eval-timeout` (10s), `magent-max-history` (100).
 
@@ -233,7 +233,6 @@ Transient top-level keys:
 | `!` | Run a command-like skill |
 | `A` | Agent submenu |
 | `s` | Skills submenu |
-| `x` | Capabilities submenu |
 | `c` | Clear current session |
 | `S` | Session/transcript submenu |
 | `l` | Logs submenu |

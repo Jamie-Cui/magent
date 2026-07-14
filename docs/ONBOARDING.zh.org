@@ -29,7 +29,9 @@ Magent 拥有 Magent-owned agent loop 和 durable child-agent lifecycle。Root a
 *关键文件：*
 
 - ~magent.el~ ：主入口，定义带 ~C-c m~ 前缀的 ~magent-mode~ minor mode。
-- ~magent-config.el~ ：全部 ~defcustom~ 和 ~defface~ 。
+- ~magent-modeline.el~ ：mode-line 格式化和状态 construct 安装。
+- ~magent-config.el~ ：UI-neutral runtime 与 feature customization。
+- ~magent-ui.el~ ：UI customization/faces 与 backend routing。
 - ~magent-pkg.el~ ：package metadata。
 
 *职责：* ~magent--ensure-initialized~ 在第一次命令调用时触发 lazy initialization。启用 mode 只添加 modeline construct，agent registry、skills 等完整初始化按需执行。

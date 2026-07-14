@@ -28,7 +28,9 @@ The foundation layer that initializes the system and manages settings.
 
 *Key Files:*
 - ~magent.el~ — Main entry point, defines ~magent-mode~ minor mode with ~C-c m~ prefix
-- ~magent-config.el~ — All ~defcustom~ variables and ~defface~ definitions
+- ~magent-modeline.el~ — Mode-line formatting and status construct installation
+- ~magent-config.el~ — UI-neutral runtime and feature customization
+- ~magent-ui.el~ — UI customization/faces and backend routing
 - ~magent-pkg.el~ — Package metadata
 
 *What it does:* Lazy initialization triggered on first command via ~magent--ensure-initialized~. Mode enable only adds modeline construct; full setup (agent registry, skills) happens on demand.
@@ -245,7 +247,7 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 ** Core Entry & Configuration
 - *magent.el* — Mode definition, keybindings, lazy initialization
 - *magent-log.el* — UI-neutral logging mechanism and sink registry
-- *magent-config.el* — All customization variables and faces
+- *magent-config.el* — UI-neutral runtime and feature customization
 - *magent-json.el* — JSON-safe serialization helpers
 
 ** State Management
@@ -274,12 +276,12 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 - *magent-llm-gptel.el* — ~gptel-request~ adapter
 
 ** User Interface
-- *magent-ui.el* — Thin backend router, log/event sinks, and compatibility shims
+- *magent-ui.el* — UI customization/faces, thin backend router, log/event sinks, and compatibility shims
 - *magent-agent-shell.el* — agent-shell backend config and prompt routing
 - *magent-acp.el* — In-process ACP adapter
 - *magent-runtime-api.el* — UI/backend-facing runtime API
 - *magent-runtime-queue.el* — Runtime queue and session-scoped cancellation
-- *magent-ui-legacy.el* — Legacy workspace/compose buffers, streaming summaries, transcript/detail views, transient menu
+- *magent-ui-legacy.el* — Legacy workspace/compose buffers, private submission queue, streaming summaries, transcript/detail views, transient menu
 - *magent-markdown-to-org.el* — Legacy markdown to org-mode converter outside the live workspace path
 - *magent-file-loader.el* — Shared frontmatter parser
 

@@ -98,17 +98,30 @@
 (defvar magent-runtime-queue--arbiter-bootstrap-complete nil
   "Non-nil after preserved pre-arbiter backend state has been adopted.")
 
-(defvar magent-legacy-queue--active)
-(defvar magent-legacy-queue--pending)
+(defvar magent-runtime-queue--arbiter-ticket-adapters
+  (make-hash-table :test #'eq :weakness 'key)
+  "Backend callbacks keyed by arbiter ticket.
+Callbacks keep the runtime queue independent of backend-specific token types.")
 
-(declare-function magent-legacy-queue--rollback-start "magent-legacy-queue")
-(declare-function magent-legacy-queue--start "magent-legacy-queue")
-(declare-function magent-legacy-queue-submission-id "magent-legacy-queue")
-(declare-function magent-legacy-queue-submission-session "magent-legacy-queue")
-(declare-function magent-legacy-queue-submission-started-at "magent-legacy-queue")
-(declare-function magent-legacy-queue-submission-submitted-at "magent-legacy-queue")
 (declare-function magent-runtime-api--start-submission "magent-runtime-api")
 (declare-function magent-runtime-session-magent-session "magent-runtime-api")
+
+(defun magent-runtime-queue--set-ticket-adapters
+    (ticket live-p scope session)
+  "Associate backend callbacks LIVE-P, SCOPE, and SESSION with TICKET."
+  (when (or live-p scope session)
+    (puthash ticket
+             (list :live-p live-p :scope scope :session session)
+             magent-runtime-queue--arbiter-ticket-adapters))
+  ticket)
+
+(defun magent-runtime-queue--ticket-adapter-call (ticket key)
+  "Call TICKET's backend adapter at KEY, returning nil when absent."
+  (when-let* ((function
+               (plist-get
+                (gethash ticket magent-runtime-queue--arbiter-ticket-adapters)
+                key)))
+    (funcall function)))
 
 (defun magent-runtime-queue--runtime-bootstrap-ticket (submission active-p)
   "Return an arbiter ticket for preserved runtime SUBMISSION.
@@ -135,57 +148,17 @@ ACTIVE-P means the backend request is already running and must not restart."
              (delq submission magent-runtime-queue--pending))
        (magent-runtime-queue--rollback-start submission err)))))
 
-(defun magent-runtime-queue--legacy-bootstrap-ticket (submission active-p)
-  "Return an arbiter ticket for preserved legacy SUBMISSION.
-ACTIVE-P means the backend request is already running and must not restart."
-  (magent-runtime-arbiter-ticket-create
-   :owner 'legacy
-   :token submission
-   :id (and (fboundp 'magent-legacy-queue-submission-id)
-            (magent-legacy-queue-submission-id submission))
-   :starter
-   (if active-p
-       #'ignore
-     (lambda ()
-       (setq magent-legacy-queue--pending
-             (delq submission magent-legacy-queue--pending))
-       (unless (fboundp 'magent-legacy-queue--start)
-         (error "Legacy queue starter is unavailable after reload"))
-       (magent-legacy-queue--start submission)))
-   :rollback
-   (unless active-p
-     (lambda (err)
-       (setq magent-legacy-queue--pending
-             (delq submission magent-legacy-queue--pending))
-       (when (fboundp 'magent-legacy-queue--rollback-start)
-         (magent-legacy-queue--rollback-start submission err))))))
-
 (defun magent-runtime-queue--ticket-time (ticket active-p)
   "Return a sortable timestamp for preserved TICKET.
 Use started time for ACTIVE-P tickets and submitted time otherwise."
-  (let ((owner (magent-runtime-arbiter-ticket-owner ticket))
-        (token (magent-runtime-arbiter-ticket-token ticket)))
-    (or
-     (pcase owner
-       ('runtime
-        (if active-p
+  (let ((token (magent-runtime-arbiter-ticket-token ticket)))
+    (or (if active-p
             (magent-runtime-submission-started-at token)
-          (magent-runtime-submission-submitted-at token)))
-       ('legacy
-        (when (if active-p
-                  (fboundp 'magent-legacy-queue-submission-started-at)
-                (fboundp 'magent-legacy-queue-submission-submitted-at))
-          (if active-p
-              (magent-legacy-queue-submission-started-at token)
-            (magent-legacy-queue-submission-submitted-at token))))
-       (_ nil))
-     most-positive-fixnum)))
+          (magent-runtime-submission-submitted-at token))
+        most-positive-fixnum)))
 
 (defun magent-runtime-queue--bootstrap-preserved-backends ()
-  "Create a global lease for backend state preserved across source reload.
-Older Magent versions had independent runtime and legacy queues.  Already
-running tokens become no-op lease tickets; queued tokens retain chronological
-order and use their backend starter when the lease advances."
+  "Create global lease tickets for runtime state preserved across reload."
   (when (and (null magent-runtime-queue--arbiter-active)
              (null magent-runtime-queue--arbiter-pending))
     (let (active-tickets pending-tickets)
@@ -193,18 +166,9 @@ order and use their backend starter when the lease advances."
         (push (magent-runtime-queue--runtime-bootstrap-ticket
                magent-runtime-queue--active t)
               active-tickets))
-      (when (and (boundp 'magent-legacy-queue--active)
-                 magent-legacy-queue--active)
-        (push (magent-runtime-queue--legacy-bootstrap-ticket
-               magent-legacy-queue--active t)
-              active-tickets))
       (dolist (submission magent-runtime-queue--pending)
         (push (magent-runtime-queue--runtime-bootstrap-ticket submission nil)
               pending-tickets))
-      (when (boundp 'magent-legacy-queue--pending)
-        (dolist (submission magent-legacy-queue--pending)
-          (push (magent-runtime-queue--legacy-bootstrap-ticket submission nil)
-                pending-tickets)))
       (setq active-tickets
             (sort active-tickets
                   (lambda (left right)
@@ -233,12 +197,13 @@ order and use their backend starter when the lease advances."
        ('runtime
         (or (eq token magent-runtime-queue--active)
             (memq token magent-runtime-queue--pending)))
-       ('legacy
-        (and (boundp 'magent-legacy-queue--active)
-             (boundp 'magent-legacy-queue--pending)
-             (or (eq token magent-legacy-queue--active)
-                 (memq token magent-legacy-queue--pending))))
-       (_ nil)))))
+       (_
+        (let ((live-p
+               (plist-get
+                (gethash ticket
+                         magent-runtime-queue--arbiter-ticket-adapters)
+                :live-p)))
+          (and live-p (funcall live-p))))))))
 
 (defun magent-runtime-queue--arbiter-rollback-ticket (ticket err)
   "Roll back TICKET after its starter signalled ERR.
@@ -317,15 +282,20 @@ synchronously finalized it, or (error . ERR) after rolling it back."
   (unless magent-runtime-queue--arbiter-active
     (magent-runtime-queue--arbiter-start-next)))
 
-(defun magent-runtime-queue-arbitrate (owner token id starter &optional rollback)
+(defun magent-runtime-queue-arbitrate
+    (owner token id starter &optional rollback live-p scope session)
   "Submit OWNER's TOKEN and STARTER to the global execution FIFO.
 ID is the stable backend submission id.  ROLLBACK receives a starter error
-and must undo backend state established by STARTER.  Return `started' or
-`queued'."
+and must undo backend state established by STARTER.  LIVE-P, SCOPE, and
+SESSION are optional zero-argument callbacks used to inspect non-runtime
+tokens without coupling the arbiter to their representation.  Return
+`started' or `queued'."
   (magent-runtime-queue--arbiter-reconcile)
   (let ((ticket (magent-runtime-arbiter-ticket-create
                  :owner owner :token token :id id :starter starter
                  :rollback rollback)))
+    (magent-runtime-queue--set-ticket-adapters
+     ticket live-p scope session)
     (if magent-runtime-queue--arbiter-active
         (progn
           (setq magent-runtime-queue--arbiter-pending
@@ -347,8 +317,10 @@ and must undo backend state established by STARTER.  Return `started' or
   (setq magent-runtime-queue--arbiter-pending
         (cl-remove-if
          (lambda (ticket)
-           (and (eq (magent-runtime-arbiter-ticket-owner ticket) owner)
-                (eq (magent-runtime-arbiter-ticket-token ticket) token)))
+           (when (and (eq (magent-runtime-arbiter-ticket-owner ticket) owner)
+                      (eq (magent-runtime-arbiter-ticket-token ticket) token))
+             (remhash ticket magent-runtime-queue--arbiter-ticket-adapters)
+             t))
          magent-runtime-queue--arbiter-pending)))
 
 (defun magent-runtime-queue-arbiter-finish (owner token &optional before-advance)
@@ -402,7 +374,6 @@ was finished without a successor, or nil when TOKEN did not own the lease."
   "Return non-nil while any backend owns the global execution lease."
   (and (magent-runtime-queue-arbiter-owner) t))
 
-(declare-function magent-legacy-queue-submission-scope "magent-legacy-queue")
 (declare-function magent-session-scope-origin "magent-session")
 
 (defun magent-runtime-queue-active-scope ()
@@ -413,10 +384,8 @@ was finished without a successor, or nil when TOKEN did not own the lease."
     (let ((scope
            (pcase (magent-runtime-arbiter-ticket-owner ticket)
              ('runtime (magent-runtime-submission-scope token))
-             ('legacy
-              (when (fboundp 'magent-legacy-queue-submission-scope)
-                (magent-legacy-queue-submission-scope token)))
-             (_ nil))))
+             (_ (magent-runtime-queue--ticket-adapter-call
+                 ticket :scope)))))
       (if (and scope (fboundp 'magent-session-scope-origin))
           (magent-session-scope-origin scope)
         scope))))
@@ -557,24 +526,26 @@ started."
       (pcase (magent-runtime-arbiter-ticket-owner ticket)
         ('runtime
          (magent-runtime-queue--submission-session-object token))
-        ('legacy
-         (when (fboundp 'magent-legacy-queue-submission-session)
-           (magent-legacy-queue-submission-session token)))
-        (_ nil)))))
+        (_
+         (magent-runtime-queue--ticket-adapter-call ticket :session))))))
 
 (defun magent-runtime-queue-session-busy-owners (session)
   "Return backend owners whose active or queued work captures SESSION.
 The comparison is by exact session object identity.  This is used by session
   replacement and clear transactions; equal ids are deliberately insufficient."
   (let (owners)
-    (when (or (and magent-runtime-queue--arbiter-active
-                   (eq (magent-runtime-arbiter-ticket-owner
-                        magent-runtime-queue--arbiter-active)
-                       'runtime)
-                   (eq session
-                       (magent-runtime-queue--ticket-session-object
-                        magent-runtime-queue--arbiter-active)))
-              (and magent-runtime-queue--active
+    (dolist (ticket
+             (append (and magent-runtime-queue--arbiter-active
+                          (list magent-runtime-queue--arbiter-active))
+                     magent-runtime-queue--arbiter-pending))
+      (when (eq session
+                (magent-runtime-queue--ticket-session-object ticket))
+        (cl-pushnew (magent-runtime-arbiter-ticket-owner ticket)
+                    owners :test #'eq)))
+    ;; Preserve session-busy behavior across a live reload from a version
+    ;; predating arbiter tickets.  Only runtime state can exist without a
+    ;; backend adapter now.
+    (when (or (and magent-runtime-queue--active
                    (eq session
                        (magent-runtime-queue--submission-session-object
                         magent-runtime-queue--active)))
@@ -584,28 +555,7 @@ The comparison is by exact session object identity.  This is used by session
                      (magent-runtime-queue--submission-session-object
                       submission)))
                magent-runtime-queue--pending))
-      (push 'runtime owners))
-    (when (or (and magent-runtime-queue--arbiter-active
-                   (eq (magent-runtime-arbiter-ticket-owner
-                        magent-runtime-queue--arbiter-active)
-                       'legacy)
-                   (eq session
-                       (magent-runtime-queue--ticket-session-object
-                        magent-runtime-queue--arbiter-active)))
-              (and (boundp 'magent-legacy-queue--active)
-                   magent-legacy-queue--active
-                   (fboundp 'magent-legacy-queue-submission-session)
-                   (eq session
-                       (magent-legacy-queue-submission-session
-                        magent-legacy-queue--active)))
-              (and (boundp 'magent-legacy-queue--pending)
-                   (fboundp 'magent-legacy-queue-submission-session)
-                   (cl-some
-                    (lambda (submission)
-                      (eq session
-                          (magent-legacy-queue-submission-session submission)))
-                    magent-legacy-queue--pending)))
-      (push 'legacy owners))
+      (cl-pushnew 'runtime owners :test #'eq))
     (nreverse owners)))
 
 (defun magent-runtime-queue-session-busy-p (session)

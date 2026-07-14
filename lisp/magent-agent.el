@@ -30,18 +30,17 @@
 (require 'magent-permission)
 (require 'magent-prompt)
 
-;; Forward declarations for UI functions
-(declare-function magent-ui-insert-streaming "magent-ui")
-(declare-function magent-ui-start-streaming "magent-ui")
-(declare-function magent-ui-continue-streaming "magent-ui")
-(declare-function magent-ui-finish-streaming-fontify "magent-ui")
-(declare-function magent-ui-insert-reasoning-start "magent-ui")
-(declare-function magent-ui-insert-reasoning-text "magent-ui")
-(declare-function magent-ui-insert-reasoning-end "magent-ui")
 (declare-function magent-capability-resolution-skill-names "magent-capability")
 (declare-function magent-capability-resolution-to-plist "magent-capability")
 (declare-function magent-capability-resolve-for-turn "magent-capability")
 (declare-function magent-skills-get-instruction-prompts "magent-skills")
+
+(defvar magent-agent-presentation-function nil
+  "Optional presentation adapter for compatibility agent turns.
+The function receives an event symbol and an optional text payload.  Supported
+events are `stream-start', `stream-text', `stream-continue', `stream-finish',
+`reasoning-start', `reasoning-text', and `reasoning-end'.  Runtime backends
+normally consume request observer events instead of installing this adapter.")
 
 ;;; Agent execution
 
@@ -128,8 +127,8 @@ not rely on `plist-get' returning the meaningful one."
   (or (null request-state)
       (magent-request-context-ui-visible-p request-state)))
 
-(defun magent-agent--completion-ui-text (loop event streaming-started)
-  "Return assistant text that still needs UI rendering for EVENT.
+(defun magent-agent--completion-presentation-text (loop event streaming-started)
+  "Return assistant text that still needs presentation for EVENT.
 LOOP has already accumulated EVENT by the time this helper is called.
 When streaming has not started, the full loop result should be rendered.
 When streaming has started, render only the completed event's text that
@@ -192,8 +191,8 @@ Emacs profile memory block, and SKILL-PROMPTS are active skill prompts."
 
 (defun magent-agent-process
     (user-prompt &optional callback agent-info skill-names event-context
-                 request-context capability-resolution ui-callback request-live-p
-                 request-state)
+                 request-context capability-resolution text-callback request-live-p
+                 request-state presentation-function)
   "Process USER-PROMPT through the AI agent using the Magent loop.
 CALLBACK is called with the final string response when complete.
 AGENT-INFO is the agent to use (defaults to session agent or registry default).
@@ -203,12 +202,14 @@ REQUEST-CONTEXT is an optional structured context plist captured at
 dispatch time.
 CAPABILITY-RESOLUTION is an optional precomputed capability resolver
 result for this turn.
-UI-CALLBACK receives streaming text chunks for this request and defaults
-to `magent-ui-insert-streaming'.
+TEXT-CALLBACK receives streaming text chunks for this request.  When nil,
+stream text is sent to PRESENTATION-FUNCTION instead.
 REQUEST-LIVE-P is an optional predicate used to discard stale backend
 callbacks after the UI has moved on to a newer request.
 REQUEST-STATE is an optional `magent-request-context' carrying runtime
 state for the request.
+PRESENTATION-FUNCTION is an optional compatibility presentation adapter.  It
+defaults to `magent-agent-presentation-function'.
 When nil, no skills are injected (skills must be explicitly selected
 via slash commands in the prompt).
 
@@ -236,6 +237,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
               (and request-state
                    (magent-request-context-event-context request-state))))
          (owns-context (null inherited-context))
+         (presentation (or presentation-function
+                           magent-agent-presentation-function))
          (context (or inherited-context
                       (magent-lifecycle-events-begin-turn
                        (format "Agent %s" (magent-agent-info-name agent))))))
@@ -404,7 +407,11 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                   (suppress-next-abort-error nil)
                   loop)
              (cl-labels
-                 ((current-turn-id
+                 ((present
+                   (event &optional text)
+                   (when presentation
+                     (funcall presentation event text)))
+                  (current-turn-id
                    ()
                    (or (and request-state
                             (magent-request-context-turn-id request-state))
@@ -540,7 +547,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                    (when reasoning-open
                      (setq reasoning-open nil)
                      (when (magent-agent--ui-visible-p request-state)
-                       (magent-ui-insert-reasoning-end)))
+                       (present 'reasoning-end)))
                    (finish-reasoning-item))
                   (sample
                    ()
@@ -826,7 +833,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                    (close-reasoning)
                    (when (and streaming-started
                               (magent-agent--ui-visible-p request-state))
-                     (magent-ui-finish-streaming-fontify)))
+                     (present 'stream-finish)))
                   (finish-turn
                    (status response &optional metadata)
                    (finish-streaming)
@@ -851,7 +858,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                    (when (and (not streaming-started)
                               (magent-agent--ui-visible-p request-state))
                      (setq streaming-started t)
-                     (magent-ui-start-streaming)))
+                     (present 'stream-start)))
                   (handle-event
                    (event)
                    (when (magent-agent--request-live-p live-p)
@@ -877,17 +884,19 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                         :text (magent-llm-event-text event))
                         (record-text-delta (magent-llm-event-text event))
                         (when (magent-agent--ui-visible-p request-state)
-                          (funcall (or ui-callback
-                                       #'magent-ui-insert-streaming)
-                                   (magent-llm-event-text event))))
+                          (if text-callback
+                              (funcall text-callback
+                                       (magent-llm-event-text event))
+                            (present 'stream-text
+                                     (magent-llm-event-text event)))))
                        ('reasoning-delta
                         (when (and (eq magent-include-reasoning t)
                                    (magent-agent--ui-visible-p request-state))
                           (unless reasoning-open
                             (setq reasoning-open t)
-                            (magent-ui-insert-reasoning-start))
-                          (magent-ui-insert-reasoning-text
-                           (magent-llm-event-text event)))
+                            (present 'reasoning-start))
+                          (present 'reasoning-text
+                                   (magent-llm-event-text event)))
                         (magent-request-context-notify
                          request-state 'reasoning-delta
                          :text (magent-llm-event-text event))
@@ -911,12 +920,12 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                          :arguments (magent-llm-event-arguments event))
                         (when (and streaming-started
                                    (magent-agent--ui-visible-p request-state))
-                          (magent-ui-continue-streaming)))
+                          (present 'stream-continue)))
                        ('tool-call-batch-end
                         (close-reasoning)
                         (when (and streaming-started
                                    (magent-agent--ui-visible-p request-state))
-                          (magent-ui-continue-streaming))
+                          (present 'stream-continue))
                         (magent-lifecycle-events-emit
                          'llm-request-end
                          :context context
@@ -938,23 +947,23 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                              (continue-turn outcome)))))
                        ('completed
                         (let ((observer-text
-                               (magent-agent--completion-ui-text
+                               (magent-agent--completion-presentation-text
                                 loop event text-delta-seen))
-                              (ui-text
-                               (magent-agent--completion-ui-text
+                              (presentation-text
+                               (magent-agent--completion-presentation-text
                                 loop event streaming-started)))
                           (when (and (stringp observer-text)
                                      (not (string-empty-p observer-text)))
                             (magent-request-context-notify
                              request-state 'assistant-delta
                              :text observer-text))
-                          (when (and (stringp ui-text)
-                                     (not (string-empty-p ui-text)))
+                          (when (and (stringp presentation-text)
+                                     (not (string-empty-p presentation-text)))
                             (start-streaming)
                             (when (magent-agent--ui-visible-p request-state)
-                              (funcall (or ui-callback
-                                           #'magent-ui-insert-streaming)
-                                       ui-text))))
+                              (if text-callback
+                                  (funcall text-callback presentation-text)
+                                (present 'stream-text presentation-text)))))
                         (cond
                          ((and (empty-post-tool-final-response-retry-p)
                                (string-empty-p

@@ -32,10 +32,9 @@
 (require 'subr-x)
 (require 'magent-config)
 (require 'magent-file-loader)
+(require 'magent-log)
 (require 'magent-runtime)
 (require 'magent-skills)
-
-(declare-function magent-log "magent-ui")
 
 (cl-defstruct (magent-capability
                (:constructor magent-capability-create))
@@ -529,7 +528,7 @@ Returns the new symbolic state: either `enabled' or `disabled'."
   "Capture a structured request context from the current buffer.
 Returns a plist or nil when the current buffer is not a useful
 source for contextual capability resolution."
-  (unless (or (derived-mode-p 'magent-output-mode)
+  (unless (or magent-runtime-context-buffer-p
               (minibufferp))
     (let* ((file-path (buffer-file-name))
            (major-mode-family (magent-capability--mode-family major-mode)))
@@ -1013,47 +1012,6 @@ When INCLUDE-HIDDEN is non-nil, include hidden matches too."
     (magent--with-display-buffer buffer-name
       (insert "Capability Resolution\n\n")
       (magent-capability--insert-resolution resolution nil))))
-
-;;;###autoload
-(defun magent-list-capabilities-for-current-context (&optional prompt)
-  "List all capabilities for the current context and optional PROMPT."
-  (interactive)
-  (magent-runtime-prepare-command-context)
-  (let ((resolution (magent-capability-resolve
-                     (or prompt "")
-                     (magent-capability-capture-context)
-                     nil)))
-    (magent--with-display-buffer "*Magent Capability Resolution*"
-      (insert "Capabilities For Current Context\n\n")
-      (magent-capability--insert-resolution resolution t))))
-
-;;;###autoload
-(defun magent-explain-last-capability-resolution ()
-  "Show the most recently recorded capability resolution in detail."
-  (interactive)
-  (if (not magent-capability--last-resolution)
-      (message "Magent: no capability resolution recorded yet")
-    (magent--with-display-buffer "*Magent Last Capability Resolution*"
-      (insert "Last Capability Resolution\n\n")
-      (magent-capability--insert-resolution
-       magent-capability--last-resolution
-       t))))
-
-;;;###autoload
-(defun magent-toggle-capability-locally (capability-name)
-  "Toggle CAPABILITY-NAME on or off for the current Emacs session only."
-  (interactive
-   (progn
-     (magent-runtime-prepare-command-context)
-     (list (completing-read "Toggle capability locally: "
-                            (magent-capability-list) nil t))))
-  (magent-runtime-prepare-command-context)
-  (let ((state (magent-capability-toggle-locally capability-name)))
-    (message "Magent: capability '%s' locally %s"
-             capability-name
-             (pcase state
-               ('enabled "enabled")
-               (_ "disabled")))))
 
 ;;;###autoload
 (defun magent-show-active-capabilities ()

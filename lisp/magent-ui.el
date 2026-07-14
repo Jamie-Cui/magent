@@ -17,22 +17,240 @@
 
 (require 'cl-lib)
 (require 'subr-x)
-(require 'magent-agent-shell)
 (require 'magent-config)
+
+(defgroup magent-ui nil
+  "User interfaces for Magent."
+  :prefix "magent-"
+  :group 'magent)
+
+;;; Faces
+
+(defface magent-user-header
+  '((t :inherit (bold font-lock-keyword-face)))
+  "Face for USER heading labels."
+  :group 'magent-ui)
+
+(defface magent-assistant-header
+  '((t :inherit (bold font-lock-function-name-face)))
+  "Face for ASSISTANT heading labels."
+  :group 'magent-ui)
+
+(defface magent-tool-header
+  '((t :inherit (bold font-lock-type-face)))
+  "Face for compact tool status rows."
+  :group 'magent-ui)
+
+(defface magent-tool-args
+  '((t :inherit font-lock-comment-face))
+  "Face for tool input arguments."
+  :group 'magent-ui)
+
+(defface magent-tool-result
+  '((t :inherit font-lock-string-face))
+  "Face for `-> result' text in tool blocks."
+  :group 'magent-ui)
+
+(defface magent-error-header
+  '((t :inherit (bold error)))
+  "Face for error heading labels."
+  :group 'magent-ui)
+
+(defface magent-error-body
+  '((t :inherit error))
+  "Face for error body text."
+  :group 'magent-ui)
+
+(defface magent-reasoning-header
+  '((t :inherit (bold font-lock-doc-face)))
+  "Face for compact reasoning status rows."
+  :group 'magent-ui)
+
+(defface magent-separator
+  '((t :inherit shadow :strike-through t))
+  "Face for separator lines between conversation turns."
+  :group 'magent-ui)
+
+(defface magent-strike-through
+  '((t :inherit shadow :strike-through t))
+  "Face for the dash line after section headers."
+  :group 'magent-ui)
+
+;;; UI configuration
+
+(defcustom magent-ui-backend 'agent-shell
+  "UI backend used by Magent public commands."
+  :type '(choice (const :tag "Agent Shell" agent-shell)
+                 (const :tag "Legacy Magent UI" legacy))
+  :group 'magent-ui)
+
+(defcustom magent-agent-shell-session-strategy 'new
+  "Agent Shell session strategy used by Magent entry points.
+The default starts a fresh session immediately, avoiding agent-shell's global
+session picker on every `magent-dwim'.  Set this to `prompt' or `latest' when
+you want Magent's agent-shell backend to use agent-shell's session selection
+flow."
+  :type '(choice (const :tag "Always start new session" new)
+                 (const :tag "Load latest session" latest)
+                 (const :tag "Prompt for session" prompt))
+  :group 'magent-ui)
+
+(defcustom magent-buffer-name "*magent*"
+  "Base name used when deriving Magent output buffer names.
+Output buffers are named like `*magent:global*' or
+`*magent:PROJECT-NAME*'."
+  :type 'string
+  :group 'magent-ui)
+
+(defcustom magent-compose-window-height 0.25
+  "Height used when displaying the Magent compose popup.
+If this is an integer, it is interpreted as a number of lines.  If
+it is a float, it is interpreted as a fraction of the frame height."
+  :type '(choice (integer :tag "Lines")
+                 (float :tag "Frame fraction"))
+  :group 'magent-ui)
+
+(defcustom magent-compose-close-after-submit t
+  "Whether to close the Magent compose popup after submitting a prompt.
+When non-nil, submitting from compose closes its window and selects the
+Magent workspace buffer.  When nil, the compose window remains open."
+  :type 'boolean
+  :group 'magent-ui)
+
+(defcustom magent-auto-scroll t
+  "Automatically scroll the legacy output buffer when content arrives."
+  :type 'boolean
+  :group 'magent-ui)
+
+(defcustom magent-enable-logging t
+  "Enable logging to the *magent-log* buffer.
+When enabled, API requests and responses are logged for debugging."
+  :type 'boolean
+  :group 'magent-ui)
+
+(defcustom magent-log-level 'info
+  "Minimum log severity written to the `*magent-log*' buffer.
+Recognized message prefixes are DEBUG, INFO, WARN, ERROR, and PERM.
+`PERM' is treated as `info', and messages without a recognized prefix
+are also treated as `info'."
+  :type '(choice (const :tag "Debug" debug)
+                 (const :tag "Info" info)
+                 (const :tag "Warn" warn)
+                 (const :tag "Error" error))
+  :group 'magent-ui)
+
+(defcustom magent-assistant-prompt "ASSISTANT"
+  "Tag text displayed in assistant section headers."
+  :type 'string
+  :group 'magent-ui)
+
+(defcustom magent-user-prompt "USER"
+  "Tag text displayed in user section headers."
+  :type 'string
+  :group 'magent-ui)
+
+(defcustom magent-tool-call-prompt "tool"
+  "Tag text displayed in tool call lines."
+  :type 'string
+  :group 'magent-ui)
+
+(defcustom magent-error-prompt "error"
+  "Tag text displayed in error section headers."
+  :type 'string
+  :group 'magent-ui)
+
+(defcustom magent-ui-header-strike-through nil
+  "Whether to draw a strike-through line after section headers.
+When non-nil, a dash line extends from the header label to the
+right window edge using the `magent-strike-through' face."
+  :type 'boolean
+  :group 'magent-ui)
+
+(defcustom magent-ui-separator-char ?\s
+  "Character for separator lines between conversation turns.
+A whitespace character inserts literal spacing; a graphic character
+draws a full-width line with `magent-separator' face.
+Set to nil to disable separators."
+  :type '(choice character (const :tag "Disabled" nil))
+  :group 'magent-ui)
+
+(defcustom magent-ui-result-max-length 200
+  "Maximum length for legacy tool result display before truncation."
+  :type 'integer
+  :group 'magent-ui)
+
+(defcustom magent-ui-result-preview-length 150
+  "Length of the preview shown for truncated legacy tool results."
+  :type 'integer
+  :group 'magent-ui)
+
+(defcustom magent-ui-tool-input-max-length 60
+  "Maximum length for legacy tool input display before truncation."
+  :type 'integer
+  :group 'magent-ui)
+
+(defcustom magent-ui-log-truncate-length 80
+  "Maximum length for log messages before truncation."
+  :type 'integer
+  :group 'magent-ui)
+
+(defcustom magent-ui-fontify-threshold 500
+  "Character threshold for async fontification.
+Text blocks smaller than this are fontified synchronously.
+Larger blocks are fontified with idle timer to avoid blocking."
+  :type 'integer
+  :group 'magent-ui)
+
+(defcustom magent-ui-fontify-idle-delay 0.1
+  "Idle delay in seconds before async fontification starts."
+  :type 'float
+  :group 'magent-ui)
+
+(defcustom magent-ui-batch-insert-delay 0.05
+  "Delay in seconds for batching small streaming chunks.
+Streaming text chunks are accumulated for this duration before
+rendering to reduce UI updates."
+  :type 'float
+  :group 'magent-ui)
+
+(defcustom magent-evil-reset-input-method-after-submit t
+  "Whether Magent clears Evil's input method state after prompt submission.
+
+When non-nil, submitting from a Magent compose buffer clears Evil's
+buffer-local `evil-input-method' after returning to normal state.  This
+prevents Evil from restoring a stale input method, such as rime, when the
+compose buffer later re-enters insert state."
+  :type 'boolean
+  :group 'magent-ui)
+
+(defcustom magent-auto-context t
+  "Whether to attach calling buffer context in the legacy `magent-dwim'.
+When non-nil, buffer name, file path, major mode, line number,
+and active region bounds are prepended to the submitted prompt."
+  :type 'boolean
+  :group 'magent-ui)
+
+(require 'magent-agent-shell)
 (require 'magent-lifecycle-events)
 (require 'magent-log)
 (require 'magent-runtime)
 (require 'magent-runtime-api)
 (require 'magent-session)
-(require 'magent-legacy-queue)
-
-(defvar magent-enable-logging)
-(defvar magent-log-level)
 
 (declare-function magent--ensure-initialized "magent")
+(declare-function magent-doctor-register-probe "magent-doctor")
 (declare-function magent-ui-insert-agent-job-event "magent-ui-legacy")
+(declare-function magent-ui-continue-streaming "magent-ui-legacy")
+(declare-function magent-ui-finish-streaming-fontify "magent-ui-legacy")
+(declare-function magent-ui-insert-reasoning-end "magent-ui-legacy")
+(declare-function magent-ui-insert-reasoning-start "magent-ui-legacy")
+(declare-function magent-ui-insert-reasoning-text "magent-ui-legacy")
+(declare-function magent-ui-insert-streaming "magent-ui-legacy")
 (declare-function magent-ui-insert-tool-call "magent-ui-legacy")
 (declare-function magent-ui-insert-tool-result "magent-ui-legacy")
+(declare-function magent-ui-start-streaming "magent-ui-legacy")
+
+(defvar magent-agent-presentation-function)
 
 (defvar magent--current-request-handle nil
   "Current active legacy request handle, if any.")
@@ -102,7 +320,14 @@
 
 (define-derived-mode magent-log-mode fundamental-mode "MagentLog"
   "Major mode for Magent log buffers."
-  (setq buffer-read-only t))
+  (setq buffer-read-only t)
+  (visual-line-mode 1)
+  (setq-local display-fill-column-indicator-column nil)
+  (setq-local font-lock-defaults
+              '((("\\[\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\} [0-9]\\{2\\}:[0-9]\\{2\\}:[0-9]\\{2\\}\\)\\]"
+                   0 font-lock-comment-face)
+                  ("\\<\\(ERROR\\|WARNING\\|INFO\\|DEBUG\\)\\>"
+                   0 font-lock-keyword-face)))))
 
 (defun magent-ui-get-log-buffer ()
   "Get or create the Magent log buffer."
@@ -145,6 +370,43 @@
         (plist-get event :scope))))))
 
 (magent-lifecycle-events-add-sink #'magent-ui--lifecycle-render-sink)
+
+(defun magent-ui--agent-presentation (event &optional text)
+  "Project compatibility agent presentation EVENT and optional TEXT."
+  (pcase event
+    ('stream-start (magent-ui-start-streaming))
+    ('stream-text (magent-ui-insert-streaming text))
+    ('stream-continue (magent-ui-continue-streaming))
+    ('stream-finish (magent-ui-finish-streaming-fontify))
+    ('reasoning-start (magent-ui-insert-reasoning-start))
+    ('reasoning-text (magent-ui-insert-reasoning-text text))
+    ('reasoning-end (magent-ui-insert-reasoning-end))))
+
+(setq magent-agent-presentation-function #'magent-ui--agent-presentation)
+
+(defun magent-ui--doctor-collector (_context _state)
+  "Return bounded UI diagnostics for the Doctor extension probe."
+  `((backend . ,magent-ui-backend)))
+
+(defun magent-ui--register-doctor-probe ()
+  "Register the UI-owned Doctor probe."
+  (magent-doctor-register-probe
+   "ui"
+   :description "Magent UI backend state"
+   :collector #'magent-ui--doctor-collector
+   :data-categories '(runtime ui)))
+
+(with-eval-after-load 'magent-doctor
+  (magent-ui--register-doctor-probe))
+
+(defun magent-ui--legacy-command-scope ()
+  "Return the scope owned by the current legacy UI buffer, if any."
+  (when magent-runtime-context-buffer-p
+    (or magent-ui--buffer-scope
+        (magent-session-current-scope))))
+
+(add-hook 'magent-runtime-command-scope-functions
+          #'magent-ui--legacy-command-scope)
 
 ;;; Backend routing
 
@@ -329,7 +591,6 @@ agent-shell exposes an equivalent per-request agent override."
 (magent-ui--define-interactive-legacy-command magent-transient-menu)
 (magent-ui--define-interactive-legacy-command magent-transient-agent-menu)
 (magent-ui--define-interactive-legacy-command magent-transient-skill-menu)
-(magent-ui--define-interactive-legacy-command magent-transient-capability-menu)
 (magent-ui--define-interactive-legacy-command magent-transient-session-menu)
 (magent-ui--define-interactive-legacy-command magent-transient-log-menu)
 (magent-ui--define-interactive-legacy-command magent-transient-health-menu)

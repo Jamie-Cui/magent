@@ -25,9 +25,8 @@
 (require 'subr-x)
 (require 'magent-config)
 (require 'magent-file-loader)
+(require 'magent-log)
 (require 'magent-runtime)
-
-(declare-function magent-log "magent-ui")
 
 ;;; Built-in skill metadata
 

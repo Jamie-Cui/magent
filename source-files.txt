@@ -26,7 +26,6 @@ lisp/magent-runtime-queue.el
 lisp/magent-tools.el
 lisp/magent-tool-runtime.el
 lisp/magent-tool-orchestrator.el
-lisp/magent-legacy-queue.el
 lisp/magent-agent-info.el
 lisp/magent-agent-builtins.el
 lisp/magent-agent.el
@@ -38,6 +37,7 @@ lisp/magent-agent-file.el
 lisp/magent-permission.el
 lisp/magent-markdown-to-org.el
 lisp/magent-ui.el
+lisp/magent-modeline.el
 lisp/magent-ui-legacy.el
 lisp/magent-evil.el
 lisp/magent-skills.el

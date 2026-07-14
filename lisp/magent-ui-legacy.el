@@ -29,53 +29,62 @@
 (require 'magent-agent-registry)
 (require 'magent-agent-loop)
 (require 'magent-json)
+(require 'magent-ledger)
 (require 'magent-protocol)
 (require 'magent-prompt)
-(require 'magent-legacy-queue)
+(require 'magent-runtime-queue)
 
+(defvar magent-assistant-prompt)
+(defvar magent-auto-context)
+(defvar magent-auto-scroll)
+(defvar magent-buffer-name)
 (defvar magent-compose-close-after-submit)
+(defvar magent-compose-mode-map)
 (defvar magent-compose-window-height)
-(defvar magent-enable-logging)
-(defvar magent-log-level)
+(defvar magent-dwim-hook)
+(defvar magent-error-prompt)
+(defvar magent-log-buffer-name)
+(defvar magent-output-mode-map)
+(defvar magent-ui-after-input-submit-hook)
+(defvar magent-ui-backend)
+(defvar magent-ui--buffer-scope)
+(defvar magent-ui--fold-state)
+(defvar magent-ui-header-strike-through)
+(defvar magent-ui--pending-skills-by-scope)
+(defvar magent-ui--processing)
+(defvar magent-ui-region-active-functions)
+(defvar magent-ui--request-generation)
+(defvar magent-ui-result-max-length)
+(defvar magent-ui-separator-char)
+(defvar magent-ui-tool-input-max-length)
+(defvar magent-ui-batch-insert-delay)
+(defvar magent-user-prompt)
+(defvar magent--current-request-handle)
+
+;; `magent-ui' normally loads this file lazily.  Keep direct legacy requires
+;; working without making the byte compiler load every router shim first.
+(unless (or (featurep 'magent-ui)
+            (bound-and-true-p byte-compile-current-file))
+  (require 'magent-ui))
 
 (declare-function magent-run-doctor "magent-command")
 (declare-function magent-skill-find "magent-skill-manager")
 (declare-function magent-skill-install "magent-skill-manager")
 (declare-function magent-skill-delete "magent-skill-manager")
-
-(defvar magent--current-request-handle nil
-  "Current active request handle, if any.")
-
-;; Forward declaration for buffer-local scope state (defined in
-;; "Compose input" section below).
-(defvar magent-ui--buffer-scope nil)
-
-(defvar-local magent-ui--fold-state nil
-  "Hash table of persisted fragment fold state for the current workspace.")
+(declare-function magent-ui--agent-shell-backend-p "magent-ui")
+(declare-function magent-ui--agent-shell-dispatch-p "magent-ui")
+(declare-function magent-ui--legacy-active-p "magent-ui")
+(declare-function magent-ui--snapshot-buffer-content "magent-ui")
+(declare-function magent-ui-get-log-buffer "magent-ui")
+(declare-function magent-ui-processing-p "magent-ui")
 
 (defvar magent-ui--section-depth 0
   "Dynamic indentation depth for Magent workspace sections.")
 
-(defvar magent-ui-after-input-submit-hook nil
-  "Hook run in the Magent buffer after successful in-buffer input submission.
-Functions are called with no arguments before the prompt is dispatched.")
-
-(defvar magent-dwim-hook nil
-  "Hook run after `magent-dwim' displays the Magent buffer and positions point.")
-
-(defvar magent-ui-region-active-functions nil
-  "Special hook for extra region-active predicates.
-Functions are called with no arguments by `magent-ui--capture-buffer-context'.
-They should return non-nil only when `region-beginning' and `region-end'
-are valid for the current buffer.")
-
 ;; Forward declarations for magent-skills (loaded lazily via require)
 (declare-function magent-capability-capture-context "magent-capability")
-(declare-function magent-explain-last-capability-resolution "magent-capability")
-(declare-function magent-list-capabilities-for-current-context "magent-capability")
 (declare-function magent-capability-resolution-summary "magent-capability")
 (declare-function magent-capability-resolve-for-turn "magent-capability")
-(declare-function magent-toggle-capability-locally "magent-capability")
 (declare-function magent-skills-get "magent-skills")
 (declare-function magent-skills-default-prompt "magent-skills")
 (declare-function magent-skills-list "magent-skills")
@@ -97,6 +106,405 @@ are valid for the current buffer.")
   (when (magent-agent-loop-p request)
     (magent-agent-loop-abort request)))
 
+;;; Legacy submission queue
+
+(cl-defstruct (magent-legacy-queue-submission
+               (:constructor magent-legacy-queue-submission--create)
+               (:copier nil))
+  id
+  op
+  payload
+  dispatcher
+  status
+  submitted-at
+  started-at
+  finished-at
+  turn-id)
+
+(defvar magent-legacy-queue--submission-metadata
+  (make-hash-table :test #'eq :weakness 'key)
+  "Captured session identity and lifecycle flags keyed by submission.
+The metadata stays outside the historical struct layout for live reloads.")
+
+(defun magent-legacy-queue-submission-create (&rest args)
+  "Create a legacy submission from ARGS while storing extension metadata."
+  (unless (zerop (% (length args) 2))
+    (error "Legacy submission arguments must be keyword/value pairs"))
+  (let (base-args metadata)
+    (while args
+      (let ((key (pop args))
+            (value (pop args)))
+        (if (memq key '(:session :scope :received :finalized))
+            (setq metadata (plist-put metadata key value))
+          (setq base-args (append base-args (list key value))))))
+    (let ((submission (apply #'magent-legacy-queue-submission--create
+                             base-args)))
+      (when metadata
+        (puthash submission metadata magent-legacy-queue--submission-metadata))
+      submission)))
+
+(defun magent-legacy-queue--metadata (submission key)
+  "Return SUBMISSION metadata KEY."
+  (plist-get (gethash submission magent-legacy-queue--submission-metadata) key))
+
+(defun magent-legacy-queue--set-metadata (submission key value)
+  "Set SUBMISSION metadata KEY to VALUE."
+  (puthash submission
+           (plist-put (gethash submission
+                               magent-legacy-queue--submission-metadata)
+                      key value)
+           magent-legacy-queue--submission-metadata)
+  value)
+
+(defun magent-legacy-queue-submission-session (submission)
+  "Return the session captured for SUBMISSION."
+  (magent-legacy-queue--metadata submission :session))
+
+(defun magent-legacy-queue-submission-scope (submission)
+  "Return the scope captured for SUBMISSION."
+  (magent-legacy-queue--metadata submission :scope))
+
+(defun magent-legacy-queue-submission-received (submission)
+  "Return non-nil when SUBMISSION emitted its receipt event."
+  (magent-legacy-queue--metadata submission :received))
+
+(defun magent-legacy-queue-submission-finalized (submission)
+  "Return non-nil when SUBMISSION has terminalized."
+  (magent-legacy-queue--metadata submission :finalized))
+
+(defvar magent-legacy-queue--active nil
+  "Currently running legacy submission, if any.")
+
+(defvar magent-legacy-queue--pending nil
+  "Queued legacy submissions.")
+
+(defvar magent-legacy-queue--current-request-handle nil
+  "Request handle associated with the active submission, if known.")
+
+(defun magent-legacy-queue-active-submission ()
+  "Return the active submission, or nil."
+  magent-legacy-queue--active)
+
+(defun magent-legacy-queue-processing-p ()
+  "Return non-nil when a submission is active."
+  (and magent-legacy-queue--active t))
+
+(defun magent-legacy-queue-pending-p ()
+  "Return non-nil when submissions are queued."
+  (and magent-legacy-queue--pending t))
+
+(defun magent-legacy-queue-length ()
+  "Return the number of queued submissions."
+  (length magent-legacy-queue--pending))
+
+(defun magent-legacy-queue-current-request-handle ()
+  "Return the request handle associated with the active submission."
+  magent-legacy-queue--current-request-handle)
+
+(defun magent-legacy-queue-set-current-request-handle
+    (request-handle &optional submission)
+  "Record REQUEST-HANDLE for the active SUBMISSION.
+When SUBMISSION is non-nil, ignore a stale handle for any other active token."
+  (when (or (null submission)
+            (magent-legacy-queue-active-submission-p submission))
+    (setq magent-legacy-queue--current-request-handle request-handle)))
+
+(defun magent-legacy-queue-active-id-p (submission-id)
+  "Return non-nil when SUBMISSION-ID is the active submission."
+  (and magent-legacy-queue--active
+       (equal (magent-legacy-queue-submission-id magent-legacy-queue--active)
+              submission-id)))
+
+(defun magent-legacy-queue-active-submission-p (submission)
+  "Return non-nil when SUBMISSION is the exact active submission object."
+  (eq magent-legacy-queue--active submission))
+
+(defun magent-legacy-queue--emit (type submission &rest props)
+  "Emit TYPE for SUBMISSION with PROPS."
+  (apply #'magent-lifecycle-events-emit
+         type
+         :submission-id (magent-legacy-queue-submission-id submission)
+         :op-type (and (magent-legacy-queue-submission-op submission)
+                       (magent-op-type
+                        (magent-legacy-queue-submission-op submission)))
+         props))
+
+(defun magent-legacy-queue--submission-session (&optional submission)
+  "Return the captured session for SUBMISSION or the current session."
+  (or (and submission
+           (magent-legacy-queue-submission-session submission))
+      (magent-session-get)))
+
+(defun magent-legacy-queue--session-thread (&optional submission)
+  "Return SUBMISSION's captured session thread ledger, or nil."
+  (when-let* ((session (magent-legacy-queue--submission-session submission))
+              (thread (magent-session-thread-ledger session)))
+    thread))
+
+(defun magent-legacy-queue--submission-turn (submission)
+  "Return SUBMISSION's ledger turn, or nil."
+  (when-let* ((turn-id (magent-legacy-queue-submission-turn-id submission))
+              (thread (magent-legacy-queue--session-thread submission)))
+    (cl-find turn-id (magent-thread-turns thread)
+             :key #'magent-thread-turn-id
+             :test #'equal)))
+
+(defun magent-legacy-queue--payload-prompt (payload)
+  "Return a best-effort prompt string from SUBMISSION PAYLOAD."
+  (cond
+   ((stringp payload) payload)
+   ((and (recordp payload)
+         (fboundp 'magent-ui--request-prompt))
+    (ignore-errors (magent-ui--request-prompt payload)))
+   ((and (listp payload) (plist-member payload :prompt))
+    (plist-get payload :prompt))
+   (t nil)))
+
+(defun magent-legacy-queue--activate-submission (submission)
+  "Activate SUBMISSION's captured scope and session."
+  (let ((session (magent-legacy-queue-submission-session submission))
+        (scope (magent-legacy-queue-submission-scope submission)))
+    (when scope
+      (magent-runtime-activate-scope scope)
+      (when session
+        (magent-session-install scope session)
+        (magent-session-refresh-agent session)))))
+
+(defun magent-legacy-queue--save-submission (submission)
+  "Persist SUBMISSION's captured session and scope asynchronously."
+  (when-let* ((session (magent-legacy-queue-submission-session submission)))
+    (magent-session-save-deferred-for-session
+     session (magent-legacy-queue-submission-scope submission))))
+
+(defun magent-legacy-queue--emit-received-once (submission)
+  "Emit `submission-received' once for committed SUBMISSION."
+  (unless (magent-legacy-queue-submission-received submission)
+    (magent-legacy-queue--set-metadata submission :received t)
+    (magent-legacy-queue--emit 'submission-received submission)))
+
+(defun magent-legacy-queue--terminalize (submission status detail)
+  "Commit terminal STATUS and DETAIL for SUBMISSION exactly once.
+Return non-nil when this call performed the transition."
+  (unless (magent-legacy-queue-submission-finalized submission)
+    (magent-legacy-queue--set-metadata submission :finalized t)
+    (setf (magent-legacy-queue-submission-status submission)
+          (or status 'completed)
+          (magent-legacy-queue-submission-finished-at submission)
+          (float-time))
+    (when-let* ((turn-id (magent-legacy-queue-submission-turn-id submission))
+                (thread (magent-legacy-queue--session-thread submission))
+                (turn (cl-find turn-id (magent-thread-turns thread)
+                               :key #'magent-thread-turn-id
+                               :test #'equal)))
+      (unless (magent-thread-terminal-turn-p turn)
+        (pcase (or status 'completed)
+          ('completed (magent-thread-complete-turn thread turn-id))
+          ('failed (magent-thread-fail-turn thread turn-id detail))
+          ('interrupted (magent-thread-interrupt-turn thread turn-id detail))
+          ('dropped (magent-thread-drop-turn thread turn-id detail))))
+      (magent-session-refresh-projections
+       (magent-legacy-queue--submission-session submission)))
+    (magent-legacy-queue--save-submission submission)
+    t))
+
+(defun magent-legacy-queue--rollback-start (submission err)
+  "Undo partial legacy startup for SUBMISSION after ERR."
+  (let ((detail (error-message-string err)))
+    (when (magent-legacy-queue-active-submission-p submission)
+      (setq magent-legacy-queue--active nil
+            magent-legacy-queue--current-request-handle nil))
+    (when (magent-legacy-queue--terminalize submission 'failed detail)
+      (magent-legacy-queue--emit 'submission-error submission :error detail)
+      (magent-legacy-queue--emit
+       'submission-finished submission :status 'failed :detail detail))))
+
+(defun magent-legacy-queue--start (submission)
+  "Start SUBMISSION asynchronously."
+  (magent-legacy-queue--activate-submission submission)
+  (setq magent-legacy-queue--active submission
+        magent-legacy-queue--current-request-handle nil)
+  (setf (magent-legacy-queue-submission-status submission) 'running
+        (magent-legacy-queue-submission-started-at submission) (float-time))
+  (magent-legacy-queue--emit-received-once submission)
+  ;; A received sink may synchronously interrupt or finish this exact token.
+  (when (and (magent-legacy-queue-active-submission-p submission)
+             (not (magent-legacy-queue-submission-finalized submission)))
+    (when-let* ((thread (magent-legacy-queue--session-thread submission))
+                (turn-id (magent-legacy-queue-submission-turn-id submission)))
+      (magent-thread-start-turn thread turn-id)
+      (magent-session-refresh-projections
+       (magent-legacy-queue--submission-session submission))
+      (magent-legacy-queue--save-submission submission))
+    (magent-legacy-queue--emit 'submission-start submission)
+    (run-at-time
+     0 nil
+     (lambda (submission)
+       (when (and (magent-legacy-queue-active-submission-p submission)
+                  (eq (magent-legacy-queue-submission-status submission)
+                      'running))
+         (condition-case err
+             (progn
+               ;; Dispatch against the submission's captured identity, not
+               ;; ambient session globals that the user may have switched.
+               (magent-legacy-queue--activate-submission submission)
+               (funcall
+                (magent-legacy-queue-submission-dispatcher submission)
+                submission))
+           (error
+            (magent-legacy-queue--emit
+             'submission-error submission
+             :error (error-message-string err))
+            (magent-legacy-queue-finish-submission
+             submission 'failed (error-message-string err))))))
+     submission)))
+
+(defun magent-legacy-queue-kick ()
+  "Reconcile and resume the backend-neutral global FIFO."
+  (magent-runtime-queue-kick))
+
+(defun magent-legacy-queue-submit (op payload dispatcher)
+  "Submit OP with PAYLOAD to DISPATCHER.
+When a turn is already active, the submission is queued and will run
+after the active submission finishes.  Return the submission id."
+  (let* ((session (magent-session-get))
+         (scope (magent-session-current-scope))
+         (thread (and session (magent-session-thread-ledger session)))
+         (prompt (magent-legacy-queue--payload-prompt payload))
+         (turn (when thread
+                 (magent-thread-queue-turn
+                  thread
+                  prompt
+                  (and op (magent-op-id op))
+                  (list :source 'submission-queue))))
+         (submission (magent-legacy-queue-submission-create
+                      :id (or (and turn (magent-thread-turn-id turn))
+                              (and op (magent-op-id op))
+                              (magent-protocol-generate-id "sub"))
+                      :op op
+                      :payload payload
+                      :dispatcher dispatcher
+                      :session session
+                      :scope scope
+                      :status 'queued
+                      :submitted-at (float-time)
+                      :turn-id (and turn (magent-thread-turn-id turn)))))
+    (when (and thread turn prompt)
+      (magent-thread-record-user-message-if-needed
+       thread (magent-thread-turn-id turn) prompt nil
+       (list :source 'submission-queue))
+      (magent-session-refresh-projections session))
+    (setq magent-legacy-queue--pending
+          (nconc magent-legacy-queue--pending (list submission)))
+    (let ((disposition
+           (magent-runtime-queue-arbitrate
+            'legacy submission (magent-legacy-queue-submission-id submission)
+            (lambda ()
+              (setq magent-legacy-queue--pending
+                    (delq submission magent-legacy-queue--pending))
+              (magent-legacy-queue--start submission))
+            (lambda (err)
+              (setq magent-legacy-queue--pending
+                    (delq submission magent-legacy-queue--pending))
+              (magent-legacy-queue--rollback-start submission err))
+            (lambda ()
+              (or (magent-legacy-queue-active-submission-p submission)
+                  (memq submission magent-legacy-queue--pending)))
+            (lambda ()
+              (magent-legacy-queue-submission-scope submission))
+            (lambda ()
+              (magent-legacy-queue-submission-session submission)))))
+      (when (eq disposition 'queued)
+        (magent-legacy-queue--emit-received-once submission)
+        (when (and (not (magent-legacy-queue-submission-finalized submission))
+                   (memq submission magent-legacy-queue--pending))
+          (magent-legacy-queue--emit
+           'submission-queued submission
+           :queue-length (length magent-legacy-queue--pending)))))
+    (magent-legacy-queue--save-submission submission)
+    (magent-legacy-queue-submission-id submission)))
+
+(defun magent-legacy-queue-finish-submission (submission &optional status detail)
+  "Finish exact active SUBMISSION with STATUS and optional DETAIL.
+Return the next queued submission id when one is started.  A stale callback
+for an older submission is a no-op, even when ids have been reused."
+  (when (and (magent-legacy-queue-active-submission-p submission)
+             (not (magent-legacy-queue-submission-finalized submission)))
+    (setq magent-legacy-queue--active nil
+          magent-legacy-queue--current-request-handle nil)
+    (let ((finalize
+           (lambda ()
+             (when (magent-legacy-queue--terminalize submission status detail)
+               (magent-legacy-queue--emit
+                'submission-finished submission
+                :status (magent-legacy-queue-submission-status submission)
+                :detail detail))))
+          disposition)
+      (setq disposition
+            (magent-runtime-queue-arbiter-finish
+             'legacy submission finalize))
+      (unless disposition
+        ;; Completion from a pre-arbiter live reload must still be durable.
+        (funcall finalize)
+        (setq disposition (magent-runtime-queue-kick)))
+      (unless (eq disposition 'handled)
+        disposition))))
+
+(defun magent-legacy-queue-finish (&optional status detail)
+  "Finish the active submission with STATUS and optional DETAIL.
+Return the next queued submission id when one is started."
+  (when-let* ((submission magent-legacy-queue--active))
+    (magent-legacy-queue-finish-submission submission status detail)))
+
+(defun magent-legacy-queue-clear ()
+  "Drop all queued submissions and return the number dropped."
+  (let* ((submissions magent-legacy-queue--pending)
+         (count (length submissions)))
+    ;; Detach every token before invoking lifecycle sinks.  New submissions
+    ;; created by a sink belong to a later transaction and must survive clear.
+    (setq magent-legacy-queue--pending nil)
+    (dolist (submission submissions)
+      (magent-runtime-queue-arbiter-cancel 'legacy submission))
+    ;; Commit every terminal state before invoking external sinks so observers
+    ;; never see later detached tokens still looking queued.
+    (let (terminalized)
+      (dolist (submission submissions)
+        (when (magent-legacy-queue--terminalize
+               submission 'dropped "Queued submission dropped")
+          (push submission terminalized)))
+      (dolist (submission (nreverse terminalized))
+        (magent-legacy-queue--emit 'submission-dropped submission)))
+    count))
+
+(defun magent-legacy-queue-interrupt (&optional abort-function)
+  "Interrupt the active submission and clear queued submissions.
+ABORT-FUNCTION, when non-nil, is called with the active request handle."
+  (let ((request-handle magent-legacy-queue--current-request-handle)
+        (active magent-legacy-queue--active))
+    (magent-legacy-queue-clear)
+    (setq magent-legacy-queue--active nil
+          magent-legacy-queue--current-request-handle nil)
+    (when active
+      (let ((interrupt
+             (lambda ()
+               (when (magent-legacy-queue--terminalize
+                      active 'interrupted "User interrupted")
+                 (magent-legacy-queue--emit 'submission-interrupted active))
+               ;; Invalidate queue identity before aborting so synchronous
+               ;; provider callbacks observe a stale submission.
+               (when (and request-handle abort-function)
+                 (condition-case err
+                     (funcall abort-function request-handle)
+                   (error
+                    (display-warning
+                     'magent
+                     (format "Legacy request abort failed: %s"
+                             (error-message-string err))
+                     :warning)))))))
+        (unless (magent-runtime-queue-arbiter-finish
+                 'legacy active interrupt)
+          (funcall interrupt)
+          (magent-runtime-queue-kick))))))
+
 ;;; Request dispatch
 
 (cl-defstruct (magent-ui--request
@@ -111,41 +519,6 @@ are valid for the current buffer.")
   request-context
   capability-resolution
   (timestamp 0.0 :type float))
-
-(defvar magent-ui--processing nil
-  "Legacy UI processing flag.
-Kept for compatibility with older tests and external callers.  The
-active runtime state is owned by `magent-legacy-queue'.")
-
-(defvar magent-ui--pending-skills-by-scope (make-hash-table :test #'equal)
-  "One-shot instruction skills selected for the next request by scope.")
-
-(defun magent-ui--agent-shell-backend-p ()
-  "Return non-nil when Magent should use the agent-shell backend."
-  (eq magent-ui-backend 'agent-shell))
-
-(defun magent-ui--legacy-active-p ()
-  "Return non-nil when the legacy UI/turn path owns active work."
-  (or magent-ui--processing
-      (magent-legacy-queue-processing-p)
-      (magent-legacy-queue-pending-p)))
-
-(defun magent-ui--agent-shell-dispatch-p (&optional skills agent)
-  "Return non-nil when a prompt should dispatch through agent-shell.
-SKILLS can be routed through the agent-shell backend as request-local
-instruction skills.  Per-request AGENT overrides still require the legacy
-dispatcher until the agent-shell ACP path grows equivalent controls."
-  (ignore skills)
-  (and (magent-ui--agent-shell-backend-p)
-       (not agent)))
-
-(defun magent-ui-processing-p ()
-  "Return non-nil if a request is currently being processed."
-  (or (magent-ui--legacy-active-p)
-      (and (magent-ui--agent-shell-backend-p)
-           (magent-agent-shell-processing-p))
-      (and (fboundp 'magent-runtime-processing-p)
-           (magent-runtime-processing-p))))
 
 (defun magent-ui--enqueue
     (prompt source &optional display skills agent request-context capability-resolution)
@@ -198,16 +571,7 @@ stack frame before UI mutations happen."
   (magent-ui--run-item (magent-legacy-queue-submission-payload submission)
                        (magent-legacy-queue-submission-id submission)))
 
-(defvar magent-ui--request-generation 0
-  "Monotonically increasing counter for request dispatch cycles.
-Incremented on each new dispatch and on interrupt.  Callbacks
-capture this value and compare on completion to detect and
-discard stale callbacks from interrupted requests.")
-
 ;;; Buffer management
-
-(defvar magent-log-buffer-name "*magent-log*"
-  "Name of the buffer used for Magent logging.")
 
 (defun magent-ui--buffer-name-base ()
   "Return the configured base name used for Magent output buffers."
@@ -335,40 +699,6 @@ When SCOPE is nil, use the current session scope."
   (erase-buffer)
   (message "Magent compose cleared"))
 
-(defun magent-ui-get-log-buffer ()
-  "Get or create the Magent log buffer."
-  (let ((buffer (get-buffer-create magent-log-buffer-name)))
-    (with-current-buffer buffer
-      (unless (derived-mode-p 'magent-log-mode)
-        (magent-log-mode)))
-    buffer))
-
-(defconst magent-ui--log-level-order
-  '((debug . 10)
-    (info . 20)
-    (warn . 30)
-    (error . 40))
-  "Priority order for `magent-log' filtering.")
-
-(defun magent-ui--log-message-level (message)
-  "Return normalized severity symbol for log MESSAGE."
-  (let ((prefix (and (string-match "\\`\\([A-Z]+\\)\\(?:\\s-\\|:\\|$\\)" message)
-                     (match-string 1 message))))
-    (pcase prefix
-      ("DEBUG" 'debug)
-      ((or "INFO" "PERM") 'info)
-      ("WARN" 'warn)
-      ("ERROR" 'error)
-      (_ 'info))))
-
-(defun magent-ui--loggable-message-p (message)
-  "Return non-nil when MESSAGE should be written to `*magent-log*'."
-  (and magent-enable-logging
-       (>= (alist-get (magent-ui--log-message-level message)
-                      magent-ui--log-level-order)
-           (alist-get magent-log-level
-                      magent-ui--log-level-order))))
-
 (defmacro magent-ui--with-insert (buffer &rest body)
   "Execute BODY at end of BUFFER with `inhibit-read-only' set.
 After BODY, marks the newly inserted region as read-only and
@@ -409,15 +739,6 @@ past messages so the user can see the full conversation."
     (or scope
         (and (derived-mode-p 'magent-output-mode)
              (magent-ui--context-scope))))))
-
-(defun magent-ui--snapshot-buffer-content (session &optional scope)
-  "Stop persisting workspace text into SESSION.
-The ledger is the restore source.  This function remains as a harmless
-compatibility hook for older callers."
-  (ignore scope)
-  (when session
-    (setf (magent-session-buffer-content session) nil))
-  nil)
 
 (defun magent-ui--context-scope ()
   "Return the session scope implied by the current command context."
@@ -1497,13 +1818,6 @@ Skips keys already reserved by `magent-transient-agent-menu'."
     ("I" "install" magent-skill-install)
     ("D" "delete" magent-skill-delete)]])
 
-(transient-define-prefix magent-transient-capability-menu ()
-  "Magent capability menu."
-  ["Capabilities"
-   [("x" "current context" magent-list-capabilities-for-current-context)
-    ("e" "last resolution" magent-explain-last-capability-resolution)
-    ("k" "toggle local" magent-toggle-capability-locally)]])
-
 (transient-define-prefix magent-transient-session-menu ()
   "Magent session menu."
   ["Session"
@@ -1540,8 +1854,7 @@ Skips keys already reserved by `magent-transient-agent-menu'."
     ("!" "Run skill command" magent-ui-run-skill-command)]]
   ["Context"
    [("A" "Agent..." magent-transient-agent-menu)
-    ("s" "Skills..." magent-transient-skill-menu)
-    ("x" "Capabilities..." magent-transient-capability-menu)]]
+    ("s" "Skills..." magent-transient-skill-menu)]]
   ["Session"
    [("c" "Clear session" magent-ui-clear-session-command)
     ("S" "Session..." magent-transient-session-menu)]]
@@ -1556,9 +1869,6 @@ Skips keys already reserved by `magent-transient-agent-menu'."
   "Open the Magent menu."
   (interactive)
   (call-interactively #'magent-transient-menu))
-
-(defvar magent-output-mode-map (make-sparse-keymap)
-  "Keymap for `magent-output-mode'.")
 
 (defun magent-ui--setup-output-mode-map ()
   "Install Magent output mode bindings.
@@ -1588,6 +1898,7 @@ Press \\[magent-ui-submit-or-interrupt] to compose, or interrupt with confirmati
 Press \\[magent-ui-compose-from-output] to open compose directly.
 Press \\[magent-ui-menu-or-insert-question-mark] for the command menu."
   (visual-line-mode 1)
+  (setq-local magent-runtime-context-buffer-p t)
   (setq-local magent-ui--buffer-scope
               (or magent-ui--buffer-scope
                   (magent-session-current-scope)))
@@ -1596,15 +1907,9 @@ Press \\[magent-ui-menu-or-insert-question-mark] for the command menu."
   (setq-local revert-buffer-function #'magent-ui--revert-buffer)
   (add-hook 'kill-buffer-hook #'magent-ui--cancel-timers nil t))
 
-(defvar magent-compose-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-c") #'magent-input-submit)
-    (define-key map (kbd "C-c C-k") #'magent-compose-cancel)
-    map)
-  "Keymap for `magent-compose-mode'.")
-
 (define-derived-mode magent-compose-mode text-mode "MagentCompose"
   "Major mode for composing Magent prompts."
+  (setq-local magent-runtime-context-buffer-p t)
   (setq-local magent-ui--buffer-scope
               (or magent-ui--buffer-scope
                   (magent-session-current-scope))))
@@ -1621,22 +1926,7 @@ Called via `kill-buffer-hook' to prevent timers firing on dead buffers."
     (cancel-timer magent-ui--streaming-batch-timer)
     (setq magent-ui--streaming-batch-timer nil)))
 
-(define-derived-mode magent-log-mode fundamental-mode "MagentLog"
-  "Major mode for Magent log buffer."
-  (setq buffer-read-only t)
-  (visual-line-mode 1)
-  (setq-local display-fill-column-indicator-column nil)
-  (setq-local font-lock-defaults
-              '((
-                 ("\\[\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\} [0-9]\\{2\\}:[0-9]\\{2\\}:[0-9]\\{2\\}\\)\\]"
-                  0 font-lock-comment-face)
-                 ("\\<\\(ERROR\\|WARNING\\|INFO\\|DEBUG\\)\\>"
-                  0 font-lock-keyword-face)))))
-
 ;;; Compose input
-
-(defvar-local magent-ui--buffer-scope nil
-  "Scope associated with the current Magent output buffer.")
 
 (defun magent-ui--maybe-show-input-prompt (&optional scope)
   "Ensure SCOPE's compose buffer exists.

@@ -26,58 +26,6 @@
   :group 'tools
   :link '(url-link :tag "GitHub" "https://github.com/jamie-cui/magent"))
 
-;;; Faces
-
-(defface magent-user-header
-  '((t :inherit (bold font-lock-keyword-face)))
-  "Face for USER heading labels."
-  :group 'magent)
-
-(defface magent-assistant-header
-  '((t :inherit (bold font-lock-function-name-face)))
-  "Face for ASSISTANT heading labels."
-  :group 'magent)
-
-(defface magent-tool-header
-  '((t :inherit (bold font-lock-type-face)))
-  "Face for compact tool status rows."
-  :group 'magent)
-
-(defface magent-tool-args
-  '((t :inherit font-lock-comment-face))
-  "Face for tool input arguments."
-  :group 'magent)
-
-(defface magent-tool-result
-  '((t :inherit font-lock-string-face))
-  "Face for `-> result' text in tool blocks."
-  :group 'magent)
-
-(defface magent-error-header
-  '((t :inherit (bold error)))
-  "Face for error heading labels."
-  :group 'magent)
-
-(defface magent-error-body
-  '((t :inherit error))
-  "Face for error body text."
-  :group 'magent)
-
-(defface magent-reasoning-header
-  '((t :inherit (bold font-lock-doc-face)))
-  "Face for compact reasoning status rows."
-  :group 'magent)
-
-(defface magent-separator
-  '((t :inherit shadow :strike-through t))
-  "Face for separator lines between conversation turns."
-  :group 'magent)
-
-(defface magent-strike-through
-  '((t :inherit shadow :strike-through t))
-  "Face for the dash line after section headers."
-  :group 'magent)
-
 (defvar magent--prompt-file
   (magent-prompt-path "system.org")
   "Path to the bundled system prompt file.")
@@ -87,19 +35,6 @@
   "System prompt for the AI agent.
 The default value is read from prompt/system.org in the package."
   :type 'string
-  :group 'magent)
-
-(defcustom magent-buffer-name "*magent*"
-  "Base name used when deriving Magent output buffer names.
-Output buffers are named like `*magent:global*' or
-`*magent:PROJECT-NAME*'."
-  :type 'string
-  :group 'magent)
-
-(defcustom magent-ui-backend 'agent-shell
-  "UI backend used by Magent public commands."
-  :type '(choice (const :tag "Agent Shell" agent-shell)
-                 (const :tag "Legacy Magent UI" legacy))
   :group 'magent)
 
 (defcustom magent-skill-search-endpoint "https://skills.sh/api/search"
@@ -125,37 +60,6 @@ Output buffers are named like `*magent:global*' or
 (defcustom magent-skill-install-max-bytes (* 10 1024 1024)
   "Maximum total byte size accepted in one installed skill."
   :type 'natnum
-  :group 'magent)
-
-(defcustom magent-agent-shell-session-strategy 'new
-  "Agent Shell session strategy used by Magent entry points.
-The default starts a fresh session immediately, avoiding agent-shell's global
-session picker on every `magent-dwim'.  Set this to `prompt' or `latest' when
-you want Magent's agent-shell backend to use agent-shell's session selection
-flow."
-  :type '(choice (const :tag "Always start new session" new)
-                 (const :tag "Load latest session" latest)
-                 (const :tag "Prompt for session" prompt))
-  :group 'magent)
-
-(defcustom magent-compose-window-height 0.25
-  "Height used when displaying the Magent compose popup.
-If this is an integer, it is interpreted as a number of lines.  If
-it is a float, it is interpreted as a fraction of the frame height."
-  :type '(choice (integer :tag "Lines")
-                 (float :tag "Frame fraction"))
-  :group 'magent)
-
-(defcustom magent-compose-close-after-submit t
-  "Whether to close the Magent compose popup after submitting a prompt.
-When non-nil, submitting from compose closes its window and selects the
-Magent workspace buffer.  When nil, the compose window remains open."
-  :type 'boolean
-  :group 'magent)
-
-(defcustom magent-auto-scroll t
-  "Automatically scroll output buffer when new content arrives."
-  :type 'boolean
   :group 'magent)
 
 (defcustom magent-enable-tools '(read write edit grep glob bash emacs_eval agent skill web_search)
@@ -298,23 +202,6 @@ This variable is the canonical permission bypass flag used by
   :group 'magent
   :risky t)
 
-(defcustom magent-enable-logging t
-  "Enable logging to the *magent-log* buffer.
-When enabled, API requests and responses are logged for debugging."
-  :type 'boolean
-  :group 'magent)
-
-(defcustom magent-log-level 'info
-  "Minimum log severity written to the `*magent-log*' buffer.
-Recognized message prefixes are DEBUG, INFO, WARN, ERROR, and PERM.
-`PERM' is treated as `info', and messages without a recognized prefix
-are also treated as `info'."
-  :type '(choice (const :tag "Debug" debug)
-                 (const :tag "Info" info)
-                 (const :tag "Warn" warn)
-                 (const :tag "Error" error))
-  :group 'magent)
-
 (defcustom magent-enable-audit-log t
   "Enable persistent audit logging for permission and sensitive actions.
 When enabled, Magent writes a compact JSONL audit trail to disk."
@@ -340,26 +227,6 @@ not loaded unless their normalized project root appears in this list.
 Instruction-only project skills do not require trust.  Built-in and user-level
 tool skills retain their existing loading behavior."
   :type '(repeat directory)
-  :group 'magent)
-
-(defcustom magent-assistant-prompt "ASSISTANT"
-  "Tag text displayed in assistant section headers."
-  :type 'string
-  :group 'magent)
-
-(defcustom magent-user-prompt "USER"
-  "Tag text displayed in user section headers."
-  :type 'string
-  :group 'magent)
-
-(defcustom magent-tool-call-prompt "tool"
-  "Tag text displayed in tool call lines."
-  :type 'string
-  :group 'magent)
-
-(defcustom magent-error-prompt "error"
-  "Tag text displayed in error section headers."
-  :type 'string
   :group 'magent)
 
 (defcustom magent-agent-directory ".magent/agent"
@@ -481,70 +348,6 @@ to disable the depth guard."
                  (natnum :tag "Maximum child-agent depth"))
   :group 'magent)
 
-(defcustom magent-ui-header-strike-through nil
-  "Whether to draw a strike-through line after section headers.
-When non-nil, a dash line extends from the header label to the
-right window edge using the `magent-strike-through' face."
-  :type 'boolean
-  :group 'magent)
-
-(defcustom magent-ui-separator-char ?\s
-  "Character for separator lines between conversation turns.
-A whitespace character inserts literal spacing; a graphic character
-draws a full-width line with `magent-separator' face.
-Set to nil to disable separators."
-  :type '(choice character (const :tag "Disabled" nil))
-  :group 'magent)
-
-(defcustom magent-ui-result-max-length 200
-  "Maximum length for tool result display before truncation."
-  :type 'integer
-  :group 'magent)
-
-(defcustom magent-ui-result-preview-length 150
-  "Length of preview shown for truncated results."
-  :type 'integer
-  :group 'magent)
-
-(defcustom magent-ui-tool-input-max-length 60
-  "Maximum length for tool input display before truncation."
-  :type 'integer
-  :group 'magent)
-
-(defcustom magent-ui-log-truncate-length 80
-  "Maximum length for log messages before truncation."
-  :type 'integer
-  :group 'magent)
-
-(defcustom magent-ui-fontify-threshold 500
-  "Character threshold for async fontification.
-Text blocks smaller than this are fontified synchronously.
-Larger blocks are fontified with idle timer to avoid blocking."
-  :type 'integer
-  :group 'magent)
-
-(defcustom magent-ui-fontify-idle-delay 0.1
-  "Idle delay in seconds before async fontification starts."
-  :type 'float
-  :group 'magent)
-
-(defcustom magent-ui-batch-insert-delay 0.05
-  "Delay in seconds for batching small streaming chunks.
-Streaming text chunks are accumulated for this duration before
-rendering to reduce UI updates."
-  :type 'float
-  :group 'magent)
-
-(defcustom magent-evil-reset-input-method-after-submit t
-  "Whether Magent clears Evil's input method state after prompt submission.
-
-When non-nil, submitting from a Magent compose buffer clears Evil's
-buffer-local `evil-input-method' after returning to normal state.  This
-prevents Evil from restoring a stale input method, such as rime, when the
-compose buffer later re-enters insert state."
-  :type 'boolean
-  :group 'magent)
-
 (defcustom magent-include-reasoning t
   "How to handle LLM reasoning/thinking blocks.
 If t, display reasoning blocks in the Magent UI and retain them.
@@ -558,13 +361,6 @@ In other words, `ignore' means \"hidden but kept\", while nil means
   :type '(choice (const :tag "Display reasoning and keep it" t)
                  (const :tag "Hide reasoning but keep it internally" ignore)
                  (const :tag "Discard reasoning entirely" nil))
-  :group 'magent)
-
-(defcustom magent-auto-context t
-  "Whether to automatically attach calling buffer context in `magent-dwim'.
-When non-nil, buffer name, file path, major mode, line number,
-and active region bounds are prepended to the submitted prompt."
-  :type 'boolean
   :group 'magent)
 
 (defcustom magent-enable-capabilities t

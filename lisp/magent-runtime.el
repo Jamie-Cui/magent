@@ -14,6 +14,7 @@
 (require 'cl-lib)
 (require 'magent-audit)
 (require 'magent-lifecycle-events)
+(require 'magent-log)
 (require 'magent-session)
 
 (defvar magent-load-custom-agents)
@@ -26,7 +27,6 @@
 (declare-function magent-capability-load-project-scope "magent-capability")
 (declare-function magent-capability-remove-project-scope "magent-capability")
 (declare-function magent-audit-enable "magent-audit")
-(declare-function magent-log "magent-ui")
 (declare-function magent-runtime-queue-active-scope "magent-runtime-queue")
 (declare-function magent-runtime-queue-execution-active-p "magent-runtime-queue")
 (declare-function magent-session-refresh-agent "magent-session")
@@ -36,6 +36,15 @@
 
 (defvar magent--initialized nil
   "Non-nil when Magent static definitions have been initialized.")
+
+(defvar-local magent-runtime-context-buffer-p nil
+  "Non-nil when the current buffer is a Magent-owned UI context buffer.")
+
+(defvar magent-runtime-command-scope-functions nil
+  "Functions that may resolve the scope for the current command buffer.
+Each function is called without arguments.  The first non-nil return value
+wins; when all functions return nil, scope is derived from
+`default-directory'.")
 
 (defconst magent-runtime--overlay-specs
   '((:name agents
@@ -294,11 +303,9 @@ Nil means only static definitions are loaded.")
 
 (defun magent-runtime-command-scope ()
   "Return the scope implied by the current interactive command context."
-  (if (derived-mode-p 'magent-output-mode)
-      (or (and (boundp 'magent-ui--buffer-scope)
-               magent-ui--buffer-scope)
-          (magent-session-current-scope))
-    (magent-session-scope-from-directory default-directory)))
+  (or (run-hook-with-args-until-success
+       'magent-runtime-command-scope-functions)
+      (magent-session-scope-from-directory default-directory)))
 
 (defun magent-runtime-prepare-command-context (&optional scope)
   "Ensure Magent is initialized and activate the command SCOPE.
