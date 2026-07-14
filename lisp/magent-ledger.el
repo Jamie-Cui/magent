@@ -1016,6 +1016,37 @@ Return the number of cancelled items."
     :payload (list :error detail)))
   (magent-thread--find-turn thread turn-id))
 
+(defun magent-thread-reconcile-after-restart (thread &optional detail)
+  "Terminalize non-durable work in THREAD after an Emacs restart.
+DETAIL defaults to a stable explanatory message.  Pending or in-progress
+items are cancelled, queued turns are dropped, and in-progress turns are
+interrupted.  An otherwise active thread is returned to `idle'.  Return the
+number of lifecycle objects changed."
+  (let ((reason (or detail "Interrupted by Emacs restart"))
+        (changed 0))
+    (dolist (turn (copy-sequence (magent-thread-turns thread)))
+      (dolist (item (copy-sequence (magent-thread-turn-items turn)))
+        (when (memq (magent-thread-item-status item) '(pending in-progress))
+          (magent-thread-cancel-item thread item reason)
+          (cl-incf changed)))
+      (pcase (magent-thread-turn-status turn)
+        ('queued
+         (magent-thread-drop-turn thread (magent-thread-turn-id turn) reason)
+         (cl-incf changed))
+        ('in-progress
+         (magent-thread-interrupt-turn
+          thread (magent-thread-turn-id turn) reason)
+         (cl-incf changed))))
+    (when (eq (magent-thread-status thread) 'active)
+      (magent-thread-append-event
+       thread
+       (magent-thread-event-create
+        :type 'thread-status-changed
+        :thread-id (magent-thread-id thread)
+        :payload (list :status 'idle)))
+      (cl-incf changed))
+    changed))
+
 (defun magent-thread-all-items (thread)
   "Return all items in THREAD in chronological turn order."
   (apply #'append

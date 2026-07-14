@@ -24,7 +24,9 @@
 ;;; Registry state
 
 (defvar magent-agent-registry--agents (make-hash-table :test 'equal)
-  "Hash table mapping agent names to agent info structures.")
+  "Hash table mapping agent names to precedence-ordered agent stacks.
+The first item is the effective definition.  Lower-layer definitions remain
+available so removing a project overlay restores the previous definition.")
 
 (defvar magent-agent-registry--default-agent nil
   "The default agent name.")
@@ -52,21 +54,49 @@
 
 (defun magent-agent-registry-register (agent-info)
   "Register an AGENT-INFO in the registry.
-If an agent with the same name exists, it will be replaced.
+An existing definition from the same source layer and scope is replaced.
+Definitions from lower layers are retained for reversible project overlays.
 Returns the registered agent info."
   (when (magent-agent-info-valid-p agent-info)
-    (puthash (magent-agent-info-name agent-info)
-             agent-info
-             magent-agent-registry--agents)
+    (let* ((name (magent-agent-info-name agent-info))
+           (current (gethash name magent-agent-registry--agents))
+           (stack (cond
+                   ((magent-agent-info-p current) (list current))
+                   ((listp current) current)
+                   (t nil)))
+           (layer (magent-agent-info-source-layer agent-info))
+           (scope (magent-agent-info-source-scope agent-info)))
+      (setq stack
+            (cl-remove-if
+             (lambda (existing)
+               (and (eq (magent-agent-info-source-layer existing) layer)
+                    (equal (magent-agent-info-source-scope existing) scope)))
+             stack))
+      (puthash name (cons agent-info stack)
+               magent-agent-registry--agents))
     agent-info))
 
 (defun magent-agent-registry-remove-project-scope (scope)
   "Remove all project-local agents registered for SCOPE."
-  (magent-file-loader-hash-remove-project-scope-entries
-   magent-agent-registry--agents
-   #'magent-agent-info-source-layer
-   #'magent-agent-info-source-scope
-   scope))
+  (let (updates removals)
+    (maphash
+     (lambda (name value)
+       (let* ((stack (if (magent-agent-info-p value) (list value) value))
+              (remaining
+               (cl-remove-if
+                (lambda (agent)
+                  (and (eq (magent-agent-info-source-layer agent) 'project)
+                       (equal (magent-agent-info-source-scope agent) scope)))
+                stack)))
+         (if remaining
+             (push (cons name remaining) updates)
+           (push name removals))))
+     magent-agent-registry--agents)
+    (dolist (entry updates)
+      (puthash (car entry) (cdr entry) magent-agent-registry--agents))
+    (dolist (name removals)
+      (remhash name magent-agent-registry--agents)))
+  magent-agent-registry--agents)
 
 ;;; Agent retrieval
 
@@ -74,7 +104,8 @@ Returns the registered agent info."
   "Get agent info by NAME.
 Returns the agent info structure, or nil if not found."
   (magent-agent-registry-ensure-initialized)
-  (gethash name magent-agent-registry--agents))
+  (let ((value (gethash name magent-agent-registry--agents)))
+    (if (magent-agent-info-p value) value (car value))))
 
 (defun magent-agent-registry-get-default ()
   "Get the default agent info.
@@ -101,14 +132,18 @@ If MODE is non-nil (primary, subagent, or all), filter by mode.
 If NATIVE-ONLY is non-nil, only include native (built-in) agents."
   (magent-agent-registry-ensure-initialized)
   (let ((agents nil))
-    (maphash (lambda (_name info)
-               (when (and (or include-hidden
-                              (not (magent-agent-info-hidden info)))
-                          (or (null mode)
-                              (magent-agent-info-mode-p info mode))
-                          (or (null native-only)
-                              (magent-agent-info-native info)))
-                 (push info agents)))
+    (maphash (lambda (_name value)
+               (let ((info (if (magent-agent-info-p value)
+                               value
+                             (car value))))
+                 (when (and info
+                            (or include-hidden
+                                (not (magent-agent-info-hidden info)))
+                            (or (null mode)
+                                (magent-agent-info-mode-p info mode))
+                            (or (null native-only)
+                                (magent-agent-info-native info)))
+                   (push info agents))))
              magent-agent-registry--agents)
     (sort agents
           (lambda (a b)

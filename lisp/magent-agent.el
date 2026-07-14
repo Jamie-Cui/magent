@@ -223,19 +223,36 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
          (agent (or agent-info
                     (magent-session-agent session)
                     (magent-agent-registry-get-default)))
-         (context (or event-context
-                      (and request-state
-                           (magent-request-context-event-context request-state))
+         (effective-permission
+          (or (and request-state
+                   (magent-request-context-permission-profile request-state))
+              (magent-agent-info-permission agent)))
+         (request-scope
+          (or (and request-state
+                   (magent-request-context-scope request-state))
+              (magent-session-current-scope)))
+         (inherited-context
+          (or event-context
+              (and request-state
+                   (magent-request-context-event-context request-state))))
+         (owns-context (null inherited-context))
+         (context (or inherited-context
                       (magent-lifecycle-events-begin-turn
                        (format "Agent %s" (magent-agent-info-name agent))))))
-    (when request-state
-      (setf (magent-request-context-session request-state) session
-            (magent-request-context-live-p request-state)
-            (or (magent-request-context-live-p request-state)
-                request-live-p)
-            (magent-request-context-event-context request-state) context))
-    (magent-session-set-agent session agent)
-    (let* ((thread (magent-session-thread-ledger session))
+    (condition-case err
+        (progn
+          (when request-state
+            (setf (magent-request-context-session request-state) session
+                  (magent-request-context-live-p request-state)
+                  (or (magent-request-context-live-p request-state)
+                      request-live-p)
+                  (magent-request-context-event-context request-state) context))
+          (magent-session-set-agent session agent)
+          ;; Freeze scalar audit attribution after the request-local agent is
+          ;; selected.  Later UI/session mutations must not relabel this turn.
+          (when request-state
+            (magent-request-context-audit-snapshot request-state))
+          (let* ((thread (magent-session-thread-ledger session))
            (state-turn-id (and request-state
                                (magent-request-context-turn-id request-state)))
            (state-turn (and state-turn-id
@@ -285,7 +302,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
             (magent-agent--compose-system-message
              base-system-msg request-project-root memory-message skill-prompts))
            (tools (mapcar #'magent-tool-runtime-to-plist
-                          (magent-tool-runtime-for-agent agent))))
+                          (magent-tool-runtime-for-permission
+                           effective-permission))))
       (when capability-resolution
         (magent-lifecycle-events-emit
          'capability-resolution
@@ -349,9 +367,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                              capability-resolution))
                        request-context)
                    (magent-request-context-permission-profile request-state)
-                   (or (magent-request-context-permission-profile
-                        request-state)
-                       (magent-agent-info-permission agent))))
+                   effective-permission))
            (magent-log "INFO agent=%s backend=%s model=%s tools=[%s]"
                        (magent-agent-info-name agent)
                        (gptel-backend-name backend)
@@ -430,7 +446,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                (thread (magent-session-thread-ledger session))
                                (item (ensure-assistant-item)))
                      (magent-thread-append-item-content thread item chunk)
-                     (magent-session-save-deferred)))
+                     (magent-session-save-deferred-for-session
+                      session request-scope)))
                   (record-reasoning-delta
                    (text)
                    (when (not (null magent-include-reasoning))
@@ -438,7 +455,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                  (thread (magent-session-thread-ledger session))
                                  (item (ensure-reasoning-item)))
                        (magent-thread-append-item-content thread item chunk)
-                       (magent-session-save-deferred))))
+                       (magent-session-save-deferred-for-session
+                        session request-scope))))
                   (finish-reasoning-item
                    ()
                    (when-let* ((thread (magent-session-thread-ledger session))
@@ -449,7 +467,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                         :content (magent-thread-item-content item)
                         :metadata (magent-thread-item-metadata item))
                        (magent-session-refresh-projections session)
-                       (magent-session-save-deferred))
+                       (magent-session-save-deferred-for-session
+                        session request-scope))
                      (setq reasoning-item nil)))
                   (record-assistant-terminal
                    (status response)
@@ -491,7 +510,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                            (setq assistant-item item)
                            (magent-session-refresh-projections session)
                            (condition-case err
-                               (magent-session-save)
+                               (magent-session-save-for-session
+                                session request-scope)
                              (error
                               (magent-log
                                "ERROR immediate session save failed: %s"
@@ -767,27 +787,31 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                         (post-tool-reasoning-guard-active-p)))
                   (continue-turn
                    (outcome)
+                   (setq last-continuation-reason
+                         (plist-get outcome :reason))
+                   (when (eq last-continuation-reason 'tool-output)
+                     (cl-incf tool-output-seq))
                    (if (and (numberp magent-max-sampling-requests)
                             (> magent-max-sampling-requests 0)
                             (>= sampling-count
                                 magent-max-sampling-requests))
-                       (let ((message
-                              (format
-                               "Maximum sampling requests reached for this turn (%d)"
-                               magent-max-sampling-requests)))
+                       (if sample-strict-final-response-retry
+                           (let ((message
+                                  (format
+                                   "Maximum sampling requests reached for this turn (%d); the forced final request did not complete"
+                                   magent-max-sampling-requests)))
+                             (finish-turn
+                              'failed message
+                              (list :status 'sampling-limit
+                                    :sampling-count sampling-count
+                                    :continuation-reason
+                                    last-continuation-reason)))
+                         (setf (magent-agent-loop-request loop)
+                               (request-for-current-session-strict-final-response-retry))
                          (magent-log
-                          "WARN stopping turn continuation after %d sampling request(s): %s"
-                          sampling-count
-                          (plist-get outcome :reason))
-                         (finish-turn 'failed message
-                                      (list :status 'sampling-limit
-                                           :sampling-count sampling-count
-                                           :continuation-reason
-                                           (plist-get outcome :reason))))
-                     (setq last-continuation-reason
-                           (plist-get outcome :reason))
-                     (when (eq last-continuation-reason 'tool-output)
-                       (cl-incf tool-output-seq))
+                          "WARN sampling budget reached after %d request(s); forcing one provider-tools-disabled final request: %s"
+                          sampling-count last-continuation-reason)
+                         (sample))
                      (setf (magent-agent-loop-request loop)
                            (request-for-current-session))
                      (magent-log
@@ -812,7 +836,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                     :status status
                     :backend (and backend (gptel-backend-name backend))
                     :model (format "%s" model))
-                   (unless event-context
+                   (when owns-context
                      (magent-lifecycle-events-end-turn context status))
                    (record-assistant-terminal status response)
                    (when callback
@@ -903,7 +927,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                          loop
                          (magent-agent-loop-create-orchestrator
                           loop
-                          (magent-agent-info-permission agent)
+                          effective-permission
                           request-state)
                          (lambda (outcome)
                            (if (and (eq (magent-agent-loop-status loop)
@@ -994,12 +1018,19 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                    (list :effort effort)))
                       :callback #'handle-event)
                       :request-context request-state
+                      :event-context context
+                      :owns-event-context-p owns-context
                       :turn-id (and request-state
                                     (magent-request-context-turn-id
                                      request-state))
                       :sampler #'magent-llm-gptel-sample))
                (sample)
-               loop))))))))
+               loop)))))))
+      (error
+       (when owns-context
+         (magent-lifecycle-events-end-turn
+          context 'failed (error-message-string err)))
+       (signal (car err) (cdr err))))))
 
 (cl-defun magent-agent-run-turn
     (&key session prompt agent skills context observer request-context

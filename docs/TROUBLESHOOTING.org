@@ -123,7 +123,7 @@ variables explicitly, such as ~GPTEL_DIR~, ~TRANSIENT_DIR~, ~COMPAT_DIR~, or
         (magent-live-test-reload-source)
         (list :repo-source (magent-live-test--repo-source-summary)))'
    #+end_src
-   Every path in ~:repo-source~ must be under the checkout, for example ~/path/to/magent/magent.el~, not under ~~/.emacs.d/elpa/magent/~.
+   Every path in ~:repo-source~ must be under the checkout, for example ~/path/to/magent/lisp/magent.el~, not under ~~/.emacs.d/elpa/magent/~.
 
 4. Clear stale bytecode before batch or live verification. A warning like ~Source file ... newer than byte-compiled file; using older file~ means Emacs tested old code.
    #+begin_src bash

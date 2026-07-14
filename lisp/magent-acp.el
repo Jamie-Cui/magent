@@ -462,6 +462,7 @@ Each handler runs inside the CLIENT's context buffer (via
 
 (defun magent-acp--session-success (client runtime-session on-success)
   "Call ON-SUCCESS with RUNTIME-SESSION response and command metadata."
+  (magent-acp--bind-client-session client runtime-session)
   (funcall on-success (magent-acp--session-response runtime-session))
   (magent-acp--notify-available-commands client runtime-session))
 
@@ -617,6 +618,40 @@ Each handler runs inside the CLIENT's context buffer (via
       (let ((context-buffer (map-elt client :context-buffer)))
         (and (buffer-live-p context-buffer) context-buffer))))
 
+(defvar magent-acp--client-session-scopes
+  (make-hash-table :test #'eq :weakness 'key)
+  "Frozen session-id to scope bindings for each in-process ACP client.")
+
+(defun magent-acp--client-default-scope (client)
+  "Return the current buffer-derived scope for unbound ACP CLIENT."
+  (when-let* ((buffer (magent-acp--callback-buffer client nil)))
+    (with-current-buffer buffer
+      (magent-session-scope-from-directory default-directory))))
+
+(defun magent-acp--bind-client-session (client runtime-session)
+  "Bind CLIENT's RUNTIME-SESSION id to its exact creation/load scope."
+  (let* ((session-id (magent-runtime-session-id runtime-session))
+         (scope (magent-runtime-session-scope runtime-session))
+         (bindings
+          (or (gethash client magent-acp--client-session-scopes)
+              (let ((table (make-hash-table :test #'equal)))
+                (puthash client table magent-acp--client-session-scopes)
+                table))))
+    (puthash session-id scope bindings)
+    scope))
+
+(defun magent-acp--client-session-scope (client session-id)
+  "Return CLIENT's frozen scope for SESSION-ID, or nil when unbound."
+  (when-let* ((bindings (gethash client magent-acp--client-session-scopes)))
+    (gethash session-id bindings)))
+
+(defun magent-acp--request-session-scope (client session-id)
+  "Return CLIENT's stable scope for SESSION-ID.
+The buffer-derived fallback preserves clients that survived a source reload;
+new and resumed sessions are always explicitly bound before use."
+  (or (magent-acp--client-session-scope client session-id)
+      (magent-acp--client-default-scope client)))
+
 (defun magent-acp--wrap-callback (client buffer callback)
   "Return CALLBACK wrapped to run in CLIENT/BUFFER context."
   (when callback
@@ -646,35 +681,103 @@ Each handler runs inside the CLIENT's context buffer (via
        (t
         (funcall on-failure))))))
 
-(defun magent-acp--session-file-by-id (session-id)
-  "Return saved session file for SESSION-ID, or nil."
-  (seq-find
-   (lambda (file)
-     (equal (file-name-sans-extension (file-name-nondirectory file))
-            session-id))
-   (magent-session-list-files)))
+(defun magent-acp--scope-equal-p (left right)
+  "Return non-nil when session scopes LEFT and RIGHT are equal."
+  (cond
+   ((and (eq left 'global) (eq right 'global)) t)
+   ((and (stringp left) (stringp right))
+    (equal (file-truename (directory-file-name left))
+           (file-truename (directory-file-name right))))
+   (t nil)))
 
-(defun magent-acp--runtime-session-by-id (session-id)
-  "Return runtime session SESSION-ID, loading it from disk if needed."
-  (or (magent-runtime-session-from-id session-id)
-      (when-let* ((file (magent-acp--session-file-by-id session-id)))
+(defun magent-acp--scope-for-cwd (cwd)
+  "Return the Magent session scope for ACP CWD."
+  (unless (and (stringp cwd) (not (string-empty-p cwd)))
+    (error "ACP session cwd is required"))
+  (magent-session-scope-from-directory cwd))
+
+(defun magent-acp--file-scope (file)
+  "Return saved session scope represented by FILE metadata."
+  (let ((metadata (magent-session--read-file-metadata-cached file)))
+    (if (eq (plist-get metadata :scope) 'global)
+        'global
+      (plist-get metadata :project-root))))
+
+(defun magent-acp--session-file-by-id (session-id &optional expected-scope)
+  "Return saved session file for SESSION-ID in EXPECTED-SCOPE, or nil."
+  (magent-session-validate-id session-id)
+  (let ((matches
+         (cl-remove-if-not
+          (lambda (file)
+            (and (equal (file-name-sans-extension
+                         (file-name-nondirectory file))
+                        session-id)
+                 (or (null expected-scope)
+                     (magent-acp--scope-equal-p
+                      (magent-acp--file-scope file) expected-scope))))
+          (magent-session-list-files))))
+    ;; Without an exact scope, ambiguity is safer than silently loading another
+    ;; project's conversation.  Duplicate files within one scope are likewise
+    ;; treated as corrupt/ambiguous state.
+    (and (= (length matches) 1) (car matches))))
+
+(defun magent-acp--runtime-session-by-id (session-id &optional expected-scope)
+  "Return runtime SESSION-ID in EXPECTED-SCOPE, loading it if needed."
+  (magent-session-validate-id session-id)
+  (or (when-let* ((runtime-session
+                   (if expected-scope
+                       (magent-runtime-session-from-id
+                        session-id expected-scope)
+                     (magent-runtime-session-from-id session-id)))
+                  ((or (null expected-scope)
+                       (magent-acp--scope-equal-p
+                        (magent-runtime-session-scope runtime-session)
+                        expected-scope))))
+        runtime-session)
+      (when-let* ((file (magent-acp--session-file-by-id
+                         session-id expected-scope)))
         (magent-runtime-load-session-file file))))
 
-(defun magent-acp--session-list-response ()
-  "Return ACP session/list response."
-  `((sessions . ,(vconcat
-                  (mapcar
-                   (lambda (entry)
-                     (let ((updated-at (seconds-to-time
-                                        (plist-get entry :updated-at))))
-                       `((sessionId . ,(plist-get entry :id))
-                         (cwd . ,(or (plist-get entry :project-root)
-                                     default-directory))
-                         (title . ,(or (plist-get entry :title)
-                                       (plist-get entry :id)))
-                         (createdAt . ,(magent-acp--iso-time updated-at))
-                         (updatedAt . ,(magent-acp--iso-time updated-at)))))
-                   (magent-runtime-list-sessions))))))
+(defun magent-acp--runtime-session-for-scope (session-id expected-scope)
+  "Return SESSION-ID restricted to EXPECTED-SCOPE when it is available."
+  (if expected-scope
+      (magent-acp--runtime-session-by-id session-id expected-scope)
+    (magent-acp--runtime-session-by-id session-id)))
+
+(defun magent-acp--load-candidate (session-id scope)
+  "Return a read-only load candidate for SESSION-ID in exact SCOPE.
+The result contains either `:runtime-session' or `:session'.  Validating it
+does not activate overlays or install a session into the runtime registry."
+  (magent-session-validate-id session-id)
+  (if-let* ((runtime-session
+             (magent-runtime-session-from-id session-id scope)))
+      (list :runtime-session runtime-session)
+    (when-let* ((file (magent-acp--session-file-by-id session-id scope))
+                (loaded (magent-session-read-file file))
+                (loaded-scope (plist-get loaded :scope))
+                ((magent-acp--scope-equal-p loaded-scope scope))
+                (session (plist-get loaded :session)))
+      (list :session session))))
+
+(defun magent-acp--session-list-response (cwd)
+  "Return ACP session/list response filtered to CWD's exact scope."
+  (let ((scope (magent-acp--scope-for-cwd cwd)))
+    `((sessions . ,(vconcat
+                    (mapcar
+                     (lambda (entry)
+                       (let ((updated-at (seconds-to-time
+                                          (plist-get entry :updated-at))))
+                         `((sessionId . ,(plist-get entry :id))
+                           (cwd . ,(or (plist-get entry :project-root) cwd))
+                           (title . ,(or (plist-get entry :title)
+                                         (plist-get entry :id)))
+                           (createdAt . ,(magent-acp--iso-time updated-at))
+                           (updatedAt . ,(magent-acp--iso-time updated-at)))))
+                     (cl-remove-if-not
+                      (lambda (entry)
+                        (magent-acp--scope-equal-p
+                         (plist-get entry :scope) scope))
+                      (magent-runtime-list-sessions))))))))
 
 (defun magent-acp--emit-item-replay (client session-id item)
   "Replay ledger ITEM to CLIENT for SESSION-ID."
@@ -735,17 +838,18 @@ Each handler runs inside the CLIENT's context buffer (via
       (dolist (item (magent-thread-turn-items turn))
         (magent-acp--emit-item-replay client session-id item)))))
 
-(defun magent-acp--handle-set-mode (params)
+(defun magent-acp--handle-set-mode (params &optional expected-scope)
   "Handle ACP session/set_mode PARAMS."
   (let* ((session-id (map-elt params 'sessionId))
          (mode-id (map-elt params 'modeId))
-         (runtime-session (magent-acp--runtime-session-by-id session-id)))
+         (runtime-session
+          (magent-acp--runtime-session-for-scope session-id expected-scope)))
     (unless runtime-session
       (error "Unknown session: %s" session-id))
     (magent-runtime-session-set-agent runtime-session mode-id)
     (magent-acp--session-response runtime-session)))
 
-(defun magent-acp--handle-set-model (params)
+(defun magent-acp--handle-set-model (params &optional expected-scope)
   "Handle ACP session/set_model PARAMS.
 Magent uses gptel as the provider boundary, so the first ACP backend only
 advertises the currently configured gptel model.  Accepting that model keeps
@@ -753,7 +857,8 @@ agent-shell's default bootstrap flow working without adding ACP-side model
 switching semantics."
   (let* ((session-id (map-elt params 'sessionId))
          (model-id (map-elt params 'modelId))
-         (runtime-session (magent-acp--runtime-session-by-id session-id))
+         (runtime-session
+          (magent-acp--runtime-session-for-scope session-id expected-scope))
          (current-model-id (format "%s" (or (and (boundp 'gptel-model)
                                                  gptel-model)
                                             "gptel"))))
@@ -763,12 +868,13 @@ switching semantics."
       (error "Unknown Magent model: %s" model-id))
     (magent-acp--session-response runtime-session)))
 
-(defun magent-acp--handle-set-config-option (params)
+(defun magent-acp--handle-set-config-option (params &optional expected-scope)
   "Handle ACP session/set_config_option PARAMS."
   (let* ((session-id (map-elt params 'sessionId))
          (config-id (map-elt params 'configId))
          (value (map-elt params 'value))
-         (runtime-session (magent-acp--runtime-session-by-id session-id)))
+         (runtime-session
+          (magent-acp--runtime-session-for-scope session-id expected-scope)))
     (unless runtime-session
       (error "Unknown session: %s" session-id))
     (unless (equal config-id "effort")
@@ -806,28 +912,57 @@ switching semantics."
                   (runtime-session (magent-runtime-session-new scope)))
              (magent-acp--session-success client runtime-session on-success)))
           ("session/list"
-           (funcall on-success (magent-acp--session-list-response)))
+           (let ((cwd (or (map-elt params 'cwd) default-directory)))
+             (funcall on-success (magent-acp--session-list-response cwd))))
           ((or "session/load" "session/resume")
            (let* ((session-id (map-elt params 'sessionId))
-                  (runtime-session
-                   (magent-acp--runtime-session-by-id session-id)))
-             (unless runtime-session
-               (error "Unknown session: %s" session-id))
-             (magent-runtime-prepare-command-context
-              (magent-runtime-session-scope runtime-session))
-             (when (equal method "session/load")
-               (magent-acp--replay-session client runtime-session))
-             (magent-acp--session-success client runtime-session on-success)))
+                  (cwd (or (map-elt params 'cwd) default-directory))
+                  (scope (magent-acp--scope-for-cwd cwd))
+                  (candidate (magent-acp--load-candidate session-id scope)))
+             (unless candidate
+               (error "Unknown session in requested cwd: %s" session-id))
+             ;; Preflight exact-session replacement before changing overlays.
+             (let ((candidate-session
+                    (or (plist-get candidate :session)
+                        (when-let* ((runtime-session
+                                    (plist-get candidate :runtime-session)))
+                          (magent-runtime-session-magent-session
+                           runtime-session)))))
+               (magent-runtime-session-ensure-registerable
+                scope candidate-session))
+             (magent-runtime-prepare-command-context scope)
+             (let ((runtime-session
+                    (or (plist-get candidate :runtime-session)
+                        (magent-runtime-session-register
+                         scope (plist-get candidate :session)))))
+               (when (equal method "session/load")
+                 (magent-acp--replay-session client runtime-session))
+               (magent-acp--session-success
+                client runtime-session on-success))))
           ("session/set_mode"
-           (funcall on-success (magent-acp--handle-set-mode params)))
+           (let ((session-id (map-elt params 'sessionId)))
+             (funcall
+              on-success
+              (magent-acp--handle-set-mode
+               params (magent-acp--request-session-scope client session-id)))))
           ("session/set_model"
-           (funcall on-success (magent-acp--handle-set-model params)))
+           (let ((session-id (map-elt params 'sessionId)))
+             (funcall
+              on-success
+              (magent-acp--handle-set-model
+               params (magent-acp--request-session-scope client session-id)))))
           ("session/set_config_option"
-           (funcall on-success (magent-acp--handle-set-config-option params)))
+           (let ((session-id (map-elt params 'sessionId)))
+             (funcall
+              on-success
+              (magent-acp--handle-set-config-option
+               params (magent-acp--request-session-scope client session-id)))))
           ("session/prompt"
            (let* ((session-id (map-elt params 'sessionId))
                   (runtime-session
-                   (magent-acp--runtime-session-by-id session-id))
+                   (magent-acp--runtime-session-for-scope
+                    session-id
+                    (magent-acp--request-session-scope client session-id)))
                   (prompt (magent-acp--prompt-text (map-elt params 'prompt)))
                   (command (magent-acp--slash-command prompt)))
              (unless runtime-session
@@ -876,18 +1011,20 @@ active message running forever)."
 
 (cl-defun magent-acp--notification-sender (&key client notification sync)
   "Handle ACP NOTIFICATION from agent-shell."
-  (ignore client sync)
+  (ignore sync)
   (let ((method (map-elt notification :method))
         (params (map-elt notification :params)))
     (pcase method
       ("session/cancel"
-       (when-let* ((session-id (map-elt params 'sessionId))
-                   (runtime-session
-                    (magent-acp--runtime-session-by-id session-id)))
-         (magent-log "INFO ACP session cancel: session=%s reason=%s"
-                     session-id
-                     (or (map-elt params 'reason) ""))
-         (magent-runtime-cancel runtime-session)))
+       (when-let* ((session-id (map-elt params 'sessionId)))
+         (let* ((scope (magent-acp--request-session-scope client session-id))
+                (runtime-session
+                 (magent-acp--runtime-session-for-scope session-id scope)))
+           (when runtime-session
+             (magent-log "INFO ACP session cancel: session=%s reason=%s"
+                         session-id
+                         (or (map-elt params 'reason) ""))
+             (magent-runtime-cancel runtime-session)))))
       (_
        (magent-log "WARN unsupported ACP notification: %s" method)))))
 

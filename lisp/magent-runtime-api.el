@@ -37,16 +37,59 @@
   metadata)
 
 (defvar magent-runtime-api--sessions (make-hash-table :test #'equal)
-  "Runtime session wrappers keyed by session id.")
+  "Runtime session wrappers keyed by (SCOPE SESSION-ID).")
+
+(defvar magent-runtime-api--clearing-sessions
+  (make-hash-table :test #'eq :weakness 'key)
+  "Exact runtime sessions currently inside a clear transaction.")
+
+(defun magent-runtime-api--session-key (scope session-id)
+  "Return registry key for SCOPE and SESSION-ID."
+  (list scope session-id))
 
 (defun magent-runtime-api--session-id (session)
   "Return SESSION's stable id."
   (magent-session-get-id session))
 
+(defun magent-runtime-session-ensure-registerable (scope session)
+  "Signal when installing SESSION at SCOPE would violate a queue lease."
+  (let* ((id (magent-runtime-api--session-id session))
+         (existing
+          (gethash (magent-runtime-api--session-key scope id)
+                   magent-runtime-api--sessions))
+         (existing-session
+          (and existing (magent-runtime-session-magent-session existing)))
+         (installed (magent-session-get-if-present scope))
+         (active-scope (magent-runtime-queue-active-scope))
+         (active-session (magent-runtime-queue-active-session-object)))
+    (when (and active-scope
+               (equal (magent-session-scope-origin scope) active-scope)
+               (not (eq active-session session)))
+      (user-error
+       "Magent: cannot replace a session while its scope owns the execution lease"))
+    (dolist (candidate (delq nil (list existing-session installed)))
+      (when (and (not (eq candidate session))
+                 (magent-runtime-queue-session-busy-p candidate))
+        (user-error
+         "Magent: cannot replace a session with active or queued work")))
+    t))
+
+(defun magent-runtime-api--session-clearing-p (runtime-session)
+  "Return non-nil during RUNTIME-SESSION's exact clear transaction."
+  (gethash runtime-session magent-runtime-api--clearing-sessions))
+
+(defun magent-runtime-api--assert-session-available (runtime-session)
+  "Signal when RUNTIME-SESSION cannot accept a new state mutation."
+  (when (magent-runtime-api--session-clearing-p runtime-session)
+    (user-error "Magent: session is being cleared"))
+  t)
+
 (defun magent-runtime-api--wrap-session (session scope)
   "Return runtime wrapper for Magent SESSION at SCOPE."
+  (magent-runtime-session-ensure-registerable scope session)
   (let* ((id (magent-runtime-api--session-id session))
-         (existing (gethash id magent-runtime-api--sessions)))
+         (key (magent-runtime-api--session-key scope id))
+         (existing (gethash key magent-runtime-api--sessions)))
     (if existing
         (progn
           (setf (magent-runtime-session-scope existing) scope
@@ -57,35 +100,53 @@
               :id id
               :scope scope
               :magent-session session)))
-        (puthash id runtime-session magent-runtime-api--sessions)
+        (puthash key runtime-session magent-runtime-api--sessions)
         runtime-session))))
 
 (defun magent-runtime-session-current (&optional scope)
   "Return the current runtime session for SCOPE."
   (magent-runtime-ensure-initialized)
-  (let* ((target-scope (or scope (magent-session-current-scope)))
-         (session (magent-session-activate target-scope)))
-    (magent-runtime-api--wrap-session session target-scope)))
+  (let ((target-scope (or scope (magent-session-current-scope))))
+    (if-let* ((session (magent-session-get-if-present target-scope)))
+        (progn
+          (magent-session-activate target-scope)
+          (magent-runtime-api--wrap-session session target-scope))
+      ;; Preflight an absent scope before `magent-session-activate' can create
+      ;; and install a replacement underneath an exact active-session lease.
+      (magent-runtime-session-register
+       target-scope (magent-session-create)))))
 
 (defun magent-runtime-session-new (&optional scope)
   "Create and activate a new runtime session for SCOPE."
   (magent-runtime-ensure-initialized)
   (let* ((target-scope (or scope (magent-session-current-scope)))
          (session (magent-session-create)))
-    (magent-session-install target-scope session)
-    (magent-runtime-api--wrap-session session target-scope)))
+    (magent-runtime-session-register target-scope session)))
 
-(defun magent-runtime-session-from-id (session-id)
-  "Return runtime session SESSION-ID, or nil."
-  (gethash session-id magent-runtime-api--sessions))
+(defun magent-runtime-session-from-id (session-id &optional scope)
+  "Return runtime SESSION-ID, optionally restricted to exact SCOPE."
+  (if scope
+      (gethash (magent-runtime-api--session-key scope session-id)
+               magent-runtime-api--sessions)
+    (let (found ambiguous)
+      (maphash
+       (lambda (_key runtime-session)
+         (when (equal (magent-runtime-session-id runtime-session) session-id)
+           (if (or (null found) (eq found runtime-session))
+               (setq found runtime-session)
+             (setq ambiguous t))))
+       magent-runtime-api--sessions)
+      (unless ambiguous found))))
 
 (defun magent-runtime-session-register (scope session)
   "Install SESSION at SCOPE and return its runtime wrapper."
+  (magent-runtime-session-ensure-registerable scope session)
   (magent-session-install scope session)
   (magent-runtime-api--wrap-session session scope))
 
 (defun magent-runtime-session-set-agent (runtime-session agent-or-name)
   "Set RUNTIME-SESSION's agent to AGENT-OR-NAME."
+  (magent-runtime-api--assert-session-available runtime-session)
   (let* ((agent (cond
                  ((magent-agent-info-p agent-or-name) agent-or-name)
                  ((stringp agent-or-name)
@@ -118,12 +179,14 @@
 
 (defun magent-runtime-session-set-effort (runtime-session effort)
   "Set RUNTIME-SESSION effort option to EFFORT and return it."
+  (magent-runtime-api--assert-session-available runtime-session)
   (let ((option (magent-effort-option-or-auto effort)))
     (setf (magent-runtime-session-effort runtime-session) option)
     option))
 
 (defun magent-runtime-session-toggle-pending-skill (runtime-session skill-name)
   "Toggle one-shot SKILL-NAME for RUNTIME-SESSION."
+  (magent-runtime-api--assert-session-available runtime-session)
   (let ((skills (magent-runtime-session-pending-skills runtime-session)))
     (setf (magent-runtime-session-pending-skills runtime-session)
           (if (member skill-name skills)
@@ -132,6 +195,7 @@
 
 (defun magent-runtime-session-clear-pending-skills (runtime-session)
   "Clear one-shot skills for RUNTIME-SESSION."
+  (magent-runtime-api--assert-session-available runtime-session)
   (setf (magent-runtime-session-pending-skills runtime-session) nil))
 
 (defun magent-runtime-session-clear (runtime-session)
@@ -139,17 +203,44 @@
 Any active or queued work for the session is cancelled first."
   (unless (magent-runtime-session-p runtime-session)
     (error "Expected runtime session, got: %S" runtime-session))
-  (magent-runtime-cancel runtime-session)
-  (let ((session (magent-runtime-session-magent-session runtime-session))
-        (scope (magent-runtime-session-scope runtime-session)))
-    (magent-session-clear session scope)
-    (magent-runtime-session-clear-pending-skills runtime-session)
-    (magent-session-install scope session)
-    (when (fboundp 'magent-capability-clear-local-overrides)
-      (magent-capability-clear-local-overrides))
-    (magent-log "INFO runtime session cleared: %s"
-                (magent-runtime-session-id runtime-session))
-    runtime-session))
+  (magent-runtime-api--assert-session-available runtime-session)
+  (let* ((session (magent-runtime-session-magent-session runtime-session))
+         (scope (magent-runtime-session-scope runtime-session))
+         (installed (magent-session-get-if-present scope))
+         (owners (magent-runtime-queue-session-busy-owners session)))
+    ;; A stale wrapper with the same persisted id must never delete or replace
+    ;; the registered session's file.  Different ids have independent files
+    ;; and may be cleared without stealing the scope's current-session slot.
+    (when (and installed
+               (not (eq installed session))
+               (equal (magent-session-id installed)
+                      (magent-session-id session)))
+      (user-error
+       "Magent: refusing to clear a stale session with a reused id"))
+    ;; Runtime cancellation cannot safely terminalize legacy work that happens
+    ;; to capture the same session object.
+    (when (memq 'legacy owners)
+      (user-error
+       "Magent: cannot clear a session used by legacy queued or active work"))
+    (puthash runtime-session t magent-runtime-api--clearing-sessions)
+    (unwind-protect
+        (progn
+          (magent-runtime-cancel runtime-session)
+          (when (magent-runtime-queue-session-busy-p session)
+            (error "Magent: session cancellation did not release all work"))
+          (magent-session-clear session scope)
+          (setf (magent-runtime-session-pending-skills runtime-session) nil)
+          ;; Preserve another session currently selected in the same scope.
+          ;; A manually constructed runtime wrapper still becomes discoverable
+          ;; when no session has ever been installed there.
+          (unless (magent-session-get-if-present scope)
+            (magent-session-install scope session))
+          (when (fboundp 'magent-capability-clear-local-overrides)
+            (magent-capability-clear-local-overrides))
+          (magent-log "INFO runtime session cleared: %s"
+                      (magent-runtime-session-id runtime-session))
+          runtime-session)
+      (remhash runtime-session magent-runtime-api--clearing-sessions))))
 
 (defun magent-runtime-api--notify-submission (submission type &rest props)
   "Notify SUBMISSION's observer of TYPE with PROPS."
@@ -186,11 +277,14 @@ Any active or queued work for the session is cancelled first."
      thread (magent-thread-turn-id turn) prompt nil
      (list :source 'runtime-queue))
     (magent-session-refresh-projections session)
+    (magent-session-save-deferred-for-session session scope)
     (magent-thread-turn-id turn)))
 
 (defun magent-runtime-api--submission-live-p (submission)
-  "Return non-nil while SUBMISSION should still accept callbacks."
-  (memq (magent-runtime-submission-status submission) '(running queued)))
+  "Return non-nil while SUBMISSION still owns the active runtime slot."
+  (and (not (magent-runtime-submission-finalized submission))
+       (eq (magent-runtime-submission-status submission) 'running)
+       (eq submission (magent-runtime-queue-active-submission))))
 
 (defun magent-runtime-api--call-completion (submission status result)
   "Safely call SUBMISSION's completion callback with STATUS and RESULT."
@@ -216,13 +310,12 @@ Any active or queued work for the session is cancelled first."
        (_ 'turn-failed))
      :status status
      :result result)
-    (when (equal (magent-runtime-submission-id submission)
-                 (and (magent-runtime-queue-active-submission)
-                      (magent-runtime-submission-id
-                       (magent-runtime-queue-active-submission))))
+    (if (eq submission (magent-runtime-queue-active-submission))
       (magent-runtime-queue-finish-active
-       status result #'magent-runtime-api--start-submission))
-    (magent-runtime-api--call-completion submission status result)))
+       status result
+       (lambda ()
+         (magent-runtime-api--call-completion submission status result)))
+      (magent-runtime-api--call-completion submission status result))))
 
 (defun magent-runtime-api--submission-execution-scope (submission)
   "Return the project/global overlay scope for SUBMISSION."
@@ -240,6 +333,11 @@ Any active or queued work for the session is cancelled first."
      (magent-runtime-api--submission-execution-scope submission))
     (magent-session-install
      (magent-runtime-session-scope runtime-session)
+     (magent-runtime-session-magent-session runtime-session))
+    ;; Overlay activation refreshes the session currently registered for its
+    ;; ordinary scope.  Internal sessions and captured sessions installed only
+    ;; after that activation still need an explicit refresh.
+    (magent-session-refresh-agent
      (magent-runtime-session-magent-session runtime-session))))
 
 (defun magent-runtime-api--mark-submission-turn-started (submission)
@@ -300,10 +398,6 @@ Any active or queued work for the session is cancelled first."
       (progn
         (magent-runtime-api--activate-submission-session submission)
         (magent-runtime-api--mark-submission-turn-started submission)
-        (magent-runtime-api--notify-submission submission 'turn-start)
-        (magent-runtime-api--notify-submission
-         submission 'user-message
-         :text (magent-runtime-submission-prompt submission))
         (let* ((runtime-session (magent-runtime-submission-session submission))
                (session (magent-runtime-session-magent-session runtime-session))
                (request-context
@@ -323,21 +417,39 @@ Any active or queued work for the session is cancelled first."
                  :submission-id (magent-runtime-submission-id submission)
                  :live-p (lambda ()
                            (magent-runtime-api--submission-live-p submission)))))
-          (setf (magent-runtime-submission-handle submission)
-                (magent-agent-run-turn
-                 :session session
-                 :prompt (magent-runtime-submission-prompt submission)
-                 :agent (magent-runtime-submission-agent submission)
-                 :skills (magent-runtime-submission-skills submission)
-                 :context (magent-runtime-submission-context submission)
-                 :request-context request-context
-                 :on-complete
-                 (lambda (result)
-                   (let ((status (if (magent-agent-result-success-p result)
-                                     'completed
-                                   'failed)))
-                     (magent-runtime-api--finish-submission
-                      submission status result)))))))
+          (magent-runtime-queue-set-submission-request-context
+           submission request-context)
+          (when (magent-runtime-api--submission-live-p submission)
+            (magent-runtime-api--notify-submission submission 'turn-start))
+          (when (magent-runtime-api--submission-live-p submission)
+            (magent-runtime-api--notify-submission
+             submission 'user-message
+             :text (magent-runtime-submission-prompt submission)))
+          (when (magent-runtime-api--submission-live-p submission)
+            (let ((handle
+                   (magent-agent-run-turn
+                    :session session
+                    :prompt (magent-runtime-submission-prompt submission)
+                    :agent (magent-runtime-submission-agent submission)
+                    :skills (magent-runtime-submission-skills submission)
+                    :context (magent-runtime-submission-context submission)
+                    :request-context request-context
+                    :on-complete
+                    (lambda (result)
+                      (let ((status
+                             (if (magent-agent-result-success-p result)
+                                 'completed
+                               'failed)))
+                        (magent-runtime-api--finish-submission
+                         submission status result))))))
+              (setf (magent-runtime-submission-handle submission) handle)
+              ;; A synchronous observer may cancel while the sampler is still
+              ;; on the stack, before HANDLE can be stored.  The starter lease
+              ;; prevents the next ticket from advancing until this point.
+              (when (and (eq (magent-runtime-submission-status submission)
+                             'cancelled)
+                         (magent-agent-loop-p handle))
+                (magent-agent-loop-abort handle))))))
     (error
      (let* ((message (format "Runtime startup failed: %s"
                              (error-message-string err)))
@@ -370,6 +482,7 @@ Any active or queued work for the session is cancelled first."
 OBSERVER receives request-local Magent-native events."
   (unless (magent-runtime-session-p runtime-session)
     (error "Expected runtime session, got: %S" runtime-session))
+  (magent-runtime-api--assert-session-available runtime-session)
   (unless (and (stringp prompt)
                (not (string-empty-p (string-trim prompt))))
     (error "Prompt is empty"))
@@ -409,6 +522,7 @@ turn is marked as a future prompt-history boundary while the session's selected
 user-facing agent is restored after the request finishes."
   (unless (magent-runtime-session-p runtime-session)
     (error "Expected runtime session, got: %S" runtime-session))
+  (magent-runtime-api--assert-session-available runtime-session)
   (let* ((session (magent-runtime-session-magent-session runtime-session))
          (selected-agent (magent-session-agent session))
          (compaction-agent (magent-agent-registry-get "compaction"))
@@ -449,14 +563,11 @@ user-facing agent is restored after the request finishes."
 
 (defun magent-runtime-pending-count (&optional runtime-session)
   "Return queued turn count, optionally for RUNTIME-SESSION."
-  (magent-runtime-queue-length
-   (and runtime-session
-        (magent-runtime-session-id runtime-session))))
+  (magent-runtime-queue-length runtime-session))
 
 (defun magent-runtime-cancel (runtime-session)
   "Cancel RUNTIME-SESSION active and queued submissions."
-  (let* ((session-id (magent-runtime-session-id runtime-session))
-         (removed (magent-runtime-queue-remove-session session-id))
+  (let* ((removed (magent-runtime-queue-remove-session runtime-session))
          (active (magent-runtime-queue-active-submission)))
     (dolist (submission removed)
       (magent-runtime-api--mark-submission-turn-dropped
@@ -464,8 +575,8 @@ user-facing agent is restored after the request finishes."
       (magent-runtime-api--finish-submission
        submission 'cancelled "Queued turn cancelled"))
     (when (and active
-               (equal (magent-runtime-submission-session-id active)
-                      session-id))
+               (eq (magent-runtime-submission-session active)
+                   runtime-session))
       (setf (magent-runtime-submission-status active) 'cancelled)
       (when-let* ((handle (magent-runtime-submission-handle active)))
         (when (magent-agent-loop-p handle)
@@ -476,8 +587,8 @@ user-facing agent is restored after the request finishes."
        active 'cancelled "Active turn cancelled"))
     (+ (length removed)
        (if (and active
-                (equal (magent-runtime-submission-session-id active)
-                       session-id))
+                (eq (magent-runtime-submission-session active)
+                    runtime-session))
            1
          0))))
 
@@ -487,19 +598,28 @@ user-facing agent is restored after the request finishes."
 
 (defun magent-runtime-list-sessions ()
   "Return saved sessions as plists for UI/ACP display."
-  (mapcar
-   (lambda (file)
-     (let* ((metadata (magent-session--read-file-metadata-cached file))
-            (scope (if (eq (plist-get metadata :scope) 'global)
-                       'global
-                     (plist-get metadata :project-root))))
-       (list :id (magent-runtime-api--session-id-from-file file)
-             :file file
-             :scope scope
-             :project-root (plist-get metadata :project-root)
-             :title (plist-get metadata :summary-title)
-             :updated-at (float-time (magent-session--file-display-time file)))))
-   (magent-session-list-files)))
+  (delq
+   nil
+   (mapcar
+    (lambda (file)
+      (let* ((metadata (magent-session--read-file-metadata-cached file))
+             (valid (or (not (plist-member metadata :valid))
+                        (plist-get metadata :valid)))
+             (id (or (plist-get metadata :id)
+                     (and valid
+                          (magent-runtime-api--session-id-from-file file))))
+             (scope (if (eq (plist-get metadata :scope) 'global)
+                        'global
+                      (plist-get metadata :project-root))))
+        (when (and valid (magent-session-valid-id-p id))
+          (list :id id
+                :file file
+                :scope scope
+                :project-root (plist-get metadata :project-root)
+                :title (plist-get metadata :summary-title)
+                :updated-at
+                (float-time (magent-session--file-display-time file))))))
+    (magent-session-list-files))))
 
 (defun magent-runtime-load-session-file (file)
   "Load session FILE and return a runtime session."

@@ -40,6 +40,28 @@
       (and request-context
            (magent-request-context-session request-context))))
 
+(defun magent-tool-orchestrator--project-root (request-context)
+  "Return the canonical project root carried by REQUEST-CONTEXT."
+  (when-let* ((root
+               (or (and request-context
+                        (magent-request-context-project-root request-context))
+                   (and request-context
+                        (let ((scope (magent-request-context-scope
+                                      request-context)))
+                          (and (stringp scope) scope))))))
+    (condition-case nil
+        (file-truename (expand-file-name root))
+      (error (expand-file-name root)))))
+
+(defun magent-tool-orchestrator--canonical-resource
+    (file-path request-context)
+  "Return canonical FILE-PATH for permission and tool I/O identity."
+  (unless (stringp file-path)
+    (error "Resource path must be a string"))
+  (magent-tools-canonical-resource-path
+   file-path
+   (magent-tool-orchestrator--project-root request-context)))
+
 (defun magent-tool-orchestrator--call-audit
     (orchestrator tool-spec arg-values decision source)
   "Call ORCHESTRATOR audit hook."
@@ -47,10 +69,25 @@
     (funcall fn tool-spec arg-values decision source
              (magent-tool-orchestrator-request-context orchestrator))))
 
-(defun magent-tool-orchestrator--run (orchestrator tool-spec cb arg-values)
+(defun magent-tool-orchestrator--accepts-arity-p (function arity)
+  "Return non-nil when FUNCTION accepts ARITY arguments."
+  (pcase-let ((`(,minimum . ,maximum) (func-arity function)))
+    (and (<= minimum arity)
+         (or (eq maximum 'many)
+             (null maximum)
+             (and (numberp maximum) (>= maximum arity))))))
+
+(defun magent-tool-orchestrator--run
+    (orchestrator tool-spec cb arg-values &optional resource-identity)
   "Run TOOL-SPEC through ORCHESTRATOR."
-  (funcall (magent-tool-orchestrator-run-tool-function orchestrator)
-           tool-spec cb arg-values))
+  (let ((function (magent-tool-orchestrator-run-tool-function orchestrator)))
+    ;; The fourth argument is a compatible extension: legacy/test runners that
+    ;; accept the historical three arguments continue to work, while the agent
+    ;; loop carries the frozen identity to the actual dequeue point.
+    (if (and resource-identity
+             (magent-tool-orchestrator--accepts-arity-p function 4))
+        (funcall function tool-spec cb arg-values resource-identity)
+      (funcall function tool-spec cb arg-values))))
 
 (defun magent-tool-orchestrator--finish-one
     (orchestrator tool-spec arg-values raw-call result)
@@ -129,28 +166,88 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
                  (raw-call (nth 3 tc))
                  (tool-name (gptel-tool-name tool-spec))
                  (perm-key (magent-tools-permission-key tool-name))
-                 (file-path
+                 (file-arg-index
                   (when perm-key
-                    (let ((idx (magent-tool-orchestrator--file-arg-index
-                                orchestrator
-                                (gptel-tool-args tool-spec))))
-                      (when idx
-                        (nth idx arg-values)))))
-                 (resolved (when perm-key
-                             (magent-permission-resolve
-                              permission perm-key file-path)))
+                    (magent-tool-orchestrator--file-arg-index
+                     orchestrator
+                     (gptel-tool-args tool-spec))))
+                 (raw-file-path
+                  (and file-arg-index
+                       (nth file-arg-index arg-values)))
+                 (project-root nil)
+                 (canonicalization-error nil)
+                 (file-path
+                  (when file-arg-index
+                    (condition-case err
+                        (progn
+                          (setq project-root
+                                (magent-tool-orchestrator--project-root
+                                 request-context))
+                          (magent-tool-orchestrator--canonical-resource
+                           raw-file-path request-context))
+                      (error
+                       (setq canonicalization-error err)
+                       nil))))
+                 (resolved
+                  (when perm-key
+                    (if canonicalization-error
+                        'deny
+                      (magent-permission-resolve
+                       permission perm-key file-path project-root))))
                  (override (when perm-key
                              (magent-permission-session-override
-                              perm-key approval-session))))
+                              perm-key approval-session)))
+                 (resource-identity
+                  (and file-arg-index
+                       file-path
+                       (not canonicalization-error)
+                       (list :file-arg-index file-arg-index
+                             :canonical-resource file-path))))
+            ;; Freeze the same canonical resource identity that permission
+            ;; resolution inspected into the eventual tool invocation.  In
+            ;; particular, an approval delay must not allow a symlinked model
+            ;; argument to resolve to a different target at execution time.
+            (when (and file-arg-index file-path)
+              (setq arg-values (copy-sequence arg-values))
+              (setf (nth file-arg-index arg-values) file-path))
             (magent-lifecycle-events-emit
              'tool-approval-evaluated
              :context (and request-context
                            (magent-request-context-event-context request-context))
+             :audit-context
+             (magent-request-context-audit-snapshot request-context)
              :tool-name tool-name
              :perm-key perm-key
              :file file-path
-             :decision (or override resolved 'ask))
+             :decision (if (eq resolved 'deny)
+                           'deny
+                         (or override resolved 'ask)))
             (cond
+             ;; A persisted session choice only resolves an `ask'.  It must
+             ;; never relax an explicit tool or resource deny.
+             ((eq resolved 'deny)
+              (let ((source (cond
+                             (canonicalization-error
+                              'canonicalization-deny)
+                             (file-path 'file-rule-deny)
+                             (t 'rule-deny))))
+                (magent-log "PERM auto-deny (%s): %s %s"
+                            source tool-name (or file-path ""))
+                (magent-tool-orchestrator--call-audit
+                 orchestrator tool-spec arg-values 'deny source)
+                (setq raw-call
+                      (magent-tool-orchestrator--annotate-approval
+                       raw-call 'deny source))
+                (let ((result
+                       (if canonicalization-error
+                           (format "Error: invalid or unstable resource path for %s"
+                                   tool-name)
+                         (format "Error: access denied for %s on %s"
+                                 tool-name
+                                 (or file-path "this resource")))))
+                  (when cb
+                    (funcall cb result))
+                  (complete-one tool-spec arg-values raw-call result))))
              ((eq override 'allow)
               (magent-log "PERM auto-allow (session override): %s" tool-name)
               (magent-tool-orchestrator--call-audit
@@ -165,7 +262,7 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
                  (when cb
                    (funcall cb result))
                  (complete-one tool-spec arg-values raw-call result))
-               arg-values))
+               arg-values resource-identity))
              ((eq override 'deny)
               (magent-log "PERM auto-deny (session override): %s" tool-name)
               (magent-tool-orchestrator--call-audit
@@ -176,20 +273,6 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
                      raw-call 'deny 'session-override-deny))
               (let ((result (format "Error: tool '%s' denied by session policy"
                                     tool-name)))
-                (when cb
-                  (funcall cb result))
-                (complete-one tool-spec arg-values raw-call result)))
-             ((eq resolved 'deny)
-              (magent-log "PERM auto-deny (file rule): %s %s"
-                          tool-name (or file-path ""))
-              (magent-tool-orchestrator--call-audit
-               orchestrator tool-spec arg-values 'deny 'file-rule-deny)
-              (setq raw-call
-                    (magent-tool-orchestrator--annotate-approval
-                     raw-call 'deny 'file-rule-deny))
-              (let ((result (format "Error: access denied for %s on %s"
-                                    tool-name
-                                    (or file-path "this resource"))))
                 (when cb
                   (funcall cb result))
                 (complete-one tool-spec arg-values raw-call result)))
@@ -207,7 +290,7 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
                  (when cb
                    (funcall cb result))
                  (complete-one tool-spec arg-values raw-call result))
-               arg-values))
+               arg-values resource-identity))
              ((eq resolved 'allow)
               (magent-log "PERM auto-allow: %s" tool-name)
               (magent-tool-orchestrator--call-audit
@@ -221,9 +304,10 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
                  (when cb
                    (funcall cb result))
                  (complete-one tool-spec arg-values raw-call result))
-               arg-values))
+               arg-values resource-identity))
              (t
-              (push tc pending)))))
+              (push (list tool-spec arg-values cb raw-call resource-identity)
+                    pending)))))
         (when pending
           (magent-tool-orchestrator-prompt-next
            orchestrator (nreverse pending) #'complete-one)))))))
@@ -238,6 +322,7 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
            (arg-values (cadr tc))
            (cb (caddr tc))
            (raw-call (nth 3 tc))
+           (resource-identity (nth 4 tc))
            (tool-name (gptel-tool-name tool-spec))
            (perm-key (magent-tools-permission-key tool-name))
            (request-context
@@ -254,6 +339,8 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
                              request-context))
              :context (and request-context
                            (magent-request-context-event-context request-context))
+             :audit-context
+             (magent-request-context-audit-snapshot request-context)
              :tool-name tool-name
              :perm-key perm-key
              :summary summary
@@ -282,7 +369,7 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
                  (funcall cb result))
                (when complete-one
                  (funcall complete-one tool-spec arg-values raw-call result)))
-             arg-values))
+             arg-values resource-identity))
            ('deny-once
             (magent-log "PERM user denied (once): %s" tool-name)
             (magent-tool-orchestrator--call-audit
@@ -312,7 +399,7 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
                  (funcall cb result))
                (when complete-one
                  (funcall complete-one tool-spec arg-values raw-call result)))
-             arg-values))
+             arg-values resource-identity))
            ('deny-session
             (magent-log "PERM user always-deny: %s" tool-name)
             (when perm-key

@@ -40,6 +40,7 @@
 (declare-function dom-inner-text "dom")
 
 (defvar magent--current-session)
+(defvar magent-lifecycle-events--subagent-audit-context)
 (defvar magent-session--current-scope)
 
 ;;; Tool implementations
@@ -83,15 +84,36 @@ parent `magent-session' under `agent-jobs'.")
     (funcall magent-tools--register-cancel cleanup))
   cleanup)
 
+(defun magent-tools-canonical-resource-path (path &optional project-root)
+  "Return the canonical absolute resource path for PATH.
+Expands ~ and environment variables first, then resolves relative paths
+against PROJECT-ROOT or the current tool request's project root.  Permission
+resolution and tool I/O both use this function so they cannot disagree about
+absolute versus project-relative spellings of the same resource."
+  (unless (stringp path)
+    (error "Resource path must be a string (got %S)" path))
+  (let* ((path (substitute-in-file-name path))
+         (root (or project-root (magent-tools--request-project-root)))
+         (canonical-root (and root (file-truename (expand-file-name root))))
+         (expanded (if (file-name-absolute-p path)
+                       (expand-file-name path)
+                     (expand-file-name path canonical-root))))
+    ;; `substitute-in-file-name' deliberately leaves references to undefined
+    ;; variables untouched.  Such a path is not a stable policy identity: a
+    ;; later tool or timer could define the variable before execution and make
+    ;; the same string name a different resource.
+    (when (string-match-p
+           "\\$\\(?:{[[:alpha:]_][[:alnum:]_]*}\\|[[:alpha:]_][[:alnum:]_]*\\)"
+           path)
+      (error "Resource path contains an unresolved environment variable"))
+    ;; `file-truename' also resolves existing symlink ancestors for a target
+    ;; that does not exist yet, preventing policy checks and I/O from naming
+    ;; different resources through a symlinked directory.
+    (file-truename expanded)))
+
 (defun magent-tools--resolve-path (path)
-  "Resolve PATH for tool operations.
-Expands ~ and environment variables first, then resolves relative
-paths against the project root."
-  (let ((path (substitute-in-file-name path))
-        (root (magent-tools--request-project-root)))
-    (if (file-name-absolute-p path)
-        (expand-file-name path)
-      (expand-file-name path root))))
+  "Resolve PATH for tool operations."
+  (magent-tools-canonical-resource-path path))
 
 (defun magent-tools--read-file (callback path)
   "Read contents of file at PATH asynchronously.
@@ -151,68 +173,150 @@ SCOPE and SCOPE-FILES describe a scoped summary."
   "Search for PATTERN in files under PATH using ripgrep asynchronously.
 If CASE-SENSITIVE is nil, performs case-insensitive search.
 CALLBACK is called with matching lines or error message."
-  (let* ((resolved (magent-tools--resolve-path path))
-         (default-directory (if (file-directory-p resolved)
-                                resolved
-                              (or (file-name-directory resolved)
-                                  (magent-tools--request-project-root))))
-         (buf (generate-new-buffer " *magent-grep*"))
-         (args (list "--no-heading" "--line-number" "--color=never"
-                     (format "--max-count=%d" magent-grep-max-matches)))
-         proc)
-    (unless case-sensitive
-      (push "--ignore-case" args))
-    (unless (file-directory-p resolved)
-      (push resolved args))
-    (push pattern args)
-    (setq proc
-          (make-process
-           :name "magent-grep"
-           :buffer buf
-           :command (cons magent-grep-program (nreverse args))
-           :sentinel
-           (lambda (proc _event)
-             (when (memq (process-status proc) '(exit signal))
-               (let ((output (if (buffer-live-p buf)
-                                 (with-current-buffer buf (buffer-string))
-                               ""))
-                     (exit-code (process-exit-status proc)))
+  (let (buf proc)
+    (condition-case err
+        (progn
+          (unless (stringp pattern)
+            (error "Missing required argument 'pattern' (got %S)" pattern))
+          (unless (stringp path)
+            (error "Missing required argument 'path' (got %S)" path))
+          (let* ((resolved (magent-tools--resolve-path path))
+                 (directory-p (file-directory-p resolved))
+                 (default-directory
+                  (if directory-p
+                      (file-name-as-directory resolved)
+                    (or (file-name-directory resolved)
+                        (magent-tools--request-project-root))))
+                 (target (if directory-p "." resolved))
+                 (limit (max 1 magent-grep-max-matches))
+                 (args (append
+                        (list "--no-heading" "--line-number" "--color=never")
+                        (unless case-sensitive (list "--ignore-case"))
+                        (list "--" pattern target)))
+                 (finished nil)
+                 (truncated nil))
+            (setq buf (generate-new-buffer " *magent-grep*"))
+            (cl-labels
+                ((finish
+                  (process)
+                  (unless finished
+                    (setq finished t)
+                    (let* ((output (if (buffer-live-p buf)
+                                       (with-current-buffer buf (buffer-string))
+                                     ""))
+                           (exit-code (process-exit-status process))
+                           (trimmed (string-trim-right output)))
+                      (when (buffer-live-p buf)
+                        (kill-buffer buf))
+                      (funcall
+                       callback
+                       (cond
+                        (truncated
+                         (magent-tool-result-create
+                          :status 'completed
+                          :success t
+                          :exit-code 0
+                          :metadata (list :truncated t :limit limit)
+                          :output (format "%s%s[results truncated after %d matches]"
+                                          trimmed
+                                          (if (string-empty-p trimmed) "" "\n")
+                                          limit)))
+                        ((= exit-code 0)
+                         (magent-tool-result-create
+                          :status 'completed
+                          :success t
+                          :exit-code exit-code
+                          :output (if (string-blank-p output)
+                                      "No matches found"
+                                    trimmed)))
+                        ((= exit-code 1)
+                         (magent-tool-result-create
+                          :status 'completed
+                          :success t
+                          :exit-code exit-code
+                          :output "No matches found"))
+                        (t
+                         (let ((message
+                                (if (string-blank-p output)
+                                    (format "grep failed with exit code %d"
+                                            exit-code)
+                                  trimmed)))
+                           (magent-tool-result-create
+                            :status 'failed
+                            :success nil
+                            :exit-code exit-code
+                            :output message
+                            :error message)))))))))
+              (setq proc
+                    (make-process
+                     :name "magent-grep"
+                     :buffer buf
+                     :command (cons magent-grep-program args)
+                     :noquery t
+                     :filter
+                     (lambda (process chunk)
+                       (when (buffer-live-p buf)
+                         (with-current-buffer buf
+                           (goto-char (point-max))
+                           (insert chunk)
+                           (save-excursion
+                             (goto-char (point-min))
+                             (forward-line limit)
+                             (unless (eobp)
+                               (setq truncated t)
+                               (delete-region (point) (point-max))))))
+                       (when (and truncated (process-live-p process))
+                         (delete-process process)))
+                     :sentinel
+                     (lambda (process _event)
+                       (when (memq (process-status process) '(exit signal))
+                         (finish process)))))
+              (magent-tools--register-cancel-cleanup
+               (lambda ()
+                 (when (and proc (process-live-p proc))
+                   (delete-process proc))
                  (when (buffer-live-p buf)
-                   (kill-buffer buf))
-                 (funcall callback
-                          (cond
-                           ((= exit-code 0)
-                            (magent-tool-result-create
-                             :status 'completed
-                             :success t
-                             :exit-code exit-code
-                             :output (if (string-blank-p output)
-                                         "No matches found"
-                                       (string-trim-right output))))
-                           ((= exit-code 1)
-                            (magent-tool-result-create
-                             :status 'completed
-                             :success t
-                             :exit-code exit-code
-                             :output "No matches found"))
-                           (t
-                            (let ((message
-                                   (if (string-blank-p output)
-                                       (format "grep failed with exit code %d"
-                                               exit-code)
-                                     (string-trim-right output))))
-                              (magent-tool-result-create
-                               :status 'failed
-                               :success nil
-                               :exit-code exit-code
-                               :output message
-                               :error message))))))))))
-    (magent-tools--register-cancel-cleanup
-     (lambda ()
-       (when (process-live-p proc)
-         (delete-process proc))
+                   (kill-buffer buf)))))))
+      (error
        (when (buffer-live-p buf)
-         (kill-buffer buf))))))
+         (kill-buffer buf))
+       (funcall callback
+                (magent-tool-result-create
+                 :status 'failed
+                 :success nil
+                 :output (format "grep failed: %s" (error-message-string err))
+                 :error (error-message-string err)))))))
+
+(defun magent-tools--glob-to-regexp (pattern)
+  "Translate glob PATTERN to a regexp with distinct * and ** semantics."
+  (let ((index 0)
+        (length (length pattern))
+        (regexp "\\`"))
+    (while (< index length)
+      (cond
+       ((and (< (+ index 2) length)
+             (eq (aref pattern index) ?*)
+             (eq (aref pattern (1+ index)) ?*)
+             (eq (aref pattern (+ index 2)) ?/))
+        (setq regexp (concat regexp "\\(?:.*/\\)?")
+              index (+ index 3)))
+       ((and (< (1+ index) length)
+             (eq (aref pattern index) ?*)
+             (eq (aref pattern (1+ index)) ?*))
+        (setq regexp (concat regexp ".*")
+              index (+ index 2)))
+       ((eq (aref pattern index) ?*)
+        (setq regexp (concat regexp "[^/]*")
+              index (1+ index)))
+       ((eq (aref pattern index) ??)
+        (setq regexp (concat regexp "[^/]")
+              index (1+ index)))
+       (t
+        (setq regexp (concat regexp
+                             (regexp-quote (char-to-string
+                                            (aref pattern index))))
+              index (1+ index)))))
+    (concat regexp "\\'")))
 
 (defun magent-tools--glob (callback pattern path)
   "Find files matching PATTERN under PATH asynchronously.
@@ -220,23 +324,27 @@ Supports * and ** wildcards.
 CALLBACK is called with list of matching file paths."
   (condition-case err
       (let* ((resolved (magent-tools--resolve-path path))
-             (default-directory (if (file-directory-p resolved)
-                                    resolved
-                                  (or (file-name-directory resolved)
-                                      (magent-tools--request-project-root))))
+             (search-root (if (file-directory-p resolved)
+                              resolved
+                            (or (file-name-directory resolved)
+                                (magent-tools--request-project-root))))
+             (normalized-pattern
+              (string-remove-prefix "./" (subst-char-in-string ?\\ ?/ pattern)))
              (matches
               (if (string-match-p "\\*\\*" pattern)
-                  ;; ** requires recursive search
-                  (let* ((parts (split-string pattern "\\*\\*/?"))
-                         (file-regexp (if (> (length parts) 1)
-                                          (wildcard-to-regexp (car (last parts)))
-                                        nil)))
-                    (directory-files-recursively
-                     default-directory
-                     (or file-regexp ".")))
+                  (let ((regexp (magent-tools--glob-to-regexp
+                                 normalized-pattern)))
+                    (cl-remove-if-not
+                     (lambda (file)
+                       (let ((relative
+                              (subst-char-in-string
+                               ?\\ ?/ (file-relative-name file search-root))))
+                         (string-match-p regexp relative)))
+                     (directory-files-recursively search-root ".")))
                 ;; Single * uses file-expand-wildcards
-                (file-expand-wildcards pattern t))))
-        (funcall callback (mapconcat #'identity matches "\n")))
+                (file-expand-wildcards
+                 (expand-file-name normalized-pattern search-root) t))))
+        (funcall callback (mapconcat #'identity (sort matches #'string<) "\n")))
     (error (funcall callback (format "Error during glob: %s" (error-message-string err))))))
 
 (defun magent-tools--edit-file (callback path old-text new-text)
@@ -244,7 +352,12 @@ CALLBACK is called with list of matching file paths."
 OLD-TEXT must match exactly once in the file.
 CALLBACK is called with success message or error."
   (condition-case err
-      (let ((path (magent-tools--resolve-path path)))
+      (progn
+        (unless (and (stringp old-text) (not (string-empty-p old-text)))
+          (error "old_text must be a non-empty string"))
+        (unless (stringp new-text)
+          (error "new_text must be a string"))
+        (let ((path (magent-tools--resolve-path path)))
         (let* ((content (with-temp-buffer
                           (insert-file-contents path)
                           (buffer-string)))
@@ -263,7 +376,7 @@ CALLBACK is called with success message or error."
               (with-temp-buffer
                 (insert new-content)
                 (write-region (point-min) (point-max) path nil 0))
-              (funcall callback (format "Successfully edited %s" path)))))))
+              (funcall callback (format "Successfully edited %s" path))))))))
     (error
      (funcall callback (format "Error editing file: %s"
                                (error-message-string err))))))
@@ -546,40 +659,20 @@ CALLBACK is called with the command output (stdout + stderr)."
       (edit . ,(symbol-name (magent-permission-resolve rules 'edit)))
       (wildcard . ,(symbol-name (magent-permission-resolve rules '*))))))
 
-(defconst magent-tools--permission-rank
-  '((deny . 0)
-    (ask . 1)
-    (allow . 2))
-  "Permission ordering used for inherited child-agent intersections.")
-
-(defconst magent-tools--permission-keys
-  '(read write edit grep glob bash emacs_eval agent skill web_search)
-  "Canonical list of magent tool permission key symbols.
-This is the single source of truth for all tool names in the permission system.")
-
-(defun magent-tools--permission-more-restrictive (left right)
-  "Return the more restrictive permission of LEFT and RIGHT."
-  (let ((left-rank (cdr (assq left magent-tools--permission-rank)))
-        (right-rank (cdr (assq right magent-tools--permission-rank))))
-    (if (<= (or left-rank 2) (or right-rank 2))
-        left
-      right)))
+(defconst magent-tools--permission-keys magent-permission-keys
+  "Compatibility view of canonical `magent-permission-keys'.")
 
 (defun magent-tools--effective-child-permission (parent-context agent)
-  "Return AGENT permission restricted by PARENT-CONTEXT's profile."
+  "Return AGENT permission restricted by PARENT-CONTEXT's profile.
+The returned intersection preserves nested file/resource rules from both the
+parent and child instead of flattening them to one decision per tool."
   (let ((parent-permission
          (and parent-context
               (magent-request-context-permission-profile parent-context)))
         (child-permission (magent-agent-info-permission agent)))
     (if (not parent-permission)
         child-permission
-      (mapcar
-       (lambda (key)
-         (cons key
-               (magent-tools--permission-more-restrictive
-                (magent-permission-resolve parent-permission key)
-                (magent-permission-resolve child-permission key))))
-       (append magent-tools--permission-keys '(*))))))
+      (magent-permission-intersect parent-permission child-permission))))
 
 (defun magent-tools--agent-model-name (model)
   "Return MODEL as a JSON-safe string."
@@ -746,10 +839,12 @@ Return the child loop handle when startup succeeds."
                     (format "Agent %s: %s" agent-name task-name)
                   (format "Agent %s" agent-name)))
          (subagent-context
-          (magent-lifecycle-events-create-subagent-context
-           title
-           (and parent-context
-                (magent-request-context-event-context parent-context))))
+          (let ((magent-lifecycle-events--subagent-audit-context
+                 (magent-request-context-audit-snapshot parent-context)))
+            (magent-lifecycle-events-create-subagent-context
+             title
+             (and parent-context
+                  (magent-request-context-event-context parent-context)))))
          (effective-permission
           (magent-tools--effective-child-permission parent-context agent))
          (child-request-context
@@ -1259,6 +1354,7 @@ See `magent-agent-loop-filter-display-args'.")
                        :description "Absolute or relative path to the file")
                '(:name "old_text"
                        :type string
+                       :minLength 1
                        :description "The exact text to find and replace (must match exactly once)")
                '(:name "new_text"
                        :type string
@@ -1521,23 +1617,26 @@ automatically included in the system prompt."
         magent-tools--web-search-tool)
   "All magent tools as gptel-tool structs.")
 
+(defun magent-tools-get-gptel-tools-for-permission (permission)
+  "Return gptel tools exposed by explicit PERMISSION profile.
+Global `magent-enable-tools' filtering still applies.  Tools whose effective
+decision is \\='ask remain exposed so the orchestrator can request approval."
+  (cl-remove-if-not
+   (lambda (tool)
+     (let* ((tool-name (gptel-tool-name tool))
+            (perm-key (magent-tools-permission-key tool-name)))
+       (and
+        (or (null perm-key) (memq perm-key magent-enable-tools))
+        (or (null permission)
+            (magent-permission-tool-available-p permission perm-key)))))
+   magent-tools--all-gptel-tools))
+
 (defun magent-tools-get-gptel-tools (agent-info)
   "Return a list of gptel-tool structs available for AGENT-INFO.
-Filters by both `magent-enable-tools' global config and agent permissions.
-Tools with \\='ask permission are included (they will be confirmed at runtime)."
-  (let ((permission (and agent-info
-                         (magent-agent-info-permission agent-info))))
-    (cl-remove-if-not
-     (lambda (tool)
-       (let* ((tool-name (gptel-tool-name tool))
-              (perm-key (magent-tools-permission-key tool-name)))
-         (and
-          ;; Globally enabled
-          (or (null perm-key) (memq perm-key magent-enable-tools))
-          ;; Agent permission allows or asks
-          (or (null permission)
-              (magent-permission-tool-available-p permission perm-key)))))
-     magent-tools--all-gptel-tools)))
+This compatibility API delegates to
+`magent-tools-get-gptel-tools-for-permission'."
+  (magent-tools-get-gptel-tools-for-permission
+   (and agent-info (magent-agent-info-permission agent-info))))
 
 (defun magent-tools-get-magent-tools (agent-info)
   "Return a list of magent tool plists allowed for AGENT-INFO.

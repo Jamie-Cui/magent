@@ -33,7 +33,8 @@ Fields:
 - COLOR: Optional display color for UI
 - MODEL: Optional model specification (providerID . modelID)
 - PROMPT: Optional custom system prompt
-- OPTIONS: Additional options as an alist
+- OPTIONS: Compatibility metadata retained from older definitions; it is not
+  sent to the provider
 - STEPS: Compatibility metadata from older agent definitions; it no longer
   imposes a tool-call loop limit
 - PERMISSION: Permission ruleset for tool access control
@@ -91,6 +92,8 @@ The agent's TEMPERATURE field, if non-nil, overrides `gptel-temperature'."
                        ((and (consp model-field)
                              (symbolp (cdr model-field)))
                         (cdr model-field))
+                       ((symbolp model-field) model-field)
+                       ((stringp model-field) (intern model-field))
                        (t (default-value 'gptel-model))))
          (gptel-temperature (or (magent-agent-info-temperature info)
                                 (default-value 'gptel-temperature))))

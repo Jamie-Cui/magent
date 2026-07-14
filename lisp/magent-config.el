@@ -209,7 +209,8 @@ transitions to an error state.  Set to 0 to disable."
 Magent normally follows Codex-style turn continuation and does not impose a
 per-turn sampling limit.  When this value is positive, the initial request
 counts as one and tool-output continuations count as additional requests; the
-turn fails once the limit is reached.  Set to 0 to disable."
+limit replaces the next continuation with one provider-tools-disabled final
+request.  Set to 0 to disable."
   :type 'integer
   :group 'magent)
 
@@ -329,6 +330,16 @@ Should match one of the registered agent names."
 (defcustom magent-load-custom-agents t
   "Whether to load custom agents from .magent/agent/*.md files."
   :type 'boolean
+  :group 'magent)
+
+(defcustom magent-trusted-project-skill-companion-roots nil
+  "Project roots allowed to load tool-skill companion Elisp files.
+
+Project-local `.magent/skills/*/*.el' files are executable Emacs Lisp and are
+not loaded unless their normalized project root appears in this list.
+Instruction-only project skills do not require trust.  Built-in and user-level
+tool skills retain their existing loading behavior."
+  :type '(repeat directory)
   :group 'magent)
 
 (defcustom magent-assistant-prompt "ASSISTANT"
@@ -665,17 +676,20 @@ When nil, the custom file path is recorded but its contents are not read."
   :group 'magent)
 
 (defcustom magent-doctor-probe-timeout 2
-  "Default timeout in seconds for one Magent doctor probe."
+  "Default timeout in seconds for one Magent doctor probe.
+Set to 0 to disable this per-probe limit."
   :type 'number
   :group 'magent)
 
 (defcustom magent-doctor-process-timeout 10
-  "Default timeout in seconds for a doctor probe subprocess."
+  "Default timeout in seconds for a doctor probe subprocess.
+Set to 0 to disable this subprocess limit."
   :type 'number
   :group 'magent)
 
 (defcustom magent-doctor-total-timeout 30
-  "Maximum seconds spent collecting local Magent doctor diagnostics."
+  "Maximum seconds spent collecting local Magent doctor diagnostics.
+Set to 0 to disable the total collection limit."
   :type 'number
   :group 'magent)
 

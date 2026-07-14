@@ -118,10 +118,10 @@ Replay 语义：
 7. Tool-call events 累积到 provider-neutral ~tool-call-batch-end~ 。
 8. Tool dispatch 启动 ~tool~ items，记录 approval metadata，并把同一 item 更新为 ~completed~ 或 ~failed~ 。
 9. Tool output 返回 ~tool-output~ 等 continuation outcome； ~magent-agent-process~ 决定是否从 session history 重建 prompt 并继续 sampling。
-10. 如果 post-tool continuation 返回空 assistant text，Magent 记录空 assistant message 并完成 turn。空消息保存在 transcript 中，但不会回灌到后续 prompt。
+10. 如果 post-tool continuation 返回空 assistant text，Magent 会进行一次禁用 provider tools 的 final-response retry。若该 retry 只有 reasoning 而没有 text，再进行一次更严格且禁用 reasoning 的 retry；严格 retry 仍为空时 turn 失败。
 11. Assistant completion 记录 assistant message item，并完成 turn。
 12. Abort、failure 和 dropped queued submissions 分别把 turn 转成 ~interrupted~ 、 ~failed~ 或 ~dropped~ ；aborted turn 下的 in-progress items 标记为 ~cancelled~ 。
-13. ~magent-max-sampling-requests~ 是可选兼容 safety guard，默认关闭。Codex 没有 per-turn sampling cap；用户显式启用时，Magent 到达上限后失败 turn，而不是强行追加 no-tool final answer。
+13. ~magent-max-sampling-requests~ 是可选兼容 safety guard，默认关闭。Codex 没有 per-turn sampling cap；用户显式启用时，Magent 在到达上限时用一次禁用 provider tools 的 final request 替代后续 continuation。
 
 Prompt reconstruction 是 ledger-driven。知道 current turn id 时，Magent 只包含 completed history 和该 turn，避免后续 queued user submissions 泄漏进 active model request。
 

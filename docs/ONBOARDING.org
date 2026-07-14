@@ -413,13 +413,17 @@ mode: primary
 temperature: 0.7
 effort: medium
 permissions:
-  - (read_file . allow)
-  - (write_file . ask)
-  - (bash . deny)
+  read: allow
+  write: ask
+  bash: deny
 ---
 
 System prompt goes here.
 #+end_src
+
+Use permission group keys such as ~read~, ~write~, ~edit~, and ~agent~.  The
+older list form with concrete tool names remains supported for reading, but
+new definitions should use this mapping form.
 
 ** Adding a Skill
 

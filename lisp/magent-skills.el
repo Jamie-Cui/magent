@@ -195,7 +195,25 @@ use a skill - make it count."
 ;;; Skill registry
 
 (defvar magent-skills--registry nil
-  "Alist of (skill-name . magent-skill) for registered skills.")
+  "Layered alist of (skill-name . magent-skill) definitions.
+For duplicate names the first entry is effective; lower-layer entries are
+kept so unloading a project overlay restores the previous definition.")
+
+(defun magent-skills--same-owner-p (left right)
+  "Return non-nil when skills LEFT and RIGHT belong to the same layer."
+  (and (eq (magent-skill-source-layer left)
+           (magent-skill-source-layer right))
+       (equal (magent-skill-source-scope left)
+              (magent-skill-source-scope right))))
+
+(defun magent-skills--effective-entries ()
+  "Return effective skill registry entries without shadowed duplicates."
+  (let (seen effective)
+    (dolist (entry magent-skills--registry)
+      (unless (member (car entry) seen)
+        (push (car entry) seen)
+        (push entry effective)))
+    (nreverse effective)))
 
 (defun magent-skills-get (name)
   "Get skill by NAME from registry."
@@ -203,7 +221,7 @@ use a skill - make it count."
 
 (defun magent-skills-list ()
   "Return list of all registered skill names."
-  (mapcar #'car magent-skills--registry))
+  (mapcar #'car (magent-skills--effective-entries)))
 
 (defun magent-skills-list-by-type (type)
   "Return list of skill names of TYPE."
@@ -211,14 +229,18 @@ use a skill - make it count."
         (mapcar (lambda (entry)
                   (when (eq (magent-skill-type (cdr entry)) type)
                     (car entry)))
-                magent-skills--registry)))
+                (magent-skills--effective-entries))))
 
 (defun magent-skills-register (skill)
   "Register SKILL in the registry.
-If a skill with the same name exists, it will be replaced."
+If a skill with the same name and owner exists, it will be replaced.
+Shadowed lower-layer definitions remain registered for later restoration."
   (let ((name (magent-skill-name skill)))
     (setq magent-skills--registry
-          (cl-remove-if (lambda (entry) (equal (car entry) name))
+          (cl-remove-if (lambda (entry)
+                          (and (equal (car entry) name)
+                               (magent-skills--same-owner-p
+                                (cdr entry) skill)))
                         magent-skills--registry))
     (push (cons name skill) magent-skills--registry))
   skill)
@@ -271,7 +293,7 @@ If SKILL-NAMES is a list, only include those skills."
                           (cl-remove-if-not
                            (lambda (entry)
                              (eq (magent-skill-type (cdr entry)) 'instruction))
-                           magent-skills--registry)))))
+                           (magent-skills--effective-entries))))))
     (delq nil
           (mapcar (lambda (skill)
                     (when-let* ((prompt (magent-skill-prompt skill))
@@ -357,7 +379,8 @@ directory if it exists."
    filepath
    :builtin-dirs (list magent-skills--builtin-dir)
    :user-dirs magent-skill-directories
-   :project-relative-dir ".magent/skills"))
+   :project-relative-dir ".magent/skills"
+   :default-layer 'external))
 
 (defun magent-skills--classify-source (filepath)
   "Return a plist describing the source classification for FILEPATH."
@@ -370,12 +393,8 @@ directory if it exists."
              (append (list magent-skills--builtin-dir)
                      magent-skill-directories
                      (magent-file-loader-project-subdir ".magent/skills")))))
-    (apply #'append
-           (mapcar
-            (lambda (directory)
-              (magent-file-loader-list-named-files
-               (list directory) magent-skill-file-name))
-            ordered-directories))))
+    (magent-file-loader-list-named-files-ordered
+     ordered-directories magent-skill-file-name)))
 
 (defun magent-skills--parse-type (type-str)
   "Parse type string TYPE-STR to a skill type symbol."
@@ -427,15 +446,41 @@ pieces joined back together."
      ((file-exists-p named-el) named-el)
      (t nil))))
 
-(defun magent-skills--load-companion (skill-file skill-name)
+(defun magent-skills--normalized-root (root)
+  "Return normalized directory ROOT for trust comparisons."
+  (when (stringp root)
+    (file-truename (directory-file-name (expand-file-name root)))))
+
+(defun magent-skills--project-companion-trusted-p (source)
+  "Return non-nil when project SOURCE may execute companion Elisp."
+  (pcase (plist-get source :layer)
+    ((or 'builtin 'user) t)
+    ('project
+     (let ((scope (magent-skills--normalized-root
+                   (plist-get source :scope))))
+       (cl-some
+        (lambda (root)
+          (equal scope (magent-skills--normalized-root root)))
+        magent-trusted-project-skill-companion-roots)))
+    (_ nil)))
+
+(defun magent-skills--load-companion (skill-file skill-name source)
   "Load companion implementation file for SKILL-FILE.
-SKILL-NAME is used to resolve the invoke function."
+SKILL-NAME is used to resolve the invoke function.  SOURCE controls the
+explicit trust gate for executable project-local skill code."
   (when-let* ((el-file (magent-skills--find-companion-file skill-file)))
-    (magent-log "INFO loading companion file: %s" el-file)
-    (load-file el-file)
-    (let ((invoke-fn (intern (format "magent-skill-%s-invoke" skill-name))))
-      (when (fboundp invoke-fn)
-        invoke-fn))))
+    (if (magent-skills--project-companion-trusted-p source)
+        (progn
+          (magent-log "INFO loading companion file: %s" el-file)
+          (load-file el-file)
+          (let ((invoke-fn (intern (format "magent-skill-%s-invoke"
+                                           skill-name))))
+            (when (fboundp invoke-fn)
+              invoke-fn)))
+      (magent-log
+       "WARN skipped untrusted project skill companion: %s (trust root via magent-trusted-project-skill-companion-roots)"
+       el-file)
+      nil)))
 
 (defun magent-skills-load-file (filepath)
   "Load a skill from FILEPATH.
@@ -456,7 +501,8 @@ Returns the skill if successful, nil otherwise."
                  (tools (magent-skills--parse-tools
                          (plist-get frontmatter :tools)))
                  (invoke-fn (when (eq type 'tool)
-                              (magent-skills--load-companion filepath name)))
+                              (magent-skills--load-companion
+                               filepath name source)))
                  (skill (magent-skill-create
                          :name name
                          :description description
@@ -536,7 +582,7 @@ local skills after static definitions are reloaded."
   "Display a list of all registered skills."
   (interactive)
   (magent-runtime-prepare-command-context)
-  (let ((skills (mapcar #'cdr magent-skills--registry)))
+  (let ((skills (mapcar #'cdr (magent-skills--effective-entries))))
     (magent--with-display-buffer "*Magent Skills*"
       (insert "Available Skills:\n\n")
       (dolist (skill (sort skills

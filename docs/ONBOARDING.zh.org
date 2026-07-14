@@ -336,13 +336,16 @@ description: Agent purpose
 mode: primary
 temperature: 0.7
 permissions:
-  - (read_file . allow)
-  - (write_file . ask)
-  - (bash . deny)
+  read: allow
+  write: ask
+  bash: deny
 ---
 
 System prompt goes here.
 #+end_src
+
+请使用 ~read~、~write~、~edit~、~agent~ 这类 permission group key。旧的
+具体 tool name 列表格式仍可读取，但新定义应使用上面的 mapping 格式。
 
 ** 新增 Skill
 

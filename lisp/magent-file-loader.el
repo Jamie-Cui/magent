@@ -14,6 +14,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'json)
 (require 'subr-x)
 (require 'yaml)
 (require 'magent-config)
@@ -29,21 +30,16 @@ If no frontmatter is found, returns (nil . CONTENT)."
   (if (string-match "\\`---\n\\(\\(?:.\\|\n\\)*?\\)\n---\n?" content)
       (let* ((yaml-text (match-string 1 content))
              (body (substring content (match-end 0)))
-             (raw (or (magent-file-loader--parse-frontmatter-regex yaml-text)
-                      (condition-case err
-                          (yaml-parse-string yaml-text
-                                             :object-type 'plist
-                                             :object-key-type 'keyword
-                                             :sequence-type 'list
-                                             :false-object nil
-                                             :null-object nil)
-                        (error
-                         (magent-log "WARN frontmatter yaml parse failed (%s)"
-                                     (error-message-string err))
-                         nil))))
+             (raw (or (magent-file-loader--parse-simple-frontmatter yaml-text)
+                      (magent-file-loader--parse-yaml-frontmatter yaml-text)))
              (normalized (magent-file-loader--normalize-frontmatter-plist raw)))
         (cons normalized body))
     (cons nil content)))
+
+(defconst magent-file-loader--comma-list-keys
+  '(:tools :skills :capability-skills :modes :features :files
+    :prompt-keywords :keywords)
+  "Frontmatter keys that accept the legacy comma-separated list syntax.")
 
 (defun magent-file-loader--normalize-frontmatter-plist (plist)
   "Normalize PLIST keys and values for Magent definition files."
@@ -51,46 +47,163 @@ If no frontmatter is found, returns (nil . CONTENT)."
     (cl-loop for (key val) on plist by #'cddr do
       (let* ((key-str (substring (symbol-name key) 1))
              (normalized-key (intern (concat ":" (subst-char-in-string ?_ ?- key-str))))
-             (normalized-val (magent-file-loader--normalize-frontmatter-value val)))
+             (normalized-val
+              (magent-file-loader--normalize-frontmatter-value
+               normalized-key val)))
         (setq result (plist-put result normalized-key normalized-val))))
     result))
 
-(defun magent-file-loader--normalize-frontmatter-value (val)
-  "Split VAL into a list if it is a comma-separated string."
-  (if (and (stringp val) (string-match-p "," val))
+(defun magent-file-loader--normalize-frontmatter-value (key val)
+  "Normalize frontmatter VAL for KEY.
+Only declared list fields accept the legacy comma-separated shorthand; commas
+in descriptions and other scalar strings remain data."
+  (if (and (memq key magent-file-loader--comma-list-keys)
+           (stringp val)
+           (string-match-p "," val))
       (mapcar #'string-trim (split-string val ","))
     val))
 
-(defun magent-file-loader--parse-frontmatter-regex (header-str)
-  "Parse simple key-value frontmatter from HEADER-STR.
-Returns nil if any non-blank line is not a simple scalar key-value pair,
-allowing the caller to fall back to a full YAML parser."
+(defun magent-file-loader--parse-simple-frontmatter (header)
+  "Parse flat scalar HEADER without losing JSON-compatible string escapes.
+Return nil for nested or otherwise complex YAML so `yaml-parse-string' owns
+those cases.  Saved agent files use JSON-compatible scalar quoting, which is
+decoded here because yaml.el currently mishandles a doubled backslash before
+letters such as `t'."
   (let (result)
     (catch 'complex
-      (dolist (line (split-string header-str "\n"))
+      (dolist (line (split-string header "\n"))
         (cond
          ((string-blank-p line))
-         ((string-match "^\\s-*\\([^:]+\\):\\s-*\\(.+\\)$" line)
-          (let* ((key (string-trim (match-string 1 line)))
-                 (val (string-trim (match-string 2 line))))
+         ((or (string-match-p "\\`[[:space:]]" line)
+              (not (string-match
+                    "\\`\\([^:]+\\):[[:space:]]*\\(.+\\)\\'" line)))
+          (throw 'complex nil))
+         (t
+          (let ((key (string-trim (match-string 1 line)))
+                (value (string-trim (match-string 2 line))))
+            (when (or (string-match-p "[[:space:]]#" value)
+                      (string-match-p "\\`[|>&*!]" value))
+              (throw 'complex nil))
             (setq result
-                  (plist-put result
-                             (intern (concat ":" key))
-                             (magent-file-loader--parse-frontmatter-scalar val)))))
-         (t (throw 'complex nil))))
+                  (plist-put
+                   result
+                   (intern (concat ":" key))
+                   (magent-file-loader--parse-simple-scalar value)))))))
       result)))
 
-(defun magent-file-loader--parse-frontmatter-scalar (str)
-  "Parse scalar frontmatter STR into a boolean, number, or string."
+(defun magent-file-loader--parse-simple-scalar (value)
+  "Parse flat frontmatter VALUE, or throw `complex' for full YAML parsing."
   (cond
-   ((string-equal str "true") t)
-   ((string-equal str "false") nil)
-   ((string-match-p "^[0-9]+\\(?:\\.[0-9]+\\)?$" str) (string-to-number str))
-   ((and (> (length str) 1)
-         (or (and (eq (aref str 0) ?\") (eq (aref str (1- (length str))) ?\"))
-             (and (eq (aref str 0) ?') (eq (aref str (1- (length str))) ?'))))
-    (substring str 1 -1))
-   (t str)))
+   ((and (> (length value) 1)
+         (eq (aref value 0) ?')
+         (eq (aref value (1- (length value))) ?'))
+    (replace-regexp-in-string
+     "''" "'" (substring value 1 -1) t t))
+   ((or (memq (aref value 0) '(?\" ?\[ ?{))
+        (string-match-p
+         "\\`\\(?:true\\|false\\|null\\|-?[0-9]+\\(?:\\.[0-9]+\\)?\\)\\'"
+         value))
+    (condition-case nil
+        (json-parse-string value
+                           :object-type 'plist
+                           :array-type 'list
+                           :null-object nil
+                           :false-object nil)
+      (error
+       (if (memq (aref value 0) '(?\[ ?{))
+           (condition-case nil
+               (yaml-parse-string value
+                                  :object-type 'plist
+                                  :object-key-type 'keyword
+                                  :sequence-type 'list
+                                  :false-object nil
+                                  :null-object nil)
+             (error (throw 'complex nil)))
+         (throw 'complex nil)))))
+   (t value)))
+
+(defun magent-file-loader--parse-yaml-frontmatter (text)
+  "Parse complex YAML frontmatter TEXT without corrupting backslashes."
+  (condition-case err
+      (pcase-let* ((`(,protected . ,marker)
+                    (magent-file-loader--protect-yaml-backslashes text))
+                   (parsed
+                    (yaml-parse-string protected
+                                       :object-type 'plist
+                                       :object-key-type 'keyword
+                                       :sequence-type 'list
+                                       :false-object nil
+                                       :null-object nil)))
+        (magent-file-loader--restore-yaml-backslashes parsed marker))
+    (error
+     (magent-log "WARN frontmatter yaml parse failed (%s)"
+                 (error-message-string err))
+     nil)))
+
+(defun magent-file-loader--protect-yaml-backslashes (text)
+  "Return (PROTECTED . MARKER) for doubled slashes in quoted YAML TEXT.
+The yaml.el decoder applies named escapes before it collapses a doubled
+backslash, so a value such as `C:\\\\tmp' otherwise becomes a tab."
+  (let ((code #xe000))
+    (while (and (<= code #xf8ff)
+                (string-match-p (regexp-quote (char-to-string code)) text))
+      (cl-incf code))
+    (when (> code #xf8ff)
+      (error "Unable to reserve a YAML backslash marker"))
+    (let ((marker (char-to-string code))
+          (state 'plain)
+          (index 0)
+          pieces)
+      (while (< index (length text))
+        (let* ((char (aref text index))
+               (next (and (< (1+ index) (length text))
+                          (aref text (1+ index))))
+               (previous (and (> index 0) (aref text (1- index)))))
+          (pcase state
+            ('comment
+             (push (char-to-string char) pieces)
+             (when (eq char ?\n) (setq state 'plain)))
+            ('single
+             (push (char-to-string char) pieces)
+             (when (eq char ?')
+               (if (eq next ?')
+                   (progn
+                     (push (char-to-string next) pieces)
+                     (cl-incf index))
+                 (setq state 'plain))))
+            ('double
+             (cond
+              ((and (eq char ?\\) next)
+               (if (eq next ?\\)
+                   (push marker pieces)
+                 (push (string char next) pieces))
+               (cl-incf index))
+              (t
+               (push (char-to-string char) pieces)
+               (when (eq char ?\") (setq state 'plain)))))
+            (_
+             (push (char-to-string char) pieces)
+             (cond
+              ((and (eq char ?#)
+                    (or (null previous) (memq previous '(?\s ?\t ?\n))))
+               (setq state 'comment))
+              ((and (memq char '(?\" ?'))
+                    (or (null previous)
+                        (memq previous '(?\s ?\t ?\n ?: ?, ?- ?\[ ?{))))
+               (setq state (if (eq char ?\") 'double 'single))))))
+          (cl-incf index)))
+      (cons (apply #'concat (nreverse pieces)) marker))))
+
+(defun magent-file-loader--restore-yaml-backslashes (value marker)
+  "Replace protected YAML MARKER recursively in parsed VALUE."
+  (cond
+   ((stringp value)
+    (replace-regexp-in-string
+     (regexp-quote marker) (lambda (_match) "\\") value t t))
+   ((consp value)
+    (cons (magent-file-loader--restore-yaml-backslashes (car value) marker)
+          (magent-file-loader--restore-yaml-backslashes (cdr value) marker)))
+   (t value)))
 
 (defun magent-file-loader-project-subdir (relative-dir)
   "Return project-local RELATIVE-DIR as a one-item list when it exists."
@@ -116,6 +229,17 @@ allowing the caller to fall back to a full YAML parser."
        (string-prefix-p (file-name-as-directory (file-truename directory))
                         (file-truename filepath))))
 
+(defun magent-file-loader-lexical-file-under-directory-p (filepath directory)
+  "Return non-nil when FILEPATH's entry path is inside DIRECTORY.
+Unlike `magent-file-loader-file-under-directory-p', this ownership check does
+not follow the final symlink.  It is used to classify project overlay entries;
+resource access may still canonicalize the target independently."
+  (and filepath directory
+       (string-prefix-p
+        (file-name-as-directory
+         (directory-file-name (expand-file-name directory)))
+        (expand-file-name filepath))))
+
 (defun magent-file-loader-file-under-any-directory-p (filepath directories)
   "Return non-nil when FILEPATH is inside one of DIRECTORIES."
   (cl-some (lambda (directory)
@@ -127,13 +251,14 @@ allowing the caller to fall back to a full YAML parser."
 RELATIVE-DIR is the project-local subdirectory path such as
 \".magent/skills\"."
   (when filepath
-    (let ((current (file-name-directory (file-truename filepath)))
+    (let ((current (file-name-directory (expand-file-name filepath)))
           found)
       (while (and current (not found))
         (let* ((candidate (directory-file-name current))
                (subdir (expand-file-name relative-dir candidate))
                (parent (file-name-directory candidate)))
-          (if (magent-file-loader-file-under-directory-p filepath subdir)
+          (if (magent-file-loader-lexical-file-under-directory-p
+               filepath subdir)
               (setq found (file-truename candidate))
             (setq current
                   (and parent
@@ -160,6 +285,16 @@ For each directory in DIRECTORIES, include:
                 (push nested-file files)))))))
     (sort files #'string<)))
 
+(defun magent-file-loader-list-named-files-ordered (directories filename)
+  "Return FILENAME paths while preserving precedence order of DIRECTORIES.
+Paths are sorted within each directory so loading remains deterministic."
+  (apply #'append
+         (mapcar
+          (lambda (directory)
+            (magent-file-loader-list-named-files
+             (list directory) filename))
+          (delq nil (copy-sequence directories)))))
+
 (defun magent-file-loader-list-matching-files (directory regexp)
   "Return sorted files in DIRECTORY matching REGEXP."
   (sort (when (file-directory-p directory)
@@ -168,8 +303,8 @@ For each directory in DIRECTORIES, include:
 
 (cl-defun magent-file-loader-list-definition-files
     (filename &key builtin-dirs user-dirs project-relative-dir scope extra-dirs)
-  "Return sorted FILENAME paths across configured definition directories."
-  (magent-file-loader-list-named-files
+  "Return FILENAME paths across configured directories in precedence order."
+  (magent-file-loader-list-named-files-ordered
    (append builtin-dirs
            user-dirs
            (when project-relative-dir
@@ -186,9 +321,15 @@ For each directory in DIRECTORIES, include:
                              filepath project-relative-dir)))
          (source-layer
           (cond
-           ((magent-file-loader-file-under-any-directory-p filepath builtin-dirs)
+           ((cl-some (lambda (directory)
+                       (magent-file-loader-lexical-file-under-directory-p
+                        filepath directory))
+                     (delq nil builtin-dirs))
             'builtin)
-           ((magent-file-loader-file-under-any-directory-p filepath user-dirs)
+           ((cl-some (lambda (directory)
+                       (magent-file-loader-lexical-file-under-directory-p
+                        filepath directory))
+                     (delq nil user-dirs))
             'user)
            (source-scope 'project)
            (t (or default-layer 'builtin)))))

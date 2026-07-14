@@ -76,6 +76,93 @@
 (defvar magent-memory--last-command-result nil
   "Last memory management command result plist.")
 
+(cl-defstruct (magent-memory-operation
+               (:constructor magent-memory-operation--create)
+               (:copier nil))
+  generation
+  operation
+  handle
+  on-complete
+  completed-p)
+
+(defvar magent-memory--operation-generation 0
+  "Monotonic generation used to reject stale memory callbacks.")
+
+(defvar magent-memory--active-operation nil
+  "Current memory write operation, or nil.")
+
+(defun magent-memory--abort-handle (handle)
+  "Abort provider request HANDLE without signaling."
+  (when (and (bufferp handle) (buffer-live-p handle))
+    (condition-case nil
+        (if (fboundp 'gptel-abort)
+            (gptel-abort handle)
+          (kill-buffer handle))
+      (error
+       (when (buffer-live-p handle)
+         (kill-buffer handle))))))
+
+(defun magent-memory--complete-operation (state status message)
+  "Complete memory operation STATE once with STATUS and MESSAGE."
+  (unless (magent-memory-operation-completed-p state)
+    (setf (magent-memory-operation-completed-p state) t
+          (magent-memory-operation-handle state) nil)
+    (when (eq state magent-memory--active-operation)
+      (setq magent-memory--active-operation nil))
+    (magent-memory--complete-command
+     status message (magent-memory-operation-on-complete state))))
+
+(defun magent-memory-cancel-operation (state &optional message)
+  "Cancel memory operation STATE and abort its request handle.
+MESSAGE defaults to a stable cancellation explanation."
+  (unless (magent-memory-operation-completed-p state)
+    (let ((handle (magent-memory-operation-handle state)))
+      ;; Terminalize before aborting because provider abort callbacks may run
+      ;; synchronously and must observe a stale operation.
+      (setf (magent-memory-operation-completed-p state) t
+            (magent-memory-operation-handle state) nil)
+      (when (eq state magent-memory--active-operation)
+        (setq magent-memory--active-operation nil))
+      (magent-memory--abort-handle handle)
+      (magent-memory--complete-command
+       'cancelled
+       (or message "Magent memory operation cancelled.")
+       (magent-memory-operation-on-complete state)))))
+
+(defun magent-memory--begin-operation (operation on-complete)
+  "Begin memory OPERATION and supersede any older unfinished operation."
+  (let* ((previous magent-memory--active-operation)
+         (state
+         (magent-memory-operation--create
+          :generation (cl-incf magent-memory--operation-generation)
+          :operation operation
+          :on-complete on-complete)))
+    (setq magent-memory--active-operation state)
+    ;; Publish the replacement before notifying the superseded operation.
+    ;; Its completion callback may synchronously start an even newer operation;
+    ;; that operation must remain active when this function returns.
+    (when (and previous
+               (not (magent-memory-operation-completed-p previous)))
+      (magent-memory-cancel-operation
+       previous
+       "Magent memory operation superseded by a newer request."))
+    state))
+
+(defun magent-memory--operation-current-p (state)
+  "Return non-nil when STATE may still perform side effects."
+  (and (not (magent-memory-operation-completed-p state))
+       (eq state magent-memory--active-operation)
+       (= (magent-memory-operation-generation state)
+          magent-memory--operation-generation)))
+
+(defun magent-memory--file-fingerprint ()
+  "Return a content fingerprint for the active memory file, or nil."
+  (let ((file (magent-memory-file)))
+    (when (file-readable-p file)
+      (with-temp-buffer
+        (insert-file-contents-literally file)
+        (secure-hash 'sha256 (current-buffer))))))
+
 (defun magent-memory-file ()
   "Return the active Magent Emacs profile memory file."
   (expand-file-name magent-memory-file-name magent-memory-directory))
@@ -792,85 +879,113 @@ the user-owned heading.  ACTIVE defaults to t."
     (funcall on-complete status message)))
 
 (cl-defun magent-memory--write-from-plan
-    (operation plan notify-fn on-complete &key open-after-write)
+    (operation plan notify-fn on-complete &key open-after-write state)
   "Write memory for OPERATION using PLAN.
 NOTIFY-FN receives progress strings.  ON-COMPLETE receives status and message."
-  (let* ((bundle (magent-memory--build-source-bundle plan))
-         (user-notes (magent-memory--read-existing-user-notes))
-         (finish
-          (lambda (text)
-            (let* ((managed (magent-memory--managed-org-or-skeleton
-                             (or text "") plan bundle))
-                   (result (magent-memory--write-profile
-                            plan managed user-notes :active t))
-                   (message (format "Magent memory %s complete: %s"
-                                    operation
-                                    (plist-get result :file))))
-              (when (and open-after-write magent-memory-open-after-write)
-                (find-file (plist-get result :file)))
+  (let ((state (or state
+                   (magent-memory--begin-operation operation on-complete))))
+    (when (magent-memory--operation-current-p state)
+      (let* ((bundle (magent-memory--build-source-bundle plan))
+             (source-fingerprint (magent-memory--file-fingerprint))
+             (finish
+              (lambda (text)
+                (when (magent-memory--operation-current-p state)
+                  (let* ((current-fingerprint (magent-memory--file-fingerprint))
+                         ;; User notes are owned outside the generated section.
+                         ;; Re-read immediately before commit so edits made while
+                         ;; the provider was sampling cannot be overwritten.
+                         (user-notes (magent-memory--read-existing-user-notes))
+                         (managed (magent-memory--managed-org-or-skeleton
+                                   (or text "") plan bundle))
+                         (result (magent-memory--write-profile
+                                  plan managed user-notes :active t))
+                         (message (format "Magent memory %s complete: %s"
+                                          operation
+                                          (plist-get result :file))))
+                    (unless (equal source-fingerprint current-fingerprint)
+                      (magent-log
+                       "INFO memory file changed during generation; preserved latest User Notes"))
+                    (when (and open-after-write magent-memory-open-after-write)
+                      (find-file (plist-get result :file)))
+                    (when notify-fn
+                      (funcall notify-fn message))
+                    (magent-memory--complete-operation
+                     state 'completed message))))))
+        (if magent-memory-use-llm
+            (progn
               (when notify-fn
-                (funcall notify-fn message))
-              (magent-memory--complete-command
-               'completed message on-complete)))))
-    (if magent-memory-use-llm
-        (progn
-          (when notify-fn
-            (funcall notify-fn "Summarizing sanitized Emacs profile memory..."))
-          (magent-memory--summarize-with-llm plan bundle finish))
-      (funcall finish nil))))
+                (funcall notify-fn
+                         "Summarizing sanitized Emacs profile memory..."))
+              (when (magent-memory--operation-current-p state)
+                (let ((handle (magent-memory--summarize-with-llm
+                               plan bundle finish)))
+                  (if (magent-memory-operation-completed-p state)
+                      (magent-memory--abort-handle handle)
+                    (setf (magent-memory-operation-handle state) handle)))))
+          (funcall finish nil))))
+    state))
 
 (cl-defun magent-memory-run
     (operation &key confirm-fn notify-fn on-complete open-after-write)
   "Run memory management OPERATION.
 OPERATION is one of `init', `refresh', or `clear'.  CONFIRM-FN is called
 with a plan and continuation for scan-based operations."
-  (condition-case err
-      (pcase operation
-        ((or 'init 'refresh)
-         (let ((plan (magent-memory-build-scan-plan)))
+  (let ((state (magent-memory--begin-operation operation on-complete)))
+    (condition-case err
+        (when (magent-memory--operation-current-p state)
+          (pcase operation
+            ((or 'init 'refresh)
+             (let ((plan (magent-memory-build-scan-plan)))
+               (when notify-fn
+                 (funcall notify-fn (magent-memory-scan-plan-summary plan)))
+               (when (magent-memory--operation-current-p state)
+                 (let ((continue
+                        (lambda (approved)
+                          (when (magent-memory--operation-current-p state)
+                            (if (not approved)
+                                (magent-memory--complete-operation
+                                 state 'cancelled "Magent memory scan cancelled.")
+                              (magent-memory--write-from-plan
+                               operation plan notify-fn on-complete
+                               :open-after-write open-after-write
+                               :state state))))))
+                   (if confirm-fn
+                       (funcall confirm-fn plan continue)
+                     (funcall continue t))))))
+            ('clear
+             (let ((continue
+                    (lambda (approved)
+                      (when (magent-memory--operation-current-p state)
+                        (if (not approved)
+                            (magent-memory--complete-operation
+                             state 'cancelled "Magent memory clear cancelled.")
+                          (let* ((user-notes
+                                  (magent-memory--read-existing-user-notes))
+                                 (result (magent-memory--write-profile
+                                          (magent-memory--empty-plan)
+                                          (magent-memory--empty-managed-org)
+                                          user-notes
+                                          :active nil))
+                                 (message (format "Magent memory cleared: %s"
+                                                  (plist-get result :file))))
+                            (when notify-fn
+                              (funcall notify-fn message))
+                            (magent-memory--complete-operation
+                             state 'completed message)))))))
+               (if confirm-fn
+                   (funcall confirm-fn nil continue)
+                 (funcall continue t))))
+            (_
+             (error "Unknown Magent memory operation: %S" operation))))
+      (error
+       (when (magent-memory--operation-current-p state)
+         (let ((message (format "Magent memory %s failed: %s"
+                                operation
+                                (error-message-string err))))
            (when notify-fn
-             (funcall notify-fn (magent-memory-scan-plan-summary plan)))
-           (let ((continue
-                  (lambda (approved)
-                    (if (not approved)
-                        (magent-memory--complete-command
-                         'cancelled "Magent memory scan cancelled." on-complete)
-                      (magent-memory--write-from-plan
-                       operation plan notify-fn on-complete
-                       :open-after-write open-after-write)))))
-             (if confirm-fn
-                 (funcall confirm-fn plan continue)
-               (funcall continue t)))))
-        ('clear
-         (let ((continue
-                (lambda (approved)
-                  (if (not approved)
-                      (magent-memory--complete-command
-                       'cancelled "Magent memory clear cancelled." on-complete)
-                    (let* ((user-notes (magent-memory--read-existing-user-notes))
-                           (result (magent-memory--write-profile
-                                    (magent-memory--empty-plan)
-                                    (magent-memory--empty-managed-org)
-                                    user-notes
-                                    :active nil))
-                           (message (format "Magent memory cleared: %s"
-                                            (plist-get result :file))))
-                      (when notify-fn
-                        (funcall notify-fn message))
-                      (magent-memory--complete-command
-                       'completed message on-complete))))))
-           (if confirm-fn
-               (funcall confirm-fn nil continue)
-             (funcall continue t))))
-        (_
-         (error "Unknown Magent memory operation: %S" operation)))
-    (error
-     (let ((message (format "Magent memory %s failed: %s"
-                            operation
-                            (error-message-string err))))
-       (when notify-fn
-         (funcall notify-fn message))
-       (magent-memory--complete-command 'failed message on-complete)))))
+             (funcall notify-fn message))
+           (magent-memory--complete-operation state 'failed message)))))
+    state))
 
 (defun magent-memory--interactive-confirm (plan continue)
   "Interactively confirm PLAN, then call CONTINUE with non-nil on approval."
@@ -969,9 +1084,10 @@ with a plan and continuation for scan-based operations."
                (not (equal recorded-roots current-roots)))
       (push "scan roots changed" reasons))
     (dolist (file source-files)
-      (when-let* ((mtime (magent-memory--file-mtime-float file)))
-        (when (> mtime generated)
-          (push (format "source changed: %s" file) reasons))))
+      (if-let* ((mtime (magent-memory--file-mtime-float file)))
+          (when (> mtime generated)
+            (push (format "source changed: %s" file) reasons))
+        (push (format "source missing: %s" file) reasons)))
     (list :stale (and reasons t)
           :reasons (nreverse reasons)
           :active active
@@ -1062,15 +1178,23 @@ with a plan and continuation for scan-based operations."
 (defun magent-memory--command-runner (operation)
   "Return a command runner for memory OPERATION."
   (lambda (context)
-    (magent-memory-run
-     operation
-     :confirm-fn (magent-memory--command-confirm-provider context operation)
-     :notify-fn (lambda (message)
-                  (message "%s" message)
-                  (magent-command-notify context message))
-     :on-complete (lambda (status message)
-                    (magent-command-complete context status message))
-     :open-after-write (memq operation '(init refresh)))))
+    (let ((state
+           (magent-memory-run
+            operation
+            :confirm-fn
+            (magent-memory--command-confirm-provider context operation)
+            :notify-fn (lambda (message)
+                         (message "%s" message)
+                         (magent-command-notify context message))
+            :on-complete (lambda (status message)
+                           (magent-command-complete context status message))
+            :open-after-write (memq operation '(init refresh)))))
+      (magent-command-set-cancel-function
+       context
+       (lambda ()
+         (magent-memory-cancel-operation
+          state "Magent memory command cancelled.")))
+      state)))
 
 (defun magent-memory--load-text ()
   "Return active memory file text, or nil."

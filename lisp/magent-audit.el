@@ -22,9 +22,8 @@
 (require 'magent-approval)
 (require 'magent-lifecycle-events)
 (require 'magent-protocol)
+(require 'magent-redaction)
 (require 'magent-session)
-
-(declare-function magent-agent-info-name "magent-agent-registry")
 
 (defconst magent-audit--sensitive-tools
   '("bash" "emacs_eval" "write_file" "write_repo_summary" "edit_file"
@@ -89,11 +88,13 @@ Each entry is a cons cell of the form (FILE . JSONL-LINE).")
 
 (defun magent-audit-enable ()
   "Enable persistent audit logging hooks."
-  (unless magent-audit--enabled
-    (magent-lifecycle-events-add-sink #'magent-audit--event-sink)
-    (add-hook 'magent-approval-state-change-functions
-              #'magent-audit--approval-state-changed)
-    (setq magent-audit--enabled t))
+  ;; Registration is idempotent.  Reassert it even when the compatibility
+  ;; flag is already set so live reloads and dynamically rebound hook lists
+  ;; cannot leave auditing nominally enabled but disconnected.
+  (magent-lifecycle-events-add-sink #'magent-audit--event-sink)
+  (add-hook 'magent-approval-state-change-functions
+            #'magent-audit--approval-state-changed)
+  (setq magent-audit--enabled t)
   magent-audit--enabled)
 
 (defun magent-audit-disable ()
@@ -165,25 +166,46 @@ PROPS accepts the same plist keys as `magent-audit-record'."
     (cancel-timer magent-audit--flush-timer))
   (setq magent-audit--flush-timer nil)
   (when magent-audit--pending-writes
-    (condition-case err
-        (let ((writes (prog1 (nreverse magent-audit--pending-writes)
-                        (setq magent-audit--pending-writes nil)))
-              grouped)
-          (dolist (entry writes)
-            (let* ((file (car entry))
-                   (line (cdr entry))
-                   (existing (assoc file grouped)))
-              (if existing
-                  (setcdr existing (concat (cdr existing) line))
-                (push (cons file line) grouped))))
-          (dolist (entry (nreverse grouped))
-            (make-directory (file-name-directory (car entry)) t)
-            (with-temp-buffer
-              (insert (cdr entry))
-              (write-region (point-min) (point-max) (car entry) t 0))))
-      (error
-       (magent-log "WARN audit write failed: %s"
-                   (error-message-string err))))))
+    (let ((writes (prog1 (nreverse magent-audit--pending-writes)
+                    (setq magent-audit--pending-writes nil)))
+          grouped)
+      (dolist (entry writes)
+        (let* ((file (car entry))
+               (line (cdr entry))
+               (existing (assoc file grouped)))
+          (if existing
+              (setcdr existing (concat (cdr existing) line))
+            (push (cons file line) grouped))))
+      ;; A stale or unwritable destination must not discard records queued for
+      ;; unrelated scopes/directories in the same flush.
+      (dolist (entry (nreverse grouped))
+        (condition-case err
+            (magent-audit--append-batch (car entry) (cdr entry))
+          (error
+           (magent-log "WARN audit write failed for %s: %s"
+                       (magent-audit--path-preview (car entry))
+                       (error-message-string err))))))))
+
+(defun magent-audit--append-batch (file payload)
+  "Append audit PAYLOAD to FILE using private directory and file modes."
+  (let* ((directory (file-name-directory file))
+         (old-default-modes (default-file-modes)))
+    (unwind-protect
+        (progn
+          (set-default-file-modes #o700)
+          (make-directory directory t))
+      (set-default-file-modes old-default-modes))
+    (set-file-modes directory #o700)
+    (unwind-protect
+        (progn
+          (set-default-file-modes #o600)
+          (when (file-exists-p file)
+            (set-file-modes file #o600))
+          (with-temp-buffer
+            (insert payload)
+            (write-region (point-min) (point-max) file t 0)))
+      (set-default-file-modes old-default-modes))
+    (set-file-modes file #o600)))
 
 (defun magent-audit-get-buffer ()
   "Return the Magent audit browser buffer."
@@ -282,37 +304,80 @@ refresh.  The first two arguments follow `revert-buffer'."
 
 (defun magent-audit--build-record (event props)
   "Build one audit record for EVENT from PROPS."
-  (let* ((context (or (plist-get props :context)
-                      (plist-get props :event-context)
-                      (magent-lifecycle-events-current-context)))
-         (scope (magent-session-current-scope))
-         (project-root (unless (eq scope 'global) scope))
-         (session (and (boundp 'magent--current-session) magent--current-session))
-         (session-id (when session (magent-session-get-id session)))
+  (let* ((audit-context
+          (magent-audit--valid-context-snapshot
+           (plist-get props :audit-context)))
+         ;; Async audit records must never borrow mutable ambient attribution.
+         ;; Explicit lifecycle contexts may contribute only their stable ids;
+         ;; session, scope, project, and agent always come from AUDIT-CONTEXT.
+         (candidate-context (or (plist-get props :context)
+                                (plist-get props :event-context)))
+         (context (and (magent-lifecycle-events-context-p candidate-context)
+                       candidate-context))
+         (scope (plist-get audit-context :scope))
+         (project-root (plist-get audit-context :project-root))
          (tool-name (plist-get props :tool-name))
          (args (plist-get props :args)))
     `((timestamp . ,(format-time-string "%Y-%m-%dT%H:%M:%S%z"))
-      (event . ,(magent-audit--stringify event))
-      (agent . ,(magent-audit--current-agent-name session))
-      (turn_id . ,(or (plist-get props :turn-id)
-                      (and context (magent-lifecycle-events-context-turn-id context))))
-      (subagent_id . ,(or (plist-get props :subagent-id)
-                          (and context (magent-lifecycle-events-context-subagent-id context))))
-      (session_id . ,session-id)
+      (event . ,(magent-audit--safe-identifier event))
+      (attribution_source . ,(if audit-context "request-snapshot" "missing"))
+      (agent . ,(magent-audit--safe-identifier
+                 (plist-get audit-context :agent)))
+      (turn_id . ,(magent-audit--safe-identifier
+                   (or (plist-get props :turn-id)
+                       (plist-get audit-context :turn-id)
+                       (and context
+                            (magent-lifecycle-events-context-turn-id context)))))
+      (subagent_id . ,(magent-audit--safe-identifier
+                       (or (plist-get props :subagent-id)
+                           (plist-get audit-context :subagent-id)
+                           (and context
+                                (magent-lifecycle-events-context-subagent-id
+                                 context)))))
+      (session_id . ,(magent-audit--safe-identifier
+                      (plist-get audit-context :session-id)))
       (scope . ,(magent-audit--scope-name scope))
-      (project_root . ,project-root)
-      (tool_name . ,tool-name)
-      (perm_key . ,(magent-audit--stringify (plist-get props :perm-key)))
-      (decision . ,(magent-audit--stringify (plist-get props :decision)))
-      (decision_source . ,(magent-audit--stringify (plist-get props :decision-source)))
-      (status . ,(magent-audit--stringify (plist-get props :status)))
-      (summary . ,(magent-audit--preview (plist-get props :summary)))
-      (args_preview . ,(magent-audit--sanitize-args tool-name args))
-      (result_preview . ,(magent-audit--preview (plist-get props :result)))
-      (call_id . ,(plist-get props :call-id))
-      (request_id . ,(plist-get props :request-id))
-      (title . ,(magent-audit--preview (plist-get props :title)))
-      (detail . ,(magent-audit--preview (plist-get props :detail))))))
+      (project_root . ,(magent-audit--path-preview project-root project-root))
+      (project_id . ,(magent-audit--safe-identifier
+                      (plist-get audit-context :project-id)))
+      (tool_name . ,(magent-audit--safe-identifier tool-name))
+      (perm_key . ,(magent-audit--safe-identifier (plist-get props :perm-key)))
+      (decision . ,(magent-audit--safe-identifier (plist-get props :decision)))
+      (decision_source . ,(magent-audit--safe-identifier
+                           (plist-get props :decision-source)))
+      (status . ,(magent-audit--safe-identifier (plist-get props :status)))
+      (summary . nil)
+      (summary_length . ,(magent-audit--string-length
+                          (plist-get props :summary)))
+      (args_preview . ,(magent-audit--sanitize-args
+                        tool-name args project-root))
+      (result_preview . nil)
+      (result_length . ,(magent-audit--string-length
+                         (plist-get props :result)))
+      (call_id . ,(magent-audit--safe-identifier (plist-get props :call-id)))
+      (request_id . ,(magent-audit--safe-identifier
+                      (plist-get props :request-id)))
+      (title . nil)
+      (title_length . ,(magent-audit--string-length
+                        (plist-get props :title)))
+      (detail . nil)
+      (detail_length . ,(magent-audit--string-length
+                         (plist-get props :detail))))))
+
+(defun magent-audit--valid-context-snapshot (value)
+  "Return VALUE when it is a valid scalar audit context, otherwise nil."
+  (when (and (proper-list-p value)
+             (zerop (% (length value) 2))
+             (eq (plist-get value :attribution-source) 'request-snapshot)
+             (cl-every
+              (lambda (key)
+                (let ((item (plist-get value key)))
+                  (or (null item) (stringp item))))
+              '(:session-id :project-root :project-id :agent
+                :turn-id :subagent-id))
+             (let ((scope (plist-get value :scope)))
+               (or (null scope) (eq scope 'global) (stringp scope))))
+    value))
 
 (defun magent-audit--scope-name (scope)
   "Return a stable scope name string for SCOPE."
@@ -321,88 +386,135 @@ refresh.  The first two arguments follow `revert-buffer'."
    ((stringp scope) "project")
    (t nil)))
 
-(defun magent-audit--stringify (value)
-  "Convert VALUE into a stable string or nil."
-  (cond
-   ((null value) nil)
-   ((symbolp value) (symbol-name value))
-   ((stringp value) value)
-   (t (format "%s" value))))
-
-(defun magent-audit--current-agent-name (session)
-  "Return the current agent name for SESSION, or nil."
-  (when-let* ((agent (and session (magent-session-agent session))))
-    (if (fboundp 'magent-agent-info-name)
-        (magent-agent-info-name agent)
-      (format "%s" agent))))
-
-(defun magent-audit--preview (value)
-  "Return a compact single-line preview string for VALUE."
+(defun magent-audit--safe-identifier (value)
+  "Return VALUE only when it is a bounded identifier, otherwise a marker."
   (when value
-    (let* ((text (replace-regexp-in-string "[ \t\n\r]+" " "
-                                           (string-trim (format "%s" value))))
-           (clean (unless (string-empty-p text) text)))
-      (when clean
-        (truncate-string-to-width clean
-                                  magent-audit-preview-length
-                                  nil nil "...")))))
+    (let ((text (cond ((symbolp value) (symbol-name value))
+                      ((stringp value) value))))
+      (cond
+       ((null text) "<invalid-identifier>")
+       ((and (<= (length text) 128)
+             (string-match-p "\\`[[:alnum:]_.:@+-]+\\'" text))
+        text)
+       (t (format "<identifier:%s>"
+                  (substring (secure-hash 'sha256 text) 0 12)))))))
 
-(defun magent-audit--sanitize-args (tool-name args)
-  "Return a redacted JSON-safe preview for TOOL-NAME ARGS."
+(defun magent-audit--external-path-marker (path)
+  "Return a stable non-disclosing marker for external absolute PATH."
+  (format "<external-path:%s>"
+          (substring (secure-hash 'sha256 path) 0 12)))
+
+(defun magent-audit--path-preview (value &optional request-project-root)
+  "Return a redacted and normalized audit preview for path VALUE.
+REQUEST-PROJECT-ROOT is explicit; this helper never consults ambient scope."
+  (when value
+    (condition-case nil
+        (if (not (stringp value))
+            "<redacted:unsafe-path>"
+          (let* ((project-root
+                  (and request-project-root
+                       (condition-case nil
+                           (file-truename
+                            (expand-file-name request-project-root))
+                         (error (expand-file-name request-project-root)))))
+                 (normalized
+                  (magent-redaction-normalize-paths value project-root))
+                 (redacted (magent-redaction-string normalized t)))
+            (cond
+             ((string-prefix-p "/" redacted)
+              (magent-audit--external-path-marker redacted))
+             ((string-empty-p redacted) nil)
+             (t (truncate-string-to-width
+                 redacted magent-audit-preview-length nil nil "...")))))
+      (error "<redacted:unsafe-path>"))))
+
+(defun magent-audit--generic-args-preview (args)
+  "Return fail-closed metadata for generic ARGS without persisting values."
+  (if (and (proper-list-p args) (zerop (% (length args) 2)))
+      (list (cons 'field_count (/ (length args) 2)))
+    '((redacted . "<redacted:unsafe-args>"))))
+
+(defun magent-audit--sanitize-args (tool-name args &optional project-root)
+  "Return a redacted JSON-safe preview for TOOL-NAME ARGS.
+PROJECT-ROOT is the captured request root used to normalize path prefixes."
   (when args
     (pcase tool-name
       ("write_file"
        (magent-audit--compact-alist
-        (cons 'path (plist-get args :path))
+        (cons 'path (magent-audit--path-preview
+                     (plist-get args :path) project-root))
         (cons 'content_length (magent-audit--string-length (plist-get args :content)))))
       ("write_repo_summary"
        (magent-audit--compact-alist
-        (cons 'mode (plist-get args :mode))
-        (cons 'scope (magent-audit--preview (plist-get args :scope)))
-        (cons 'scope_file_count (length (plist-get args :scope_files)))
+        (cons 'mode (magent-audit--safe-identifier (plist-get args :mode)))
+        (cons 'scope_length
+              (magent-audit--string-length (plist-get args :scope)))
+        (cons 'scope_file_count
+              (and (proper-list-p (plist-get args :scope_files))
+                   (length (plist-get args :scope_files))))
         (cons 'content_length
               (magent-audit--string-length (plist-get args :content)))))
       ("edit_file"
        (magent-audit--compact-alist
-        (cons 'path (plist-get args :path))
+        (cons 'path (magent-audit--path-preview
+                     (plist-get args :path) project-root))
         (cons 'old_text_length (magent-audit--string-length (plist-get args :old_text)))
         (cons 'new_text_length (magent-audit--string-length (plist-get args :new_text)))))
       ("bash"
        (magent-audit--compact-alist
-        (cons 'command (magent-audit--preview (plist-get args :command)))
-        (cons 'timeout (plist-get args :timeout))))
+        (cons 'command_length
+              (magent-audit--string-length (plist-get args :command)))
+        (cons 'timeout (magent-audit--safe-number
+                        (plist-get args :timeout)))))
       ("emacs_eval"
        (magent-audit--compact-alist
-        (cons 'sexp (magent-audit--preview (plist-get args :sexp)))
-        (cons 'timeout (plist-get args :timeout))))
+        (cons 'sexp_length
+              (magent-audit--string-length (plist-get args :sexp)))
+        (cons 'timeout (magent-audit--safe-number
+                        (plist-get args :timeout)))))
       ("spawn_agent"
        (magent-audit--compact-alist
-        (cons 'agent (plist-get args :agent))
-        (cons 'task_name (plist-get args :task_name))
-        (cons 'prompt_preview (magent-audit--preview (plist-get args :prompt)))
-        (cons 'prompt_length (magent-audit--string-length (plist-get args :prompt)))))
+        (cons 'agent (magent-audit--safe-identifier
+                      (plist-get args :agent)))
+        (cons 'task_name_length
+              (magent-audit--string-length (plist-get args :task_name)))
+        (cons 'prompt_length
+              (magent-audit--string-length (plist-get args :prompt)))))
       ((or "send_agent_message" "wait_agent" "close_agent")
        (magent-audit--compact-alist
-        (cons 'job_id (plist-get args :job_id))
-        (cons 'message_preview (magent-audit--preview
-                                (plist-get args :message)))
+        (cons 'job_id (magent-audit--safe-identifier
+                       (plist-get args :job_id)))
         (cons 'message_length (magent-audit--string-length
                                (plist-get args :message)))
-        (cons 'close_reason
-              (magent-audit--preview (plist-get args :close_reason)))))
+        (cons 'close_reason_length
+              (magent-audit--string-length
+               (plist-get args :close_reason)))))
       ("list_agents"
        (magent-audit--compact-alist
-        (cons 'include_closed (plist-get args :include_closed))))
+        (cons 'include_closed
+              (magent-audit--safe-true-boolean
+               (plist-get args :include_closed)))))
       ("read_file"
        (magent-audit--compact-alist
-        (cons 'path (plist-get args :path))))
+        (cons 'path (magent-audit--path-preview
+                     (plist-get args :path) project-root))))
+      ("grep"
+       (magent-audit--compact-alist
+        (cons 'pattern_length
+              (magent-audit--string-length (plist-get args :pattern)))
+        (cons 'path (magent-audit--path-preview
+                     (plist-get args :path) project-root))
+        (cons 'case_sensitive
+              (magent-audit--safe-true-boolean
+               (plist-get args :case_sensitive)))))
+      ("glob"
+       (magent-audit--compact-alist
+        (cons 'pattern_length
+              (magent-audit--string-length (plist-get args :pattern)))
+        (cons 'path (magent-audit--path-preview
+                     (plist-get args :path) project-root))))
       (_
-       (let (pairs)
-         (while args
-           (let ((key (intern (substring (symbol-name (pop args)) 1)))
-                 (value (pop args)))
-             (push (cons key (magent-audit--preview value)) pairs)))
-         (nreverse pairs))))))
+       (magent-audit--generic-args-preview args)))))
 
 (defun magent-audit--compact-alist (&rest pairs)
   "Return PAIRS without null values."
@@ -415,6 +527,22 @@ refresh.  The first two arguments follow `revert-buffer'."
   "Return the string length of VALUE, or nil."
   (when (stringp value)
     (length value)))
+
+(defun magent-audit--safe-number (value)
+  "Return finite numeric VALUE, otherwise nil.
+This prevents malformed provider arguments from turning a metadata field into
+an arbitrary persisted string or object."
+  (cond
+   ((integerp value) value)
+   ((and (floatp value)
+         (not (isnan value))
+         (not (string-match-p "\\(?:INF\\|NaN\\)" (format "%s" value))))
+    value)))
+
+(defun magent-audit--safe-true-boolean (value)
+  "Return t only when VALUE is the canonical true value.
+False and malformed values are omitted by `magent-audit--compact-alist'."
+  (and (eq value t) t))
 
 (defun magent-audit--tool-status (result)
   "Return a compact status string for RESULT."
@@ -453,6 +581,7 @@ refresh.  The first two arguments follow `revert-buffer'."
       (magent-audit-record
        (intern (format "approval-%s" event))
        :context context
+       :audit-context (plist-get request :audit-context)
        :request-id request-id
        :tool-name (plist-get request :tool-name)
        :perm-key (plist-get request :perm-key)
@@ -465,7 +594,8 @@ refresh.  The first two arguments follow `revert-buffer'."
        :summary (plist-get request :summary)
        :args (plist-get request :args)
        :detail (and (eq event 'resolved)
-                    (magent-audit--stringify (plist-get entry :decision)))))))
+                    (magent-audit--safe-identifier
+                     (plist-get entry :decision)))))))
 
 (defun magent-audit--event-sink (event)
   "Persist supported EVENT plists to the audit log."
@@ -475,6 +605,7 @@ refresh.  The first two arguments follow `revert-buffer'."
        (magent-audit-record
         (plist-get event :type)
         :context (plist-get event :context)
+        :audit-context (plist-get event :audit-context)
         :turn-id (plist-get event :turn-id)
         :subagent-id (plist-get event :subagent-id)
         :tool-name (plist-get event :tool-name)
@@ -495,6 +626,7 @@ refresh.  The first two arguments follow `revert-buffer'."
      (magent-audit-record
       'subagent-start
       :context (plist-get event :context)
+      :audit-context (plist-get event :audit-context)
       :turn-id (plist-get event :turn-id)
       :subagent-id (plist-get event :subagent-id)
       :status 'started
@@ -504,6 +636,7 @@ refresh.  The first two arguments follow `revert-buffer'."
       (magent-audit-record
       'subagent-stop
       :context (plist-get event :context)
+      :audit-context (plist-get event :audit-context)
       :turn-id (plist-get event :turn-id)
       :subagent-id (plist-get event :subagent-id)
       :status 'stopped))))

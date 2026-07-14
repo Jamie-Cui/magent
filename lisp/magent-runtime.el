@@ -13,11 +13,13 @@
 
 (require 'cl-lib)
 (require 'magent-audit)
+(require 'magent-lifecycle-events)
 (require 'magent-session)
 
 (defvar magent-load-custom-agents)
 
 (declare-function magent-agent-file-load-project-scope "magent-agent-file")
+(declare-function magent-agent-info-name "magent-agent-info")
 (declare-function magent-agent-initialize-static "magent-agent-registry")
 (declare-function magent-agent-registry-remove-project-scope "magent-agent-registry")
 (declare-function magent-capability-initialize-static "magent-capability")
@@ -25,6 +27,8 @@
 (declare-function magent-capability-remove-project-scope "magent-capability")
 (declare-function magent-audit-enable "magent-audit")
 (declare-function magent-log "magent-ui")
+(declare-function magent-runtime-queue-active-scope "magent-runtime-queue")
+(declare-function magent-runtime-queue-execution-active-p "magent-runtime-queue")
 (declare-function magent-session-refresh-agent "magent-session")
 (declare-function magent-skills-initialize-static "magent-skills")
 (declare-function magent-skills-load-project-scope "magent-skills")
@@ -35,6 +39,7 @@
 
 (defconst magent-runtime--overlay-specs
   '((:name agents
+     :state-variable magent-agent-registry--agents
      :static-feature magent-agent-registry
      :static magent-agent-initialize-static
      :load-project-feature magent-agent-file
@@ -43,6 +48,7 @@
      :unload-project magent-agent-registry-remove-project-scope
      :project-enabled magent-load-custom-agents)
     (:name skills
+     :state-variable magent-skills--registry
      :static-feature magent-skills
      :static magent-skills-initialize-static
      :load-project-feature magent-skills
@@ -50,6 +56,7 @@
      :unload-project-feature magent-skills
      :unload-project magent-skills-remove-project-scope)
     (:name capabilities
+     :state-variable magent-capability--registry
      :static-feature magent-capability
      :static magent-capability-initialize-static
      :load-project-feature magent-capability
@@ -89,6 +96,32 @@
   event-context
   abort-controller)
 
+(defvar magent-request-context--audit-contexts
+  (make-hash-table :test #'eq :weakness 'key)
+  "Frozen scalar audit snapshots keyed by request-context identity.
+Keeping this outside the struct preserves active request objects across a
+source reload from older Magent versions.")
+
+(defun magent-request-context--copy-audit-snapshot (snapshot)
+  "Return an independent scalar copy of audit SNAPSHOT."
+  (when snapshot
+    (cl-loop for (key value) on snapshot by #'cddr
+             append (list key (if (stringp value)
+                                  (copy-sequence value)
+                                value)))))
+
+(defun magent-request-context-audit-context (context)
+  "Return CONTEXT's frozen scalar audit snapshot as an independent copy."
+  (magent-request-context--copy-audit-snapshot
+   (gethash context magent-request-context--audit-contexts)))
+
+(defun magent-request-context--set-audit-context (context snapshot)
+  "Freeze scalar audit SNAPSHOT for CONTEXT outside the struct layout."
+  (puthash context
+           (magent-request-context--copy-audit-snapshot snapshot)
+           magent-request-context--audit-contexts)
+  context)
+
 (defun magent-request-context-ui-visible-p (context)
   "Return non-nil when CONTEXT should render UI details."
   (or (null context)
@@ -99,6 +132,63 @@
   (when-let* ((session (and context
                            (magent-request-context-session context))))
     (magent-session-get-id session)))
+
+(defun magent-request-context-audit-snapshot (context)
+  "Return immutable scalar audit attribution captured from CONTEXT.
+The returned plist deliberately excludes sessions, callbacks, provider
+objects, and other live runtime state so lifecycle sinks and completed
+  approval records cannot retain an entire request graph."
+  (when (magent-request-context-p context)
+    (let ((snapshot (gethash context magent-request-context--audit-contexts)))
+      (unless snapshot
+        (let* ((session (magent-request-context-session context))
+               (valid-session (and (magent-session-p session) session))
+               (scope (magent-request-context-scope context))
+               (project-root
+                (or (and (stringp (magent-request-context-project-root context))
+                         (magent-request-context-project-root context))
+                    (and (stringp scope) scope)))
+               (canonical-root
+                (and project-root
+                     (condition-case nil
+                         (file-truename (expand-file-name project-root))
+                       (error (expand-file-name project-root)))))
+               (agent (and valid-session
+                           (magent-session-agent valid-session)))
+               (candidate-event-context
+                (magent-request-context-event-context context))
+               (event-context
+                (and (magent-lifecycle-events-context-p
+                      candidate-event-context)
+                     candidate-event-context)))
+          (setq snapshot
+                (list :attribution-source 'request-snapshot
+                      :session-id (and valid-session
+                                       (magent-session-get-id valid-session))
+                      :scope scope
+                      :project-root canonical-root
+                      :project-id (and canonical-root
+                                       (substring
+                                        (secure-hash 'sha256 canonical-root)
+                                        0 16))
+                      :agent (cond
+                              ((and agent (fboundp 'magent-agent-info-name))
+                               (ignore-errors (magent-agent-info-name agent)))
+                              ((symbolp agent) (symbol-name agent))
+                              ((stringp agent) agent))
+                      :turn-id
+                      (and event-context
+                           (magent-lifecycle-events-context-turn-id
+                            event-context))
+                      :subagent-id
+                      (and event-context
+                           (magent-lifecycle-events-context-subagent-id
+                            event-context))))
+          (magent-request-context--set-audit-context context snapshot)))
+      ;; Consumers receive their own plist so provider hooks cannot mutate the
+      ;; request-owned attribution captured for later lifecycle events.
+      (magent-request-context--copy-audit-snapshot
+       (gethash context magent-request-context--audit-contexts)))))
 
 (defun magent-request-context-notify (context type &rest props)
   "Notify CONTEXT's request-local observer of TYPE with PROPS.
@@ -166,6 +256,28 @@ Nil means only static definitions are loaded.")
       (when-let* ((fn (plist-get spec phase)))
         (funcall fn scope)))))
 
+(defun magent-runtime--copy-overlay-state (value)
+  "Return a transaction snapshot of overlay registry VALUE."
+  (cond
+   ((hash-table-p value) (copy-hash-table value))
+   ((consp value) (copy-tree value))
+   ((sequencep value) (copy-sequence value))
+   (t value)))
+
+(defun magent-runtime--snapshot-overlay-state ()
+  "Capture the registry state owned by every project overlay spec."
+  (cl-loop for spec in magent-runtime--overlay-specs
+           for variable = (plist-get spec :state-variable)
+           when (and variable (boundp variable))
+           collect (cons variable
+                         (magent-runtime--copy-overlay-state
+                          (symbol-value variable)))))
+
+(defun magent-runtime--restore-overlay-state (snapshot)
+  "Restore project overlay registries from SNAPSHOT."
+  (dolist (entry snapshot)
+    (set (car entry) (cdr entry))))
+
 (defun magent-runtime-initialize-static ()
   "Load Magent definitions that are independent of project scope."
   (magent-runtime--run-static-initializers))
@@ -192,8 +304,14 @@ Nil means only static definitions are loaded.")
   "Ensure Magent is initialized and activate the command SCOPE.
 When SCOPE is nil, derive it from the current buffer context."
   (magent-runtime-ensure-initialized)
-  (magent-runtime-activate-scope
-   (or scope (magent-runtime-command-scope))))
+  (let ((target (or scope (magent-runtime-command-scope))))
+    (when (and (fboundp 'magent-runtime-queue-execution-active-p)
+               (magent-runtime-queue-execution-active-p)
+               (not (equal target
+                           (magent-runtime-queue-active-scope))))
+      (user-error
+       "Magent: cannot switch project definitions while a turn is active"))
+    (magent-runtime-activate-scope target)))
 
 (defun magent-runtime--unload-project-overlay (scope)
   "Unload project-local overlay definitions for SCOPE."
@@ -214,12 +332,26 @@ When FORCE is non-nil, reload the overlay even if SCOPE is unchanged."
   (let ((target-project-scope (unless (eq scope 'global) scope)))
     (when (or force
               (not (equal target-project-scope magent-runtime--active-project-scope)))
-      (magent-runtime--unload-project-overlay
-       magent-runtime--active-project-scope)
-      (setq magent-runtime--active-project-scope nil)
-      (when target-project-scope
-        (magent-runtime--load-project-overlay target-project-scope)
-        (setq magent-runtime--active-project-scope target-project-scope))))
+      (let ((previous-scope magent-runtime--active-project-scope)
+            (snapshot (magent-runtime--snapshot-overlay-state)))
+        (condition-case err
+            (progn
+              (magent-runtime--unload-project-overlay previous-scope)
+              (setq magent-runtime--active-project-scope nil)
+              (when target-project-scope
+                (magent-runtime--load-project-overlay target-project-scope))
+              (setq magent-runtime--active-project-scope target-project-scope))
+          (error
+           ;; A loader may fail after registering only part of an overlay.
+           ;; Give every owner a chance to release non-registry state, then
+           ;; restore the exact definitions that were active before the
+           ;; switch.  The original activation error remains authoritative.
+           (when target-project-scope
+             (ignore-errors
+               (magent-runtime--unload-project-overlay target-project-scope)))
+           (magent-runtime--restore-overlay-state snapshot)
+           (setq magent-runtime--active-project-scope previous-scope)
+           (signal (car err) (cdr err)))))))
   (when-let* ((session (and (not (eq scope 'global))
                            (magent-session-get-if-present scope))))
     (magent-session-refresh-agent session))

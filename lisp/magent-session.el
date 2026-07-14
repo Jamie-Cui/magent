@@ -88,6 +88,10 @@ transcript, but should not be fed back into later requests."
 (defvar magent-session--metadata-cache (make-hash-table :test #'equal)
   "Cached lightweight metadata for saved session files.")
 
+(defvar magent-session--loaded-sessions
+  (make-hash-table :test #'eq :weakness 'key)
+  "Runtime-only map of sessions awaiting restart reconciliation to source files.")
+
 (defvar magent-session--current-scope)
 
 (defun magent-session-metadata-value (session key)
@@ -208,19 +212,24 @@ When VALUE is nil, remove KEY.  Return SESSION metadata."
   "Return SESSION's canonical thread ledger, creating it when needed."
   (when session
     (or (magent-session-thread session)
-        (let ((thread
-               (magent-thread-create
-                :id (or (magent-session-id session)
-                        (magent-session-get-id session))
-                :session-id (or (magent-session-id session)
-                                (magent-session-get-id session))
-                :scope (magent-session--scope-for-thread session)
-                :status 'idle
-                :metadata (append (list :source 'magent)
-                                  (and (magent-session-metadata session)
-                                       (list :session-metadata
-                                             (magent-session-metadata
-                                              session)))))))
+        (let* ((id (or (magent-session-id session)
+                       (magent-session-get-id session)))
+               (scope (magent-session--scope-for-thread session))
+               (messages (magent-session-messages session))
+               (thread
+                (if messages
+                    (magent-session--thread-from-messages
+                     messages id scope (list :live-migration t))
+                  (magent-thread-create
+                   :id id
+                   :session-id id
+                   :scope scope
+                   :status 'idle
+                   :metadata (append (list :source 'magent)
+                                     (and (magent-session-metadata session)
+                                          (list :session-metadata
+                                                (magent-session-metadata
+                                                 session))))))))
           (setf (magent-session-thread session) thread)
           thread))))
 
@@ -355,10 +364,54 @@ This is either the symbol `global' or a normalized project root path.")
   "Sequence number used when multiple sessions are created in one second.")
 
 (defvar magent-session--save-timer nil
-  "Idle timer used for deferred UI session saves.")
+  "Shared idle timer used to flush deferred session saves.")
+
+(defvar magent-session--pending-saves nil
+  "Deferred saves as (SESSION . SCOPE) pairs awaiting the shared idle timer.")
 
 (defconst magent-session-schema-version 5
   "Current schema version written to session JSON files.")
+
+(define-error 'magent-session-schema-error
+  "Unsupported or invalid Magent session schema")
+
+(defconst magent-session-id-max-length 200
+  "Maximum accepted length of a persisted Magent session id.")
+
+(defun magent-session-valid-id-p (id)
+  "Return non-nil when ID is safe as a single session filename stem."
+  (and (stringp id)
+       (> (length id) 0)
+       (<= (length id) magent-session-id-max-length)
+       (string-match-p
+        "\\`[[:alnum:]][[:alnum:]_.-]*\\'" id)
+       (not (member id '("." "..")))))
+
+(defun magent-session-validate-id (id)
+  "Return safe session ID or signal `magent-session-schema-error'."
+  (unless (magent-session-valid-id-p id)
+    (signal 'magent-session-schema-error
+            (list (format "Invalid Magent session id: %S" id))))
+  id)
+
+(defun magent-session--file-id (filepath)
+  "Return validated session id encoded by FILEPATH's filename."
+  (magent-session-validate-id
+   (file-name-sans-extension (file-name-nondirectory filepath))))
+
+(defun magent-session--validate-schema-version (value)
+  "Return persisted schema VALUE after validating compatibility.
+Missing versions denote the original legacy schema."
+  (let ((version (or value 1)))
+    (unless (and (integerp version) (> version 0))
+      (signal 'magent-session-schema-error
+              (list (format "Invalid session schema version: %S" value))))
+    (when (> version magent-session-schema-version)
+      (signal 'magent-session-schema-error
+              (list (format
+                     "Session schema %d is newer than supported schema %d"
+                     version magent-session-schema-version))))
+    version))
 
 (defun magent-session--persisted-journal (thread)
   "Return the bounded journal tail persisted for THREAD."
@@ -478,12 +531,15 @@ SCOPE defaults to the active session scope.  SESSION keeps its identity,
 selected agent, and history limit so runtime UI handles remain valid."
   (when session
     (let* ((target-scope (or scope magent-session--current-scope))
-           (id (magent-session-id session))
+           (id (and (magent-session-id session)
+                    (magent-session-validate-id
+                     (magent-session-id session))))
            (filepath
             (and id
                  (expand-file-name
                   (concat id ".json")
                   (magent-session--scope-storage-directory target-scope)))))
+      (magent-session--cancel-deferred-save-for-session session target-scope)
       (setf (magent-session-messages session) nil
             (magent-session-buffer-content session) nil
             (magent-session-approval-overrides session) nil
@@ -491,6 +547,7 @@ selected agent, and history limit so runtime UI handles remain valid."
             (magent-session-agent-jobs session) nil
             (magent-session-thread session) nil
             (magent-session-metadata session) nil)
+      (remhash session magent-session--loaded-sessions)
       (when (and filepath (file-exists-p filepath))
         (condition-case err
             (progn
@@ -594,6 +651,25 @@ Fall back to the file modification time for legacy filenames."
         (let* ((json-object-type 'alist)
                (json-array-type 'list)
                (data (json-read))
+               (schema-version
+                (magent-session--validate-schema-version
+                 (cdr (assq 'schema-version data))))
+               (file-id (magent-session--file-id filepath))
+               (raw-id (cdr (assq 'id data)))
+               (_required-id
+                (when (and (> schema-version 1) (null raw-id))
+                  (signal 'magent-session-schema-error
+                          (list "Versioned session is missing its id"))))
+               (id (if raw-id
+                       (magent-session-validate-id raw-id)
+                     file-id))
+               (_matching-id
+                (when (and raw-id (not (equal id file-id)))
+                  (signal
+                   'magent-session-schema-error
+                   (list (format
+                          "Session id %S does not match filename %S"
+                          id file-id)))))
                (kind (cdr (assq 'kind data)))
                (command (cdr (assq 'command data)))
                (status (cdr (assq 'status data)))
@@ -608,7 +684,9 @@ Fall back to the file modification time for legacy filenames."
                                    (cdr (assq 'summary-title data)))
                                   (magent-session--summary-title-from-messages
                                    (cdr (assq 'messages data))))))
-          (list :scope (if (equal scope-name "project") 'project 'global)
+          (list :valid t
+                :id id
+                :scope (if (equal scope-name "project") 'project 'global)
                 :project-root (magent-session--normalize-project-root project-root)
                 :summary-title summary-title
                 :kind kind
@@ -618,7 +696,9 @@ Fall back to the file modification time for legacy filenames."
                 :parent-session-id parent-session-id
                 :metadata metadata)))
     (error
-     (list :scope (magent-session--file-scope-kind filepath)
+     (list :valid nil
+           :id nil
+           :scope (magent-session--file-scope-kind filepath)
            :project-root nil
            :summary-title nil
            :kind nil
@@ -767,17 +847,19 @@ Fall back to the file modification time for legacy filenames."
                               :result (cdr (assq 'result content))))
                     content)))))
 
-(defun magent-session-save ()
-  "Save the current session to disk as <session-id>.json.
-Called automatically after each successful LLM response.
+(defun magent-session-save-for-session (session scope)
+  "Synchronously save SESSION for explicit SCOPE as <session-id>.json.
+This is the persistence primitive for asynchronous callers: it never reads or
+temporarily rebinds the ambient current session or scope.
 The caller is responsible for updating `magent-session-buffer-content'
 before calling this function."
-  (let* ((scope magent-session--current-scope)
-         (session magent--current-session))
-    (when session
-      (magent-session-thread-ledger session)
-      (when (or (magent-session-messages session)
-                (magent-session-agent-jobs session))
+  (unless (magent-session-p session)
+    (error "Expected a Magent session, got: %S" session))
+  (unless scope
+    (error "An explicit session scope is required"))
+  (magent-session-thread-ledger session)
+  (when (or (magent-session-messages session)
+            (magent-session-agent-jobs session))
       (let ((storage-dir (magent-session--scope-storage-directory scope)))
         (make-directory storage-dir t)
         (let* ((messages (magent-session-messages session))
@@ -842,52 +924,74 @@ before calling this function."
           (magent-session--write-json-atomic filepath data)
           (remhash filepath magent-session--metadata-cache)
           (magent-log "INFO session saved to %s (%d messages) scope=%s"
-                      id (length messages) scope)))))))
+                      id (length messages) scope)
+          filepath))))
+
+(defun magent-session-save ()
+  "Save the ambient current session to disk.
+Compatibility wrapper around `magent-session-save-for-session'."
+  (when magent--current-session
+    (magent-session-save-for-session
+     magent--current-session magent-session--current-scope)))
 
 (defun magent-session-save-deferred (&optional delay)
   "Schedule a session save to run after Emacs is idle.
 DELAY defaults to `magent-session-save-idle-delay'.  The active session
 and scope at scheduling time are saved even if the user switches scopes
 before the timer fires."
-  (let ((session magent--current-session)
-        (scope magent-session--current-scope)
-        timer)
-    (setq timer
-          (run-with-idle-timer
-           (or delay magent-session-save-idle-delay) nil
-           (lambda ()
-             (when (eq magent-session--save-timer timer)
-               (setq magent-session--save-timer nil))
-             (let ((previous-session magent--current-session)
-                   (previous-scope magent-session--current-scope))
-               (unwind-protect
-                   (progn
-                     (setq magent--current-session session
-                           magent-session--current-scope scope)
-                     (magent-session-save))
-                 (setq magent--current-session previous-session
-                       magent-session--current-scope previous-scope))))))
-    (setq magent-session--save-timer timer)
-    magent-session--save-timer))
+  (when magent--current-session
+    (magent-session-save-deferred-for-session
+     magent--current-session magent-session--current-scope delay)))
 
 (defun magent-session-save-deferred-for-session (session &optional scope delay)
   "Schedule SESSION to be saved for SCOPE after Emacs is idle.
 SCOPE defaults to SESSION's ledger scope, falling back to the active scope.
-The active session and scope are restored before returning."
-  (let ((previous-session magent--current-session)
-        (previous-scope magent-session--current-scope)
-        (target-scope (or scope
+Repeated requests for the same SESSION and SCOPE coalesce behind one shared
+idle timer.  Different sessions remain distinct and no ambient session state
+is consulted when the timer fires."
+  (unless (magent-session-p session)
+    (error "Expected a Magent session, got: %S" session))
+  (let ((target-scope (or scope
                           (magent-session--scope-for-thread session)
                           magent-session--current-scope)))
-    (unwind-protect
-        (progn
-          (setq magent--current-session session
-                magent-session--current-scope target-scope)
-          (if delay
-              (magent-session-save-deferred delay)
-            (magent-session-save-deferred)))
-      (setq magent--current-session previous-session
-            magent-session--current-scope previous-scope))))
+    (unless (cl-find-if
+             (lambda (entry)
+               (and (eq (car entry) session)
+                    (equal (cdr entry) target-scope)))
+             magent-session--pending-saves)
+      (push (cons session target-scope) magent-session--pending-saves))
+    (unless magent-session--save-timer
+      (setq magent-session--save-timer
+            (run-with-idle-timer
+             (or delay magent-session-save-idle-delay) nil
+             #'magent-session--flush-deferred-saves)))
+    magent-session--save-timer))
+
+(defun magent-session--flush-deferred-saves ()
+  "Flush all coalesced deferred session saves independently."
+  (let ((pending (nreverse magent-session--pending-saves)))
+    (setq magent-session--pending-saves nil
+          magent-session--save-timer nil)
+    (dolist (entry pending)
+      (condition-case err
+          (magent-session-save-for-session (car entry) (cdr entry))
+        (error
+         (magent-log "WARN deferred session save failed for %s: %s"
+                     (or (magent-session-id (car entry)) "<new-session>")
+                     (error-message-string err)))))))
+
+(defun magent-session--cancel-deferred-save-for-session (session &optional scope)
+  "Remove pending saves for SESSION, restricted to SCOPE when non-nil."
+  (setq magent-session--pending-saves
+        (cl-delete-if
+         (lambda (entry)
+           (and (eq (car entry) session)
+                (or (null scope) (equal (cdr entry) scope))))
+         magent-session--pending-saves))
+  (when (and (null magent-session--pending-saves)
+             magent-session--save-timer)
+    (cancel-timer magent-session--save-timer)
+    (setq magent-session--save-timer nil)))
 
 (defun magent-session-read-file (filepath)
   "Read session data from FILEPATH without changing active session state.
@@ -898,7 +1002,23 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
         (let* ((json-object-type 'alist)
                (json-array-type 'list)
                (data (json-read))
-               (id (cdr (assq 'id data)))
+               (schema-version
+                (magent-session--validate-schema-version
+                 (cdr (assq 'schema-version data))))
+               (file-id (magent-session--file-id filepath))
+               (raw-id (cdr (assq 'id data)))
+               (_required-id
+                (when (and (> schema-version 1) (null raw-id))
+                  (signal 'magent-session-schema-error
+                          (list "Versioned session is missing its id"))))
+               (id (magent-session-validate-id (or raw-id file-id)))
+               (_matching-id
+                (when (and raw-id (not (equal id file-id)))
+                  (signal
+                   'magent-session-schema-error
+                   (list (format
+                          "Session id %S does not match filename %S"
+                          id file-id)))))
                (kind (cdr (assq 'kind data)))
                (command (cdr (assq 'command data)))
                (status (cdr (assq 'status data)))
@@ -957,6 +1077,7 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
                          :buffer-content (when (> (length bc) 0) bc))))
           (unless context-raw
             (magent-session-refresh-projections session))
+          (puthash session filepath magent-session--loaded-sessions)
           (list :scope scope
                 :session session
                 :id id)))
@@ -964,11 +1085,40 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
      (magent-log "ERROR loading session %s: %s" filepath (error-message-string err))
      nil)))
 
+(defun magent-session-reconcile-after-restart (session)
+  "Terminalize SESSION state that cannot survive an Emacs restart.
+Return the number of thread, item, and child-job lifecycle objects changed."
+  (let ((changed 0)
+        (reason "Interrupted by Emacs restart"))
+    (when-let* ((thread (magent-session-thread session)))
+      (cl-incf changed
+               (magent-thread-reconcile-after-restart thread reason)))
+    (dolist (job (magent-session-agent-jobs session))
+      (when (magent-agent-job-reconcile-after-restart job reason)
+        (cl-incf changed)))
+    (when (> changed 0)
+      (magent-session-refresh-projections session))
+    changed))
+
 (defun magent-session-install (scope session)
-  "Install SESSION for SCOPE and make it active."
-  (puthash scope session magent-session--scoped-sessions)
-  (magent-session-activate scope)
-  session)
+  "Install SESSION for SCOPE and make it active.
+Persisted non-terminal work is reconciled once before the session becomes
+available, then saved atomically through the explicit session/scope API."
+  (let ((recovered
+         (when (gethash session magent-session--loaded-sessions)
+           (prog1 (magent-session-reconcile-after-restart session)
+             (remhash session magent-session--loaded-sessions)))))
+    (puthash scope session magent-session--scoped-sessions)
+    (magent-session-activate scope)
+    (when (> (or recovered 0) 0)
+      (condition-case err
+          (magent-session-save-for-session session scope)
+        (error
+         (magent-log
+          "ERROR saving reconciled session %s: %s"
+          (or (magent-session-id session) "unknown")
+          (error-message-string err)))))
+    session))
 
 (defun magent-session-refresh-agent (session)
   "Refresh SESSION's agent pointer from the current registry.
@@ -996,7 +1146,12 @@ Restores `magent--current-session'.  Returns the session or nil."
 (defun magent-session-list-files ()
   "Return all session JSON files grouped by project for resume display."
   (magent-session--sort-files-for-display
-   (delq nil (magent-session--all-files))))
+   (cl-remove-if-not
+    (lambda (file)
+      (let ((metadata (magent-session--read-file-metadata-cached file)))
+        (or (not (plist-member metadata :valid))
+            (plist-get metadata :valid))))
+    (delq nil (magent-session--all-files)))))
 
 (defun magent-session--format-file (filepath)
   "Return a human-readable label for session FILEPATH.
@@ -1016,7 +1171,8 @@ Parses the session-YYYYMMDD-HHMMSS filename pattern into a date/time string."
 
 (defun magent-session-get-id (session)
   "Get or generate a unique ID for SESSION."
-  (or (magent-session-id session)
+  (or (and (magent-session-id session)
+           (magent-session-validate-id (magent-session-id session)))
       (let* ((stem (format-time-string "%Y%m%d-%H%M%S"))
              (seq (if (equal stem magent-session--last-id-stem)
                       (cl-incf magent-session--last-id-seq)

@@ -104,7 +104,7 @@ values.  Custom probes execute as trusted Emacs Lisp and are not sandboxed."
     (when (and predicate (not (functionp predicate)))
       (error "Doctor probe %s has an invalid predicate" key))
     (when (and timeout
-               (not (and (numberp timeout) (> timeout 0))))
+               (not (and (numberp timeout) (>= timeout 0))))
       (error "Doctor probe %s has an invalid timeout" key))
     (let ((probe (magent-doctor-probe-create
                   :id key
@@ -249,6 +249,8 @@ values.  Custom probes execute as trusted Emacs Lisp and are not sandboxed."
 (defun magent-doctor-run-process (state program args &optional timeout directory)
   "Run PROGRAM with ARGS for a trusted probe in STATE.
 No shell is used.  TIMEOUT defaults to `magent-doctor-process-timeout'.
+Zero disables the process-specific timeout; the total collection deadline,
+when enabled, still applies.
 DIRECTORY defaults to STATE's project root.  Return exit and output data."
   (let* ((executable (or (and (file-name-absolute-p program) program)
                          (executable-find program)
@@ -257,11 +259,20 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
                                 (magent-doctor-state-project-root state)
                                 default-directory))
          (buffer (generate-new-buffer " *magent-doctor-process*"))
-         (limit (min (or timeout magent-doctor-process-timeout)
-                     (max 0.0
-                          (- (magent-doctor-state-deadline state)
-                             (float-time)))))
-         (deadline (+ (float-time) limit))
+         (configured (if (null timeout)
+                         magent-doctor-process-timeout
+                       timeout))
+         (remaining (when (magent-doctor-state-deadline state)
+                      (max 0.0
+                           (- (magent-doctor-state-deadline state)
+                              (float-time)))))
+         (limit (cond
+                 ((and (> configured 0) remaining)
+                  (min configured remaining))
+                 ((> configured 0) configured)
+                 (remaining remaining)
+                 (t nil)))
+         (deadline (and limit (+ (float-time) limit)))
          process)
     (unwind-protect
         (progn
@@ -277,7 +288,7 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
           (while (process-live-p process)
             (when (magent-doctor-state-cancelled-p state)
               (signal 'quit nil))
-            (when (>= (float-time) deadline)
+            (when (and deadline (>= (float-time) deadline))
               (signal 'magent-doctor-probe-timeout (list program)))
             (accept-process-output process 0.05))
           `((program . ,program)
@@ -596,19 +607,32 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
 
 (defun magent-doctor--run-probe (probe context state)
   "Run one PROBE for CONTEXT and return a sanitized result using STATE."
-  (when (>= (float-time) (magent-doctor-state-deadline state))
+  (when (and (magent-doctor-state-deadline state)
+             (>= (float-time) (magent-doctor-state-deadline state)))
     (signal 'magent-doctor-probe-timeout '("total collection timeout")))
-  (let* ((remaining (- (magent-doctor-state-deadline state) (float-time)))
-         (timeout (min (or (magent-doctor-probe-timeout probe)
-                           magent-doctor-probe-timeout)
-                       remaining))
+  (let* ((remaining (when (magent-doctor-state-deadline state)
+                      (max 0.0
+                           (- (magent-doctor-state-deadline state)
+                              (float-time)))))
+         (configured (if (null (magent-doctor-probe-timeout probe))
+                         magent-doctor-probe-timeout
+                       (magent-doctor-probe-timeout probe)))
+         (timeout (cond
+                   ((and (> configured 0) remaining)
+                    (min configured remaining))
+                   ((> configured 0) configured)
+                   (remaining remaining)
+                   (t nil)))
          (id (magent-doctor-probe-id probe)))
     (magent-command-notify context (format "Running doctor probe %s..." id))
     (condition-case err
         (let* ((raw
-                (with-timeout
-                    (timeout
-                     (signal 'magent-doctor-probe-timeout (list id)))
+                (if timeout
+                    (with-timeout
+                        (timeout
+                         (signal 'magent-doctor-probe-timeout (list id)))
+                      (funcall (magent-doctor-probe-collector probe)
+                               context state))
                   (funcall (magent-doctor-probe-collector probe)
                            context state)))
                (safe (magent-doctor--sanitize-value raw state))
@@ -798,15 +822,16 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
           (when (and (bufferp handle) (buffer-live-p handle))
             (kill-buffer handle))
         (setf (magent-doctor-state-request-handle state) handle)
-        (setf (magent-doctor-state-request-timer state)
-              (run-at-time
-               magent-request-timeout nil
-               (lambda ()
-                 (unless (or (magent-doctor-state-cancelled-p state)
-                             (magent-command-context-completed-p context))
-                   (magent-doctor--abort-request state)
-                   (magent-command-complete
-                    context 'failed "Doctor analysis timed out")))))))))
+        (when (> magent-request-timeout 0)
+          (setf (magent-doctor-state-request-timer state)
+                (run-at-time
+                 magent-request-timeout nil
+                 (lambda ()
+                   (unless (or (magent-doctor-state-cancelled-p state)
+                               (magent-command-context-completed-p context))
+                     (magent-doctor--abort-request state)
+                     (magent-command-complete
+                      context 'failed "Doctor analysis timed out"))))))))))
 
 (defun magent-doctor--runner (context)
   "Run the safe probe-based doctor pipeline for command CONTEXT."
@@ -824,7 +849,8 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
     (if (not (magent-doctor--confirm context probes))
         (magent-command-complete context 'cancelled "Doctor cancelled")
       (setf (magent-doctor-state-deadline state)
-            (+ (float-time) magent-doctor-total-timeout))
+            (and (> magent-doctor-total-timeout 0)
+                 (+ (float-time) magent-doctor-total-timeout)))
       (condition-case nil
           (let ((results (magent-doctor--collect probes context state)))
             (unless (magent-doctor-state-cancelled-p state)
@@ -855,7 +881,10 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
    :description "Project indicators and read-only Git status"
    :predicate #'magent-doctor--project-predicate
    :collector #'magent-doctor--project-collector
-   :timeout magent-doctor-process-timeout
+   ;; The collector reads `magent-doctor-process-timeout' at run time.  Do not
+   ;; freeze its Custom value when this file is loaded; the total deadline
+   ;; still bounds the whole probe.
+   :timeout 0
    :data-categories '(project vc filesystem))
   (magent-doctor-register-probe
    "diagnostics"

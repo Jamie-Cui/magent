@@ -101,29 +101,57 @@ If CONTROLLER is already aborted, run CLEANUP immediately."
   result
   metadata)
 
+(defvar magent-agent-loop--event-contexts
+  (make-hash-table :test #'eq :weakness 'key)
+  "Lifecycle contexts keyed by loop identity without changing struct layout.")
+
+(defvar magent-agent-loop--context-ownership
+  (make-hash-table :test #'eq :weakness 'key)
+  "Lifecycle ownership markers keyed by loop identity.")
+
+(defun magent-agent-loop-event-context (loop)
+  "Return LOOP's captured lifecycle context, if any."
+  (gethash loop magent-agent-loop--event-contexts))
+
+(defun magent-agent-loop-owns-event-context-p (loop)
+  "Return non-nil when LOOP owns its lifecycle context.
+Loops created before this metadata existed retain the historical owned
+behavior, which is safe because lifecycle completion is idempotent."
+  (let ((marker (gethash loop magent-agent-loop--context-ownership 'missing)))
+    (if (eq marker 'missing) t (eq marker 'owned))))
+
 (defun magent-agent-loop-create (&rest args)
   "Create a `magent-agent-loop' from keyword ARGS.
-Recognized keys are `:request', `:sampler', `:status', and
-`:metadata'.  SAMPLER is a function called with REQUEST by
-`magent-agent-loop-start'."
+Recognized keys include `:request', `:sampler', `:request-context',
+`:event-context', `:owns-event-context-p', `:status', and `:metadata'.
+SAMPLER is a function called with REQUEST by `magent-agent-loop-start'."
   (let ((sampler (plist-get args :sampler)))
     (when (and sampler (not (functionp sampler)))
       (error "Agent loop sampler is not callable: %S" sampler))
-    (magent-agent-loop--create
-     :request (plist-get args :request)
-     :sampler sampler
-     :session (plist-get args :session)
-     :request-context (plist-get args :request-context)
-     :turn-id (plist-get args :turn-id)
-     :abort-controller (or (plist-get args :abort-controller)
-                           (magent-agent-loop-abort-controller-create))
-     :tool-queue (or (plist-get args :tool-queue)
-                     (magent-agent-loop-tool-queue-create))
-     :status (or (plist-get args :status) 'created)
-     :text-chunks nil
-     :reasoning-chunks nil
-     :tool-calls nil
-     :metadata (plist-get args :metadata))))
+    (let ((loop
+           (magent-agent-loop--create
+            :request (plist-get args :request)
+            :sampler sampler
+            :session (plist-get args :session)
+            :request-context (plist-get args :request-context)
+            :turn-id (plist-get args :turn-id)
+            :abort-controller (or (plist-get args :abort-controller)
+                                  (magent-agent-loop-abort-controller-create))
+            :tool-queue (or (plist-get args :tool-queue)
+                            (magent-agent-loop-tool-queue-create))
+            :status (or (plist-get args :status) 'created)
+            :text-chunks nil
+            :reasoning-chunks nil
+            :tool-calls nil
+            :metadata (plist-get args :metadata))))
+      (puthash loop (plist-get args :event-context)
+               magent-agent-loop--event-contexts)
+      (puthash loop
+               (if (plist-get args :owns-event-context-p)
+                   'owned
+                 'inherited)
+               magent-agent-loop--context-ownership)
+      loop)))
 
 (defun magent-agent-loop-text (loop)
   "Return accumulated assistant text for LOOP."
@@ -285,6 +313,33 @@ Recognized keys are `:request', `:sampler', `:status', and
     (and controller
          (magent-agent-loop-abort-controller-aborted controller))))
 
+(defun magent-agent-loop--resource-identity-error
+    (identity request-context fn-args)
+  "Return a failed tool result when frozen resource IDENTITY changed.
+The check runs at the actual dequeue point.  It closes deterministic races
+across Magent's own serial tool queue without claiming OS-level isolation."
+  (when identity
+    (let* ((index (plist-get identity :file-arg-index))
+           (expected (plist-get identity :canonical-resource))
+           (value (and (integerp index) (nth index fn-args)))
+           (project-root
+            (or (and request-context
+                     (magent-request-context-project-root request-context))
+                (and request-context
+                     (let ((scope (magent-request-context-scope request-context)))
+                       (and (stringp scope) scope)))))
+           (actual
+            (condition-case nil
+                (magent-tools-canonical-resource-path value project-root)
+              (error nil))))
+      (unless (and (stringp expected) (equal actual expected))
+        (magent-tool-result-create
+         :status 'failed
+         :success nil
+         :output "Error: resource identity changed after permission evaluation"
+         :error "Resource identity changed after permission evaluation"
+         :metadata (list :resource-identity-changed t))))))
+
 (defun magent-agent-loop-tool-queue-abort (queue)
   "Abort QUEUE, discarding pending tool items."
   (when queue
@@ -314,11 +369,14 @@ Recognized keys are `:request', `:sampler', `:status', and
             (fn (plist-get item :fn))
             (async-p (plist-get item :async))
             (structured-result-p (plist-get item :structured-result-p))
+            (resource-identity (plist-get item :resource-identity))
             (fn-args (plist-get item :args))
             (callback (plist-get item :callback)))
         (magent-lifecycle-events-emit 'tool-call-start
                             :context
                             (magent-agent-loop--event-context request-context)
+                            :audit-context
+                            (magent-request-context-audit-snapshot request-context)
                             :call-id call-id
                             :tool-name name
                             :title name
@@ -351,6 +409,8 @@ Recognized keys are `:request', `:sampler', `:status', and
                    'tool-call-end
                    :context
                    (magent-agent-loop--event-context request-context)
+                   :audit-context
+                   (magent-request-context-audit-snapshot request-context)
                    :call-id call-id
                    :tool-name name
                    :status status
@@ -376,22 +436,26 @@ Recognized keys are `:request', `:sampler', `:status', and
                    (magent-agent-loop-abort-controller-register
                     abort-controller cleanup)))
                 (magent-tools--request-context request-context))
-            (if async-p
-                (condition-case err
-                    (apply fn #'complete fn-args)
-                  (quit
-                   (complete "Error: Tool execution interrupted"))
-                  (error
-                   (complete
+            (if-let* ((identity-error
+                       (magent-agent-loop--resource-identity-error
+                        resource-identity request-context fn-args)))
+                (complete identity-error)
+              (if async-p
+                  (condition-case err
+                      (apply fn #'complete fn-args)
+                    (quit
+                     (complete "Error: Tool execution interrupted"))
+                    (error
+                     (complete
+                      (format "Error: Tool execution failed: %s"
+                              (error-message-string err)))))
+                (complete
+                 (condition-case err
+                     (apply fn fn-args)
+                   (quit "Error: Tool execution interrupted")
+                   (error
                     (format "Error: Tool execution failed: %s"
-                            (error-message-string err)))))
-              (complete
-               (condition-case err
-                   (apply fn fn-args)
-                 (quit "Error: Tool execution interrupted")
-                 (error
-                  (format "Error: Tool execution failed: %s"
-                          (error-message-string err))))))))))))
+                            (error-message-string err)))))))))))))
 
 (defun magent-agent-loop-tool-queue-run (queue)
   "Process the next queued tool in QUEUE when idle."
@@ -401,7 +465,8 @@ Recognized keys are `:request', `:sampler', `:status', and
       (magent-agent-loop--execute-tool-item queue item))))
 
 (defun magent-agent-loop-run-tool
-    (loop request-context tool-spec callback arg-values &optional structured-result-p)
+    (loop request-context tool-spec callback arg-values
+          &optional structured-result-p resource-identity)
   "Run TOOL-SPEC with ARG-VALUES and call CALLBACK with the result.
 When STRUCTURED-RESULT-P is non-nil, pass a `magent-tool-result'; otherwise
 preserve the historical string callback contract."
@@ -429,6 +494,7 @@ preserve the historical string callback contract."
              :fn fn
              :async async-p
              :structured-result-p structured-result-p
+             :resource-identity resource-identity
              :callback callback
              :args fn-args)))))
 
@@ -522,6 +588,8 @@ preserve the historical string callback contract."
       (magent-audit-record-permission-decision
        tool-name perm-key decision source
        :context (magent-agent-loop--event-context request-context)
+       :audit-context
+       (magent-request-context-audit-snapshot request-context)
        :summary summary
        :args args-plist))))
 
@@ -553,9 +621,11 @@ preserve the historical string callback contract."
   (magent-tool-orchestrator-create
    :permission permission
    :request-context request-context
-   :run-tool-function (lambda (tool-spec callback arg-values)
+   :run-tool-function (lambda (tool-spec callback arg-values
+                               &optional resource-identity)
                         (magent-agent-loop-run-tool
-                         loop request-context tool-spec callback arg-values t))
+                         loop request-context tool-spec callback arg-values t
+                         resource-identity))
    :audit-function #'magent-agent-loop-audit-permission-decision
    :file-arg-index-function #'magent-agent-loop-find-file-arg-index
    :args-to-plist-function #'magent-agent-loop-args-to-plist
@@ -805,13 +875,14 @@ session, the existing request prompt is reused."
 
 (defun magent-agent-loop--request-active-p (loop)
   "Return non-nil when LOOP is still waiting on a provider response."
-  (memq (magent-agent-loop-status loop) '(running streaming reasoning)))
+  (memq (magent-agent-loop-status loop)
+        '(running streaming reasoning tool-pending)))
 
 (defun magent-agent-loop--schedule-request-timeout
     (loop original-callback)
-  "Schedule provider request timeout for LOOP.
+  "Schedule provider inactivity timeout for LOOP.
 ORIGINAL-CALLBACK receives a normalized timeout error event when the
-provider request exceeds `magent-request-timeout'."
+provider request has emitted no event for `magent-request-timeout' seconds."
   (magent-agent-loop--cancel-request-timeout loop)
   (when (and (numberp magent-request-timeout)
              (> magent-request-timeout 0)
@@ -878,9 +949,13 @@ provider request exceeds `magent-request-timeout'."
           (setf (magent-request-context-abort-controller request-context)
                 nil)))
       (unless already-aborted
-        (when-let* ((context (magent-agent-loop--event-context
-                             (magent-agent-loop-request-context loop))))
-          (magent-lifecycle-events-end-turn context 'cancelled "User aborted")))))
+        (when (magent-agent-loop-owns-event-context-p loop)
+          (when-let* ((context
+                       (or (magent-agent-loop-event-context loop)
+                           (magent-agent-loop--event-context
+                            (magent-agent-loop-request-context loop)))))
+            (magent-lifecycle-events-end-turn
+             context 'cancelled "User aborted"))))))
   loop)
 
 (defun magent-agent-loop-start (loop)
@@ -893,7 +968,8 @@ the sampler return value."
   (let* ((request (magent-agent-loop-request loop))
          (sampler (magent-agent-loop-sampler loop))
          (original-callback (and request
-                                 (magent-llm-request-callback request))))
+                                 (magent-llm-request-callback request)))
+         (terminal-event-seen nil))
     (unless (magent-llm-request-p request)
       (error "Agent loop requires a magent-llm-request"))
     (unless sampler
@@ -916,17 +992,25 @@ the sampler return value."
             :metadata (magent-llm-request-metadata request)
             :callback (lambda (event)
                         (unless (magent-agent-loop--aborted-p loop)
-                          (when (memq (magent-llm-event-type event)
-                                      '(tool-call-batch-end completed error))
-                            (magent-agent-loop--cancel-request-timeout
-                             loop))
+                          (if (memq (magent-llm-event-type event)
+                                    '(tool-call-batch-end completed error))
+                              (progn
+                                (setq terminal-event-seen t)
+                                (magent-agent-loop--cancel-request-timeout loop))
+                            ;; Every normalized provider event proves forward
+                            ;; progress.  Restart the inactivity window before
+                            ;; applying the event, while LOOP is still active.
+                            (unless terminal-event-seen
+                              (magent-agent-loop--schedule-request-timeout
+                               loop original-callback)))
                           (magent-agent-loop-apply-event loop event)
                           (when original-callback
                             (funcall original-callback event)))))))
       (let ((handle (funcall sampler loop-request)))
         (setf (magent-agent-loop-request-handle loop) handle)
-        (magent-agent-loop--schedule-request-timeout
-         loop original-callback)
+        (unless terminal-event-seen
+          (magent-agent-loop--schedule-request-timeout
+           loop original-callback))
         handle))))
 
 (provide 'magent-agent-loop)

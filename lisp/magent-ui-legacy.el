@@ -173,11 +173,12 @@ Returns the submitted operation id."
      item
      #'magent-ui--dispatch-submission)))
 
-(defun magent-ui--clear-processing ()
+(defun magent-ui--clear-processing (&optional scope)
   "Release the processing lock.
 Called by `magent-ui--finish-processing' and `magent-interrupt'."
   (setq magent-ui--processing nil)
-  (magent-ui--refresh-header-line (magent-session-current-scope)))
+  (magent-ui--refresh-header-line
+   (or scope (magent-session-current-scope))))
 
 (defun magent-ui--dispatch (item)
   "Set the processing lock and hand ITEM off to the UI layer.
@@ -191,7 +192,9 @@ stack frame before UI mutations happen."
 (defun magent-ui--dispatch-submission (submission)
   "Dispatch a queued runtime SUBMISSION to the UI runner."
   (setq magent-ui--processing t)
-  (magent-ui--refresh-header-line (magent-session-current-scope))
+  (magent-ui--refresh-header-line
+   (or (magent-legacy-queue-submission-scope submission)
+       (magent-session-current-scope)))
   (magent-ui--run-item (magent-legacy-queue-submission-payload submission)
                        (magent-legacy-queue-submission-id submission)))
 
@@ -435,14 +438,18 @@ compatibility hook for older callers."
 (defun magent-ui--activate-scope
     (scope &optional session force-render preserve-current-session)
   "Activate SCOPE with optional SESSION, then prepare its UI buffer."
+  ;; Acquire the global project-definition lease before mutating ambient
+  ;; session state.  This also covers resume/load paths that bypass prompt
+  ;; dispatch's normal processing check.
+  (magent-runtime-prepare-command-context scope)
   (cond
    (session
-    (magent-session-install scope session))
+    (magent-session-install scope session)
+    (magent-session-refresh-agent session))
    ((or (not preserve-current-session)
         (not (equal scope (magent-session-current-scope)))
         (null magent--current-session))
     (magent-session-activate scope)))
-  (magent-runtime-activate-scope scope)
   (magent-ui--ensure-scope-buffer-rendered scope force-render)
   (magent-session-get))
 
@@ -1273,6 +1280,9 @@ request are discarded."
            (not (magent-ui--legacy-active-p))
            (not magent--current-request-handle))
       (magent-agent-shell-interrupt t)
+    ;; Invalidate callbacks before aborting because provider abort can invoke a
+    ;; completion callback synchronously.
+    (cl-incf magent-ui--request-generation)
     (let ((turn-request-handle (magent-legacy-queue-current-request-handle)))
       (magent-legacy-queue-interrupt #'magent-ui--abort-active-request)
       (when magent--current-request-handle
@@ -1280,7 +1290,6 @@ request are discarded."
           (magent-ui--abort-active-request magent--current-request-handle))
         (setq magent--current-request-handle nil)))
     (magent-approval-drop-requests)
-    (cl-incf magent-ui--request-generation)
     (magent-ui-insert-status-line "[Interrupted by user]")
     (magent-log "INFO Request interrupted by user (gen now %d)"
                 magent-ui--request-generation)
@@ -2206,7 +2215,8 @@ AGENT is an optional `magent-agent-info' override for this request."
           (magent-ui--activate-context-session)
         (progn
           (magent-session-get)
-          (magent-runtime-activate-scope (magent-session-current-scope))))
+          (magent-runtime-prepare-command-context
+           (magent-session-current-scope))))
       (magent-ui-process prompt source display skills agent))))
 
 (defun magent-ui-process (prompt &optional source display skills agent)
@@ -2232,13 +2242,18 @@ Inserts the user message into the output buffer and creates the agent loop.
 Captures the current request generation so stale callbacks are discarded."
   (let* ((input (magent-ui--request-prompt item))
          (gen (cl-incf magent-ui--request-generation))
-         (scope (magent-session-current-scope))
-         (session (magent-session-get))
          (submission
           (and submission-id
                (magent-legacy-queue-active-submission)))
-         request-state)
-    (magent-ui-display-buffer)
+         (scope (or (and submission
+                         (magent-legacy-queue-submission-scope submission))
+                    (magent-session-current-scope)))
+         (session (or (and submission
+                           (magent-legacy-queue-submission-session submission))
+                      (magent-session-get)))
+         request-state
+         request-finished)
+    (magent-ui-display-buffer scope)
     (magent-ui-render-history t scope)
     (magent-log "INFO processing [%s] gen=%d: %s"
                 (magent-ui--request-source item) gen input)
@@ -2253,7 +2268,9 @@ Captures the current request generation so stale callbacks are discarded."
                (lambda ()
                  (and (= gen magent-ui--request-generation)
                       (or (null submission-id)
-                          (magent-legacy-queue-active-id-p submission-id))))))
+                          (and submission
+                               (magent-legacy-queue-active-submission-p
+                                submission)))))))
           (setq request-state
                 (magent-request-context-create
                  :id (magent-lifecycle-events-generate-id)
@@ -2269,60 +2286,84 @@ Captures the current request generation so stale callbacks are discarded."
                  :origin-context (magent-ui--request-request-context item)
                  :ui-visibility 'full
                  :live-p request-live-p))
-          (setq magent--current-request-handle
-                (magent-agent-process
-                 input
-                 (lambda (response)
-                   (if (and (= gen magent-ui--request-generation)
-                            (or (null submission-id)
-                                (magent-legacy-queue-active-id-p submission-id)))
-                       (magent-ui--finish-processing response submission-id)
-                     (magent-log "DEBUG discarding stale callback gen=%d (current=%d)"
-                                 gen magent-ui--request-generation)))
-                 (magent-ui--request-agent item)
-                 (magent-ui--request-skills item)
-                 nil
-                 (magent-ui--request-request-context item)
-                 (magent-ui--request-capability-resolution item)
-                 #'magent-ui-insert-streaming
-                 request-live-p
-                 request-state))
-          (when submission-id
-            (magent-legacy-queue-set-current-request-handle
-             magent--current-request-handle)))
+          (let ((handle
+                 (magent-agent-process
+                  input
+                  (lambda (response)
+                    (if (and (= gen magent-ui--request-generation)
+                             (or (null submission-id)
+                                 (and submission
+                                      (magent-legacy-queue-active-submission-p
+                                       submission))))
+                        (progn
+                          (setq request-finished t)
+                          (magent-ui--finish-processing
+                           response submission-id submission))
+                      (magent-log
+                       "DEBUG discarding stale callback gen=%d (current=%d)"
+                       gen magent-ui--request-generation)))
+                  (magent-ui--request-agent item)
+                  (magent-ui--request-skills item)
+                  nil
+                  (magent-ui--request-request-context item)
+                  (magent-ui--request-capability-resolution item)
+                  #'magent-ui-insert-streaming
+                  request-live-p
+                  request-state)))
+            (when (and (not request-finished)
+                       (funcall request-live-p))
+              (setq magent--current-request-handle handle)
+              (when submission-id
+                (magent-legacy-queue-set-current-request-handle
+                 handle submission)))))
       (error
-      (magent-log "ERROR in run-item: %s" (error-message-string err))
-      (magent-ui-insert-error (error-message-string err))
+       (magent-log "ERROR in run-item: %s" (error-message-string err))
+       (magent-ui-insert-error (error-message-string err))
        (setq magent--current-request-handle nil)
-       (when submission-id
-         (magent-legacy-queue-finish 'failed (error-message-string err)))
-       (magent-ui--clear-processing)
+       (magent-ui--clear-processing scope)
+       (when submission
+         (magent-legacy-queue-finish-submission
+          submission 'failed (error-message-string err)))
        (magent-ui-render-history t scope)
        (magent-ui--maybe-show-input-prompt scope)))))
 
-(defun magent-ui--finish-processing (response &optional submission-id)
+(defun magent-ui--finish-processing
+    (response &optional submission-id expected-submission)
   "Finish processing with RESPONSE and advance the queue.
-Handles both streaming and non-streaming completion."
-  (let ((success (magent-agent-result-success-p response))
-        (content (magent-agent-result-content-string response))
-        (scope (magent-session-current-scope)))
+Handles both streaming and non-streaming completion.  EXPECTED-SUBMISSION,
+when non-nil, makes stale completion callbacks identity-safe."
+  (let* ((active (and submission-id
+                      (magent-legacy-queue-active-submission)))
+         (submission (or expected-submission active))
+         (success (magent-agent-result-success-p response))
+         (content (magent-agent-result-content-string response))
+         (scope (or (and submission
+                         (magent-legacy-queue-submission-scope submission))
+                    (magent-session-current-scope)))
+         (session (or (and submission
+                           (magent-legacy-queue-submission-session submission))
+                      (magent-session-get))))
     (setq magent--current-request-handle nil)
     (if success
         (magent-log "INFO done")
       (magent-log "ERROR request failed or aborted: %s" content)
       (magent-ui-insert-error
        (if (string-empty-p content)
-           "Request failed or was aborted"
+         "Request failed or was aborted"
          content)))
-    (magent-ui--clear-processing)
-    (when submission-id
-      (magent-legacy-queue-finish (if success 'completed 'failed) content))
+    (magent-ui--clear-processing scope)
+    (when (and submission-id submission)
+      (magent-legacy-queue-finish-submission
+       submission (if success 'completed 'failed) content))
     (magent-ui-render-history t scope)
     (magent-ui--maybe-show-input-prompt scope)
     (condition-case err
         (progn
-          (magent-ui--snapshot-buffer-content magent--current-session scope)
-          (magent-session-save-deferred))
+          (magent-ui--snapshot-buffer-content session scope)
+          ;; Queued completion is persisted by the queue's exactly-once
+          ;; terminalizer.  Direct, unqueued legacy calls still save here.
+          (unless submission-id
+            (magent-session-save-deferred-for-session session scope)))
       (error
        (magent-log "ERROR session save failed: %s"
                    (error-message-string err))))))

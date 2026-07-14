@@ -19,6 +19,7 @@
 (require 'magent-config)
 (require 'magent-runtime)
 (require 'magent-runtime-api)
+(require 'magent-session)
 (require 'magent-skills)
 
 (defvar gptel-model)
@@ -40,6 +41,7 @@
 (declare-function agent-shell-start "agent-shell")
 (declare-function shell-maker-busy "shell-maker")
 (declare-function magent-acp--runtime-session-by-id "magent-acp")
+(declare-function magent-acp--client-session-scope "magent-acp")
 
 (defconst magent-agent-shell--identifier 'magent
   "agent-shell config identifier used by Magent.")
@@ -157,8 +159,17 @@
       (with-current-buffer buffer
         (when-let* ((session-id (map-nested-elt agent-shell--state
                                                 '(:session :id))))
-          (or (magent-runtime-session-from-id session-id)
-              (magent-acp--runtime-session-by-id session-id)))))))
+          (let* ((client (map-elt agent-shell--state :client))
+                 (scope
+                  (or (and client
+                           (magent-acp--client-session-scope
+                            client session-id))
+                      ;; Compatibility fallback for an agent-shell client that
+                      ;; survived a source reload before scope bindings existed.
+                      (magent-session-scope-from-directory
+                       default-directory))))
+          (or (magent-runtime-session-from-id session-id scope)
+                (magent-acp--runtime-session-by-id session-id scope))))))))
 
 (defun magent-agent-shell--set-runtime-pending-skills
     (runtime-session skills)
@@ -520,7 +531,7 @@ When FORCE is non-nil, skip agent-shell's confirmation prompt."
                                    (current-buffer))
                               (magent-agent-shell--buffer t))))
       (with-current-buffer shell-buffer
-        (agent-shell-interrupt (or force t)))
+        (agent-shell-interrupt force))
     (user-error "No Magent agent-shell buffer")))
 
 (defun magent-agent-shell-processing-p ()

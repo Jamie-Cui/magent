@@ -423,8 +423,12 @@ assistant prose."
 Return `tool-call' when textual tool calls were emitted, otherwise
 `completed'."
   (let* ((metadata (magent-llm-gptel--metadata info))
-         (events (magent-llm-gptel--parse-dsml-tool-calls
-                  text metadata)))
+         (strict-final
+          (plist-get (magent-llm-request-metadata request)
+                     :strict-final-response-retry))
+         (events (unless strict-final
+                   (magent-llm-gptel--parse-dsml-tool-calls
+                    text metadata))))
     (if events
       (progn
         (magent-llm-gptel--flush-reasoning request state info)

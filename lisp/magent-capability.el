@@ -91,7 +91,25 @@ The output shape is intentionally inspectable:
   skill-names)
 
 (defvar magent-capability--registry nil
-  "Alist of (capability-name . `magent-capability').")
+  "Layered alist of (capability-name . `magent-capability').
+The first definition for a name is effective; shadowed definitions are kept
+so project overlays can be removed without rebuilding static registries.")
+
+(defun magent-capability--same-owner-p (left right)
+  "Return non-nil when capabilities LEFT and RIGHT have the same owner."
+  (and (eq (magent-capability-source-layer left)
+           (magent-capability-source-layer right))
+       (equal (magent-capability-source-scope left)
+              (magent-capability-source-scope right))))
+
+(defun magent-capability--effective-entries ()
+  "Return effective capability entries without shadowed duplicates."
+  (let (seen effective)
+    (dolist (entry magent-capability--registry)
+      (unless (member (car entry) seen)
+        (push (car entry) seen)
+        (push entry effective)))
+    (nreverse effective)))
 
 (defvar magent-capability--last-resolution nil
   "Last `magent-capability-resolution' returned by the resolver.")
@@ -146,10 +164,13 @@ Each directory can contain subdirectories with CAPABILITY.md files."
   :group 'magent)
 
 (defun magent-capability-register (capability)
-  "Register CAPABILITY in the registry."
+  "Register CAPABILITY while retaining definitions from other layers."
   (let ((name (magent-capability-name capability)))
     (setq magent-capability--registry
-          (cl-remove-if (lambda (entry) (equal (car entry) name))
+          (cl-remove-if (lambda (entry)
+                          (and (equal (car entry) name)
+                               (magent-capability--same-owner-p
+                                (cdr entry) capability)))
                         magent-capability--registry))
     (push (cons name capability) magent-capability--registry))
   capability)
@@ -179,7 +200,7 @@ Each directory can contain subdirectories with CAPABILITY.md files."
 
 (defun magent-capability-list ()
   "Return a sorted list of registered capability names."
-  (sort (mapcar #'car magent-capability--registry) #'string<))
+  (sort (mapcar #'car (magent-capability--effective-entries)) #'string<))
 
 (defun magent-capability--source-owner (filepath)
   "Classify FILEPATH for capability governance purposes."
@@ -207,7 +228,8 @@ Each directory can contain subdirectories with CAPABILITY.md files."
 (defun magent-capability--list-files (&optional directories)
   "List all capability files in DIRECTORIES."
   (if directories
-      (magent-file-loader-list-named-files directories magent-capability-file-name)
+      (magent-file-loader-list-named-files-ordered
+       directories magent-capability-file-name)
     (magent-file-loader-list-definition-files
      magent-capability-file-name
      :builtin-dirs (list magent-capability--builtin-dir)
@@ -392,7 +414,7 @@ capabilities."
 
 (defun magent-capability-load-skill-capabilities (&optional directories)
   "Load capability metadata embedded in skill files from DIRECTORIES."
-  (let* ((files (magent-file-loader-list-named-files
+  (let* ((files (magent-file-loader-list-named-files-ordered
                  (or directories (magent-skills-definition-directories))
                  magent-skill-file-name))
          (count (magent-file-loader-load-all
@@ -753,7 +775,7 @@ remain active regardless of capability selection."
          (matches (magent-capability--sort-matches
                    (mapcar (lambda (entry)
                              (magent-capability--score (cdr entry) prompt context))
-                           magent-capability--registry)))
+                           (magent-capability--effective-entries))))
          (active-all (cl-remove-if-not
                       (lambda (match)
                         (eq (magent-capability-match-status match) 'active))
@@ -900,7 +922,8 @@ When INCLUDE-HIDDEN is non-nil, include hidden matches too."
   "Display all registered capabilities."
   (interactive)
   (magent-runtime-prepare-command-context)
-  (let ((capabilities (mapcar #'cdr magent-capability--registry)))
+  (let ((capabilities
+         (mapcar #'cdr (magent-capability--effective-entries))))
     (magent--with-display-buffer "*Magent Capabilities*"
       (insert "Registered Capabilities:\n\n")
       (dolist (capability (sort capabilities

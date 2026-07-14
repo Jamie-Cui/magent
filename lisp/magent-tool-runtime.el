@@ -40,9 +40,15 @@
      :supports-parallel nil)))
 
 (defun magent-tool-runtime-for-agent (agent-info)
-  "Return tool runtimes available to AGENT-INFO."
+  "Return tool runtimes available to AGENT-INFO.
+This compatibility API delegates to `magent-tool-runtime-for-permission'."
+  (magent-tool-runtime-for-permission
+   (and agent-info (magent-agent-info-permission agent-info))))
+
+(defun magent-tool-runtime-for-permission (permission)
+  "Return tool runtimes available under explicit PERMISSION profile."
   (mapcar #'magent-tool-runtime-from-gptel-tool
-          (magent-tools-get-gptel-tools agent-info)))
+          (magent-tools-get-gptel-tools-for-permission permission)))
 
 (defun magent-tool-runtime-to-plist (runtime)
   "Convert RUNTIME to the existing Magent tool plist shape."

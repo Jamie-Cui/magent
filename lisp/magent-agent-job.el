@@ -109,6 +109,20 @@ Return JOB."
     (setf (magent-agent-job-error job) error))
   job)
 
+(defun magent-agent-job-terminal-p (job)
+  "Return non-nil when JOB has reached a durable terminal status."
+  (memq (magent-agent-job-status job)
+        '(completed failed closed cancelled)))
+
+(defun magent-agent-job-reconcile-after-restart (job &optional detail)
+  "Cancel non-durable JOB state after an Emacs restart.
+DETAIL defaults to a stable explanatory message.  Return non-nil when JOB
+was changed."
+  (when (memq (magent-agent-job-status job) '(queued running waiting))
+    (magent-agent-job-set-status
+     job 'cancelled nil (or detail "Interrupted by Emacs restart"))
+    t))
+
 (defun magent-agent-job-find (jobs id)
   "Return the job with ID from JOBS, or nil."
   (cl-find id jobs :key #'magent-agent-job-id :test #'equal))
