@@ -194,9 +194,11 @@ Skills with a ~default-prompt~ can also be run as command-like actions.  In
 agent-shell, use ~M-x magent-agent-shell-run-skill-command~ or
 ~M-x magent-agent-shell-run-init-command~.  The ~init~ skill initializes or
 refreshes the project's root ~AGENTS.md~ and prompts for optional extra
-instructions such as focusing on tests.  Agent-shell also advertises seven
-bundled slash commands: the ~/explain~, ~/fix~, ~/init~, ~/review~, and ~/test~
-skill commands plus the ~/compact~ and ~/clear~ session controls.
+instructions such as focusing on tests.  Agent-shell also advertises eight
+bundled slash commands: the ~/explain~, ~/fix~, ~/init~, ~/review~,
+~/summarize~, and ~/test~ skill commands plus the ~/compact~ and ~/clear~
+session controls. ~/summarize~ writes one canonical Org note for the current
+Git project and accepts an optional path or semantic scope.
 See [[file:docs/COMMANDS.org][docs/COMMANDS.org]] for command behavior, examples, and
 the extension rule for project-local command skills.
 
@@ -361,7 +363,7 @@ complete user-facing workflow command reference.
 
 7. *LLM Integration* (via gptel): All LLM communication is handled by [[https://github.com/karthink/gptel][gptel]]. Provider, model, and API key configuration is managed entirely by gptel.
 
-8. *Tools* (~magent-tools.el~): 14 tool implementations registered as ~gptel-tool~ structs, filtered per agent based on permission rules. The durable child-agent lifecycle tools are ~spawn_agent~, ~send_agent_message~, ~wait_agent~, ~list_agents~, and ~close_agent~.
+8. *Tools* (~magent-tools.el~): 15 tool implementations registered as ~gptel-tool~ structs, filtered per agent based on permission rules. ~write_repo_summary~ owns canonical single-file Org summary updates. The durable child-agent lifecycle tools are ~spawn_agent~, ~send_agent_message~, ~wait_agent~, ~list_agents~, and ~close_agent~.
 
 9. *Skills* (~magent-skills.el~): Two skill types -- ~instruction~ (markdown injected into the system prompt) and ~tool~ (invoked via ~skill_invoke~). Instruction skills can be selected from agent-shell as one-shot request context, skills that declare ~default-prompt~ can be run as command-like agent-shell actions such as ~init~, and skills that declare ~capability: true~ can auto-activate through the capability resolver. The module contains the registry, built-in ~skill-creator~ definition, file-based skill loading, and interactive inspection commands. Skills load from: (1) built-in ~skills/~ directory bundled with magent, (2) user directory =~/.emacs.d/magent/skills=, (3) legacy =~/.emacs.d/magent-skills= when present, and (4) project-local ~.magent/skills/<name>/SKILL.md~.
 
@@ -371,14 +373,14 @@ complete user-facing workflow command reference.
    same-name capabilities are therefore skill-backed capabilities: their
    trigger metadata lives in the corresponding ~SKILL.md~, but not every
    built-in skill is a capability. For example, ~init~, ~review~, ~fix~,
-   ~test~, and ~explain~ are command-style skills without automatic capability
+   ~test~, ~summarize~, and ~explain~ are command-style skills without automatic capability
    activation.
 
 10. *Internal Commands* (~magent-command.el~, ~magent-doctor.el~, ~magent-redaction.el~): Session-backed Magent maintenance workflows invoked from Emacs commands such as ~magent-run-doctor~ and ~magent-run-memory-init~. These commands are intentionally not exposed as agent-shell slash commands; each run gets an isolated internal session under ~magent-session-directory/internal~ and records only a compact breadcrumb in the parent session. Doctor uses trusted local probes followed by one sanitized request with no provider tools.
 
 11. *Session* (~magent-ledger.el~, ~magent-session.el~): Thread-ledger backed conversation history with per-project active sessions, global fallback outside projects, atomic JSON persistence, internal command session storage, and durable restore from ledger snapshots plus bounded journal tails.
 
-12. *Audit* (~magent-audit.el~): Persistent JSONL audit logging for permission prompts and decisions plus sensitive actions such as ~bash~, ~emacs_eval~, ~write_file~, ~edit_file~, and child-agent lifecycle tools. Payloads are redacted to metadata and truncated previews.
+12. *Audit* (~magent-audit.el~): Persistent JSONL audit logging for permission prompts and decisions plus sensitive actions such as ~bash~, ~emacs_eval~, ~write_file~, ~write_repo_summary~, ~edit_file~, and child-agent lifecycle tools. Payloads are redacted to metadata and truncated previews.
 
 13. *UI backend* (~magent-ui.el~, ~magent-agent-shell.el~, ~magent-acp.el~): ~magent-ui.el~ is a thin command router and compatibility layer. The recommended backend is agent-shell through an in-process ACP adapter; ACP prompt requests submit to the runtime API and stay pending until the turn completes. See [[file:docs/UI_BACKENDS.org][docs/UI_BACKENDS.org]].
 
@@ -414,7 +416,8 @@ magent/
 |-- magent-agent-loop.el           # Magent-owned event loop, tools, guards, aborts
 |-- magent-capability.el           # Capability registry and prompt-time resolution
 |-- magent-audit.el                # Audit logging and JSONL persistence
-|-- magent-tools.el                # Tool implementations (14 gptel-tool structs)
+|-- magent-repo-summary.el         # Deterministic single-file Org summary writer
+|-- magent-tools.el                # Tool implementations (15 gptel-tool structs)
 |-- magent-tool-runtime.el         # Runtime-facing tool metadata adapter
 |-- magent-tool-orchestrator.el    # Permission, approval, audit, and tool-call orchestration
 |-- magent-agent.el                # Agent logic (gptel integration)

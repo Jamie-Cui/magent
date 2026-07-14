@@ -2,6 +2,7 @@
 lisp/magent-log.el
 lisp/magent-prompt.el
 lisp/magent-config.el
+lisp/magent-repo-summary.el
 lisp/magent-json.el
 lisp/magent-redaction.el
 lisp/magent-lifecycle-events.el

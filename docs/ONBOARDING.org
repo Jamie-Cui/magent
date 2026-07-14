@@ -72,7 +72,7 @@ Multi-agent architecture with specialized agents for different tasks.
 The action layer that executes operations requested by agents.
 
 *Key Files:*
-- ~magent-tools.el~ — 14 ~gptel-tool~ structs: read_file, write_file, edit_file, grep, glob, bash, emacs_eval, spawn_agent, send_agent_message, wait_agent, list_agents, close_agent, skill_invoke, web_search
+- ~magent-tools.el~ — 15 ~gptel-tool~ structs: read_file, write_file, write_repo_summary, edit_file, grep, glob, bash, emacs_eval, spawn_agent, send_agent_message, wait_agent, list_agents, close_agent, skill_invoke, web_search
 - ~magent-skills.el~ — Skill registry, built-in skills, file loading, inspection commands
 - ~magent-capability.el~ — Capability definitions, resolution, and file-backed loading
 - ~magent-approval.el~ — User approval prompts for sensitive operations
@@ -261,7 +261,8 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 - *magent-permission.el* — Tool access control with glob patterns
 
 ** Tools & Skills
-- *magent-tools.el* — 14 tool implementations as gptel-tool structs
+- *magent-repo-summary.el* — deterministic org-roam repository-note upserts
+- *magent-tools.el* — 15 tool implementations as gptel-tool structs
 - *magent-skills.el* — Skill registry, built-in skills, file loading, commands
 - *magent-capability.el* — Capability definitions, resolution, and file-backed loading
 - *magent-approval.el* — User approval prompts for sensitive operations

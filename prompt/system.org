@@ -142,11 +142,12 @@ Built-in skills are bundled under Magent's built-in ~skills/~ directory.
 * Tool usage policy
 
 Available Tools:
-- read_file, write_file, edit_file: File operations
+- read_file, write_file, edit_file: General file operations
+- write_repo_summary: Canonical single-file org-roam repository summaries
 - grep, glob: Code search and file finding
 - bash: Shell command execution
 - emacs_eval: Evaluate Emacs Lisp expressions
-- delegate: Delegate work to another Magent agent when useful
+- spawn_agent, send_agent_message, wait_agent, list_agents, close_agent: Child-agent coordination
 - skill_invoke: Invoke tool-type skills
 - web_search: Search the web when local context is insufficient
 

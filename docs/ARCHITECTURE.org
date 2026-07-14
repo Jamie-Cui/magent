@@ -44,9 +44,9 @@ Legacy ~messages~, ~context-items~, and ~buffer-content~ are projections or migr
 
 ** Tools, Permissions, And Audit
 
-~magent-tools.el~ exposes 14 ~gptel-tool~ structs:
+~magent-tools.el~ exposes 15 ~gptel-tool~ structs:
 
-- ~read_file~, ~write_file~, ~edit_file~
+- ~read_file~, ~write_file~, ~write_repo_summary~, ~edit_file~
 - ~grep~, ~glob~, ~bash~
 - ~emacs_eval~
 - ~spawn_agent~, ~send_agent_message~, ~wait_agent~, ~list_agents~, ~close_agent~
@@ -117,7 +117,7 @@ The distinction is:
 - A skill-backed capability is the common built-in case: a ~SKILL.md~ declares
   ~capability: true~, and the resolver auto-activates that same skill when the
   current buffer or prompt matches. Command-style built-in skills such as
-  ~init~, ~review~, ~fix~, ~test~, and ~explain~ remain skills only unless they
+  ~init~, ~review~, ~fix~, ~test~, ~summarize~, and ~explain~ remain skills only unless they
   opt into ~capability: true~.
 
 * Product Tradeoffs

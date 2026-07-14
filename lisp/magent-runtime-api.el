@@ -23,6 +23,9 @@
 (require 'magent-session)
 (require 'magent-ledger)
 
+(declare-function magent-skills-get "magent-skills")
+(declare-function magent-skill-requires-project "magent-skills")
+
 (cl-defstruct (magent-runtime-session
                (:constructor magent-runtime-session-create)
                (:copier nil))
@@ -343,6 +346,23 @@ Any active or queued work for the session is cancelled first."
        (magent-runtime-api--mark-submission-turn-failed submission message)
        (magent-runtime-api--finish-submission submission 'failed result)))))
 
+(defun magent-runtime-api--validate-skill-scope (runtime-session skill-names)
+  "Validate that SKILL-NAMES may run in RUNTIME-SESSION's scope."
+  (when skill-names
+    (require 'magent-skills)
+    (let ((origin (magent-session-scope-origin
+                   (magent-runtime-session-scope runtime-session))))
+      (dolist (name skill-names)
+        (let* ((skill-name (if (symbolp name) (symbol-name name) name))
+               (skill (and (stringp skill-name)
+                           (magent-skills-get skill-name))))
+          (when (and skill
+                     (magent-skill-requires-project skill)
+                     (not (stringp origin)))
+            (user-error
+             "Skill /%s requires a project workspace; global sessions are unsupported"
+             skill-name)))))))
+
 (cl-defun magent-runtime-submit
     (runtime-session prompt &key context skills agent observer approval-provider
                      effort turn-metadata on-complete)
@@ -354,28 +374,31 @@ OBSERVER receives request-local Magent-native events."
                (not (string-empty-p (string-trim prompt))))
     (error "Prompt is empty"))
   (let* ((effective-skills
-          (or skills (magent-runtime-session-pending-skills runtime-session)))
-         (turn-id (magent-runtime-api--prepare-turn
-                   runtime-session prompt turn-metadata))
-         (submission
-          (magent-runtime-submission-create
-           :id (magent-protocol-generate-id "submission")
-           :session runtime-session
-           :session-id (magent-runtime-session-id runtime-session)
-           :scope (magent-runtime-session-scope runtime-session)
-           :prompt prompt
-           :context context
-           :skills effective-skills
-           :agent agent
-           :effort (or (magent-effort-normalize-option effort)
-                       (magent-effort-normalize-option
-                        (magent-runtime-session-effort runtime-session)))
-           :observer observer
-           :approval-provider approval-provider
-           :on-complete on-complete
-           :turn-id turn-id)))
-    (magent-runtime-session-clear-pending-skills runtime-session)
-    (magent-runtime-queue-submit submission #'magent-runtime-api--start-submission)))
+          (or skills (magent-runtime-session-pending-skills runtime-session))))
+    (magent-runtime-api--validate-skill-scope
+     runtime-session effective-skills)
+    (let* ((turn-id (magent-runtime-api--prepare-turn
+                     runtime-session prompt turn-metadata))
+           (submission
+            (magent-runtime-submission-create
+             :id (magent-protocol-generate-id "submission")
+             :session runtime-session
+             :session-id (magent-runtime-session-id runtime-session)
+             :scope (magent-runtime-session-scope runtime-session)
+             :prompt prompt
+             :context context
+             :skills effective-skills
+             :agent agent
+             :effort (or (magent-effort-normalize-option effort)
+                         (magent-effort-normalize-option
+                          (magent-runtime-session-effort runtime-session)))
+             :observer observer
+             :approval-provider approval-provider
+             :on-complete on-complete
+             :turn-id turn-id)))
+      (magent-runtime-session-clear-pending-skills runtime-session)
+      (magent-runtime-queue-submit
+       submission #'magent-runtime-api--start-submission))))
 
 (cl-defun magent-runtime-session-compact
     (runtime-session &key instruction observer approval-provider on-complete)

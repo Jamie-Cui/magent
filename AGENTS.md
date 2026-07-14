@@ -110,7 +110,8 @@ magent.el (entry point: magent-mode, global-magent-mode)
   ├─ magent-approval.el          (user approval prompts for permission=ask)
   ├─ magent-audit.el             (audit trail for tool invocations and decisions)
   ├─ magent-capability.el        (capability registry and prompt-time resolution)
-  ├─ magent-tools.el             (14 gptel-tool structs)
+  ├─ magent-repo-summary.el      (deterministic single-file Org summary writer)
+  ├─ magent-tools.el             (15 gptel-tool structs)
   ├─ magent-agent.el             (magent-agent-process: builds gptel prompt, calls gptel-request)
   ├─ magent-agent-info.el        (agent metadata struct and helpers)
   ├─ magent-agent-builtins.el    (7 built-in agent definitions)
@@ -153,7 +154,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
 
 6. **Agent processing** (`magent-agent.el`): `magent-agent-run-turn` is the UI-neutral low-level entry point for runtime backends. `magent-agent-process` builds a gptel prompt list from the session, applies per-agent overrides (model, temperature via `default-value` — intentionally avoids buffer-local gptel settings), exposes filtered tools to the provider, then starts `magent-agent-loop`.
 
-7. **Tools** (`magent-tools.el`): 14 `gptel-tool` structs — `read_file`, `write_file`, `edit_file`, `grep`, `glob`, `bash`, `emacs_eval`, `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, `close_agent`, `skill_invoke`, `web_search`. Tools are registered globally but filtered per-agent through permissions. The child-agent tools share the `agent` permission key. `web_search` uses DuckDuckGo via `url-retrieve` + `libxml-parse-html-region` (requires Emacs built with `--with-xml2`).
+7. **Tools** (`magent-tools.el`): 15 `gptel-tool` structs — `read_file`, `write_file`, `write_repo_summary`, `edit_file`, `grep`, `glob`, `bash`, `emacs_eval`, `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, `close_agent`, `skill_invoke`, `web_search`. Tools are registered globally but filtered per-agent through permissions. `write_repo_summary` delegates canonical single-file Org updates to `magent-repo-summary.el` and shares the `write` permission key. The child-agent tools share the `agent` permission key. `web_search` uses DuckDuckGo via `url-retrieve` + `libxml-parse-html-region` (requires Emacs built with `--with-xml2`).
 
 8. **Agent Loop**: `magent-agent.el` starts the Magent-owned loop through `magent-agent-loop.el`. `magent-llm.el` defines normalized request/events, including `tool-call-batch-end`, and `magent-llm-gptel.el` calls `gptel-request` while hiding gptel callback/FSM details. The loop owns tool dispatch through `magent-tool-orchestrator`, serial tool queueing, permission audit hooks, structured lifecycle event emission, request abort cleanup, and tool-result session recording. UI sinks project visible tool events. `magent-agent-process` owns Codex-style continuation policy: tool results are fed back to the model, sampling limits force a no-tool final request, and a post-tool empty assistant completion gets one no-tool final-response retry. Reasoning events stay separate from assistant text and are not used as final-answer fallback.
 
@@ -194,6 +195,7 @@ name: skill-name
 description: Brief description
 tools: bash, read
 type: instruction        # 'instruction' or 'tool'
+requires-project: true   # optional: reject use from a global session
 ---
 
 Markdown body: system prompt for instruction-type, operation docs for tool-type.
@@ -205,7 +207,7 @@ Tool-type skills can have companion `.el` files defining `magent-skill-<name>-in
 
 All `defcustom` variables are in `magent-config.el` under `customize-group magent`. LLM provider/model/key settings are managed entirely by gptel.
 
-Key settings: `magent-default-agent` (`"build"`), `magent-enable-tools` (list of enabled tool symbols), `magent-include-reasoning` (`t`/`ignore`/`nil`), `magent-request-timeout` (120s), `magent-bash-timeout` (30s), `magent-emacs-eval-timeout` (10s), `magent-max-history` (100).
+Key settings: `magent-default-agent` (`"build"`), `magent-enable-tools` (list of enabled tool symbols), `magent-org-roam-directory` (repository summary destination; nil falls back to `org-roam-directory`), `magent-include-reasoning` (`t`/`ignore`/`nil`), `magent-request-timeout` (120s), `magent-bash-timeout` (30s), `magent-emacs-eval-timeout` (10s), `magent-max-history` (100).
 
 ### Keybindings
 

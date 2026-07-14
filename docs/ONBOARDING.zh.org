@@ -76,7 +76,8 @@ Magent 拥有 Magent-owned agent loop 和 durable child-agent lifecycle。Root a
 
 *关键文件：*
 
-- ~magent-tools.el~ ：14 个 ~gptel-tool~ structs，包括 file I/O、grep/glob、bash、emacs_eval、child-agent coordination、skill_invoke 和 web_search。
+- ~magent-repo-summary.el~ ：确定性更新单个 org-roam repository note。
+- ~magent-tools.el~ ：15 个 ~gptel-tool~ structs，包括 file I/O、repository summary writer、grep/glob、bash、emacs_eval、child-agent coordination、skill_invoke 和 web_search。
 - ~magent-skills.el~ ：skill registry、built-in skills、file loading 和 inspection commands。
 - ~magent-capability.el~ ：capability definitions、resolution 和 file-backed loading。
 - ~magent-approval.el~ ：敏感操作的 user approval prompts。

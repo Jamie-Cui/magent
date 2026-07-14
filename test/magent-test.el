@@ -30,6 +30,26 @@
       (insert (json-encode record))
       (insert "\n"))))
 
+(defun magent-test--make-git-repository (prefix)
+  "Create and return a temporary Git repository named with PREFIX."
+  (let ((directory (make-temp-file prefix t)))
+    (unless (zerop (process-file "git" nil nil nil
+                                 "-C" directory "init" "--quiet"))
+      (error "Could not initialize test Git repository"))
+    (with-temp-file (expand-file-name "README.md" directory)
+      (insert "# Test repository\n"))
+    (unless (and (zerop (process-file "git" nil nil nil
+                                      "-C" directory "add" "README.md"))
+                 (zerop (process-file
+                         "git" nil nil nil
+                         "-C" directory
+                         "-c" "user.name=Magent Tests"
+                         "-c" "user.email=magent@example.invalid"
+                         "commit" "--quiet" "-m" "Initial commit")))
+      (delete-directory directory t)
+      (error "Could not commit test Git repository"))
+    directory))
+
 (defconst magent-test--root-directory
   (expand-file-name ".."
                     (file-name-directory (or load-file-name buffer-file-name)))
@@ -58,7 +78,7 @@
     (should (equal sorted-manifest (sort actual #'string<)))))
 
 (defconst magent-test--builtin-slash-command-names
-  '("explain" "fix" "init" "review" "test")
+  '("explain" "fix" "init" "review" "summarize" "test")
   "Bundled instruction skills that are exposed as slash commands.")
 
 (defconst magent-test--builtin-control-command-names
@@ -3762,7 +3782,7 @@
     (unwind-protect
         (progn
           (with-temp-file skillfile
-            (insert "---\nname: test-skill\ndescription: A test\ntype: instruction\ntools: bash, read\ndefault-prompt: Do the default thing.\n---\nDo the thing."))
+            (insert "---\nname: test-skill\ndescription: A test\ntype: instruction\ntools: bash, read\ndefault-prompt: Do the default thing.\nrequires-project: true\n---\nDo the thing."))
           (let ((skill (magent-skills-load-file skillfile)))
             (should skill)
             (should (equal (magent-skill-name skill) "test-skill"))
@@ -3771,8 +3791,21 @@
             (should (equal (magent-skill-tools skill) '(bash read)))
             (should (equal (magent-skill-default-prompt skill)
                            "Do the default thing."))
+            (should (magent-skill-requires-project skill))
             (should (string-match-p "Do the thing" (magent-skill-prompt skill)))))
       (delete-directory tmpdir t))))
+
+(ert-deftest magent-test-skills-load-all-includes-summarize-skill ()
+  "Test the bundled summarize skill is project-bound and tool-backed."
+  (require 'magent-skills)
+  (let ((magent-skills--registry nil))
+    (magent-test--load-builtin-skills-only)
+    (let ((skill (magent-skills-get "summarize")))
+      (should skill)
+      (should (magent-skill-requires-project skill))
+      (should (memq 'write_repo_summary (magent-skill-tools skill)))
+      (should-not (string-blank-p
+                   (or (magent-skill-default-prompt skill) ""))))))
 
 (ert-deftest magent-test-skills-load-all-includes-emacs-runtime-inspection ()
   "Test builtin skill loading includes the Emacs runtime inspection workflow."
@@ -4239,6 +4272,7 @@
   (require 'magent-tools)
   (should (eq (magent-tools-permission-key "read_file") 'read))
   (should (eq (magent-tools-permission-key "write_file") 'write))
+  (should (eq (magent-tools-permission-key "write_repo_summary") 'write))
   (should (eq (magent-tools-permission-key "edit_file") 'edit))
   (should (eq (magent-tools-permission-key "grep") 'grep))
   (should (eq (magent-tools-permission-key "glob") 'glob))
@@ -4252,6 +4286,94 @@
   (should (eq (magent-tools-permission-key "skill_invoke") 'skill))
   (should (eq (magent-tools-permission-key "web_search") 'web_search))
   (should (null (magent-tools-permission-key "nonexistent"))))
+
+(ert-deftest magent-test-repo-summary-writes-and-updates-one-org-note ()
+  "Test full and scoped summaries coexist in one canonical Org note."
+  (require 'magent-repo-summary)
+  (require 'org-element)
+  (let* ((repository (magent-test--make-git-repository
+                      "magent-summary-repository-"))
+         (roam-directory (make-temp-file "magent-summary-roam-" t))
+         (magent-org-roam-directory roam-directory)
+         first-path first-id)
+    (unwind-protect
+        (progn
+          (setq first-path
+                (plist-get
+                 (magent-repo-summary-write
+                  repository "full"
+                  "The repository exists to exercise summary writing.\n\n** Architecture\nA small test fixture.")
+                 :path))
+          (should (= (length (directory-files roam-directory nil
+                                               "\\.org\\'"))
+                     1))
+          (with-temp-buffer
+            (insert-file-contents first-path)
+            (should (re-search-forward
+                     (concat "^#\\+title: "
+                             (regexp-quote
+                              (file-name-nondirectory repository))
+                             "$")
+                     nil t))
+            (should (re-search-forward "^:REPO_PATH: " nil t))
+            (should (re-search-forward "^:LAST_ANALYZED_COMMIT: [0-9a-f]+$"
+                                       nil t))
+            (goto-char (point-min))
+            (should (re-search-forward "^:ID: \\(.+\\)$" nil t))
+            (setq first-id (match-string 1))
+            (org-mode)
+            (should (org-element-parse-buffer)))
+
+          (magent-repo-summary-write
+           repository "scoped" "Only the parser is summarized."
+           "src/parser :internal:" "src/parser.el, test/parser-test.el")
+          (magent-repo-summary-write
+           repository "scoped" "The parser summary was updated."
+           "src/parser :internal:" "src/parser.el, test/parser-test.el")
+          (magent-repo-summary-write
+           repository "full" "The full repository summary was updated.")
+
+          (should (= (length (directory-files roam-directory nil
+                                               "\\.org\\'"))
+                     1))
+          (with-temp-buffer
+            (insert-file-contents first-path)
+            (should (re-search-forward
+                     (concat "^:ID: " (regexp-quote first-id) "$") nil t))
+            (should (re-search-forward "^\\* Repository Summary$" nil t))
+            (should (re-search-forward
+                     "The full repository summary was updated" nil t))
+            (should (re-search-forward "^\\* Scoped Summaries$" nil t))
+            (should (= (how-many "^:SUMMARY_SCOPE_ID:" (point-min) (point-max))
+                       1))
+            (should (re-search-forward "The parser summary was updated" nil t))
+            (should-not (re-search-forward "Only the parser is summarized" nil t))))
+      (delete-directory repository t)
+      (delete-directory roam-directory t))))
+
+(ert-deftest magent-test-repo-summary-rejects-invalid-destinations ()
+  "Test repository summaries require a Git project and org-roam directory."
+  (require 'magent-repo-summary)
+  (let ((repository (magent-test--make-git-repository
+                     "magent-summary-repository-"))
+        (plain-directory (make-temp-file "magent-summary-plain-" t)))
+    (unwind-protect
+        (progn
+          (let ((magent-org-roam-directory nil)
+                (org-roam-directory nil))
+            (should-error
+             (magent-repo-summary-write repository "full" "Summary")))
+          (let ((magent-org-roam-directory plain-directory))
+            (should-error
+             (magent-repo-summary-write 'global "full" "Summary"))
+            (should-error
+             (magent-repo-summary-write plain-directory "full" "Summary"))
+            (should-error
+             (magent-repo-summary-write
+              repository "scoped" "Summary" "parser" '("../outside.el")))
+            (should-not (directory-files plain-directory nil "\\.org\\'"))))
+      (delete-directory repository t)
+      (delete-directory plain-directory t))))
 
 (ert-deftest magent-test-tool-result-normalizes-legacy-error-text ()
   "Test legacy tool error strings enter the structured failure contract."
@@ -4648,7 +4770,7 @@
 (ert-deftest magent-test-tools-all-registered ()
   "Test that all core tools are registered."
   (require 'magent-tools)
-  (should (= (length magent-tools--all-gptel-tools) 14)))
+  (should (= (length magent-tools--all-gptel-tools) 15)))
 
 (ert-deftest magent-test-tools-filtering ()
   "Test tool filtering by permissions."
@@ -5372,8 +5494,8 @@
           (should-not (directory-files magent-audit-directory nil "\\.jsonl$")))
       (delete-directory magent-audit-directory t))))
 
-(ert-deftest magent-test-audit-tool-events-redact-write-and-edit-payloads ()
-  "Test persisted tool audit records redact write/edit file bodies."
+(ert-deftest magent-test-audit-tool-events-redact-write-payloads ()
+  "Test persisted tool audit records redact general and summary bodies."
   (require 'magent-audit)
   (let* ((magent-enable-audit-log t)
          (magent-audit-directory (make-temp-file "magent-audit-" t))
@@ -5384,6 +5506,13 @@
     (unwind-protect
         (progn
           (magent-audit-enable)
+          (magent-lifecycle-events-emit 'tool-call-start
+                              :context context
+                              :call-id "call-summary"
+                              :tool-name "write_repo_summary"
+                              :summary "full"
+                              :args '(:mode "full"
+                                      :content "private repository details"))
           (magent-lifecycle-events-emit 'tool-call-start
                               :context context
                               :call-id "call-write"
@@ -5399,16 +5528,32 @@
                                       :old_text "old secret"
                                       :new_text "new secret value"))
           (magent-audit--flush-pending)
-          (let* ((records (magent-test--read-audit-records magent-audit-directory))
-                 (write-record (car records))
-                 (edit-record (cadr records))
+          (let* ((records
+                  (magent-test--read-audit-records magent-audit-directory))
+                 (find-tool
+                  (lambda (name)
+                    (cl-find-if
+                     (lambda (record)
+                       (equal (cdr (assq 'tool_name record)) name))
+                     records)))
+                 (write-record (funcall find-tool "write_file"))
+                 (summary-record
+                  (funcall find-tool "write_repo_summary"))
+                 (edit-record (funcall find-tool "edit_file"))
                  (write-preview (cdr (assq 'args_preview write-record)))
+                 (summary-preview
+                  (cdr (assq 'args_preview summary-record)))
                  (edit-preview (cdr (assq 'args_preview edit-record))))
             (should (equal (cdr (assq 'tool_name write-record)) "write_file"))
             (should (equal (cdr (assq 'path write-preview)) "secret.txt"))
             (should (= (cdr (assq 'content_length write-preview))
                        (length "super secret body")))
             (should-not (assq 'content write-preview))
+            (should (equal (cdr (assq 'tool_name summary-record))
+                           "write_repo_summary"))
+            (should (= (cdr (assq 'content_length summary-preview))
+                       (length "private repository details")))
+            (should-not (assq 'content summary-preview))
             (should (equal (cdr (assq 'tool_name edit-record)) "edit_file"))
             (should (equal (cdr (assq 'path edit-preview)) "secret.txt"))
             (should (= (cdr (assq 'old_text_length edit-preview))
@@ -10316,6 +10461,30 @@ tolerate leading whitespace."
     (should (equal (magent-thread-scope
                     (magent-session-thread-ledger session))
                    "/tmp/project"))))
+
+(ert-deftest magent-test-runtime-submit-rejects-project-skill-in-global-scope ()
+  "Test project-only skills fail before creating a ledger turn."
+  (require 'magent-runtime-api)
+  (require 'magent-skills)
+  (let* ((magent-skills--registry nil)
+         (session (magent-session-create :id "global-session"))
+         (runtime-session
+          (magent-runtime-session-create
+           :id "global-session" :scope 'global :magent-session session))
+         prepared)
+    (magent-skills-register
+     (magent-skill-create
+      :name "summarize" :type 'instruction :requires-project t))
+    (cl-letf (((symbol-function 'magent-runtime-api--prepare-turn)
+               (lambda (&rest _args)
+                 (setq prepared t)
+                 "unexpected-turn")))
+      (should-error
+       (magent-runtime-submit
+        runtime-session "Summarize the workspace" :skills '("summarize"))
+       :type 'user-error))
+    (should-not prepared)
+    (should-not (magent-session-thread session))))
 
 (ert-deftest magent-test-runtime-submit-omits-unset-session-effort ()
   "Test unset runtime session effort leaves agent/default effort available."

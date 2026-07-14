@@ -11,7 +11,7 @@ Magent has two distinct command surfaces for LLM-assisted workflows:
 - *Internal workflow commands* are explicit Emacs commands that run Magent
   maintenance or diagnostic work in isolated durable sessions.
 
-The bundled package currently provides seven slash commands (five skill
+The bundled package currently provides eight slash commands (six skill
 commands and two session controls) and four internal workflow commands. Four
 additional Emacs commands inspect or manage the internal workflows.
 
@@ -21,6 +21,7 @@ Type a slash command as the prompt in the Magent agent-shell buffer:
 
 #+begin_example
 /review
+/summarize src/session persistence and replay
 /fix focus on the failing session persistence test
 /compact preserve exact filenames and remaining failures
 /clear
@@ -37,6 +38,7 @@ submitted as ordinary prompt text rather than executed locally.
 | ~/fix~     | Diagnose and repair a bug or regression | May edit files and run focused verification |
 | ~/init~    | Create or refresh project ~AGENTS.md~   | May update project instructions after repository inspection |
 | ~/review~  | Review current changes for defects      | Read-only review; leads with findings and test gaps |
+| ~/summarize~ | Summarize the project into org-roam   | Creates or updates one canonical Org note |
 | ~/test~    | Run and interpret relevant tests        | Runs focused tests; may fix an in-scope failure when appropriate |
 | ~/compact~ | Summarize the current conversation      | Replaces older model context with a continuation summary |
 | ~/clear~   | Clear the current conversation           | Cancels pending work and removes live and persisted session context |
@@ -104,6 +106,24 @@ skipped checks plus remaining risk.
 
 #+begin_example
 /test run the focused tests for the files changed in this branch
+#+end_example
+
+** ~/summarize~
+
+Inspects the current Git project and writes a single org-roam note whose title
+is exactly the repository name. With no argument it updates ~* Repository
+Summary~ for the whole workspace. Trailing free-form text selects a path or
+semantic scope and upserts one subtree under ~* Scoped Summaries~ in the same
+file. Global sessions are rejected before an LLM turn is created.
+
+The destination is ~magent-org-roam-directory~, or ~org-roam-directory~ when
+the Magent option is nil. The directory must already exist. The writer owns the
+Org ID, repository path, analyzed Git commit, filename, and atomic update.
+
+#+begin_example
+/summarize
+/summarize only the ACP session lifecycle
+/summarize lisp/magent-session.el
 #+end_example
 
 ** Alternate Invocation And Extension

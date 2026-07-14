@@ -27,7 +27,8 @@
 (declare-function magent-agent-info-name "magent-agent-registry")
 
 (defconst magent-audit--sensitive-tools
-  '("bash" "emacs_eval" "write_file" "edit_file" "spawn_agent"
+  '("bash" "emacs_eval" "write_file" "write_repo_summary" "edit_file"
+    "spawn_agent"
     "send_agent_message" "wait_agent" "list_agents" "close_agent")
   "Tool names that are always persisted to the audit log.")
 
@@ -354,6 +355,13 @@ refresh.  The first two arguments follow `revert-buffer'."
        (magent-audit--compact-alist
         (cons 'path (plist-get args :path))
         (cons 'content_length (magent-audit--string-length (plist-get args :content)))))
+      ("write_repo_summary"
+       (magent-audit--compact-alist
+        (cons 'mode (plist-get args :mode))
+        (cons 'scope (magent-audit--preview (plist-get args :scope)))
+        (cons 'scope_file_count (length (plist-get args :scope_files)))
+        (cons 'content_length
+              (magent-audit--string-length (plist-get args :content)))))
       ("edit_file"
        (magent-audit--compact-alist
         (cons 'path (plist-get args :path))

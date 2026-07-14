@@ -44,9 +44,9 @@ Emacs 不只是宿主进程。Magent 依赖活的编辑器状态：buffer、majo
 
 ** 工具、权限与审计
 
-~magent-tools.el~ 暴露 14 个 ~gptel-tool~ ：
+~magent-tools.el~ 暴露 15 个 ~gptel-tool~ ：
 
-- ~read_file~ 、 ~write_file~ 、 ~edit_file~
+- ~read_file~ 、 ~write_file~ 、 ~write_repo_summary~ 、 ~edit_file~
 - ~grep~ 、 ~glob~ 、 ~bash~
 - ~emacs_eval~
 - ~spawn_agent~ 、 ~send_agent_message~ 、 ~wait_agent~ 、 ~list_agents~ 、 ~close_agent~
@@ -111,7 +111,7 @@ Instruction skill 会注入 system prompt。Tool skill 通过 ~skill_invoke~ 调
 
 - ~skill~ 是实际给 agent 的内容或命令入口：注入 prompt 的 instruction text、command-like ~default-prompt~，或者 tool-type operation。
 - ~capability~ 是自动激活规则：由 ~modes~ 、~features~ 、~files~ 、~keywords~ 、~disclosure~ 和 ~risk~ 等 resolver metadata 描述什么时候为当前 turn 选择一个或多个 skills。
-- skill-backed capability 是内置默认能力的常见形态：某个 ~SKILL.md~ 声明 ~capability: true~ 后，resolver 会在当前 buffer 或 prompt 匹配时自动激活同名 skill。~init~ 、~review~ 、~fix~ 、~test~ 和 ~explain~ 这类 command-style built-in skills 仍然只是 skills，除非它们显式声明 ~capability: true~。
+- skill-backed capability 是内置默认能力的常见形态：某个 ~SKILL.md~ 声明 ~capability: true~ 后，resolver 会在当前 buffer 或 prompt 匹配时自动激活同名 skill。~init~ 、~review~ 、~fix~ 、~test~ 、~summarize~ 和 ~explain~ 这类 command-style built-in skills 仍然只是 skills，除非它们显式声明 ~capability: true~。
 
 * 产品取舍
 

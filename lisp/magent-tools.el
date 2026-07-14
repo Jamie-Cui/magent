@@ -24,6 +24,7 @@
 (require 'magent-lifecycle-events)
 (require 'magent-permission)
 (require 'magent-protocol)
+(require 'magent-repo-summary)
 (require 'magent-runtime)
 (require 'magent-session)
 
@@ -124,6 +125,27 @@ CALLBACK is called with success message or error."
             (write-region (point-min) (point-max) path nil 0))
           (funcall callback (format "Successfully wrote %s" path))))
     (error (funcall callback (format "Error writing file: %s" (error-message-string err))))))
+
+(defun magent-tools--write-repo-summary
+    (callback mode content &optional scope scope-files)
+  "Write repository summary CONTENT in MODE and call CALLBACK.
+SCOPE and SCOPE-FILES describe a scoped summary."
+  (condition-case err
+      (let* ((root (magent-tools--request-project-root))
+             (result (magent-repo-summary-write
+                      root mode content scope scope-files)))
+        (funcall
+         callback
+         (format "Successfully %s repository summary: %s%s"
+                 (if (plist-get result :created) "created" "updated")
+                 (plist-get result :path)
+                 (if-let* ((scope-id (plist-get result :scope-id)))
+                     (format " (scope %s)" scope-id)
+                   ""))))
+    (error
+     (funcall callback
+              (format "Error writing repository summary: %s"
+                      (error-message-string err))))))
 
 (defun magent-tools--grep (callback pattern path &optional case-sensitive)
   "Search for PATTERN in files under PATH using ripgrep asynchronously.
@@ -1201,6 +1223,33 @@ See `magent-agent-loop-filter-display-args'.")
    :category "magent")
   "gptel-tool struct for write_file.")
 
+(defvar magent-tools--write-repo-summary-tool
+  (gptel-make-tool
+   :name "write_repo_summary"
+   :description "Create or update the current Git repository's single canonical org-roam summary note. Use only for /summarize. The tool controls the filename, exact repository title, Org ID, Git metadata, and full/scoped subtree upserts. Pass an Org fragment, not a complete document."
+   :args (list '(:name "mode"
+                       :type string
+                       :enum ["full" "scoped"]
+                       :description "full for the whole repository, scoped for a requested subset")
+               '(:name "content"
+                       :type string
+                       :description "Org fragment placed below the managed summary heading")
+               '(:name "scope"
+                       :type string
+                       :description "Original user scope query; required for scoped mode"
+                       :optional t)
+               '(:name "scope_files"
+                       :type array
+                       :items (:type string)
+                       :description "Repository-relative files resolved for scoped mode"
+                       :optional t)
+               magent-tools--reason-arg)
+   :function #'magent-tools--write-repo-summary
+   :async t
+   :confirm t
+   :category "magent")
+  "gptel-tool struct for write_repo_summary.")
+
 (defvar magent-tools--edit-file-tool
   (gptel-make-tool
    :name "edit_file"
@@ -1432,6 +1481,7 @@ automatically included in the system prompt."
 (defvar magent-tools--name-to-permission-key
   '(("read_file"    . read)
     ("write_file"   . write)
+    ("write_repo_summary" . write)
     ("edit_file"    . edit)
     ("grep"         . grep)
     ("glob"         . glob)
@@ -1456,6 +1506,7 @@ automatically included in the system prompt."
 (defvar magent-tools--all-gptel-tools
   (list magent-tools--read-file-tool
         magent-tools--write-file-tool
+        magent-tools--write-repo-summary-tool
         magent-tools--edit-file-tool
         magent-tools--grep-tool
         magent-tools--glob-tool

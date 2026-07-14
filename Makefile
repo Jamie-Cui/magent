@@ -35,7 +35,7 @@ LOADPATH = -L lisp \
 BYTE_COMPILE_FLAGS = --eval "(setq byte-compile-error-on-warn nil)" \
 	--eval "(setq byte-compile-warnings '(not cl-functions))"
 
-SRCS = $(shell sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$$/d' $(SOURCE_MANIFEST))
+SRCS = $(shell sed -e '/^[[:space:]]*\#/d' -e '/^[[:space:]]*$$/d' $(SOURCE_MANIFEST))
 
 COMPILED = $(SRCS:.el=.elc)
 

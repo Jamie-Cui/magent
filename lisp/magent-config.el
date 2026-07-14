@@ -149,6 +149,15 @@ agent, skill, web_search."
               (const :tag "Search the web" web_search))
   :group 'magent)
 
+(defcustom magent-org-roam-directory nil
+  "Directory where Magent writes repository summary notes.
+When nil, use `org-roam-directory' if that variable is bound.  Magent
+does not create this directory automatically; configure it to an existing
+org-roam directory before using the `/summarize' skill."
+  :type '(choice (const :tag "Use org-roam-directory" nil)
+                 (directory :tag "Org-roam directory"))
+  :group 'magent)
+
 (defcustom magent-project-root-function nil
   "Function to find project root directory.
 The function should take no arguments and return the project root

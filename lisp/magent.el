@@ -99,6 +99,7 @@
 (require 'magent-transcript-context)
 (require 'magent-runtime)
 (require 'magent-runtime-queue)
+(require 'magent-repo-summary)
 (require 'magent-tools)
 (require 'magent-tool-runtime)
 (require 'magent-tool-orchestrator)

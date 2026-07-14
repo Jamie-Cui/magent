@@ -54,6 +54,7 @@ description: When to trigger and what this skill does
 type: instruction        # 'instruction' or 'tool'
 tools: bash, read        # optional: tools this skill needs
 default-prompt: Optional prompt used when user submits only @skill-name
+requires-project: true   # optional: reject the skill in global sessions
 capability: true         # optional: auto-activate this instruction skill by context
 ---
 
@@ -185,6 +186,7 @@ use a skill - make it count."
   (tools nil)
   (prompt nil)
   (default-prompt nil)
+  (requires-project nil)
   (invoke-function nil)
   (file-path nil)
   (source-layer 'builtin)
@@ -452,6 +454,8 @@ Returns the skill if successful, nil otherwise."
                          :default-prompt
                          (magent-skills--parse-text
                           (plist-get frontmatter :default-prompt))
+                         :requires-project
+                         (eq (plist-get frontmatter :requires-project) t)
                          :invoke-function invoke-fn
                          :file-path filepath
                          :source-layer (plist-get source :layer)
