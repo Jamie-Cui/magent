@@ -109,7 +109,9 @@ session 会在创建 LLM turn 之前直接拒绝。
 
 目标目录优先使用 ~magent-org-roam-directory~；该选项为 nil 时使用
 ~org-roam-directory~，且目录必须已经存在。文件名、Org ID、仓库路径、分析时的
-Git commit 和原子更新均由专用 writer 管理。
+Git commit 和原子更新均由专用 writer 管理。org-roam 可用时，新 note 会通过
+非交互式 org-roam capture API 创建；规范的 file-level property drawer 总是位于
+Org keywords 之前，确保 org-roam 能识别并索引该 node。
 
 #+begin_example
 /summarize

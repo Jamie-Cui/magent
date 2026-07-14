@@ -19,7 +19,9 @@
 (require 'magent-config)
 
 (declare-function magent-log "magent-ui")
+(declare-function org-roam-capture- "org-roam-capture" (&rest args))
 (declare-function org-roam-db-update-file "org-roam-db")
+(declare-function org-roam-node-create "org-roam-node" (&rest args))
 (defvar org-roam-directory)
 
 (defun magent-repo-summary--directory ()
@@ -256,24 +258,75 @@
           (insert "\n" block)))
       (list :tail (buffer-string) :scope-id scope-id))))
 
+(defun magent-repo-summary--org-roam-capture-available-p ()
+  "Return non-nil when the programmatic Org-roam capture API is available."
+  (or (and (fboundp 'org-roam-capture-)
+           (fboundp 'org-roam-node-create))
+      (and (require 'org-roam-capture nil t)
+           (fboundp 'org-roam-capture-)
+           (fboundp 'org-roam-node-create))))
+
+(defun magent-repo-summary--new-id (path)
+  "Create and register a file-level Org ID for PATH."
+  (with-temp-buffer
+    (org-mode)
+    (let ((org-id-overriding-file-name path))
+      (org-id-get-create))))
+
+(defun magent-repo-summary--create-with-org-roam
+    (path directory name id)
+  "Create the new note at PATH through Org-roam when it is available.
+DIRECTORY is the Org-roam root.  NAME and ID identify the file-level node.
+Return non-nil when Org-roam capture created the note."
+  (when (magent-repo-summary--org-roam-capture-available-p)
+    (let ((org-roam-directory directory)
+          (templates
+           (list
+            (list "m" "Magent repository summary" 'plain "%?"
+                  :target (list 'file+head path "#+title: ${title}\n")
+                  :immediate-finish t
+                  :unnarrowed t
+                  :kill-buffer t))))
+      (save-current-buffer
+        (save-window-excursion
+          (org-roam-capture-
+           :node (org-roam-node-create :id id :title name)
+           :templates templates)))
+      (unless (file-exists-p path)
+        (error "Org-roam capture did not create repository note %s" path))
+      t)))
+
 (defun magent-repo-summary--preamble (name id root commit)
   "Return the canonical Org preamble for NAME, ID, ROOT, and COMMIT."
-  (format
-   (concat "#+title: %s\n#+date: %s\n#+filetags: :project:repository:\n\n"
-           ":PROPERTIES:\n:ID: %s\n:REPO_PATH: %s\n"
-           ":LAST_ANALYZED_COMMIT: %s\n:END:\n\n")
-   name (format-time-string "[%Y-%m-%d %a %H:%M]") id root commit))
+  (with-temp-buffer
+    (insert
+     (format
+      "#+title: %s\n#+date: %s\n#+filetags: :project:repository:\n\n"
+      name (format-time-string "[%Y-%m-%d %a %H:%M]")))
+    (org-mode)
+    (goto-char (point-min))
+    ;; Org-roam file nodes are Org entries at point-min.  Using Org's
+    ;; property API keeps the file-level drawer before all #+ keywords.
+    (org-entry-put nil "ID" id)
+    (org-entry-put nil "REPO_PATH" root)
+    (org-entry-put nil "LAST_ANALYZED_COMMIT" commit)
+    (buffer-string)))
 
-(defun magent-repo-summary--validate-document (content name)
-  "Validate final Org CONTENT for repository NAME."
+(defun magent-repo-summary--validate-document (content name id)
+  "Validate final Org CONTENT for repository NAME and file-level ID."
   (with-temp-buffer
     (insert content)
-    (goto-char (point-min))
-    (unless (looking-at (concat "#\\+title: " (regexp-quote name) "$"))
-      (error "Repository summary title is invalid"))
     (unless (= (how-many "^#\\+title:" (point-min) (point-max)) 1)
       (error "Repository summary must contain exactly one title"))
+    (goto-char (point-min))
+    (unless (re-search-forward
+             (concat "^#\\+title:[ \t]*" (regexp-quote name) "[ \t]*$")
+             nil t)
+      (error "Repository summary title is invalid"))
     (org-mode)
+    (goto-char (point-min))
+    (unless (equal (org-id-get) id)
+      (error "Repository summary ID is not a file-level Org ID"))
     (org-element-parse-buffer)))
 
 (defun magent-repo-summary--write-atomic (path content)
@@ -308,9 +361,8 @@ uses SCOPE and SCOPE-FILES.  Return a plist describing the written note."
          (created (not (file-exists-p path)))
          (old-content (unless created (magent-repo-summary--read-file path)))
          (parts (magent-repo-summary--document-parts (or old-content "")))
-         (id (or (magent-repo-summary--metadata-value
-                  (car parts) "ID")
-                 (org-id-new)))
+         (existing-id (magent-repo-summary--metadata-value
+                       (car parts) "ID"))
          (mode-name (if (symbolp mode) (symbol-name mode) mode))
          tail scope-id)
     (pcase mode-name
@@ -322,19 +374,24 @@ uses SCOPE and SCOPE-FILES.  Return a plist describing the written note."
          (setq tail (plist-get result :tail)
                scope-id (plist-get result :scope-id))))
       (_ (user-error "Summary mode must be full or scoped")))
-    (let ((document (concat
-                     (magent-repo-summary--preamble name id root commit)
-                     tail)))
-      (magent-repo-summary--validate-document document name)
-      (magent-repo-summary--write-atomic path document))
-    (when (fboundp 'org-roam-db-update-file)
-      (condition-case err
-          (org-roam-db-update-file path)
-        (error
-         (when (fboundp 'magent-log)
-           (magent-log "WARN org-roam index update failed for %s: %s"
-                       path (error-message-string err))))))
-    (list :path path :created created :commit commit :scope-id scope-id)))
+    (let ((id (or existing-id (magent-repo-summary--new-id path))))
+      (when created
+        (magent-repo-summary--create-with-org-roam
+         path directory name id))
+      (let ((document (concat
+                       (magent-repo-summary--preamble name id root commit)
+                       tail)))
+        (magent-repo-summary--validate-document document name id)
+        (magent-repo-summary--write-atomic path document))
+      (when (fboundp 'org-roam-db-update-file)
+        (condition-case err
+            (let ((org-roam-directory directory))
+              (org-roam-db-update-file path))
+          (error
+           (when (fboundp 'magent-log)
+             (magent-log "WARN org-roam index update failed for %s: %s"
+                         path (error-message-string err))))))
+      (list :path path :created created :commit commit :scope-id scope-id))))
 
 (provide 'magent-repo-summary)
 ;;; magent-repo-summary.el ends here

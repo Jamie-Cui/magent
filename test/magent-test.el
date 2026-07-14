@@ -4676,58 +4676,161 @@
          (roam-directory (make-temp-file "magent-summary-roam-" t))
          (magent-org-roam-directory roam-directory)
          first-path first-id)
+    (cl-letf (((symbol-function
+                'magent-repo-summary--org-roam-capture-available-p)
+               #'ignore))
+      (unwind-protect
+          (progn
+            (setq first-path
+                  (plist-get
+                   (magent-repo-summary-write
+                    repository "full"
+                    "The repository exists to exercise summary writing.\n\n** Architecture\nA small test fixture.")
+                   :path))
+            (should (= (length (directory-files roam-directory nil
+                                                 "\\.org\\'"))
+                       1))
+            (with-temp-buffer
+              (insert-file-contents first-path)
+              (should (re-search-forward
+                       (concat "^#\\+title: "
+                               (regexp-quote
+                                (file-name-nondirectory repository))
+                               "$")
+                       nil t))
+              (goto-char (point-min))
+              (should (re-search-forward "^:REPO_PATH: " nil t))
+              (should (re-search-forward
+                       "^:LAST_ANALYZED_COMMIT: [0-9a-f]+$" nil t))
+              (goto-char (point-min))
+              (org-mode)
+              (goto-char (point-min))
+              (should (looking-at ":PROPERTIES:\n"))
+              (setq first-id (org-id-get))
+              (should (stringp first-id))
+              (should (org-element-parse-buffer)))
+
+            (magent-repo-summary-write
+             repository "scoped" "Only the parser is summarized."
+             "src/parser :internal:" "src/parser.el, test/parser-test.el")
+            (magent-repo-summary-write
+             repository "scoped" "The parser summary was updated."
+             "src/parser :internal:" "src/parser.el, test/parser-test.el")
+            (magent-repo-summary-write
+             repository "full" "The full repository summary was updated.")
+
+            (should (= (length (directory-files roam-directory nil
+                                                 "\\.org\\'"))
+                       1))
+            (with-temp-buffer
+              (insert-file-contents first-path)
+              (org-mode)
+              (goto-char (point-min))
+              (should (equal (org-id-get) first-id))
+              (should (= (how-many "^:ID:" (point-min) (point-max)) 1))
+              (should (re-search-forward "^\\* Repository Summary$" nil t))
+              (should (re-search-forward
+                       "The full repository summary was updated" nil t))
+              (should (re-search-forward "^\\* Scoped Summaries$" nil t))
+              (should (= (how-many "^:SUMMARY_SCOPE_ID:"
+                                   (point-min) (point-max))
+                         1))
+              (should (re-search-forward
+                       "The parser summary was updated" nil t))
+              (should-not
+               (re-search-forward "Only the parser is summarized" nil t))))
+        (delete-directory repository t)
+        (delete-directory roam-directory t)))))
+
+(ert-deftest magent-test-repo-summary-migrates-legacy-preamble-to-file-node ()
+  "Test updates repair summaries whose property drawer follows Org keywords."
+  (require 'magent-repo-summary)
+  (let* ((repository (magent-test--make-git-repository
+                      "magent-summary-legacy-repository-"))
+         (root (file-truename repository))
+         (name (file-name-nondirectory repository))
+         (roam-directory (make-temp-file "magent-summary-legacy-roam-" t))
+         (magent-org-roam-directory roam-directory)
+         (path (expand-file-name (format "%s-summary.org" name)
+                                 roam-directory))
+         (legacy-id "a20c2e63-87d9-40af-a56d-a52f18f6f15c"))
     (unwind-protect
         (progn
-          (setq first-path
-                (plist-get
-                 (magent-repo-summary-write
-                  repository "full"
-                  "The repository exists to exercise summary writing.\n\n** Architecture\nA small test fixture.")
-                 :path))
-          (should (= (length (directory-files roam-directory nil
-                                               "\\.org\\'"))
-                     1))
+          (with-temp-file path
+            (insert (format
+                     (concat "#+title: %s\n\n:PROPERTIES:\n:ID: %s\n"
+                             ":REPO_PATH: %s\n"
+                             ":LAST_ANALYZED_COMMIT: legacy\n:END:\n\n"
+                             "* Repository Summary\nLegacy summary.\n")
+                     name legacy-id root)))
+          (magent-repo-summary-write
+           repository "full" "Migrated repository summary.")
           (with-temp-buffer
-            (insert-file-contents first-path)
-            (should (re-search-forward
-                     (concat "^#\\+title: "
-                             (regexp-quote
-                              (file-name-nondirectory repository))
-                             "$")
-                     nil t))
-            (should (re-search-forward "^:REPO_PATH: " nil t))
-            (should (re-search-forward "^:LAST_ANALYZED_COMMIT: [0-9a-f]+$"
-                                       nil t))
-            (goto-char (point-min))
-            (should (re-search-forward "^:ID: \\(.+\\)$" nil t))
-            (setq first-id (match-string 1))
+            (insert-file-contents path)
             (org-mode)
-            (should (org-element-parse-buffer)))
+            (goto-char (point-min))
+            (should (looking-at ":PROPERTIES:\n"))
+            (should (equal (org-id-get) legacy-id))
+            (should (re-search-forward "^#\\+title: " nil t))
+            (should (re-search-forward "Migrated repository summary" nil t))
+            (should-not (re-search-forward "Legacy summary" nil t))))
+      (delete-directory repository t)
+      (delete-directory roam-directory t))))
 
-          (magent-repo-summary-write
-           repository "scoped" "Only the parser is summarized."
-           "src/parser :internal:" "src/parser.el, test/parser-test.el")
-          (magent-repo-summary-write
-           repository "scoped" "The parser summary was updated."
-           "src/parser :internal:" "src/parser.el, test/parser-test.el")
-          (magent-repo-summary-write
-           repository "full" "The full repository summary was updated.")
-
-          (should (= (length (directory-files roam-directory nil
-                                               "\\.org\\'"))
-                     1))
-          (with-temp-buffer
-            (insert-file-contents first-path)
-            (should (re-search-forward
-                     (concat "^:ID: " (regexp-quote first-id) "$") nil t))
-            (should (re-search-forward "^\\* Repository Summary$" nil t))
-            (should (re-search-forward
-                     "The full repository summary was updated" nil t))
-            (should (re-search-forward "^\\* Scoped Summaries$" nil t))
-            (should (= (how-many "^:SUMMARY_SCOPE_ID:" (point-min) (point-max))
-                       1))
-            (should (re-search-forward "The parser summary was updated" nil t))
-            (should-not (re-search-forward "Only the parser is summarized" nil t))))
+(ert-deftest magent-test-repo-summary-creates-new-note-through-org-roam ()
+  "Test new summaries use noninteractive Org-roam capture when available."
+  (require 'magent-repo-summary)
+  (let* ((repository (magent-test--make-git-repository
+                      "magent-summary-roam-capture-repository-"))
+         (roam-directory (make-temp-file "magent-summary-roam-capture-" t))
+         (magent-org-roam-directory roam-directory)
+         (org-roam-directory "/wrong-org-roam-directory/")
+         captured-arguments indexed-directory indexed-path)
+    (unwind-protect
+        (cl-letf (((symbol-function
+                    'magent-repo-summary--org-roam-capture-available-p)
+                   (lambda () t))
+                  ((symbol-function 'org-roam-node-create)
+                   (lambda (&rest properties) properties))
+                  ((symbol-function 'org-roam-capture-)
+                   (lambda (&rest arguments)
+                     (setq captured-arguments arguments)
+                     (let* ((node (plist-get arguments :node))
+                            (template
+                             (car (plist-get arguments :templates)))
+                            (target (plist-get (nthcdr 4 template) :target))
+                            (path (cadr target)))
+                       (with-temp-file path
+                         (insert ":PROPERTIES:\n:ID: "
+                                 (plist-get node :id)
+                                 "\n:END:\n#+title: "
+                                 (plist-get node :title)
+                                 "\n")))))
+                  ((symbol-function 'org-roam-db-update-file)
+                   (lambda (path)
+                     (setq indexed-directory
+                           (symbol-value 'org-roam-directory)
+                           indexed-path path))))
+          (let* ((result
+                  (magent-repo-summary-write
+                   repository "full" "Captured repository summary."))
+                 (path (plist-get result :path))
+                 (template
+                  (car (plist-get captured-arguments :templates))))
+            (should captured-arguments)
+            (should (equal (cadr (plist-get (nthcdr 4 template) :target))
+                           path))
+            (should (plist-get (nthcdr 4 template) :immediate-finish))
+            (should (plist-get (nthcdr 4 template) :kill-buffer))
+            (should (equal indexed-directory roam-directory))
+            (should (equal indexed-path path))
+            (with-temp-buffer
+              (insert-file-contents path)
+              (org-mode)
+              (goto-char (point-min))
+              (should (equal
+                       (org-id-get)
+                       (plist-get (plist-get captured-arguments :node) :id))))))
       (delete-directory repository t)
       (delete-directory roam-directory t))))
 
@@ -4743,14 +4846,24 @@
                 (org-roam-directory nil))
             (should-error
              (magent-repo-summary-write repository "full" "Summary")))
-          (let ((magent-org-roam-directory plain-directory))
-            (should-error
-             (magent-repo-summary-write 'global "full" "Summary"))
-            (should-error
-             (magent-repo-summary-write plain-directory "full" "Summary"))
-            (should-error
-             (magent-repo-summary-write
-              repository "scoped" "Summary" "parser" '("../outside.el")))
+          (let ((magent-org-roam-directory plain-directory)
+                (new-id-calls 0))
+            (cl-letf (((symbol-function 'magent-repo-summary--new-id)
+                       (lambda (_path)
+                         (cl-incf new-id-calls)
+                         "unexpected-id")))
+              (should-error
+               (magent-repo-summary-write 'global "full" "Summary"))
+              (should-error
+               (magent-repo-summary-write plain-directory "full" "Summary"))
+              (should-error
+               (magent-repo-summary-write
+                repository "scoped" "Summary" "parser" '("../outside.el")))
+              (should-error
+               (magent-repo-summary-write repository "invalid" "Summary"))
+              (should-error
+               (magent-repo-summary-write repository "full" "")))
+            (should (zerop new-id-calls))
             (should-not (directory-files plain-directory nil "\\.org\\'"))))
       (delete-directory repository t)
       (delete-directory plain-directory t))))
