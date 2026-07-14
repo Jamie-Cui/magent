@@ -88,7 +88,7 @@ Emacs 不只是宿主进程。Magent 依赖活的编辑器状态：buffer、majo
 Magent 有三层 file-backed 扩展：
 
 - ~.magent/agent/*.md~ 下的 custom agents。
-- bundled ~skills/~ 、用户 ~~/.emacs.d/magent/skills~ 、存在时兼容 legacy ~~/.emacs.d/magent-skills/~ 、以及项目 ~.magent/skills/~ 下的 skills。
+- bundled ~skills/~、存在时兼容的 legacy 用户目录 ~~/.emacs.d/magent-skills/~、canonical 用户目录 ~~/.emacs.d/magent/skills~，以及项目 ~.magent/skills/~ 下的 skills。
 - 带 ~capability: true~ 的 skill frontmatter 中的 capability metadata，以及用户 capability 目录和项目 ~.magent/capabilities/~ 下的独立 ~CAPABILITY.md~。独立文件只用于触发 metadata 不应该归属于单个 skill 的场景。
 
 Magent 还有一层 Elisp-level internal command registry，实现在
@@ -106,6 +106,11 @@ Magent 还有一层 Elisp-level internal command registry，实现在
 [[file:DOCTOR.zh.org][DOCTOR.zh.org]]。
 
 Instruction skill 会注入 system prompt。Tool skill 通过 ~skill_invoke~ 调用。Capability 会根据当前上下文打分，激活少量 instruction skills。内置同名 workflow capability 和对应 skill 放在同一个 ~SKILL.md~ 里，触发 metadata 和注入说明不再分散成两份文件。这种 progressive disclosure 能保持基础 prompt 更小，同时在需要时注入 Emacs-specific workflow 知识。
+
+~magent-skill-manager.el~ 是独立且按需加载的用户维护层：它搜索 skills.sh，
+解析本地或公开 GitHub source，预检后把 instruction skill 复制到 canonical 用户
+目录，记录 provenance，并永久删除精确选中的用户级安装。它不是 model tool，
+不会管理 project overlay，也绝不读写 ~~/.agents/skills/~。
 
 两者的区别是：
 

@@ -41,5 +41,6 @@ lisp/magent-ui.el
 lisp/magent-ui-legacy.el
 lisp/magent-evil.el
 lisp/magent-skills.el
+lisp/magent-skill-manager.el
 lisp/magent-capability.el
 lisp/magent.el

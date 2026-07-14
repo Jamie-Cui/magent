@@ -74,6 +74,7 @@ The action layer that executes operations requested by agents.
 *Key Files:*
 - ~magent-tools.el~ — 15 ~gptel-tool~ structs: read_file, write_file, write_repo_summary, edit_file, grep, glob, bash, emacs_eval, spawn_agent, send_agent_message, wait_agent, list_agents, close_agent, skill_invoke, web_search
 - ~magent-skills.el~ — Skill registry, built-in skills, file loading, inspection commands
+- ~magent-skill-manager.el~ — User-level skills.sh finder, safe copy installer, and permanent deletion
 - ~magent-capability.el~ — Capability definitions, resolution, and file-backed loading
 - ~magent-approval.el~ — User approval prompts for sensitive operations
 
@@ -163,7 +164,7 @@ define ~default-prompt~ can also be run as command-like actions; built-in
 ~/init~, and accepts optional extra instructions. Compose buffers are plain
 prompt text and no longer parse ~@skill~ or ~@clear~ control syntax.
 
-Skills load from: (1) built-in ~skills/~, (2) user ~~/.emacs.d/magent/skills~, (3) legacy ~~/.emacs.d/magent-skills/~ when present, and (4) project ~.magent/skills/~.  A skill can also declare ~capability: true~ with resolver metadata such as ~modes~, ~features~, ~files~, ~keywords~, and ~disclosure~; Magent turns that metadata into a capability that activates the same skill.
+Skills load from: (1) built-in ~skills/~, (2) legacy user ~~/.emacs.d/magent-skills/~ when present, (3) canonical user ~~/.emacs.d/magent/skills~, and (4) project ~.magent/skills/~. Later user directories take precedence. ~magent-skill-find~, ~magent-skill-install~, and ~magent-skill-delete~ manage user-level skills only and never use ~~/.agents/skills/~. A skill can also declare ~capability: true~ with resolver metadata such as ~modes~, ~features~, ~files~, ~keywords~, and ~disclosure~; Magent turns that metadata into a capability that activates the same skill.
 
 Keep the terms separate when adding or reviewing defaults:
 

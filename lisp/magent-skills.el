@@ -276,8 +276,14 @@ If SKILL-NAMES is a list, only include those skills."
           (mapcar (lambda (skill)
                     (when-let* ((prompt (magent-skill-prompt skill))
                                 ((> (length prompt) 0)))
-                      (format "## Skill: %s\n\n%s"
+                      (format "## Skill: %s\n\n%s%s"
                               (magent-skill-name skill)
+                              (if-let* ((file-path (magent-skill-file-path skill)))
+                                  (format "Skill directory: %s\n\n"
+                                          (file-name-as-directory
+                                           (expand-file-name
+                                            (file-name-directory file-path))))
+                                "")
                               prompt)))
                   skills))))
 
@@ -320,11 +326,13 @@ If SKILL-NAMES is a list, only include those skills."
 (defcustom magent-skill-directories
   (let ((new-dir (expand-file-name "magent/skills" user-emacs-directory))
         (old-dir (expand-file-name "magent-skills" user-emacs-directory)))
-    (append (list new-dir)
-            (when (file-directory-p old-dir)
-              (list old-dir))))
+    (append (when (file-directory-p old-dir)
+              (list old-dir))
+            (list new-dir)))
   "List of directories to scan for skill files.
-Each directory can contain subdirectories with SKILL.md files."
+Each directory can contain subdirectories with SKILL.md files.
+Later directories take precedence over earlier directories when skill
+names collide.  The final entry is the canonical installation target."
   :type '(repeat directory)
   :group 'magent)
 
@@ -357,13 +365,17 @@ directory if it exists."
 
 (defun magent-skills--list-files (&optional directories)
   "List all SKILL.md files in DIRECTORIES or `magent-skill-directories'."
-  (if directories
-      (magent-file-loader-list-named-files directories magent-skill-file-name)
-    (magent-file-loader-list-definition-files
-     magent-skill-file-name
-     :builtin-dirs (list magent-skills--builtin-dir)
-     :user-dirs magent-skill-directories
-     :project-relative-dir ".magent/skills")))
+  (let ((ordered-directories
+         (or directories
+             (append (list magent-skills--builtin-dir)
+                     magent-skill-directories
+                     (magent-file-loader-project-subdir ".magent/skills")))))
+    (apply #'append
+           (mapcar
+            (lambda (directory)
+              (magent-file-loader-list-named-files
+               (list directory) magent-skill-file-name))
+            ordered-directories))))
 
 (defun magent-skills--parse-type (type-str)
   "Parse type string TYPE-STR to a skill type symbol."

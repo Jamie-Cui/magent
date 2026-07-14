@@ -3282,6 +3282,228 @@
       (should skill)
       (should (eq (magent-skill-type skill) 'instruction)))))
 
+(ert-deftest magent-test-skills-load-order-preserves-directory-precedence ()
+  "Test later skill directories override earlier directories deterministically."
+  (require 'magent-skills)
+  (let* ((root (make-temp-file "magent-skill-order-" t))
+         ;; Deliberately choose reverse-lexical directory names so a global
+         ;; pathname sort would produce the wrong winner.
+         (builtin-dir (expand-file-name "z-builtin" root))
+         (legacy-dir (expand-file-name "y-legacy" root))
+         (canonical-dir (expand-file-name "x-canonical" root))
+         (directories (list builtin-dir legacy-dir canonical-dir))
+         (magent-skills--registry nil)
+         (magent-skills--builtin-dir builtin-dir)
+         (magent-skill-directories (list legacy-dir canonical-dir)))
+    (unwind-protect
+        (progn
+          (cl-loop for directory in directories
+                   for description in '("builtin" "legacy" "canonical")
+                   do
+                   (let ((skill-dir (expand-file-name "same-skill" directory)))
+                     (make-directory skill-dir t)
+                     (with-temp-file (expand-file-name "SKILL.md" skill-dir)
+                       (insert (format
+                                "---\nname: same-skill\ndescription: %s\n---\n%s\n"
+                                description description)))))
+          (cl-letf (((symbol-function 'magent-log) #'ignore))
+            (magent-skills-load-all directories))
+          (should (equal
+                   (magent-skill-description
+                    (magent-skills-get "same-skill"))
+                   "canonical")))
+      (delete-directory root t))))
+
+(ert-deftest magent-test-skills-instruction-prompt-includes-source-directory ()
+  "Test file-backed skill prompts expose their resource base directory."
+  (require 'magent-skills)
+  (let* ((directory (make-temp-file "magent-skill-source-" t))
+         (skill-file (expand-file-name "SKILL.md" directory))
+         (magent-skills--registry nil))
+    (unwind-protect
+        (progn
+          (magent-skills-register
+           (magent-skill-create
+            :name "resource-skill"
+            :description "Uses references"
+            :type 'instruction
+            :prompt "Read references/guide.md."
+            :file-path skill-file
+            :source-layer 'user))
+          (let ((prompt (car (magent-skills-get-instruction-prompts
+                              '("resource-skill")))))
+            (should (string-match-p
+                     (regexp-quote
+                      (format "Skill directory: %s"
+                              (file-name-as-directory directory)))
+                     prompt))))
+      (delete-directory directory t))))
+
+(ert-deftest magent-test-skill-manager-parses-and-ranks-search-results ()
+  "Finder keeps the most-installed skills and preserves install sources."
+  (require 'magent-skill-manager)
+  (let* ((magent-skill-search-limit 2)
+         (response
+          "{\"skills\":[{\"id\":\"one/a\",\"name\":\"a\",\"installs\":3,\"source\":\"one/repo\"},{\"id\":\"two/b\",\"name\":\"b\",\"installs\":20,\"source\":\"two/repo\"},{\"id\":\"three/c\",\"name\":\"c\",\"installs\":10,\"source\":\"three/repo\"}]}" )
+         (results (magent-skill-manager--parse-search-response response)))
+    (should (equal (mapcar #'magent-skill-candidate-name results)
+                   '("b" "c")))
+    (should (equal (magent-skill-candidate-source (car results))
+                   "two/repo"))))
+
+(ert-deftest magent-test-skill-manager-preflight-rejects-tool-skills ()
+  "External tool skills are rejected before installation writes anything."
+  (require 'magent-skill-manager)
+  (let ((directory (make-temp-file "magent-tool-skill-" t)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "SKILL.md" directory)
+            (insert "---\nname: unsafe-tool\ndescription: Tool skill\ntype: tool\n---\nBody\n"))
+          (should-error
+           (magent-skill-manager--preflight-directory
+            directory (list :source-kind 'local :source directory))
+           :type 'user-error))
+      (delete-directory directory t))))
+
+(ert-deftest magent-test-skill-manager-preflight-rejects-symbolic-links ()
+  "Preflight rejects links so installation cannot copy outside content."
+  (require 'magent-skill-manager)
+  (let ((directory (make-temp-file "magent-linked-source-" t))
+        (outside (make-temp-file "magent-linked-file-")))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "SKILL.md" directory)
+            (insert "---\nname: linked-source\ndescription: Linked source\n---\nBody\n"))
+          (make-symbolic-link outside (expand-file-name "outside" directory))
+          (should-error
+           (magent-skill-manager--preflight-directory
+            directory (list :source-kind 'local :source directory))
+           :type 'user-error))
+      (delete-directory directory t)
+      (delete-file outside))))
+
+(ert-deftest magent-test-skill-manager-rejects-github-path-escape ()
+  "A GitHub tree subdirectory cannot escape its temporary checkout."
+  (require 'magent-skill-manager)
+  (let ((checkout (make-temp-file "magent-checkout-" t)))
+    (unwind-protect
+        (should-error
+         (magent-skill-manager--find-skill-directory
+          checkout nil "../outside")
+         :type 'user-error)
+      (delete-directory checkout t))))
+
+(ert-deftest magent-test-skill-manager-installs-local-copy-with-provenance ()
+  "Local installs copy resources, write provenance, and reload skills."
+  (require 'magent-skill-manager)
+  (let* ((root (make-temp-file "magent-skill-root-" t))
+         (source (make-temp-file "magent-skill-source-" t))
+         (magent-skill-directories (list root))
+         (reload-count 0))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "SKILL.md" source)
+            (insert "---\nname: copied-skill\ndescription: Copy me\n---\nUse references.\n"))
+          (make-directory (expand-file-name "references" source))
+          (with-temp-file (expand-file-name "references/guide.md" source)
+            (insert "guide"))
+          (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+                    ((symbol-function 'magent-skills-reload)
+                     (lambda () (cl-incf reload-count))))
+            (magent-skill-install source))
+          (let ((destination (expand-file-name "copied-skill" root)))
+            (should (file-exists-p (expand-file-name "SKILL.md" destination)))
+            (should (file-exists-p
+                     (expand-file-name "references/guide.md" destination)))
+            (should (file-exists-p
+                     (expand-file-name ".magent-install.json" destination)))
+            (should-not (file-symlink-p destination))
+            (should (= reload-count 1))))
+      (delete-directory root t)
+      (delete-directory source t))))
+
+(ert-deftest magent-test-skill-manager-rolls-back-when-reload-fails ()
+  "A failed registry reload leaves no partially installed new skill."
+  (require 'magent-skill-manager)
+  (let* ((root (make-temp-file "magent-skill-rollback-root-" t))
+         (source (make-temp-file "magent-skill-rollback-source-" t))
+         (magent-skill-directories (list root)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "SKILL.md" source)
+            (insert "---\nname: rollback-skill\ndescription: Roll back\n---\nBody\n"))
+          (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+                    ((symbol-function 'magent-skills-reload)
+                     (lambda () (error "reload failed"))))
+            (should-error (magent-skill-install source)))
+          (should-not (file-exists-p
+                       (expand-file-name "rollback-skill" root))))
+      (delete-directory root t)
+      (delete-directory source t))))
+
+(ert-deftest magent-test-skill-manager-reinstalls-only-the-same-source ()
+  "Managed same-source installs replace atomically; unmanaged collisions fail."
+  (require 'magent-skill-manager)
+  (let* ((root (make-temp-file "magent-skill-reinstall-root-" t))
+         (source (make-temp-file "magent-skill-reinstall-source-" t))
+         (other (make-temp-file "magent-skill-unmanaged-source-" t))
+         (magent-skill-directories (list root))
+         (reload-count 0))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "SKILL.md" source)
+            (insert "---\nname: reinstall-skill\ndescription: Reinstall\n---\nVersion one\n"))
+          (with-temp-file (expand-file-name "SKILL.md" other)
+            (insert "---\nname: unmanaged-skill\ndescription: Unmanaged\n---\nBody\n"))
+          (make-directory (expand-file-name "unmanaged-skill" root))
+          (with-temp-file (expand-file-name "unmanaged-skill/SKILL.md" root)
+            (insert "---\nname: unmanaged-skill\ndescription: Existing\n---\nBody\n"))
+          (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+                    ((symbol-function 'magent-skills-reload)
+                     (lambda () (cl-incf reload-count))))
+            (magent-skill-install source)
+            (with-temp-file (expand-file-name "SKILL.md" source)
+              (insert "---\nname: reinstall-skill\ndescription: Reinstall\n---\nVersion two\n"))
+            (magent-skill-install source)
+            (should-error (magent-skill-install other) :type 'user-error))
+          (should (= reload-count 2))
+          (with-temp-buffer
+            (insert-file-contents
+             (expand-file-name "reinstall-skill/SKILL.md" root))
+            (should (search-forward "Version two" nil t))))
+      (delete-directory root t)
+      (delete-directory source t)
+      (delete-directory other t))))
+
+(ert-deftest magent-test-skill-manager-delete-confirms-once-and-unlinks-symlink ()
+  "Deletion asks once and never follows an unmanaged skill symlink."
+  (require 'magent-skill-manager)
+  (let* ((root (make-temp-file "magent-skill-delete-root-" t))
+         (outside (make-temp-file "magent-skill-delete-target-" t))
+         (link (expand-file-name "linked-skill" root))
+         (magent-skill-directories (list root))
+         (confirm-count 0)
+         (reload-count 0))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "SKILL.md" outside)
+            (insert "---\nname: linked-skill\ndescription: Linked\n---\nBody\n"))
+          (make-symbolic-link outside link)
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (&rest _) "linked-skill"))
+                    ((symbol-function 'y-or-n-p)
+                     (lambda (&rest _) (cl-incf confirm-count) t))
+                    ((symbol-function 'magent-skills-reload)
+                     (lambda () (cl-incf reload-count))))
+            (magent-skill-delete))
+          (should (= confirm-count 1))
+          (should (= reload-count 1))
+          (should-not (file-symlink-p link))
+          (should (file-exists-p (expand-file-name "SKILL.md" outside))))
+      (when (file-symlink-p link) (delete-file link))
+      (delete-directory root t)
+      (delete-directory outside t))))
+
 (ert-deftest magent-test-skills-load-all-includes-init-skill ()
   "Test bundled skill loading includes the init workflow skill."
   (require 'magent-skills)

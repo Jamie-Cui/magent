@@ -39,6 +39,9 @@
 (defvar magent-log-level)
 
 (declare-function magent-run-doctor "magent-command")
+(declare-function magent-skill-find "magent-skill-manager")
+(declare-function magent-skill-install "magent-skill-manager")
+(declare-function magent-skill-delete "magent-skill-manager")
 
 (defvar magent--current-request-handle nil
   "Current active request handle, if any.")
@@ -1479,7 +1482,11 @@ Skips keys already reserved by `magent-transient-agent-menu'."
   ["Inspect"
    [("Y" "list" magent-list-skills)
     ("H" "describe" magent-describe-skill)
-    ("U" "reload" magent-reload-skills)]])
+    ("U" "reload" magent-reload-skills)]]
+  ["Manage user skills"
+   [("f" "find" magent-skill-find)
+    ("I" "install" magent-skill-install)
+    ("D" "delete" magent-skill-delete)]])
 
 (transient-define-prefix magent-transient-capability-menu ()
   "Magent capability menu."

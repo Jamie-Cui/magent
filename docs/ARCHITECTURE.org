@@ -88,7 +88,7 @@ The product is therefore more than a prompt box with tools. It turns Emacs workf
 Magent has three file-backed extension layers:
 
 - Custom agents under ~.magent/agent/*.md~.
-- Skills under bundled ~skills/~, user ~~/.emacs.d/magent/skills~, legacy ~~/.emacs.d/magent-skills/~ when present, and project ~.magent/skills/~.
+- Skills under bundled ~skills/~, legacy user ~~/.emacs.d/magent-skills/~ when present, canonical user ~~/.emacs.d/magent/skills~, and project ~.magent/skills/~.
 - Capability metadata embedded in skills with ~capability: true~, plus standalone ~CAPABILITY.md~ files under user capability directories and project ~.magent/capabilities/~ when trigger metadata should live outside one skill.
 
 Magent also has an Elisp-level internal command registry in ~magent-command.el~.
@@ -106,6 +106,13 @@ never exposes ~emacs_eval~, shell, or file tools.  Custom probes are trusted
 Elisp rather than sandboxed code; see [[file:DOCTOR.org][DOCTOR.org]].
 
 Instruction skills are injected into the system prompt. Tool skills are invoked through ~skill_invoke~. Capabilities score the current context and activate a small number of instruction skills. Built-in same-name workflow capabilities are co-located with their skills, so the trigger metadata and injected instruction stay in one file. This progressive disclosure model keeps the base prompt smaller while still giving the agent Emacs-specific workflow knowledge when the current request needs it.
+
+~magent-skill-manager.el~ is a separate, lazily loaded user-maintenance layer.
+It searches skills.sh, resolves local or public GitHub sources, preflights and
+copies instruction skills into the canonical user directory, records
+provenance, and permanently deletes exact user-level installations. It is not
+a model tool, never manages project overlays, and never reads or writes
+~~/.agents/skills/~.
 
 The distinction is:
 

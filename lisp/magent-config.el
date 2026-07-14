@@ -102,6 +102,31 @@ Output buffers are named like `*magent:global*' or
                  (const :tag "Legacy Magent UI" legacy))
   :group 'magent)
 
+(defcustom magent-skill-search-endpoint "https://skills.sh/api/search"
+  "HTTP endpoint used by `magent-skill-find'."
+  :type 'string
+  :group 'magent)
+
+(defcustom magent-skill-search-limit 10
+  "Maximum number of results displayed by `magent-skill-find'."
+  :type 'natnum
+  :group 'magent)
+
+(defcustom magent-skill-search-timeout 15
+  "Seconds before a pending `magent-skill-find' request is cancelled."
+  :type 'natnum
+  :group 'magent)
+
+(defcustom magent-skill-install-max-files 500
+  "Maximum number of files accepted in one installed skill."
+  :type 'natnum
+  :group 'magent)
+
+(defcustom magent-skill-install-max-bytes (* 10 1024 1024)
+  "Maximum total byte size accepted in one installed skill."
+  :type 'natnum
+  :group 'magent)
+
 (defcustom magent-agent-shell-session-strategy 'new
   "Agent Shell session strategy used by Magent entry points.
 The default starts a fresh session immediately, avoiding agent-shell's global

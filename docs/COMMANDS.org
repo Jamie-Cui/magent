@@ -139,6 +139,28 @@ directories, or project-local ~.magent/skills/~ overlays. Therefore a local
 installation can expose more skill commands in addition to the two fixed
 session controls listed above.
 
+* User Skill Management
+
+~M-x magent-skill-find~ searches skills.sh and displays the ten most-installed
+matches in a dedicated buffer. Press ~RET~ to preview the selected candidate,
+~i~ to install it directly, or ~g~ to run another search. There is no need to
+copy a repository name from the finder.
+
+~M-x magent-skill-install~ also accepts one local skill directory,
+~owner/repo@skill~, or a public GitHub URL. Before writing, Magent shows the
+source, commit when available, description, destination, file count, size, and
+whether the package contains scripts or code. Installation proceeds after one
+~y/n~ confirmation, copies files without executing scripts, accepts instruction
+skills only, and records ~.magent-install.json~ provenance. Same-source managed
+skills can be atomically reinstalled; unmanaged or different-source collisions
+must be deleted first.
+
+~M-x magent-skill-delete~ permanently removes one selected user-level skill
+after one ~y/n~ confirmation. It can remove managed and unmanaged user skills;
+a symbolic-link entry removes only the link. The manager uses Magent's user
+skill directories (normally ~~/.emacs.d/magent/skills/~) and never manages
+project-local ~.magent/skills/~ or ~~/.agents/skills/~.
+
 * Internal Workflow Commands
 
 Internal workflows are invoked through ~M-x~ and are intentionally not exposed
