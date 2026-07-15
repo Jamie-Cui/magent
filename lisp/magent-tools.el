@@ -63,6 +63,14 @@ This table intentionally stores non-persistent values such as child sessions,
 request contexts, and live loop handles.  Durable job metadata lives in the
 parent `magent-session' under `agent-jobs'.")
 
+(defconst magent-tools--read-file-default-line-count 200
+  "Default maximum number of lines returned by `read_file'.")
+
+(defconst magent-tools--read-file-page-max-characters 8000
+  "Target maximum content characters returned by one `read_file' page.
+Pages end at a line boundary when possible.  A single longer line is returned
+whole so a subsequent line-based request always makes progress.")
+
 (defun magent-tools--origin-buffer-name ()
   "Return the request origin buffer name for the current tool call."
   (and magent-tools--request-context
@@ -115,17 +123,88 @@ absolute versus project-relative spellings of the same resource."
   "Resolve PATH for tool operations."
   (magent-tools-canonical-resource-path path))
 
-(defun magent-tools--read-file (callback path)
+(defun magent-tools--read-file-buffer-page
+    (start-line line-count source modified)
+  "Return a self-describing page from the current buffer.
+START-LINE is one-based and LINE-COUNT is the requested maximum number of
+lines.  SOURCE identifies how the buffer was obtained and MODIFIED reports
+whether a live visiting buffer has unsaved changes."
+  (save-excursion
+    (save-restriction
+      (widen)
+      (let ((total-lines (count-lines (point-min) (point-max))))
+        (goto-char (point-min))
+        (forward-line (1- start-line))
+        (let ((begin (point)))
+          (forward-line line-count)
+          (let ((end (point)))
+            (when (> (- end begin)
+                     magent-tools--read-file-page-max-characters)
+              (goto-char (+ begin
+                            magent-tools--read-file-page-max-characters))
+              (unless (bolp)
+                (beginning-of-line))
+              (when (= (point) begin)
+                (forward-line 1))
+              (setq end (point)))
+            (let* ((returned-lines (count-lines begin end))
+                   (end-line (and (> returned-lines 0)
+                                  (+ start-line returned-lines -1)))
+                   (has-more (< end (point-max)))
+                   (next-line (and has-more end-line (1+ end-line)))
+                   (line-range (if end-line
+                                   (format "%d-%d" start-line end-line)
+                                 "none"))
+                   (header
+                    (format
+                     (concat "[read_file: source=%s; modified=%s; lines=%s; "
+                             "total_lines=%d; has_more=%s%s]\n")
+                     source
+                     (if modified "true" "false")
+                     line-range
+                     total-lines
+                     (if has-more "true" "false")
+                     (if next-line
+                         (format "; next_start_line=%d" next-line)
+                       ""))))
+              (concat header
+                      (buffer-substring-no-properties begin end)))))))))
+
+(defun magent-tools--read-file (callback path &optional start-line line-count)
   "Read contents of file at PATH asynchronously.
+When PATH has a visiting buffer, read its live contents.  Otherwise read the
+file through a temporary buffer.  START-LINE is an optional one-based starting
+line.  LINE-COUNT defaults to `magent-tools--read-file-default-line-count'.
+The result includes pagination metadata before the requested file contents.
 CALLBACK is called with the file contents or error message."
   (condition-case err
       (progn
         (unless (stringp path)
           (error "Missing required argument 'path' (got %S)" path))
-        (let ((path (magent-tools--resolve-path path)))
-          (with-temp-buffer
-            (insert-file-contents path)
-            (funcall callback (buffer-string)))))
+        (when (eq start-line :null)
+          (setq start-line nil))
+        (when (eq line-count :null)
+          (setq line-count nil))
+        (unless (or (null start-line)
+                    (and (integerp start-line) (> start-line 0)))
+          (error "start_line must be a positive integer (got %S)" start-line))
+        (unless (or (null line-count)
+                    (and (integerp line-count) (> line-count 0)))
+          (error "line_count must be a positive integer (got %S)" line-count))
+        (let* ((path (magent-tools--resolve-path path))
+               (first-line (or start-line 1))
+               (maximum-lines
+                (or line-count magent-tools--read-file-default-line-count)))
+          (funcall
+           callback
+           (if-let* ((buffer (find-buffer-visiting path)))
+               (with-current-buffer buffer
+                 (magent-tools--read-file-buffer-page
+                  first-line maximum-lines "live-buffer" (buffer-modified-p)))
+             (with-temp-buffer
+               (insert-file-contents path)
+               (magent-tools--read-file-buffer-page
+                first-line maximum-lines "temporary-buffer" nil))))))
     (error (funcall callback (format "Error reading file: %s" (error-message-string err))))))
 
 (defun magent-tools--write-file (callback path content)
@@ -1291,10 +1370,18 @@ See `magent-agent-loop-filter-display-args'.")
 (defvar magent-tools--read-file-tool
   (gptel-make-tool
    :name "read_file"
-   :description "Read the contents of a file at the given path. Use this to inspect file contents before making changes."
+   :description "Read a bounded page of file contents. If Emacs already has a visiting buffer, returns its live contents including unsaved edits; otherwise reads from disk without leaving a file buffer. Every result reports source, modified state, actual line range, total_lines, has_more, and next_start_line. Continue with next_start_line when has_more is true; do not use shell commands such as wc or sed to determine file size or pagination."
    :args (list '(:name "path"
                        :type string
                        :description "Absolute or relative path to the file")
+               '(:name "start_line"
+                       :type integer
+                       :description "One-based line at which to start reading; defaults to 1"
+                       :optional t)
+               '(:name "line_count"
+                       :type integer
+                       :description "Requested maximum number of lines; defaults to a bounded 200-line page and may return fewer to stay within the result budget"
+                       :optional t)
                magent-tools--reason-arg)
    :function #'magent-tools--read-file
    :async t

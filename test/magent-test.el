@@ -5252,7 +5252,12 @@
           (magent-tools--read-file
            (lambda (value) (setq result value))
            "notes.txt")
-          (should (equal result "from inherited root")))
+          (should
+           (equal result
+                  (concat
+                   "[read_file: source=temporary-buffer; modified=false; "
+                   "lines=1-1; total_lines=1; has_more=false]\n"
+                   "from inherited root"))))
       (delete-directory tmpdir t))))
 
 (ert-deftest magent-test-tools-list-wait-send-close-agent-jobs ()
@@ -5427,9 +5432,191 @@
         (progn
           (with-temp-file tmpfile
             (insert "file contents here"))
+          (should-not (find-buffer-visiting tmpfile))
           (magent-tools--read-file (lambda (r) (setq result r)) tmpfile)
-          (should (equal result "file contents here")))
+          (should
+           (equal result
+                  (concat
+                   "[read_file: source=temporary-buffer; modified=false; "
+                   "lines=1-1; total_lines=1; has_more=false]\n"
+                   "file contents here")))
+          (should-not (find-buffer-visiting tmpfile)))
       (delete-file tmpfile))))
+
+(ert-deftest magent-test-tools-read-file-prefers-live-buffer-and-preserves-state ()
+  "Test read_file returns live buffer text without disturbing its state."
+  (require 'magent-tools)
+  (let* ((tmpfile (make-temp-file "magent-live-read-"))
+         (buffer nil)
+         (result nil))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "disk one\ndisk two\ndisk three\n"))
+          (setq buffer (find-file-noselect tmpfile t))
+          (with-current-buffer buffer
+            (erase-buffer)
+            (insert "live one\nlive two\nlive three\n")
+            (goto-char (point-min))
+            (forward-line 1)
+            (let ((narrow-start (point)))
+              (forward-line 1)
+              (narrow-to-region narrow-start (point)))
+            (goto-char (point-min))
+            (let ((original-point (point))
+                  (original-min (point-min))
+                  (original-max (point-max))
+                  (original-modified (buffer-modified-p)))
+              (magent-tools--read-file
+               (lambda (value) (setq result value))
+               tmpfile)
+              (should
+               (equal result
+                      (concat
+                       "[read_file: source=live-buffer; modified=true; "
+                       "lines=1-3; total_lines=3; has_more=false]\n"
+                       "live one\nlive two\nlive three\n")))
+              (should (= (point) original-point))
+              (should (= (point-min) original-min))
+              (should (= (point-max) original-max))
+              (should (eq (buffer-modified-p) original-modified)))))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-file tmpfile))))
+
+(ert-deftest magent-test-tools-read-file-line-range ()
+  "Test read_file supports one-based line ranges."
+  (require 'magent-tools)
+  (let* ((tmpfile (make-temp-file "magent-range-read-"))
+         (result nil))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "one\ntwo\nthree\nfour\n"))
+          (magent-tools--read-file
+           (lambda (value) (setq result value))
+           tmpfile 2 2)
+          (should
+           (equal result
+                  (concat
+                   "[read_file: source=temporary-buffer; modified=false; "
+                   "lines=2-3; total_lines=4; has_more=true; "
+                   "next_start_line=4]\n"
+                   "two\nthree\n")))
+          (magent-tools--read-file
+           (lambda (value) (setq result value))
+           tmpfile 3 nil)
+          (should
+           (equal result
+                  (concat
+                   "[read_file: source=temporary-buffer; modified=false; "
+                   "lines=3-4; total_lines=4; has_more=false]\n"
+                   "three\nfour\n")))
+          (magent-tools--read-file
+           (lambda (value) (setq result value))
+           tmpfile nil 2)
+          (should
+           (equal result
+                  (concat
+                   "[read_file: source=temporary-buffer; modified=false; "
+                   "lines=1-2; total_lines=4; has_more=true; "
+                   "next_start_line=3]\n"
+                   "one\ntwo\n"))))
+      (delete-file tmpfile))))
+
+(ert-deftest magent-test-tools-read-file-default-pagination ()
+  "Test read_file defaults to bounded, self-describing pages."
+  (require 'magent-tools)
+  (let* ((tmpfile (make-temp-file "magent-page-read-"))
+         (result nil))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (dotimes (index 205)
+              (insert (format "line-%03d\n" (1+ index)))))
+          (magent-tools--read-file
+           (lambda (value) (setq result value)) tmpfile)
+          (should
+           (string-prefix-p
+            (concat
+             "[read_file: source=temporary-buffer; modified=false; "
+             "lines=1-200; total_lines=205; has_more=true; "
+             "next_start_line=201]\n")
+            result))
+          (should (string-match-p "line-200\n" result))
+          (should-not (string-match-p "line-201\n" result))
+          (magent-tools--read-file
+           (lambda (value) (setq result value)) tmpfile 201)
+          (should
+           (string-prefix-p
+            (concat
+             "[read_file: source=temporary-buffer; modified=false; "
+             "lines=201-205; total_lines=205; has_more=false]\n")
+            result))
+          (should (string-match-p "line-201\n" result))
+          (should (string-match-p "line-205\n" result)))
+      (delete-file tmpfile))))
+
+(ert-deftest magent-test-tools-read-file-keeps-pages-under-character-budget ()
+  "Test read_file ends large pages early at a complete line boundary."
+  (require 'magent-tools)
+  (let* ((tmpfile (make-temp-file "magent-page-budget-read-"))
+         (result nil))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (dotimes (index 5)
+              (insert (format "line-%d-%s\n"
+                              (1+ index)
+                              (make-string 2990 ?x)))))
+          (magent-tools--read-file
+           (lambda (value) (setq result value)) tmpfile)
+          (should
+           (string-prefix-p
+            (concat
+             "[read_file: source=temporary-buffer; modified=false; "
+             "lines=1-2; total_lines=5; has_more=true; "
+             "next_start_line=3]\n")
+            result))
+          (should (string-match-p "line-2-" result))
+          (should-not (string-match-p "line-3-" result))
+          (should (< (length result)
+                     magent-tools--read-file-page-max-characters)))
+      (delete-file tmpfile))))
+
+(ert-deftest magent-test-tools-read-file-rejects-invalid-line-range ()
+  "Test read_file rejects invalid line range arguments clearly."
+  (require 'magent-tools)
+  (let ((tmpfile (make-temp-file "magent-invalid-range-read-")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "one\ntwo\n"))
+          (dolist (args '((0 nil) (-1 nil) ("1" nil)))
+            (let (result)
+              (magent-tools--read-file
+               (lambda (value) (setq result value))
+               tmpfile (car args) (cadr args))
+              (should (string-match-p "start_line must be a positive integer"
+                                      result))))
+          (dolist (args '((1 0) (1 -1) (1 "2")))
+            (let (result)
+              (magent-tools--read-file
+               (lambda (value) (setq result value))
+               tmpfile (car args) (cadr args))
+              (should (string-match-p "line_count must be a positive integer"
+                                      result)))))
+      (delete-file tmpfile))))
+
+(ert-deftest magent-test-tools-read-file-schema-exposes-line-range ()
+  "Test read_file exposes optional line range arguments to the model."
+  (require 'magent-tools)
+  (should
+   (equal (mapcar (lambda (spec) (plist-get spec :name))
+                  (gptel-tool-args magent-tools--read-file-tool))
+          '("path" "start_line" "line_count" "reason"))))
 
 (ert-deftest magent-test-tools-read-file-relative-to-project-root ()
   "Test read_file resolves relative paths against the project root."
@@ -5445,7 +5632,12 @@
             (insert "root-relative"))
           (let ((magent-project-root-function (lambda () tmpdir)))
             (magent-tools--read-file (lambda (r) (setq result r)) relative-path))
-          (should (equal result "root-relative")))
+          (should
+           (equal result
+                  (concat
+                   "[read_file: source=temporary-buffer; modified=false; "
+                   "lines=1-1; total_lines=1; has_more=false]\n"
+                   "root-relative"))))
       (delete-directory tmpdir t))))
 
 (ert-deftest magent-test-tools-read-file-nonexistent ()
