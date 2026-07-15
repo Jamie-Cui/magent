@@ -3451,6 +3451,35 @@
             (should (equal (plist-get (car entries) :content) "123"))))
       (delete-directory root t))))
 
+(ert-deftest magent-test-project-instructions-remain-json-safe-at-unicode-cutoff ()
+  "Test decoded project instructions remain serializable at a byte cutoff."
+  (require 'magent-project-instructions)
+  (let* ((root (file-name-as-directory
+                (file-truename (make-temp-file "magent-instructions-" t))))
+         (target (expand-file-name "module.el" root))
+         ;; UTF-8 encodes this as six bytes, so four bytes cut the second
+         ;; character after its leading byte.
+         (magent-project-instructions-max-bytes 4))
+    (unwind-protect
+        (progn
+          (with-temp-file target (insert "code"))
+          (with-temp-file (expand-file-name "AGENTS.md" root)
+            (insert "中文"))
+          (let* ((entries
+                  (magent-project-instructions-discover
+                   root (list :file-path target)))
+                 (content (plist-get (car entries) :content))
+                 (message
+                  (magent-project-instructions-system-message
+                   root (list :file-path target))))
+            (should (string-prefix-p "中" content))
+            (should-not
+             (seq-find (lambda (char)
+                         (eq (char-charset char) 'eight-bit))
+                       content))
+            (should (stringp (json-serialize message)))))
+      (delete-directory root t))))
+
 (ert-deftest magent-test-project-instructions-canonicalize-symlinked-root ()
   "Test rendered instruction paths stay relative to a symlinked project root."
   (require 'magent-project-instructions)

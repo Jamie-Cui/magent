@@ -79,10 +79,18 @@
               (not (file-directory-p true-file))))))
 
 (defun magent-project-instructions--read-prefix (file max-bytes)
-  "Read at most MAX-BYTES from FILE and return its trimmed text."
+  "Read at most MAX-BYTES from FILE and return decoded, JSON-safe text.
+Replace undecodable raw bytes, including a multibyte character cut by the byte
+limit, so the resulting system prompt remains serializable by gptel."
   (with-temp-buffer
-    (insert-file-contents-literally file nil 0 max-bytes)
-    (string-trim-right (buffer-string))))
+    (insert-file-contents file nil 0 max-bytes)
+    (string-trim-right
+     (mapconcat (lambda (char)
+                  (if (eq (char-charset char) 'eight-bit)
+                      "�"
+                    (string char)))
+                (buffer-string)
+                ""))))
 
 (defun magent-project-instructions-discover (project-root request-context)
   "Return ordered project instruction entries for PROJECT-ROOT.
