@@ -118,16 +118,13 @@
   "\nMagent\n")
 
 (defun magent-agent-shell-ensure-config ()
-  "Ensure Magent is registered in `agent-shell-agent-configs'."
-  (let ((config (magent-agent-shell-make-config)))
-    (setq agent-shell-agent-configs
-          (cons config
-                (seq-remove
-                 (lambda (entry)
-                   (eq (map-elt entry :identifier)
-                       magent-agent-shell--identifier))
-                 agent-shell-agent-configs)))
-    config))
+  "Ensure Magent's config maker is registered with agent-shell.
+Return Magent's identifier for use as `agent-shell-preferred-agent-config'."
+  (setq agent-shell-agent-configs
+        (cons #'magent-agent-shell-make-config
+              (delq #'magent-agent-shell-make-config
+                    agent-shell-agent-configs)))
+  magent-agent-shell--identifier)
 
 (defmacro magent-agent-shell--with-config (&rest body)
   "Evaluate BODY with Magent selected as the preferred agent-shell config."

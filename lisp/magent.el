@@ -7,7 +7,7 @@
 ;; Maintainer: Jamie Cui <jamie.cui@outlook.com>
 ;; Keywords: tools, ai, copilot
 ;; Package-Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (gptel "0.9.8") (transient "0.7.8") (yaml "1.0.0") (compat "30.1.0.0") (acp "0.12.2") (agent-shell "0.57.1"))
+;; Package-Requires: ((emacs "29.1") (gptel "0.9.8") (transient "0.7.8") (yaml "1.0.0") (compat "30.1.0.0") (acp "0.12.2") (agent-shell "20260714.1645"))
 ;; URL: https://github.com/jamie-cui/magent
 
 ;; This file is not part of GNU Emacs.
