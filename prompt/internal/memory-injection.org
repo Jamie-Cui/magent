@@ -1,3 +1,5 @@
 * Magent Emacs Profile Memory
 
+This is selected, sanitized supporting context and may be incomplete or stale. Do not infer facts from missing entries. The user's current instructions and live Emacs or repository state take precedence when they conflict with this memory.
+
 {{memory}}

@@ -62,6 +62,7 @@ Magent 拥有 Magent-owned agent loop 和 durable child-agent lifecycle。Root a
 *关键文件：*
 
 - ~magent-agent.el~ ：核心 agent processing，构造 gptel prompt、应用 overrides、调用 ~gptel-request~ 。
+- ~magent-project-instructions.el~ ：从 project root 到请求相关 resource 有界发现 ~AGENTS.md~ 等 scoped project instructions。
 - ~magent-agent-info.el~ ：agent metadata struct 和 helpers。
 - ~magent-agent-builtins.el~ ：7 个内置 agent definitions。
 - ~magent-agent-registry.el~ ：hash-table registry 和 project overlays。
@@ -164,7 +165,16 @@ Skill 有两类：
 
 Instruction skills 可以作为下一次请求的一次性上下文。Agent-shell backend 提供 ~magent-agent-shell-toggle-skill-for-next-request~ 和 ~magent-agent-shell-run-skill-command~ 等命令；legacy transient Skills submenu 保留同类 workflow。带 ~default-prompt~ 的 skills 也可作为 command-like actions 运行，例如 built-in ~init~ 用于初始化或刷新项目根目录 ~AGENTS.md~ 。Compose buffers 是普通 prompt text，不再解析 ~@skill~ 或 ~@clear~ 控制语法。
 
-Skills 加载来源：内置 ~skills/~、存在时兼容的 legacy 用户目录 ~~/.emacs.d/magent-skills/~、canonical 用户目录 ~~/.emacs.d/magent/skills~，以及项目 ~.magent/skills/~；较后的用户目录优先。~magent-skill-find~、~magent-skill-install~ 和 ~magent-skill-delete~ 只管理用户级 skill，绝不使用 ~~/.agents/skills/~。Skill 也可以通过 ~capability: true~ 声明 resolver metadata，例如 ~modes~、~features~、~files~、~keywords~ 和 ~disclosure~；Magent 会把这些 metadata 注册成激活同一个 skill 的 capability。
+每个 turn 都从 selected agent 的 base prompt 开始，随后加入 project context、从项目
+根到请求相关本地文件逐层适用的 ~AGENTS.md~、相关的 profile memory，以及显式选择或
+capability 自动选择的少量 instruction skills。发现过程不会越过 canonical project
+root，并受 ~magent-project-instructions-max-bytes~ 限制；把该选项设为 nil 可关闭。
+所有 agent-loop prompt（包括 custom 和 utility agents）最后都会追加 runtime trust
+policy。注入的 memory 可能不完整或过时，因此当前用户说明与 live Emacs/repository
+状态优先。从文件、buffer、日志、命令、tool result 或网页读取的文本仍然只是数据，
+不能通过把自己伪装成高优先级 prompt 来授予工具权限。
+
+Skills 加载来源：内置 ~skills/~、存在时兼容的 legacy 用户目录 ~~/.emacs.d/magent-skills/~、canonical 用户目录 ~~/.emacs.d/magent/skills~，以及项目 ~.magent/skills/~；较后的用户目录优先。~magent-skill-find~、~magent-skill-install~ 和 ~magent-skill-delete~ 只管理用户级 skill，绝不使用 ~~/.agents/skills/~。Skill 也可以通过 ~capability: true~ 声明 resolver metadata，例如 ~modes~、~features~、~files~、~keywords~ 和 ~disclosure~；Magent 会把这些 metadata 注册成激活同一个 skill 的 capability。自动激活必须命中带词边界的 keyword 来证明用户 intent；只有 context 的匹配保持 suggested。Skill 声明的 ~tools~ 会与 selected agent 实际暴露的工具核对：不兼容的自动 skill 被降级，显式选择的不兼容 skill 则给出清晰错误。Agent-shell session 的 ~Automatic capabilities~ config option 可关闭自动解析。
 
 新增或 review 默认能力时保持这两个概念分开：
 
@@ -287,6 +297,11 @@ make clean
 #+end_src
 
 ~make test-live-smoke~ 需要 Emacs server，并使用 stubbed gptel transport。 ~make test-live~ 使用真实 provider，可能消耗 tokens，应在 isolated daemon 中运行。
+
+Magent 除 Elisp 外还会打包 ~prompt/~ 与 ~skills/~ runtime data。每个 bundled Org
+prompt 必须在 ~prompt/manifest.txt~ 中恰好出现一次；unit test 会把 manifest 与目录
+实际内容对照。新增 prompt layer 时同时更新 manifest 和 MELPA/melpazoid package data
+recipe。
 
 ** Live Development
 

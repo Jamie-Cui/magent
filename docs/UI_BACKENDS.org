@@ -31,7 +31,11 @@ removed later without breaking the agent-shell + ACP + runtime path.
    agent override is present, the command routes to
    ~magent-agent-shell.el~.
 3. ~agent-shell~ calls the Magent in-process ACP client from ~magent-acp.el~.
-4. ACP session/prompt submits to ~magent-runtime-api.el~.
+4. ACP session/prompt normalizes text and resource blocks separately, persists
+   the structured blocks in turn metadata, and submits to
+   ~magent-runtime-api.el~. Local ~file://~ resources also populate scoped
+   request paths; resource bodies remain user-role context when history is
+   reconstructed.
 5. The runtime queue starts exactly one active turn at a time, builds a
    ~magent-request-context~ with ~:ui-visibility 'none~, and calls
    ~magent-agent-run-turn~.
@@ -65,4 +69,7 @@ agent-shell-specific behavior in ~magent-agent-shell.el~.
 - Per-request instruction skill overrides and skill commands are supported by
   the agent-shell backend.  Per-request agent overrides still use the legacy
   dispatch path until agent-shell exposes equivalent controls.
+- ACP session config exposes ~Automatic capabilities~. Disabling it suppresses
+  contextual capability auto-resolution for future turns in that session while
+  retaining explicitly selected instruction skills.
 - ~magent-ui-backend~ can be set to ~legacy~, but the default is ~agent-shell~.

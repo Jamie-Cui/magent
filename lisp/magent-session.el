@@ -14,6 +14,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'map)
 (require 'subr-x)
 (require 'magent-config)
 (require 'magent-json)
@@ -1353,9 +1354,78 @@ Returns a condensed version of the conversation."
         (throw 'content (magent-thread-item-content item))))
     nil))
 
+(defun magent-session--metadata-value (metadata key)
+  "Return KEY from plist or alist METADATA."
+  (cond
+   ((magent-json--plist-p metadata) (plist-get metadata key))
+   ((listp metadata)
+    (or (map-elt metadata key)
+        (map-elt metadata (intern (substring (symbol-name key) 1)))
+        (map-elt metadata (substring (symbol-name key) 1))))))
+
+(defun magent-session--content-block-value (block key)
+  "Return KEY from ACP-style content BLOCK."
+  (or (map-elt block key)
+      (map-elt block (intern (concat ":" (symbol-name key))))
+      (map-elt block (symbol-name key))))
+
+(defun magent-session--resource-block-text (block)
+  "Render one normalized ACP resource BLOCK for model input."
+  (let* ((type (magent-session--content-block-value block 'type))
+         (resource (magent-session--content-block-value block 'resource))
+         (uri (or (magent-session--content-block-value block 'uri)
+                  (and resource
+                       (magent-session--content-block-value resource 'uri))))
+         (name (or (magent-session--content-block-value block 'name)
+                   (and resource
+                        (magent-session--content-block-value resource 'name))))
+         (mime-type
+          (or (magent-session--content-block-value block 'mimeType)
+              (and resource
+                   (magent-session--content-block-value resource 'mimeType))))
+         (text (or (magent-session--content-block-value block 'text)
+                   (and resource
+                        (magent-session--content-block-value resource 'text))))
+         (label (or name uri type "resource"))
+         (metadata
+          (string-join
+           (delq nil
+                 (list (format "Name: %s" label)
+                       (and uri (format "URI: %s" uri))
+                       (and mime-type (format "MIME type: %s" mime-type))))
+           "\n")))
+    (if (and (stringp text) (not (string-empty-p text)))
+        (format "[Attached context resource]\n%s\nContent:\n%s\n[End attached context resource]"
+                metadata text)
+      (format "[Attached context resource link]\n%s\n[End attached context resource link]"
+              metadata))))
+
+(defun magent-session-content-blocks-to-prompt (content-blocks)
+  "Render normalized CONTENT-BLOCKS as one user-role model prompt."
+  (let (parts)
+    (dolist (block (append content-blocks nil))
+      (let ((type (magent-session--content-block-value block 'type)))
+        (push
+         (if (or (null type) (equal type "text"))
+             (or (magent-session--content-block-value block 'text) "")
+           (magent-session--resource-block-text block))
+         parts)))
+    (string-trim (mapconcat #'identity (nreverse parts) "\n"))))
+
+(defun magent-session--turn-content-blocks (turn)
+  "Return structured user content blocks recorded for TURN, or nil."
+  (let* ((item (magent-thread-turn-message-item turn 'user))
+         (item-metadata (and item (magent-thread-item-metadata item))))
+    (or (magent-session--metadata-value item-metadata :content-blocks)
+        (magent-session--metadata-value
+         (magent-thread-turn-metadata turn) :content-blocks))))
+
 (defun magent-session--turn-user-content (turn)
   "Return TURN's prompt-visible user content."
-  (or (magent-session--turn-message-content turn 'user)
+  (or (when-let* ((content-blocks
+                   (magent-session--turn-content-blocks turn)))
+        (magent-session-content-blocks-to-prompt content-blocks))
+      (magent-session--turn-message-content turn 'user)
       (magent-thread-turn-input turn)))
 
 (defun magent-session--tool-prompt-entry (item)

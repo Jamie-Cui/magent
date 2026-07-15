@@ -604,8 +604,18 @@ source for contextual capability resolution."
   "Return non-nil when KEYWORD matches PROMPT case-insensitively."
   (and keyword
        (stringp prompt)
-       (string-match-p (regexp-quote (downcase keyword))
-                       (downcase prompt))))
+       (let* ((case-fold-search t)
+              (trimmed (string-trim keyword))
+              (starts-word
+               (string-match-p "\\`[[:alnum:]_]" trimmed))
+              (ends-word
+               (string-match-p "[[:alnum:]_]\\'" trimmed))
+              (regexp
+               (concat (and starts-word "\\_<")
+                       (regexp-quote trimmed)
+                       (and ends-word "\\_>"))))
+         (and (not (string-empty-p trimmed))
+              (string-match-p regexp prompt)))))
 
 (defun magent-capability--mode-match (capability context)
   "Return a plist describing the mode contribution for CAPABILITY and CONTEXT."
@@ -676,12 +686,17 @@ source for contextual capability resolution."
          (score (apply #'+ 0 (mapcar (lambda (entry) (plist-get entry :score))
                                      contributions)))
          (enabled (magent-capability-enabled-p capability))
+         (intent-match
+          (cl-find-if (lambda (entry)
+                        (eq (plist-get entry :kind) 'keyword))
+                      contributions))
          (status
           (cond
            ((or (not enabled)
                 (< score magent-capability--suggest-threshold))
             'hidden)
-           ((and (>= score magent-capability--activate-threshold)
+           ((and intent-match
+                 (>= score magent-capability--activate-threshold)
                  (eq (magent-capability-disclosure capability) 'active))
             'active)
            ((memq (magent-capability-disclosure capability) '(active suggested))
@@ -692,8 +707,34 @@ source for contextual capability resolution."
        :score score
        :reasons (mapcar (lambda (entry) (plist-get entry :label)) contributions)
        :details (list :enabled enabled
+                      :intent-match (and intent-match t)
                       :contributions contributions)
        :status status)))
+
+(defun magent-capability--skill-usable-p (skill-name available-tools)
+  "Return non-nil when SKILL-NAME's tool requirements are AVAILABLE-TOOLS."
+  (magent-skills-tool-requirements-satisfied-p skill-name available-tools))
+
+(defun magent-capability--apply-tool-availability
+    (match available-tools filter-tools-p)
+  "Downgrade MATCH when no linked skill can use AVAILABLE-TOOLS.
+FILTER-TOOLS-P distinguishes an omitted availability list from an explicitly
+empty one."
+  (when (and filter-tools-p
+             (eq (magent-capability-match-status match) 'active))
+    (let* ((capability (magent-capability-match-capability match))
+           (skills (magent-capability-skills capability))
+           (usable (cl-remove-if-not
+                    (lambda (skill-name)
+                      (magent-capability--skill-usable-p
+                       skill-name available-tools))
+                    skills)))
+      (when (and skills (null usable))
+        (setf (magent-capability-match-status match) 'suggested
+              (magent-capability-match-reasons match)
+              (append (magent-capability-match-reasons match)
+                      '("required-tools-unavailable"))))))
+  match)
 
 (defun magent-capability--sort-matches (matches)
   "Sort MATCHES by status, score, then capability name."
@@ -766,14 +807,22 @@ source for contextual capability resolution."
           (mapcar #'magent-capability-match-to-plist
                   (magent-capability-resolution-matches resolution)))))
 
-(defun magent-capability-resolve (prompt &optional request-context explicit-skills)
+(defun magent-capability-resolve
+    (prompt &optional request-context explicit-skills &rest available-tools-arg)
   "Resolve capabilities for PROMPT and REQUEST-CONTEXT.
 EXPLICIT-SKILLS are user-selected instruction skills that should
-remain active regardless of capability selection."
-  (let* ((context (magent-capability--merge-context request-context prompt))
+remain active regardless of capability selection.  When AVAILABLE-TOOLS-ARG
+is supplied, linked skills whose declared tools are unavailable do not
+auto-activate."
+  (let* ((filter-tools-p (consp available-tools-arg))
+         (available-tools (car available-tools-arg))
+         (context (magent-capability--merge-context request-context prompt))
          (matches (magent-capability--sort-matches
                    (mapcar (lambda (entry)
-                             (magent-capability--score (cdr entry) prompt context))
+                             (magent-capability--apply-tool-availability
+                              (magent-capability--score
+                               (cdr entry) prompt context)
+                              available-tools filter-tools-p))
                            (magent-capability--effective-entries))))
          (active-all (cl-remove-if-not
                       (lambda (match)
@@ -790,9 +839,15 @@ remain active regardless of capability selection."
          (skill-names (magent-capability--dedupe-strings
                        (append explicit-skills
                                (cl-mapcan (lambda (match)
-                                            (copy-sequence
-                                             (magent-capability-skills
-                                              (magent-capability-match-capability match))))
+                                            (cl-remove-if-not
+                                             (lambda (skill-name)
+                                               (or (not filter-tools-p)
+                                                   (magent-capability--skill-usable-p
+                                                    skill-name available-tools)))
+                                             (copy-sequence
+                                              (magent-capability-skills
+                                               (magent-capability-match-capability
+                                                match)))))
                                           active))))
          (resolution (magent-capability-resolution-create
                       :prompt prompt
@@ -815,11 +870,13 @@ remain active regardless of capability selection."
                              suggested ", ")))
     resolution))
 
-(defun magent-capability-resolve-for-turn (prompt &optional request-context explicit-skills)
+(defun magent-capability-resolve-for-turn
+    (prompt &optional request-context explicit-skills &rest available-tools-arg)
   "Resolve capabilities for one turn.
 Returns nil when capability auto-disclosure is disabled."
   (when magent-enable-capabilities
-    (magent-capability-resolve prompt request-context explicit-skills)))
+    (apply #'magent-capability-resolve
+           prompt request-context explicit-skills available-tools-arg)))
 
 (defun magent-capability--insert-match (match)
   "Insert a human-readable description of MATCH into current buffer."

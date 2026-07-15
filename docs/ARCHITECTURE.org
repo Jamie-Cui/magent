@@ -30,9 +30,41 @@ Emacs is not just a host process. Magent depends on live editor state through bu
 
 ~magent-llm.el~ defines provider-neutral request and event shapes. ~magent-llm-gptel.el~ performs one sampling request by calling ~gptel-request~ and translating gptel callbacks into normalized Magent events. Magent may hide gptel callback/FSM details inside this adapter, but the rest of the loop consumes only normalized events. Reasoning events are kept separate from assistant text; reasoning-only completions are allowed to complete with empty assistant content instead of leaking chain text into the answer.
 
+** Prompt Assembly And Trust
+
+~magent-agent.el~ assembles each agent-loop system message from ordered,
+file-backed layers. The first layer is either the agent-specific prompt or
+~magent-system-prompt~. Project-root context is followed by applicable
+~AGENTS.md~ files discovered from the project root toward request-local file
+resources, selected Emacs profile memory, and capability/explicit instruction
+skills. A short runtime trust policy is appended last, so built-in utility
+agents and custom agents retain their own output contracts while sharing the
+same instruction-provenance and permission invariants. Project instruction
+discovery stays inside the canonical project root and is bounded by
+~magent-project-instructions-max-bytes~.
+
+Profile memory is supporting context, not an authoritative state snapshot. It
+may be incomplete or stale; the current user request and live repository or
+Emacs state take precedence. Likewise, user messages, files, buffers, logs,
+command output, tool results, web pages, and conversation history remain data at
+their assigned role. Prompt-like tags inside that data cannot grant permission
+or promote themselves to runtime instructions. These prompt rules steer model
+behavior; actual tool availability, approval, and permission enforcement remain
+in the tool runtime and orchestrator.
+
+The base prompt contains only cross-task coding behavior. Tool schemas come
+from gptel, and Emacs-specific procedures are progressively disclosed through
+instruction skills. ~web_search~ returns result titles and URLs for discovery;
+it does not fetch result pages or provide article text, so the prompt does not
+treat those links as already-read sources.
+
+Bundled Org prompt resources are enumerated in ~prompt/manifest.txt~. Tests
+require the manifest to cover every bundled ~.org~ prompt exactly once, so a
+new prompt layer must update the manifest as well as the package data recipe.
+
 ** UI And Runtime API
 
-The default UI backend is ~agent-shell~. ~magent-agent-shell.el~ registers the Magent agent-shell configuration, ~magent-acp.el~ implements the in-process ACP adapter, and ~magent-runtime-api.el~ receives prompt submissions from UI backends. ~magent-runtime-queue.el~ currently runs one active turn globally, while preserving session-scoped cancellation and queue bookkeeping.
+The default UI backend is ~agent-shell~. ~magent-agent-shell.el~ registers the Magent agent-shell configuration, ~magent-acp.el~ implements the in-process ACP adapter, and ~magent-runtime-api.el~ receives prompt submissions from UI backends. ACP text and resource blocks are normalized separately: the full structured input is persisted in turn metadata and reconstructed as user-role model context, while local ~file://~ resources contribute scoped file paths for project-instruction and capability resolution. ~magent-runtime-queue.el~ currently runs one active turn globally, while preserving session-scoped cancellation and queue bookkeeping.
 
 The old workspace/compose UI lives in ~magent-ui-legacy.el~. It is loaded lazily and should not become a dependency of the default agent-shell path.
 
@@ -105,7 +137,7 @@ tool-free provider request.  Doctor never enters the general agent loop and
 never exposes ~emacs_eval~, shell, or file tools.  Custom probes are trusted
 Elisp rather than sandboxed code; see [[file:DOCTOR.org][DOCTOR.org]].
 
-Instruction skills are injected into the system prompt. Tool skills are invoked through ~skill_invoke~. Capabilities score the current context and activate a small number of instruction skills. Built-in same-name workflow capabilities are co-located with their skills, so the trigger metadata and injected instruction stay in one file. This progressive disclosure model keeps the base prompt smaller while still giving the agent Emacs-specific workflow knowledge when the current request needs it.
+Instruction skills are injected into the system prompt. Tool skills are invoked through ~skill_invoke~. Capabilities score the current context and activate a small number of instruction skills. Automatic activation requires an explicit prompt-keyword intent match in addition to contextual score; mode, feature, or file matches alone remain suggestions. Keyword matching uses word boundaries, and a capability cannot inject a linked skill whose declared tools are unavailable to the selected agent. The agent-shell session config exposes an ~Automatic capabilities~ switch for disabling this automatic layer without affecting explicitly selected skills. Built-in same-name workflow capabilities are co-located with their skills, so the trigger metadata and injected instruction stay in one file. This progressive disclosure model keeps the base prompt smaller while still giving the agent Emacs-specific workflow knowledge when the current request needs it.
 
 ~magent-skill-manager.el~ is a separate, lazily loaded user-maintenance layer.
 It searches skills.sh, resolves local or public GitHub sources, preflights and
@@ -120,10 +152,13 @@ The distinction is:
   the prompt, a command-like ~default-prompt~, or a tool-type operation.
 - A ~capability~ is an automatic activation rule: resolver metadata such as
   ~modes~, ~features~, ~files~, ~keywords~, ~disclosure~, and ~risk~ that says
-  when one or more skills should be selected for this turn.
+  when one or more skills should be selected for this turn. Context-only
+  matches are inspectable suggestions; active disclosure also requires a
+  bounded keyword match in the current user prompt.
 - A skill-backed capability is the common built-in case: a ~SKILL.md~ declares
   ~capability: true~, and the resolver auto-activates that same skill when the
-  current buffer or prompt matches. Command-style built-in skills such as
+  current context and prompt intent match and its declared tools are available.
+  Command-style built-in skills such as
   ~init~, ~review~, ~fix~, ~test~, ~summarize~, and ~explain~ remain skills only unless they
   opt into ~capability: true~.
 

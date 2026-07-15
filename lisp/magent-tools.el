@@ -1618,14 +1618,15 @@ See `magent-agent-loop-filter-display-args'.")
   "Invoke OPERATION from SKILL-NAME with ARGS asynchronously.
 CALLBACK is called with the result.
 Only works for tool-type skills.  Instruction-type skills are
-automatically included in the system prompt."
+injected separately only when explicitly selected or activated by the
+capability resolver."
   (require 'magent-skills)
   (magent-skills-invoke skill-name operation args callback))
 
 (defvar magent-tools--skill-invoke-tool
   (gptel-make-tool
    :name "skill_invoke"
-   :description "Invoke a tool-type skill operation. Only tool-type skills can be invoked this way. Instruction-type skills are automatically active in the system prompt. Check available skills and their operations before invoking."
+   :description "Invoke a tool-type skill operation. Instruction-type skills cannot be invoked by this tool; they enter the system prompt only when explicitly selected or activated by the capability resolver. Use only a known tool-type skill and operation."
    :args (list '(:name "skill_name"
                        :type string
                        :description "Name of the skill to invoke")
@@ -1645,7 +1646,7 @@ automatically included in the system prompt."
 (defvar magent-tools--web-search-tool
   (gptel-make-tool
    :name "web_search"
-   :description "Search the web using DuckDuckGo. Returns titles and URLs of search results. Use this to find current information, documentation, or online resources."
+   :description "Search the web using DuckDuckGo for current external information, documentation, or online resources. Returns result titles and URLs only; it does not fetch result pages, article text, or snippets. Use returned links for discovery and do not claim to have read page content that this tool did not return. Prefer official documentation, specifications, upstream repositories, and release notes when available."
    :args (list '(:name "query"
                        :type string
                        :description "Search query string")

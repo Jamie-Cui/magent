@@ -15,6 +15,7 @@
 (require 'map)
 (require 'seq)
 (require 'subr-x)
+(require 'url-util)
 (require 'acp)
 (require 'magent-approval)
 (require 'magent-agent-registry)
@@ -113,7 +114,22 @@
       . ,(magent-effort-option-string
           (magent-runtime-session-effort-option runtime-session)))
      (options . ,(vconcat (mapcar #'magent-acp--effort-option-entry
-                                  magent-effort-option-values))))))
+                                  magent-effort-option-values))))
+   `((id . "capabilities")
+     (name . "Automatic capabilities")
+     (description . "Resolve contextual instruction skills for future turns in this session.")
+     (category . "other")
+     (type . "select")
+     (currentValue
+      . ,(if (magent-runtime-session-capabilities-enabled-p runtime-session)
+             "enabled"
+           "disabled"))
+     (options . [((value . "enabled")
+                  (name . "Enabled")
+                  (description . "Auto-activate matching instruction skills."))
+                 ((value . "disabled")
+                  (name . "Disabled")
+                  (description . "Use only explicitly selected instruction skills."))]))))
 
 (defun magent-acp--command-skill-names ()
   "Return sorted instruction skill names that can act as slash commands."
@@ -310,6 +326,126 @@ keywords."
       (error "Unsupported ACP prompt content block(s): %s"
              (string-join (nreverse unsupported) ", ")))
     (string-trim (mapconcat #'identity (nreverse parts) "\n"))))
+
+(defun magent-acp--normalize-resource-block (block type)
+  "Return normalized ACP resource BLOCK of TYPE."
+  (let* ((resource (magent-acp--alist-plist-get block 'resource))
+         (uri (or (magent-acp--alist-plist-get block 'uri)
+                  (and resource
+                       (magent-acp--alist-plist-get resource 'uri))))
+         (name (or (magent-acp--alist-plist-get block 'name)
+                   (and resource
+                        (magent-acp--alist-plist-get resource 'name))))
+         (mime-type (or (magent-acp--alist-plist-get block 'mimeType)
+                        (and resource
+                             (magent-acp--alist-plist-get resource 'mimeType))))
+         (text (or (magent-acp--alist-plist-get block 'text)
+                   (and resource
+                        (magent-acp--alist-plist-get resource 'text))))
+         (blob (and resource
+                    (magent-acp--alist-plist-get resource 'blob))))
+    (when blob
+      (error "Unsupported binary ACP resource: %s" (or uri name type)))
+    (if (equal type "resource")
+        `((type . "resource")
+          (resource . ((uri . ,uri)
+                       ,@(when name `((name . ,name)))
+                       ,@(when mime-type `((mimeType . ,mime-type)))
+                       ,@(when text `((text . ,text))))))
+      `((type . "resource_link")
+        (uri . ,uri)
+        ,@(when name `((name . ,name)))
+        ,@(when mime-type `((mimeType . ,mime-type)))
+        ,@(when-let* ((size (magent-acp--alist-plist-get block 'size)))
+            `((size . ,size)))))))
+
+(defun magent-acp--normalize-prompt-block (block)
+  "Return normalized ACP prompt BLOCK."
+  (let ((type (magent-acp--alist-plist-get block 'type)))
+    (cond
+     ((or (null type) (equal type "text"))
+      (magent-acp--content-block
+       (or (magent-acp--alist-plist-get block 'text) "")))
+     ((member type '("resource" "resource_link" "file"))
+      (magent-acp--normalize-resource-block
+       block (if (equal type "resource") "resource" "resource_link")))
+     (t
+      (error "Unsupported ACP prompt content block: %s" type)))))
+
+(defun magent-acp--resource-path (block)
+  "Return local file path named by normalized resource BLOCK, or nil."
+  (let* ((type (magent-acp--alist-plist-get block 'type))
+         (resource (magent-acp--alist-plist-get block 'resource))
+         (uri (if (equal type "resource")
+                  (and resource
+                       (magent-acp--alist-plist-get resource 'uri))
+                (magent-acp--alist-plist-get block 'uri))))
+    (when (and (stringp uri) (string-prefix-p "file://" uri))
+      (url-unhex-string (substring uri 7)))))
+
+(defun magent-acp--prompt-input (prompt)
+  "Return normalized structured input parsed from ACP PROMPT."
+  (let* ((blocks (mapcar #'magent-acp--normalize-prompt-block
+                         (magent-acp--prompt-blocks prompt)))
+         (text (string-trim
+                (mapconcat
+                 (lambda (block)
+                   (if (equal (magent-acp--alist-plist-get block 'type) "text")
+                       (or (magent-acp--alist-plist-get block 'text) "")
+                     ""))
+                 blocks "")))
+         (resource-blocks
+          (cl-remove-if
+           (lambda (block)
+             (equal (magent-acp--alist-plist-get block 'type) "text"))
+           blocks))
+         (paths (delete-dups
+                 (delq nil (mapcar #'magent-acp--resource-path
+                                   resource-blocks))))
+         (labels
+          (mapcar (lambda (block)
+                    (magent-acp--resource-label
+                     block (magent-acp--alist-plist-get block 'type)))
+                  resource-blocks))
+         (display-text
+          (string-trim
+           (string-join
+            (delq nil
+                  (list (and (not (string-empty-p text)) text)
+                        (and labels
+                             (format "[Attached: %s]"
+                                     (string-join labels ", ")))))
+            "\n"))))
+    (list :text text
+          :display-text display-text
+          :content-blocks (vconcat blocks)
+          :resource-blocks resource-blocks
+          :context (list :file-path (car paths)
+                         :resource-paths paths))))
+
+(defun magent-acp--prompt-input-with-text (input text)
+  "Return INPUT with textual blocks replaced by one TEXT block."
+  (let* ((resources (plist-get input :resource-blocks))
+         (blocks (vconcat (cons (magent-acp--content-block text) resources)))
+         (labels
+          (mapcar (lambda (block)
+                    (magent-acp--resource-label
+                     block (magent-acp--alist-plist-get block 'type)))
+                  resources))
+         (display-text
+          (string-trim
+           (string-join
+            (delq nil
+                  (list text
+                        (and labels
+                             (format "[Attached: %s]"
+                                     (string-join labels ", ")))))
+            "\n")))
+         (result (copy-sequence input)))
+    (setq result (plist-put result :text text)
+          result (plist-put result :display-text display-text)
+          result (plist-put result :content-blocks blocks))
+    result))
 
 (defun magent-acp--dedupe-string-list (strings)
   "Return STRINGS without duplicates, preserving order."
@@ -876,9 +1012,16 @@ switching semantics."
           (magent-acp--runtime-session-for-scope session-id expected-scope)))
     (unless runtime-session
       (error "Unknown session: %s" session-id))
-    (unless (equal config-id "effort")
-      (error "Unknown Magent config option: %s" config-id))
-    (magent-runtime-session-set-effort runtime-session value)
+    (pcase config-id
+      ("effort"
+       (magent-runtime-session-set-effort runtime-session value))
+      ("capabilities"
+       (unless (member value '("enabled" "disabled"))
+         (error "Invalid capabilities option: %s" value))
+       (magent-runtime-session-set-capabilities-enabled
+        runtime-session (equal value "enabled")))
+      (_
+       (error "Unknown Magent config option: %s" config-id)))
     (magent-acp--session-response runtime-session)))
 
 (defun magent-acp--stop-reason (status result)
@@ -962,17 +1105,31 @@ switching semantics."
                    (magent-acp--runtime-session-for-scope
                     session-id
                     (magent-acp--request-session-scope client session-id)))
-                  (prompt (magent-acp--prompt-text (map-elt params 'prompt)))
-                  (command (magent-acp--slash-command prompt)))
+                  (input (magent-acp--prompt-input (map-elt params 'prompt)))
+                  (instruction-text (plist-get input :text))
+                  (command (magent-acp--slash-command instruction-text))
+                  (resources (plist-get input :resource-blocks)))
              (unless runtime-session
                (error "Unknown session: %s" session-id))
-             (if (eq (plist-get command :kind) 'control)
+             (if (and (null resources)
+                      (eq (plist-get command :kind) 'control))
                  (magent-acp--handle-control-command
                   client runtime-session command on-success)
-               (setq prompt
-                     (magent-acp--apply-slash-command runtime-session prompt))
+               (when (eq (plist-get command :kind) 'skill)
+                 (setq instruction-text
+                       (magent-acp--apply-slash-command
+                        runtime-session instruction-text)
+                       input (magent-acp--prompt-input-with-text
+                              input instruction-text)))
                (magent-runtime-submit
-                runtime-session prompt
+                runtime-session (plist-get input :display-text)
+                :context
+                (append (plist-get input :context)
+                        (list :capabilities-enabled
+                              (magent-runtime-session-capabilities-enabled-p
+                               runtime-session)))
+                :turn-metadata
+                (list :content-blocks (plist-get input :content-blocks))
                 :observer (magent-acp--observer client session-id)
                 :approval-provider
                 (magent-acp--approval-provider client session-id)

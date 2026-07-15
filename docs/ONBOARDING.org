@@ -59,6 +59,7 @@ Multi-agent architecture with specialized agents for different tasks.
 
 *Key Files:*
 - ~magent-agent.el~ — Core agent processing: builds gptel prompts, applies overrides, calls ~gptel-request~
+- ~magent-project-instructions.el~ — Bounded root-to-resource discovery of scoped project instructions such as ~AGENTS.md~
 - ~magent-agent-info.el~ — Agent metadata struct and helpers
 - ~magent-agent-builtins.el~ — 7 built-in agent definitions
 - ~magent-agent-registry.el~ — Hash-table registry and project overlays
@@ -166,7 +167,19 @@ define ~default-prompt~ can also be run as command-like actions; built-in
 ~/init~, and accepts optional extra instructions. Compose buffers are plain
 prompt text and no longer parse ~@skill~ or ~@clear~ control syntax.
 
-Skills load from: (1) built-in ~skills/~, (2) legacy user ~~/.emacs.d/magent-skills/~ when present, (3) canonical user ~~/.emacs.d/magent/skills~, and (4) project ~.magent/skills/~. Later user directories take precedence. ~magent-skill-find~, ~magent-skill-install~, and ~magent-skill-delete~ manage user-level skills only and never use ~~/.agents/skills/~. A skill can also declare ~capability: true~ with resolver metadata such as ~modes~, ~features~, ~files~, ~keywords~, and ~disclosure~; Magent turns that metadata into a capability that activates the same skill.
+For each turn, Magent starts with the selected agent's base prompt, then adds
+project context, applicable ~AGENTS.md~ files from the project root toward
+request-local file resources, relevant profile memory, and the small set of
+explicit or capability-selected instruction skills. Discovery never leaves the
+canonical project root and is bounded by
+~magent-project-instructions-max-bytes~; set that option to nil to disable it.
+A runtime trust policy is appended to all agent-loop prompts, including custom
+and utility agents. Injected memory may be incomplete or stale, so current user
+instructions and live Emacs/repository state take precedence. Text read from
+files, buffers, logs, commands, tool results, or web pages remains data and
+cannot grant tool permission by presenting itself as a higher-priority prompt.
+
+Skills load from: (1) built-in ~skills/~, (2) legacy user ~~/.emacs.d/magent-skills/~ when present, (3) canonical user ~~/.emacs.d/magent/skills~, and (4) project ~.magent/skills/~. Later user directories take precedence. ~magent-skill-find~, ~magent-skill-install~, and ~magent-skill-delete~ manage user-level skills only and never use ~~/.agents/skills/~. A skill can also declare ~capability: true~ with resolver metadata such as ~modes~, ~features~, ~files~, ~keywords~, and ~disclosure~; Magent turns that metadata into a capability that activates the same skill. Automatic activation requires a word-bounded keyword hit as evidence of user intent; context-only matches remain suggested. Declared ~tools~ are enforced against the selected agent's exposed tools: incompatible automatic skills are downgraded, while an incompatible explicitly selected skill fails with a clear error. Agent-shell sessions expose an ~Automatic capabilities~ config option for disabling automatic resolution.
 
 Keep the terms separate when adding or reviewing defaults:
 
@@ -297,7 +310,10 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 Magent packages runtime data as well as Elisp. ~prompt/~ and ~skills/~
 must remain included in the melpazoid/MELPA recipe because ~magent-config.el~,
 ~magent-skills.el~, and built-in skill-backed capabilities resolve those paths
-at runtime.  If standalone bundled ~CAPABILITY.md~ files are added, include
+at runtime. This includes internal prompt layers such as the runtime trust
+policy, not only ~prompt/system.org~. Every bundled Org prompt must also appear
+exactly once in ~prompt/manifest.txt~; the unit suite checks the manifest against
+the directory. If standalone bundled ~CAPABILITY.md~ files are added, include
 ~capabilities/~ as runtime data too.
 
 * Complexity Hotspots

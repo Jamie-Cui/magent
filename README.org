@@ -103,6 +103,9 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-bash-timeout~          | ~30~                          | Timeout in seconds for bash commands                                                  |
 | ~magent-child-agent-max-depth~ | ~1~                           | Max recursive child-agent depth; direct children are allowed by default               |
 | ~magent-emacs-eval-timeout~    | ~10~                          | Timeout in seconds for ~emacs_eval~                                                     |
+| ~magent-enable-capabilities~   | ~t~                           | Enable contextual capability resolution by default                                    |
+| ~magent-project-instruction-file-names~ | ~("AGENTS.md")~      | Scoped project instruction filenames discovered from root toward request resources    |
+| ~magent-project-instructions-max-bytes~ | ~65536~               | Aggregate per-request byte limit for project instructions; nil disables discovery     |
 | ~magent-audit-preview-length~  | ~120~                         | Max width for persisted normalized audit path markers                                  |
 | ~magent-include-reasoning~     | ~t~                           | Display (~t~), hide but retain (~ignore~), or discard (~nil~) reasoning; never final-answer fallback |
 | ~magent-auto-context~          | ~t~                           | Auto-attach buffer context in ~magent-dwim~                                             |
@@ -114,7 +117,8 @@ Core, built-in agent, and internal runtime prompts live as editable Org files
 under ~prompt/~.  Files containing placeholders such as ~{{project-root}}~ or
 ~{{instruction}}~ should keep those placeholders where the dynamic value is
 needed; ordinary percent signs need no escaping.  Skill prompts remain
-self-contained in ~skills/*/SKILL.md~.
+self-contained in ~skills/*/SKILL.md~. Every bundled Org prompt must appear
+exactly once in ~prompt/manifest.txt~.
 
 * Usage
 
@@ -138,7 +142,14 @@ context through the same backend.
 Use agent-shell session options for per-session request settings.  Reasoning
 effort is exposed as agent-shell's thought level session option; use
 ~agent-shell-set-session-thought-level~ to choose ~auto~, ~minimal~, ~low~,
-~medium~, ~high~, or ~xhigh~ for future turns in the current session.
+~medium~, ~high~, or ~xhigh~ for future turns in the current session. The
+~Automatic capabilities~ session option enables or disables contextual skill
+activation without affecting explicitly selected instruction skills.
+
+Agent-shell file mentions use ACP structured resource blocks. Magent persists
+those blocks with the turn and reconstructs their bodies as user-role context;
+local file resources also select applicable project instructions from the
+project root toward the attached file.
 
 The Magent transient menu remains available for lower-frequency agent, skill,
 capability, session, log, health, and buffer commands.  For day-to-day prompt

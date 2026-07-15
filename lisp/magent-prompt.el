@@ -14,6 +14,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'subr-x)
 
 (defvar magent-prompt-directory
@@ -27,6 +28,24 @@
           (and (file-directory-p candidate) candidate))
         (expand-file-name "prompt" dir)))
   "Directory containing bundled Magent Org prompt resources.")
+
+(defconst magent-prompt-manifest-file "manifest.txt"
+  "File listing bundled prompt resources relative to `magent-prompt-directory'.")
+
+(defun magent-prompt-manifest ()
+  "Return the ordered list of bundled prompt resources.
+Blank lines and lines beginning with `#' are ignored."
+  (let ((manifest (expand-file-name magent-prompt-manifest-file
+                                    magent-prompt-directory)))
+    (unless (file-readable-p manifest)
+      (error "Magent prompt manifest is not readable: %s" manifest))
+    (with-temp-buffer
+      (insert-file-contents manifest)
+      (cl-loop for line in (split-string (buffer-string) "\n")
+               for entry = (string-trim line)
+               unless (or (string-empty-p entry)
+                          (string-prefix-p "#" entry))
+               collect entry))))
 
 (defun magent-prompt-path (relative-path)
   "Return the absolute prompt resource path for RELATIVE-PATH.

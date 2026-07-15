@@ -19,3 +19,5 @@ risk: low
 Use Emacs introspection functions to inspect commands and variables. Distinguish symbol existence, function binding, interactive command status, default values, and buffer-local values.
 
 When checking key bindings, inspect the active keymaps in the relevant buffer.
+
+Do not guess the representation of unfamiliar variables or complex values. Inspect the value's type and shape with a purpose-built helper or `describe-variable` before extracting fields. If an operation reports `Wrong type argument`, inspect `type-of` next instead of retrying with another guessed representation.

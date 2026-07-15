@@ -230,6 +230,22 @@ kept so unloading a project overlay restores the previous definition.")
                     (car entry)))
                 (magent-skills--effective-entries))))
 
+(defun magent-skills-missing-tools (skill-name available-tools)
+  "Return SKILL-NAME's declared tools absent from AVAILABLE-TOOLS.
+Tool names may be strings or symbols.  An unknown skill has no requirements."
+  (when-let* ((skill (magent-skills-get skill-name)))
+    (let ((available
+           (mapcar (lambda (tool)
+                     (if (symbolp tool) tool (intern (format "%s" tool))))
+                   available-tools)))
+      (cl-remove-if (lambda (tool) (memq tool available))
+                    (magent-skill-tools skill)))))
+
+(defun magent-skills-tool-requirements-satisfied-p
+    (skill-name available-tools)
+  "Return non-nil when AVAILABLE-TOOLS includes all tools SKILL-NAME declares."
+  (null (magent-skills-missing-tools skill-name available-tools)))
+
 (defun magent-skills-register (skill)
   "Register SKILL in the registry.
 If a skill with the same name and owner exists, it will be replaced.

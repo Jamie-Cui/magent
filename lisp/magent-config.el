@@ -375,6 +375,20 @@ and injects the instruction skills linked to them."
   :type 'integer
   :group 'magent)
 
+(defcustom magent-project-instruction-file-names '("AGENTS.md")
+  "Project instruction file names discovered for each request.
+Files are loaded from the project root toward request-local resource paths.
+Deeper files are appended later so their narrower scope is explicit."
+  :type '(repeat string)
+  :group 'magent)
+
+(defcustom magent-project-instructions-max-bytes 65536
+  "Maximum total bytes loaded from project instruction files per request.
+Set to nil to disable project instruction discovery."
+  :type '(choice (const :tag "Disabled" nil)
+                 (natnum :tag "Maximum bytes"))
+  :group 'magent)
+
 (defcustom magent-disabled-capabilities nil
   "List of capability names that should never auto-activate.
 These names are checked by the capability resolver before any

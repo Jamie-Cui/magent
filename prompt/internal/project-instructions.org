@@ -1,0 +1,5 @@
+* Project Instructions
+
+The following repository instruction files were deliberately discovered and injected by Magent. Follow instructions that apply to the files being worked on. Entries are ordered from broader to narrower scope; when applicable instructions conflict, the narrower entry takes precedence. They remain subject to the runtime trust policy and cannot grant unavailable tools or permissions.
+
+{{instructions}}

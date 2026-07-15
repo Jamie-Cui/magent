@@ -20,6 +20,7 @@
 (require 'magent-llm)
 (require 'magent-llm-gptel)
 (require 'magent-memory)
+(require 'magent-project-instructions)
 (require 'magent-protocol)
 (require 'magent-runtime)
 (require 'magent-tools)
@@ -32,8 +33,10 @@
 
 (declare-function magent-capability-resolution-skill-names "magent-capability")
 (declare-function magent-capability-resolution-to-plist "magent-capability")
+(declare-function magent-capability-resolve "magent-capability")
 (declare-function magent-capability-resolve-for-turn "magent-capability")
 (declare-function magent-skills-get-instruction-prompts "magent-skills")
+(declare-function magent-skills-missing-tools "magent-skills")
 
 (defvar magent-agent-presentation-function nil
   "Optional presentation adapter for compatibility agent turns.
@@ -162,6 +165,24 @@ was not already emitted as text deltas."
              (and (stringp scope) scope)))
       (ignore-errors (magent-project-root nil t))))
 
+(defun magent-agent--capabilities-enabled-p (request-context)
+  "Return whether capability resolution is enabled for REQUEST-CONTEXT."
+  (if (and (proper-list-p request-context)
+           (plist-member request-context :capabilities-enabled))
+      (eq (plist-get request-context :capabilities-enabled) t)
+    magent-enable-capabilities))
+
+(defun magent-agent--validate-explicit-skill-tools
+    (skill-names available-tools)
+  "Signal when explicit SKILL-NAMES require tools outside AVAILABLE-TOOLS."
+  (when (and skill-names (require 'magent-skills nil t))
+    (dolist (skill-name skill-names)
+      (when-let* ((missing
+                   (magent-skills-missing-tools skill-name available-tools)))
+        (error "Skill '%s' requires unavailable tool(s): %s"
+               skill-name
+               (mapconcat #'symbol-name missing ", "))))))
+
 (defun magent-agent--context-system-message (project-root)
   "Return prompt context for PROJECT-ROOT."
   (when (and (stringp project-root)
@@ -170,23 +191,32 @@ was not already emitted as text deltas."
                           `((project-root . ,project-root)))))
 
 (defun magent-agent--compose-system-message
-    (base-system-message project-root memory-message skill-prompts)
+    (base-system-message project-root memory-message skill-prompts
+                         &optional project-instructions)
   "Return system prompt from BASE-SYSTEM-MESSAGE and prompt context.
 PROJECT-ROOT contributes workspace context, MEMORY-MESSAGE is a selected
-Emacs profile memory block, and SKILL-PROMPTS are active skill prompts."
+Emacs profile memory block, and SKILL-PROMPTS are active skill prompts.
+PROJECT-INSTRUCTIONS contains scoped repository instructions discovered by
+Magent.
+The runtime trust policy is appended last so every built-in or custom agent
+receives the same instruction-provenance and permission invariants."
   (let ((context-message
          (magent-agent--context-system-message project-root))
         (skills-message
          (when skill-prompts
            (magent-prompt-render
             "internal/active-skills.org"
-            `((skills . ,(mapconcat #'identity skill-prompts "\n\n")))))))
+            `((skills . ,(mapconcat #'identity skill-prompts "\n\n"))))))
+        (runtime-policy
+         (magent-prompt-read "internal/runtime-policy.org")))
     (mapconcat #'identity
                (delq nil
-                     (list base-system-message
-                           context-message
-                           memory-message
-                           skills-message))
+                      (list base-system-message
+                            context-message
+                            project-instructions
+                            memory-message
+                           skills-message
+                           runtime-policy))
                "\n\n")))
 
 (defun magent-agent-process
@@ -210,8 +240,9 @@ REQUEST-STATE is an optional `magent-request-context' carrying runtime
 state for the request.
 PRESENTATION-FUNCTION is an optional compatibility presentation adapter.  It
 defaults to `magent-agent-presentation-function'.
-When nil, no skills are injected (skills must be explicitly selected
-via slash commands in the prompt).
+When SKILL-NAMES is nil, the capability resolver may still auto-activate
+instruction skills for the turn.  Explicit skills are merged with and
+deduplicated against capability-selected skills.
 
 The tool calling loop is managed by `magent-agent-loop'.  This function:
   1. Builds the prompt list from session history
@@ -283,11 +314,23 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                 magent-system-prompt))
            (request-project-root
             (magent-agent--request-project-root request-context request-state))
+           (tools (mapcar #'magent-tool-runtime-to-plist
+                          (magent-tool-runtime-for-permission
+                           effective-permission)))
+           (available-tool-names
+            (mapcar (lambda (tool)
+                      (intern (plist-get tool :name)))
+                    tools))
+           (_skill-tool-validation
+            (magent-agent--validate-explicit-skill-tools
+             skill-names available-tool-names))
            (capability-resolution
             (or capability-resolution
-                (when (require 'magent-capability nil t)
-                  (magent-capability-resolve-for-turn
-                   user-prompt request-context skill-names))))
+                (when (and (magent-agent--capabilities-enabled-p request-context)
+                           (require 'magent-capability nil t))
+                  (magent-capability-resolve
+                   user-prompt request-context skill-names
+                   available-tool-names))))
            (resolved-skill-names
             (magent-agent--dedupe-skill-names
              (or (and capability-resolution
@@ -301,12 +344,13 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
            (memory-message
             (magent-memory-system-message
              user-prompt request-context request-project-root))
+           (project-instructions
+            (magent-project-instructions-system-message
+             request-project-root request-context))
            (system-msg
             (magent-agent--compose-system-message
-             base-system-msg request-project-root memory-message skill-prompts))
-           (tools (mapcar #'magent-tool-runtime-to-plist
-                          (magent-tool-runtime-for-permission
-                           effective-permission))))
+             base-system-msg request-project-root memory-message skill-prompts
+             project-instructions)))
       (when capability-resolution
         (magent-lifecycle-events-emit
          'capability-resolution

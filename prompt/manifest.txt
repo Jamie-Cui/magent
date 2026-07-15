@@ -1,0 +1,20 @@
+# Bundled prompt resources. Keep sorted within each directory.
+agents/compaction.org
+agents/explore.org
+agents/summary.org
+agents/title.org
+internal/active-skills.org
+internal/additional-instruction.org
+internal/doctor-system.org
+internal/doctor-user.org
+internal/emacs-diagnosis.org
+internal/empty-final-response-retry.org
+internal/memory-injection.org
+internal/memory-system.org
+internal/memory-user.org
+internal/project-context.org
+internal/project-instructions.org
+internal/runtime-policy.org
+internal/session-compaction.org
+internal/strict-final-response-retry.org
+system.org

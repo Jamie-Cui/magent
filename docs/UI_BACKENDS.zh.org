@@ -19,7 +19,7 @@ Magent 现在把 UI 明确当作 backend boundary。默认 backend 是 ~agent-sh
 1. ~magent-dwim~ 和普通 ~magent-ui-dispatch-prompt~ 等公共命令进入 ~magent-ui.el~ 。
 2. 当 ~magent-ui-backend~ 为 ~agent-shell~ ，并且没有 legacy-only per-request agent override 时，命令路由到 ~magent-agent-shell.el~ 。
 3. ~agent-shell~ 调用 ~magent-acp.el~ 中的 Magent 进程内 ACP client。
-4. ACP session/prompt 提交到 ~magent-runtime-api.el~ 。
+4. ACP session/prompt 分别规范化 text 与 resource blocks，把完整结构化 blocks 存入 turn metadata，再提交到 ~magent-runtime-api.el~。本地 ~file://~ resource 还会提供 scoped request path；history 重建时 resource body 始终保持 user-role context。
 5. runtime queue 每次只启动一个 active turn，创建带 ~:ui-visibility 'none~ 的 ~magent-request-context~ ，并调用 ~magent-agent-run-turn~ 。
 6. agent loop 发出 Magent-native observer events； ~magent-acp.el~ 将其转换成 ACP ~session/update~ 消息给 agent-shell。
 7. ACP prompt request 会保持 pending，直到对应 Magent turn completed、failed 或 cancelled。
@@ -38,4 +38,5 @@ Magent 现在把 UI 明确当作 backend boundary。默认 backend 是 ~agent-sh
 - runtime execution 是全局单执行队列。
 - cancellation 是 session-scoped：一个 ACP session 的 cancellation 会取消该 session 的 active 和 queued submissions，但不会移除其他 session 的 queued work。
 - agent-shell backend 支持 per-request instruction skill overrides 和 skill commands。per-request agent overrides 仍然走 legacy dispatch path，直到 agent-shell 暴露等价控件。
+- ACP session config 暴露 ~Automatic capabilities~；关闭后，该 session 后续 turn 不再自动解析 contextual capabilities，但显式选择的 instruction skills 仍然生效。
 - ~magent-ui-backend~ 可以设为 ~legacy~ ，但默认值是 ~agent-shell~ 。

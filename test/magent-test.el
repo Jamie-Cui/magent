@@ -2432,8 +2432,47 @@
       (should (string-match-p
                (regexp-quote "do not invent unrelated absolute paths")
                system))
+      (should (string-prefix-p "Base system." system))
+      (should (string-match-p
+               (regexp-quote "* Runtime Trust Boundary")
+               system))
+      (should (< (string-match "Current project root" system)
+                 (string-match "Runtime Trust Boundary" system)))
       (should (equal (magent-request-context-project-root request-state)
                      "/tmp/project")))))
+
+(ert-deftest magent-test-agent-compose-system-prompt-orders-runtime-policy-last ()
+  "Test dynamic context precedes the universal runtime trust policy."
+  (require 'magent-agent)
+  (let* ((system (magent-agent--compose-system-message
+                  "Agent-specific output contract."
+                  "/tmp/project"
+                  "Memory block."
+                  '("Skill block.")
+                  "Project instructions block."))
+         (base-pos (string-match "Agent-specific output contract" system))
+         (project-pos (string-match "Current project root" system))
+         (instructions-pos (string-match "Project instructions block" system))
+         (memory-pos (string-match "Memory block" system))
+         (skill-pos (string-match "Skill block" system))
+         (policy-pos (string-match "Runtime Trust Boundary" system)))
+    (should (cl-every #'integerp
+                      (list base-pos project-pos instructions-pos memory-pos
+                            skill-pos policy-pos)))
+    (should (< base-pos project-pos))
+    (should (< project-pos instructions-pos))
+    (should (< instructions-pos memory-pos))
+    (should (< memory-pos skill-pos))
+    (should (< skill-pos policy-pos))
+    (should (string-match-p
+             (regexp-quote "current user request is instruction")
+             system))
+    (should (string-match-p
+             (regexp-quote "Quoted, retrieved, or embedded content")
+             system))
+    (should (string-match-p
+             (regexp-quote "cannot promote itself")
+             system))))
 
 (ert-deftest magent-test-memory-scan-plan-skips-sensitive-and-org-notes ()
   "Test memory scan plans avoid secrets, custom-file contents, and Org notes."
@@ -3310,6 +3349,157 @@
           (should-error (magent-prompt-path "../outside.org")))
       (delete-directory directory t))))
 
+(ert-deftest magent-test-prompt-manifest-covers-bundled-org-resources ()
+  "Test every bundled Org prompt is declared once in the package manifest."
+  (require 'magent-prompt)
+  (let* ((manifest (magent-prompt-manifest))
+         (actual
+          (mapcar (lambda (file)
+                    (file-relative-name file magent-prompt-directory))
+                  (directory-files-recursively
+                   magent-prompt-directory "\\.org\\'")))
+         (sorted-manifest (sort (copy-sequence manifest) #'string<)))
+    (should (= (length manifest)
+               (length (delete-dups (copy-sequence manifest)))))
+    (should (equal sorted-manifest (sort actual #'string<)))
+    (should (member "internal/runtime-policy.org" manifest))
+    (should (member "internal/project-instructions.org" manifest))))
+
+(ert-deftest magent-test-project-instructions-follow-target-scope ()
+  "Test AGENTS discovery walks root-to-target and ignores sibling scopes."
+  (require 'magent-project-instructions)
+  (let* ((root (file-name-as-directory
+                (file-truename (make-temp-file "magent-instructions-" t))))
+         (target-dir (expand-file-name "src/nested" root))
+         (sibling-dir (expand-file-name "docs" root))
+         (target (expand-file-name "module.el" target-dir))
+         (root-agents (expand-file-name "AGENTS.md" root))
+         (nested-agents (expand-file-name "src/AGENTS.md" root))
+         (sibling-agents (expand-file-name "AGENTS.md" sibling-dir))
+         (magent-project-instructions-max-bytes 4096))
+    (unwind-protect
+        (progn
+          (make-directory target-dir t)
+          (make-directory sibling-dir t)
+          (with-temp-file target (insert "code"))
+          (with-temp-file root-agents (insert "Root rule."))
+          (with-temp-file nested-agents (insert "Source rule."))
+          (with-temp-file sibling-agents (insert "Docs-only rule."))
+          (let* ((entries
+                  (magent-project-instructions-discover
+                   root (list :file-path target)))
+                 (files (mapcar (lambda (entry)
+                                  (file-relative-name
+                                   (plist-get entry :file) root))
+                                entries))
+                 (message
+                  (magent-project-instructions-system-message
+                   root (list :file-path target))))
+            (should (equal files '("AGENTS.md" "src/AGENTS.md")))
+            (should (< (string-match "Root rule" message)
+                       (string-match "Source rule" message)))
+            (should-not (string-match-p "Docs-only rule" message))))
+      (delete-directory root t))))
+
+(ert-deftest magent-test-project-instructions-reject-symlink-escape ()
+  "Test project instruction discovery ignores files resolving outside root."
+  (require 'magent-project-instructions)
+  (let* ((root (file-name-as-directory
+                (file-truename (make-temp-file "magent-instructions-" t))))
+         (outside (make-temp-file "magent-outside-instructions-" t))
+         (target-dir (expand-file-name "src" root))
+         (target (expand-file-name "module.el" target-dir))
+         (root-agents (expand-file-name "AGENTS.md" root))
+         (outside-agents (expand-file-name "AGENTS.md" outside))
+         (nested-link (expand-file-name "AGENTS.md" target-dir))
+         (magent-project-instructions-max-bytes 4096))
+    (unwind-protect
+        (progn
+          (make-directory target-dir t)
+          (with-temp-file target (insert "code"))
+          (with-temp-file root-agents (insert "Root rule."))
+          (with-temp-file outside-agents (insert "Escaped rule."))
+          (make-symbolic-link outside-agents nested-link)
+          (let ((entries
+                 (magent-project-instructions-discover
+                  root (list :file-path target))))
+            (should (= (length entries) 1))
+            (should (equal (plist-get (car entries) :content) "Root rule."))))
+      (delete-directory root t)
+      (delete-directory outside t))))
+
+(ert-deftest magent-test-project-instructions-respect-total-byte-limit ()
+  "Test project instruction discovery enforces its aggregate byte budget."
+  (require 'magent-project-instructions)
+  (let* ((root (file-name-as-directory
+                (file-truename (make-temp-file "magent-instructions-" t))))
+         (target-dir (expand-file-name "src" root))
+         (target (expand-file-name "module.el" target-dir))
+         (magent-project-instructions-max-bytes 3))
+    (unwind-protect
+        (progn
+          (make-directory target-dir t)
+          (with-temp-file target (insert "code"))
+          (with-temp-file (expand-file-name "AGENTS.md" root)
+            (insert "12345"))
+          (with-temp-file (expand-file-name "AGENTS.md" target-dir)
+            (insert "nested"))
+          (let ((entries
+                 (magent-project-instructions-discover
+                  root (list :file-path target))))
+            (should (= (length entries) 1))
+            (should (equal (plist-get (car entries) :content) "123"))))
+      (delete-directory root t))))
+
+(ert-deftest magent-test-project-instructions-canonicalize-symlinked-root ()
+  "Test rendered instruction paths stay relative to a symlinked project root."
+  (require 'magent-project-instructions)
+  (let* ((real-root (file-name-as-directory
+                     (file-truename (make-temp-file
+                                     "magent-instructions-real-" t))))
+         (link-parent (make-temp-file "magent-instructions-link-" t))
+         (linked-root (expand-file-name "project" link-parent))
+         (target (expand-file-name "module.el" real-root))
+         (magent-project-instructions-max-bytes 4096))
+    (unwind-protect
+        (progn
+          (with-temp-file target (insert "code"))
+          (with-temp-file (expand-file-name "AGENTS.md" real-root)
+            (insert "Root rule."))
+          (make-symbolic-link real-root linked-root)
+          (let ((message
+                 (magent-project-instructions-system-message
+                  linked-root (list :file-path target))))
+            (should (string-match-p
+                     (regexp-quote "** AGENTS.md (scope: ./)") message))
+            (should-not (string-match-p "\\.\\./" message))))
+      (delete-directory link-parent t)
+      (delete-directory real-root t))))
+
+(ert-deftest magent-test-default-system-prompt-uses-calibrated-contract ()
+  "Test the default prompt stays dynamic and avoids stale host conventions."
+  (require 'magent-prompt)
+  (let ((prompt (magent-prompt-read "system.org")))
+    (should (string-match-p "Match detail to the task" prompt))
+    (should (string-match-p "capability resolver" prompt))
+    (should (string-match-p "Do not claim.*succeeded" prompt))
+    (should-not (string-match-p "fewer than 4 lines" prompt))
+    (should-not (string-match-p "One word answers are best" prompt))
+    (should-not (string-match-p "<system-reminder>" prompt))
+    (should-not (string-match-p "Available Tools:" prompt))
+    (should-not (string-match-p "Built-in Skill files" prompt))))
+
+(ert-deftest magent-test-memory-prompt-declares-precedence ()
+  "Test injected profile memory cannot silently override current state."
+  (require 'magent-prompt)
+  (let ((prompt (magent-prompt-render
+                 "internal/memory-injection.org"
+                 '((memory . "Stored preference.")))))
+    (should (string-match-p "incomplete or stale" prompt))
+    (should (string-match-p "live Emacs or repository state take precedence"
+                            prompt))
+    (should (string-suffix-p "Stored preference." prompt))))
+
 (ert-deftest magent-test-builtin-agents-count ()
   "Test that all 7 built-in agents are created."
   (require 'magent-agent-builtins)
@@ -3952,6 +4142,7 @@
         :skills (list (concat name "-skill"))
         :modes '(org-mode)
         :features '(org)
+        :prompt-keywords '("subtree")
         :disclosure 'active)))
     (let* ((resolution (magent-capability-resolve
                         "Refile this subtree"
@@ -4002,6 +4193,7 @@
       :skills '("org-structure-workflow")
       :modes '(org-mode)
       :features '(org)
+      :prompt-keywords '("subtree")
       :disclosure 'active))
     (let* ((resolution (magent-capability-resolve
                         "Refactor this subtree"
@@ -4044,6 +4236,7 @@
       :skills '("org-structure-workflow")
       :modes '(org-mode)
       :features '(org)
+      :prompt-keywords '("subtree")
       :disclosure 'active))
     (magent-capability-register
      (magent-capability-create
@@ -4115,6 +4308,89 @@
       (should (equal (mapcar (lambda (entry) (plist-get entry :kind)) contributions)
                      '(mode feature file keyword))))))
 
+(ert-deftest magent-test-capability-keywords-require-word-boundaries ()
+  "Test short capability keywords do not match inside unrelated words."
+  (require 'magent-capability)
+  (should (magent-capability--keyword-match-p "org" "Edit this Org heading"))
+  (should-not
+   (magent-capability--keyword-match-p "org" "Reorganize this function"))
+  (should-not
+   (magent-capability--keyword-match-p "command" "Inspect the commando unit")))
+
+(ert-deftest magent-test-capability-context-without-intent-stays-suggested ()
+  "Test context signals alone do not auto-activate an active capability."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil))
+    (magent-capability-register
+     (magent-capability-create
+      :name "project-workflow"
+      :skills '("project-workflow")
+      :modes '(prog-mode)
+      :features '(project)
+      :prompt-keywords '("project")
+      :disclosure 'active))
+    (let* ((resolution
+            (magent-capability-resolve
+             "Hello there"
+             '(:major-mode emacs-lisp-mode
+               :major-mode-family (emacs-lisp-mode prog-mode)
+               :features (project))))
+           (match (car (magent-capability-resolution-matches resolution))))
+      (should (= (magent-capability-match-score match) 5))
+      (should (eq (magent-capability-match-status match) 'suggested))
+      (should-not (magent-capability-resolution-active-capabilities
+                   resolution)))))
+
+(ert-deftest magent-test-capability-tool-requirements-gate-auto-activation ()
+  "Test auto capabilities do not inject skills with unavailable tools."
+  (require 'magent-capability)
+  (let ((magent-capability--registry nil)
+        (magent-skills--registry nil))
+    (magent-skills-register
+     (magent-skill-create
+      :name "runtime-skill"
+      :type 'instruction
+      :tools '(emacs_eval)
+      :prompt "Inspect runtime."))
+    (magent-capability-register
+     (magent-capability-create
+      :name "runtime"
+      :skills '("runtime-skill")
+      :modes '(emacs-lisp-mode)
+      :prompt-keywords '("runtime")
+      :disclosure 'active))
+    (let* ((blocked
+            (magent-capability-resolve
+             "Inspect runtime"
+             '(:major-mode emacs-lisp-mode)
+             nil '(read_file)))
+           (enabled
+            (magent-capability-resolve
+             "Inspect runtime"
+             '(:major-mode emacs-lisp-mode)
+             nil '(emacs_eval))))
+      (should-not (magent-capability-resolution-active-capabilities blocked))
+      (should-not (magent-capability-resolution-skill-names blocked))
+      (should (equal (magent-capability-resolution-skill-names enabled)
+                     '("runtime-skill"))))))
+
+(ert-deftest magent-test-agent-explicit-skill-rejects-unavailable-tools ()
+  "Test explicit skills fail clearly when their required tools are unavailable."
+  (require 'magent-agent)
+  (let ((magent-skills--registry nil))
+    (magent-skills-register
+     (magent-skill-create
+      :name "runtime-skill"
+      :type 'instruction
+      :tools '(emacs_eval)))
+    (should-error
+     (magent-agent--validate-explicit-skill-tools
+      '("runtime-skill") '(read_file))
+     :type 'error)
+    (should-not
+     (magent-agent--validate-explicit-skill-tools
+      '("runtime-skill") '(emacs_eval)))))
+
 (ert-deftest magent-test-capability-resolve-mixed-org-and-git-context ()
   "Test org context plus git wording does not hide the org capability."
   (require 'magent-capability)
@@ -4131,6 +4407,7 @@
       :skills '("org-structure-workflow")
       :modes '(org-mode)
       :features '(org)
+      :prompt-keywords '("subtree")
       :disclosure 'active))
     (let* ((resolution (magent-capability-resolve
                         "Please commit the result after reorganizing this subtree"
@@ -4241,7 +4518,26 @@
       (should skill)
       (should (eq (magent-skill-type skill) 'instruction))
       (should (string-match-p "Emacs Runtime Inspection"
+                              (or (magent-skill-prompt skill) "")))
+      (should (string-match-p "first correctly scoped"
+                              (or (magent-skill-prompt skill) "")))
+      (should (string-match-p "scope or semantics were wrong"
+                              (or (magent-skill-prompt skill) "")))
+      (should-not (string-match-p "first successful result"
+                                  (or (magent-skill-prompt skill) "")))
+      (should (string-match-p "loop signal"
                               (or (magent-skill-prompt skill) ""))))))
+
+(ert-deftest magent-test-skills-command-introspection-inspects-value-shape ()
+  "Test command introspection carries type-safe value guidance."
+  (require 'magent-skills)
+  (let ((magent-skills--registry nil))
+    (magent-test--load-builtin-skills-only)
+    (let ((prompt (magent-skill-prompt
+                   (magent-skills-get
+                    "emacs-command-variable-introspection"))))
+      (should (string-match-p "type and shape" prompt))
+      (should (string-match-p "Wrong type argument" prompt)))))
 
 (ert-deftest magent-test-capability-load-file-from-temp ()
   "Test loading a capability from a temporary file."
@@ -5348,6 +5644,26 @@
   "Test that all core tools are registered."
   (require 'magent-tools)
   (should (= (length magent-tools--all-gptel-tools) 15)))
+
+(ert-deftest magent-test-tools-web-search-description-matches-result-shape ()
+  "Test web_search does not imply that result pages were fetched."
+  (require 'magent-tools)
+  (let ((description
+         (gptel-tool-description magent-tools--web-search-tool)))
+    (should (string-match-p "titles and URLs only" description))
+    (should (string-match-p "does not fetch result pages" description))
+    (should (string-match-p "do not claim to have read page content"
+                            description))))
+
+(ert-deftest magent-test-tools-skill-invoke-description-matches-activation ()
+  "Test skill_invoke distinguishes tool skills from instruction activation."
+  (require 'magent-tools)
+  (let ((description
+         (gptel-tool-description magent-tools--skill-invoke-tool)))
+    (should (string-match-p "cannot be invoked by this tool" description))
+    (should (string-match-p "explicitly selected" description))
+    (should (string-match-p "capability resolver" description))
+    (should-not (string-match-p "automatically active" description))))
 
 (ert-deftest magent-test-tools-filtering ()
   "Test tool filtering by permissions."
@@ -11063,7 +11379,10 @@ tolerate leading whitespace."
     (should (equal (map-elt option 'currentValue) "xhigh"))
     (should (member "xhigh"
                     (mapcar (lambda (entry) (map-elt entry 'value))
-                            values)))))
+                            values)))
+    (let ((capabilities (aref (map-elt response 'configOptions) 1)))
+      (should (equal (map-elt capabilities 'id) "capabilities"))
+      (should (equal (map-elt capabilities 'currentValue) "enabled")))))
 
 (ert-deftest magent-test-acp-prompt-text-preserves-embedded-resource ()
   "Test ACP embedded resource blocks keep nested file text in prompts."
@@ -11082,6 +11401,119 @@ tolerate leading whitespace."
     (should-not (string-match-p
                  (regexp-quote "[Context resource: resource]")
                  text))))
+
+(ert-deftest magent-test-acp-prompt-input-preserves-resource-structure ()
+  "Test ACP resources remain structured and separate from instruction text."
+  (require 'magent-acp)
+  (let* ((input
+          (magent-acp--prompt-input
+           '[((type . "text") (text . "Review this file"))
+             ((type . "resource")
+              (resource . ((uri . "file:///tmp/example.txt")
+                           (mimeType . "text/plain")
+                           (text . "line 1\nline 2"))))]))
+         (blocks (plist-get input :content-blocks))
+         (resource (map-elt (aref blocks 1) 'resource)))
+    (should (equal (plist-get input :text) "Review this file"))
+    (should-not (string-match-p "line 1" (plist-get input :text)))
+    (should (equal (map-elt resource 'text) "line 1\nline 2"))
+    (should (equal (plist-get (plist-get input :context) :resource-paths)
+                   '("/tmp/example.txt")))))
+
+(ert-deftest magent-test-session-prompt-list-rebuilds-structured-resources ()
+  "Test ledger metadata reconstructs ACP resources for model history."
+  (require 'magent-session)
+  (let* ((session (magent-session-create))
+         (thread (magent-session-thread-ledger session))
+         (blocks '[((type . "text") (text . "Review"))
+                   ((type . "resource")
+                    (resource . ((uri . "file:///tmp/example.txt")
+                                 (text . "resource body"))))])
+         (turn (magent-thread-queue-turn
+                thread "Review\n[Attached: example.txt]" nil
+                (list :content-blocks blocks))))
+    (magent-thread-record-user-message-if-needed
+     thread (magent-thread-turn-id turn) "Review\n[Attached: example.txt]"
+     nil (list :content-blocks blocks))
+    (let ((prompt (cdr (assq 'prompt
+                             (magent-session-to-gptel-prompt-list session)))))
+      (should (string-match-p "Review" prompt))
+      (should (string-match-p "URI: file:///tmp/example.txt" prompt))
+      (should (string-match-p "resource body" prompt))
+      (should-not (string-match-p "Attached: example.txt" prompt)))))
+
+(ert-deftest magent-test-session-save-load-preserves-structured-user-resources ()
+  "Test structured ACP resources survive JSON persistence as user context."
+  (require 'magent-session)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (blocks '[((type . "text") (text . "Review"))
+                   ((type . "resource")
+                    (resource . ((uri . "file:///tmp/example.txt")
+                                 (text . "persisted body"))))]))
+    (unwind-protect
+        (progn
+          (magent-session-activate 'global)
+          (let* ((session (magent-session-get))
+                 (thread (magent-session-thread-ledger session))
+                 (turn (magent-thread-queue-turn
+                        thread "Review\n[Attached: example.txt]" nil
+                        (list :content-blocks blocks))))
+            (magent-thread-record-user-message-if-needed
+             thread (magent-thread-turn-id turn)
+             "Review\n[Attached: example.txt]" nil
+             (list :content-blocks blocks))
+            (magent-thread-start-turn thread (magent-thread-turn-id turn))
+            (magent-thread-record-message
+             thread (magent-thread-turn-id turn) 'assistant "Reviewed.")
+            (magent-thread-complete-turn thread (magent-thread-turn-id turn))
+            (magent-session-refresh-projections session)
+            (magent-session-save))
+          (let* ((file (car (directory-files
+                             magent-session-directory t "\\.json$")))
+                 (loaded (plist-get (magent-session-read-file file) :session))
+                 (prompt (cdr (assq
+                               'prompt
+                               (magent-session-to-gptel-prompt-list loaded)))))
+            (should (string-match-p "URI: file:///tmp/example.txt" prompt))
+            (should (string-match-p "persisted body" prompt))
+            (should-not (string-match-p "Attached: example.txt" prompt))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-acp-session-prompt-forwards-structured-context ()
+  "Test ACP submission stores blocks and exposes local resource paths."
+  (require 'magent-acp)
+  (let ((runtime-session (magent-runtime-session-create :id "session-1"))
+        submitted response failure)
+    (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
+               (lambda (_session-id) runtime-session))
+              ((symbol-function 'magent-runtime-submit)
+               (lambda (session prompt &rest args)
+                 (setq submitted (list session prompt args))
+                 (funcall (plist-get args :on-complete) 'completed "ok"))))
+      (magent-acp--handle-request
+       '((:notification-handlers . nil) (:request-handlers . nil))
+       '((:method . "session/prompt")
+         (:params . ((sessionId . "session-1")
+                     (prompt . [((type . "text") (text . "Review"))
+                                ((type . "resource")
+                                 (resource
+                                  . ((uri . "file:///tmp/example.txt")
+                                     (text . "body"))))]))))
+       (lambda (value) (setq response value))
+       (lambda (err &optional _raw) (setq failure err))))
+    (should-not failure)
+    (should (equal (cadr submitted)
+                   "Review\n[Attached: file:///tmp/example.txt]"))
+    (let ((args (nth 2 submitted)))
+      (should (equal (plist-get (plist-get args :context) :file-path)
+                     "/tmp/example.txt"))
+      (should (= (length (plist-get (plist-get args :turn-metadata)
+                                    :content-blocks))
+                 2)))
+    (should (equal (map-elt response 'stopReason) "end_turn"))))
 
 (ert-deftest magent-test-acp-session-prompt-expands-slash-command ()
   "Test ACP slash command prompts dispatch command-like skills."
@@ -11664,6 +12096,27 @@ tolerate leading whitespace."
       (should (equal (map-elt (aref (map-elt response 'configOptions) 0)
                               'currentValue)
                      "xhigh")))))
+
+(ert-deftest magent-test-acp-set-config-option-updates-capabilities ()
+  "Test ACP exposes a per-session automatic capability switch."
+  (require 'magent-acp)
+  (let ((runtime-session (magent-runtime-session-create :id "session-1")))
+    (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
+               (lambda (_session-id) runtime-session))
+              ((symbol-function 'magent-runtime-session-agent-name)
+               (lambda (_session) "build"))
+              ((symbol-function 'magent-agent-registry-primary-agents)
+               (lambda () nil)))
+      (let ((response
+             (magent-acp--handle-set-config-option
+              '((sessionId . "session-1")
+                (configId . "capabilities")
+                (value . "disabled")))))
+        (should-not
+         (magent-runtime-session-capabilities-enabled-p runtime-session))
+        (should (equal (map-elt (aref (map-elt response 'configOptions) 1)
+                                'currentValue)
+                       "disabled"))))))
 
 (ert-deftest magent-test-agent-shell-config-creates-in-process-client ()
   "Test Magent agent-shell config creates an in-process ACP client."

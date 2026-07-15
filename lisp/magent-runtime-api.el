@@ -184,6 +184,25 @@
     (setf (magent-runtime-session-effort runtime-session) option)
     option))
 
+(defun magent-runtime-session-capabilities-enabled-p (runtime-session)
+  "Return whether RUNTIME-SESSION should auto-resolve capabilities."
+  (let ((metadata (magent-runtime-session-metadata runtime-session)))
+    (if (and (proper-list-p metadata)
+             (plist-member metadata :capabilities-enabled))
+        (eq (plist-get metadata :capabilities-enabled) t)
+      magent-enable-capabilities)))
+
+(defun magent-runtime-session-set-capabilities-enabled
+    (runtime-session enabled)
+  "Set capability auto-resolution for RUNTIME-SESSION to ENABLED."
+  (magent-runtime-api--assert-session-available runtime-session)
+  (let ((metadata (magent-runtime-session-metadata runtime-session)))
+    (unless (proper-list-p metadata)
+      (setq metadata nil))
+    (setf (magent-runtime-session-metadata runtime-session)
+          (plist-put metadata :capabilities-enabled (and enabled t))))
+  (magent-runtime-session-capabilities-enabled-p runtime-session))
+
 (defun magent-runtime-session-toggle-pending-skill (runtime-session skill-name)
   "Toggle one-shot SKILL-NAME for RUNTIME-SESSION."
   (magent-runtime-api--assert-session-available runtime-session)
@@ -270,12 +289,12 @@ Any active or queued work for the session is cancelled first."
          (thread (let ((magent--current-session session)
                        (magent-session--current-scope scope))
                    (magent-session-thread-ledger session)))
+         (turn-metadata (append (list :source 'runtime-queue) metadata))
          (turn (magent-thread-queue-turn
-                thread prompt nil
-                (append (list :source 'runtime-queue) metadata))))
+                thread prompt nil turn-metadata)))
     (magent-thread-record-user-message-if-needed
      thread (magent-thread-turn-id turn) prompt nil
-     (list :source 'runtime-queue))
+     turn-metadata)
     (magent-session-refresh-projections session)
     (magent-session-save-deferred-for-session session scope)
     (magent-thread-turn-id turn)))
