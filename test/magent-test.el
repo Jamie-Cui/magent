@@ -11448,6 +11448,53 @@ tolerate leading whitespace."
       (should (equal (map-elt content-block 'type) "text"))
       (should (equal (map-elt content-block 'text) "done")))))
 
+(ert-deftest magent-test-acp-observer-preserves-tool-title-on-completion ()
+  "Test completion updates do not replace a descriptive tool title."
+  (require 'magent-acp)
+  (let* (notifications
+         (client `((:notification-handlers
+                    . (,(lambda (notification)
+                          (push notification notifications))))
+                   (:request-handlers . nil)))
+         (observer (magent-acp--observer client "session-1"))
+         (summary "[Find callers] capability in lisp"))
+    (funcall observer
+             `(:type tool-call-start
+               :tool-id "tool-1"
+               :name "grep"
+               :kind grep
+               :summary ,summary
+               :raw-input (:pattern "capability"
+                           :path "lisp"
+                           :reason "Find callers")))
+    (funcall observer
+             '(:type tool-call-complete
+               :tool-id "tool-1"
+               :name "grep"
+               :status completed
+               :output-preview "lisp/magent.el:118"))
+    (let* ((updates
+            (mapcar (lambda (notification)
+                      (map-nested-elt notification '(params update)))
+                    (nreverse notifications)))
+           (start (nth 0 updates))
+           (complete (nth 1 updates)))
+      (should (equal (map-elt start 'sessionUpdate) "tool_call"))
+      (should (equal (map-elt start 'title) summary))
+      (should (equal (map-elt start 'kind) "read"))
+      (should (equal (map-nested-elt start '(rawInput pattern))
+                     "capability"))
+      (should (equal (map-nested-elt start '(rawInput path)) "lisp"))
+      (should (equal (map-nested-elt start '(rawInput reason))
+                     "Find callers"))
+      (should (equal (map-elt complete 'sessionUpdate)
+                     "tool_call_update"))
+      (should (equal (map-elt complete 'status) "completed"))
+      (should-not (assq 'title complete))
+      (should (equal
+               (map-nested-elt complete '(content 0 content text))
+               "lisp/magent.el:118")))))
+
 (ert-deftest magent-test-acp-observer-drops-leading-stream-whitespace ()
   "Test ACP observer does not emit blank blocks at stream start."
   (require 'magent-acp)

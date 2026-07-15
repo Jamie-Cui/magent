@@ -529,7 +529,6 @@ Each handler runs inside the CLIENT's context buffer (via
                 client session-id
                 `((sessionUpdate . "tool_call_update")
                   (toolCallId . ,(or (plist-get event :tool-id) "unknown"))
-                  (title . ,(or (plist-get event :name) "tool"))
                   (status . ,(if (eq (plist-get event :status) 'failed)
                                  "failed"
                                "completed"))
