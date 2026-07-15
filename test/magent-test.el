@@ -8195,6 +8195,110 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest magent-test-agent-loop-coerces-textual-dsml-integer-arguments ()
+  "Test textual DSML numeric pages are restored from the tool schema."
+  (require 'magent-agent-loop)
+  (require 'magent-llm-gptel)
+  (require 'gptel)
+  (let* ((text
+          (concat
+           "<｜｜DSML｜｜tool_calls>\n"
+           "<｜｜DSML｜｜invoke name=\"read_file\">\n"
+           "<｜｜DSML｜｜parameter name=\"path\" string=\"true\">"
+           "lisp/magent-agent-loop.el"
+           "</｜｜DSML｜｜parameter>\n"
+           "<｜｜DSML｜｜parameter name=\"start_line\" string=\"true\">"
+           "121"
+           "</｜｜DSML｜｜parameter>\n"
+           "<｜｜DSML｜｜parameter name=\"line_count\" string=\"true\">"
+           "100"
+           "</｜｜DSML｜｜parameter>\n"
+           "</｜｜DSML｜｜invoke>\n"
+           "</｜｜DSML｜｜tool_calls>"))
+         (event (car (magent-llm-gptel--parse-dsml-tool-calls text)))
+         (tool (gptel-make-tool
+                :name "read_file"
+                :description "read"
+                :args (list '(:name "path" :type string)
+                            '(:name "start_line" :type integer :optional t)
+                            '(:name "line_count" :type integer :optional t))
+                :function #'ignore))
+         (loop (magent-agent-loop-create
+                :request (magent-llm-request-create :tools (list tool))))
+         (call (magent-agent-loop-tool-event-to-call loop event))
+         (raw-call (nth 3 call)))
+    (should (equal (cadr call)
+                   '("lisp/magent-agent-loop.el" 121 100)))
+    (should (equal (plist-get raw-call :args)
+                   '(:path "lisp/magent-agent-loop.el"
+                     :start_line 121
+                     :line_count 100)))))
+
+(ert-deftest magent-test-agent-loop-rejects-unknown-textual-dsml-argument ()
+  "Test textual DSML arguments outside the schema become tool errors."
+  (require 'magent-agent-loop)
+  (require 'magent-llm-gptel)
+  (require 'gptel)
+  (let* ((text
+          (concat
+           "<｜｜DSML｜｜tool_calls>\n"
+           "<｜｜DSML｜｜invoke name=\"read_file\">\n"
+           "<｜｜DSML｜｜parameter name=\"path\" string=\"true\">"
+           "lisp/magent-agent-shell.el"
+           "</｜｜DSML｜｜parameter>\n"
+           "<｜｜DSML｜｜parameter name=\"end_line\" string=\"true\">"
+           "100"
+           "</｜｜DSML｜｜parameter>\n"
+           "</｜｜DSML｜｜invoke>\n"
+           "</｜｜DSML｜｜tool_calls>"))
+         (event (car (magent-llm-gptel--parse-dsml-tool-calls text)))
+         (tool (gptel-make-tool
+                :name "read_file"
+                :description "read"
+                :args (list '(:name "path" :type string)
+                            '(:name "start_line" :type integer :optional t)
+                            '(:name "line_count" :type integer :optional t))
+                :function #'ignore))
+         (session (magent-session-create :id "session-dsml-invalid-args"))
+         (loop (magent-agent-loop-create
+                :session session
+                :request (magent-llm-request-create :tools (list tool))))
+         outcome)
+    (magent-agent-loop-apply-event loop event)
+    (magent-agent-loop-dispatch-tool-calls
+     loop
+     (magent-tool-orchestrator-create
+      :run-tool-function (lambda (&rest _args) (error "should not run")))
+     (lambda (result) (setq outcome result)))
+    (should (eq (plist-get outcome :status) 'failed))
+    (let* ((message (car (magent-session-get-messages session)))
+           (content (magent-msg-content message))
+           (result (plist-get content :result)))
+      (should (string-match-p "unknown argument: end_line" result))
+      (should (string-match-p
+               "available arguments: path, start_line, line_count"
+               result)))))
+
+(ert-deftest magent-test-agent-loop-coerces-textual-dsml-schema-types ()
+  "Test textual DSML values follow number, boolean, and array schemas."
+  (require 'magent-agent-loop)
+  (require 'gptel)
+  (let* ((tool (gptel-make-tool
+                :name "typed_tool"
+                :description "typed"
+                :args (list '(:name "ratio" :type number)
+                            '(:name "enabled" :type boolean)
+                            '(:name "names" :type array
+                                    :items (:type string)))
+                :function #'ignore))
+         (normalized
+          (magent-agent-loop--normalize-textual-tool-args
+           tool '(:ratio "1.5" :enabled "false" :names "[\"a\",\"b\"]"))))
+    (should (equal normalized
+                   '(:ratio 1.5 :enabled :json-false :names ["a" "b"])))
+    (should (equal (magent-agent-loop--tool-arg-values tool normalized t)
+                   '(1.5 nil ["a" "b"])))))
+
 (ert-deftest magent-test-llm-gptel-mixed-textual-dsml-tool-call-becomes-tool-event ()
   "Test mixed prose plus textual DSML tool calls becomes tool events."
   (require 'magent-llm-gptel)

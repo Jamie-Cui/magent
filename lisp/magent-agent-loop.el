@@ -48,6 +48,9 @@
 (defconst magent-agent-loop--tool-result-summary-preview-length 150
   "Tool result preview length used by runtime lifecycle events.")
 
+(define-error 'magent-agent-loop-invalid-tool-arguments
+  "Invalid textual tool arguments")
+
 (cl-defstruct
     (magent-agent-loop-abort-controller
      (:constructor magent-agent-loop-abort-controller-create))
@@ -697,8 +700,146 @@ carry provider-specific ids and names."
       (and (listp args)
            (keywordp (car args)))))
 
-(defun magent-agent-loop--tool-arg-values (tool-spec args)
-  "Return positional tool arg values for TOOL-SPEC from ARGS."
+(defun magent-agent-loop--signal-invalid-tool-arguments
+    (format-string &rest args)
+  "Signal invalid textual tool arguments using FORMAT-STRING and ARGS."
+  (signal 'magent-agent-loop-invalid-tool-arguments
+          (list (apply #'format format-string args))))
+
+(defun magent-agent-loop--tool-arg-key (spec)
+  "Return the keyword argument key described by tool argument SPEC."
+  (intern (concat ":" (magent-json-safe-name (plist-get spec :name)))))
+
+(defun magent-agent-loop--parse-textual-json-argument (name type value)
+  "Parse textual JSON VALUE for argument NAME with schema TYPE."
+  (unless (stringp value)
+    (magent-agent-loop--signal-invalid-tool-arguments
+     "argument '%s' must be a JSON %s (got %S)" name type value))
+  (condition-case err
+      (json-parse-string value
+                         :object-type 'plist
+                         :array-type 'array
+                         :null-object :null
+                         :false-object :json-false)
+    (error
+     (magent-agent-loop--signal-invalid-tool-arguments
+      "argument '%s' must be a JSON %s (got %S): %s"
+      name type value (error-message-string err)))))
+
+(defun magent-agent-loop--coerce-textual-tool-value (spec value)
+  "Coerce textual tool VALUE according to argument SPEC."
+  (let* ((name (magent-json-safe-name (plist-get spec :name)))
+         (type (magent-json-safe-name (plist-get spec :type))))
+    (pcase type
+      ("string"
+       (unless (stringp value)
+         (magent-agent-loop--signal-invalid-tool-arguments
+          "argument '%s' must be a string (got %S)" name value))
+       value)
+      ("integer"
+       (cond
+        ((integerp value) value)
+        ((and (stringp value)
+              (string-match-p "\\`[-+]?[0-9]+\\'" value))
+         (string-to-number value))
+        (t
+         (magent-agent-loop--signal-invalid-tool-arguments
+          "argument '%s' must be an integer (got %S)" name value))))
+      ("number"
+       (cond
+        ((numberp value) value)
+        ((and (stringp value)
+              (string-match-p
+               "\\`-?\\(?:0\\|[1-9][0-9]*\\)\\(?:\\.[0-9]+\\)?\\(?:[eE][-+]?[0-9]+\\)?\\'"
+               value))
+         (string-to-number value))
+        (t
+         (magent-agent-loop--signal-invalid-tool-arguments
+          "argument '%s' must be a number (got %S)" name value))))
+      ("boolean"
+       (cond
+        ((eq value t) t)
+        ((or (null value) (eq value :json-false)) :json-false)
+        ((and (stringp value) (string-equal (downcase value) "true")) t)
+        ((and (stringp value) (string-equal (downcase value) "false"))
+         :json-false)
+        (t
+         (magent-agent-loop--signal-invalid-tool-arguments
+          "argument '%s' must be a boolean (got %S)" name value))))
+      ("array"
+       (let ((parsed
+              (if (vectorp value)
+                  value
+                (magent-agent-loop--parse-textual-json-argument
+                 name type value))))
+         (unless (vectorp parsed)
+           (magent-agent-loop--signal-invalid-tool-arguments
+            "argument '%s' must be a JSON array (got %S)" name value))
+         parsed))
+      ("object"
+       (let ((parsed
+              (if (and (listp value) (magent-json--plist-p value))
+                  value
+                (magent-agent-loop--parse-textual-json-argument
+                 name type value))))
+         (unless (and (listp parsed) (magent-json--plist-p parsed))
+           (magent-agent-loop--signal-invalid-tool-arguments
+            "argument '%s' must be a JSON object (got %S)" name value))
+         parsed))
+      ("null"
+       (if (or (eq value :null)
+               (and (stringp value) (string-equal value "null")))
+           :null
+         (magent-agent-loop--signal-invalid-tool-arguments
+          "argument '%s' must be null (got %S)" name value)))
+      (_ value))))
+
+(defun magent-agent-loop--normalize-textual-tool-args (tool-spec args)
+  "Normalize textual DSML ARGS according to TOOL-SPEC's argument schema."
+  (let* ((args-spec (and (fboundp 'gptel-tool-args)
+                         (gptel-tool-args tool-spec)))
+         (tool-name (magent-agent-loop--tool-name tool-spec nil))
+         (proper-plist-p
+          (and (listp args)
+               (zerop (% (length args) 2))
+               (cl-loop for (key _value) on args by #'cddr
+                        always (keywordp key))))
+         (known-keys (mapcar #'magent-agent-loop--tool-arg-key args-spec)))
+    (unless proper-plist-p
+      (magent-agent-loop--signal-invalid-tool-arguments
+       "tool '%s' returned malformed textual arguments: %S" tool-name args))
+    (let ((unknown
+           (cl-loop for (key _value) on args by #'cddr
+                    unless (memq key known-keys)
+                    collect (substring (symbol-name key) 1))))
+      (when unknown
+        (magent-agent-loop--signal-invalid-tool-arguments
+         "tool '%s' received unknown argument%s: %s; available arguments: %s"
+         tool-name
+         (if (= (length unknown) 1) "" "s")
+         (mapconcat #'identity unknown ", ")
+         (mapconcat (lambda (key) (substring (symbol-name key) 1))
+                    known-keys ", "))))
+    (let (normalized)
+      (dolist (spec args-spec)
+        (let ((key (magent-agent-loop--tool-arg-key spec)))
+          (if (plist-member args key)
+              (setq normalized
+                    (append normalized
+                            (list key
+                                  (magent-agent-loop--coerce-textual-tool-value
+                                   spec (plist-get args key)))))
+            (unless (plist-get spec :optional)
+              (magent-agent-loop--signal-invalid-tool-arguments
+               "tool '%s' is missing required argument '%s'"
+               tool-name (substring (symbol-name key) 1))))))
+      normalized)))
+
+(defun magent-agent-loop--tool-arg-values
+    (tool-spec args &optional textual-dsml-p)
+  "Return positional tool arg values for TOOL-SPEC from ARGS.
+When TEXTUAL-DSML-P is non-nil, convert the JSON false sentinel to nil for the
+Elisp tool function after preserving it in the normalized raw arguments."
   (if (and tool-spec
            (magent-agent-loop--plist-args-p args)
            (fboundp 'gptel-tool-args))
@@ -707,7 +848,8 @@ carry provider-specific ids and names."
          (let ((value
                 (plist-get args
                            (intern (concat ":" (plist-get spec :name))))))
-           (unless (eq value :null)
+           (unless (or (eq value :null)
+                       (and textual-dsml-p (eq value :json-false)))
              value)))
        (gptel-tool-args tool-spec))
     args))
@@ -743,16 +885,32 @@ available in LOOP's request tools."
   (let* ((name (magent-llm-event-name event))
          (tool-spec (magent-agent-loop--find-tool loop name)))
     (when tool-spec
-      (let ((raw-call (magent-agent-loop--tool-raw-call event)))
+      (let* ((raw-call (magent-agent-loop--tool-raw-call event))
+             (textual-dsml-p
+              (member (plist-get raw-call :source)
+                      '(textual-dsml "textual-dsml")))
+             (args (magent-agent-loop--tool-args event)))
         (unless (or (plist-get raw-call :id)
                     (plist-get raw-call :call-id))
           (plist-put raw-call :id (magent-lifecycle-events-generate-id)))
+        (when textual-dsml-p
+          (setq args
+                (magent-agent-loop--normalize-textual-tool-args
+                 tool-spec args))
+          (plist-put raw-call :args args))
         (list tool-spec
               (magent-agent-loop--tool-arg-values
-               tool-spec
-               (magent-agent-loop--tool-args event))
+               tool-spec args textual-dsml-p)
               nil
               raw-call)))))
+
+(defun magent-agent-loop--invalid-tool-arguments-result (loop event err)
+  "Record and return a model-visible invalid argument result for EVENT and ERR."
+  (let* ((raw-call (magent-agent-loop--tool-raw-call event))
+         (message (format "Error: %s" (error-message-string err))))
+    (magent-agent-loop-record-tool-result
+     loop nil (magent-agent-loop--tool-args event) raw-call message)
+    message))
 
 (defun magent-agent-loop--unknown-tool-result (loop event known-tool-names)
   "Record and return an unknown-tool result for EVENT."
@@ -795,22 +953,27 @@ request after model-visible tool output has been recorded."
                           (magent-agent-loop--tool-name tool nil))
                         tools)))
          known-calls
-         unknown-results)
+         failed-results)
     (setf (magent-agent-loop-tool-calls loop) nil)
     (dolist (event events)
-      (if-let* ((call (magent-agent-loop-tool-event-to-call loop event)))
-          (progn
-            (magent-agent-loop--record-tool-start
-             loop
-             (or (plist-get (nth 3 call) :id)
-                 (plist-get (nth 3 call) :call-id))
-             (magent-agent-loop--tool-name (car call) (nth 3 call))
-             (magent-agent-loop--tool-args-plist
-              (car call) (cadr call) (nth 3 call)))
-            (push call known-calls))
-        (push (magent-agent-loop--unknown-tool-result
-               loop event known-tool-names)
-              unknown-results)))
+      (condition-case err
+          (if-let* ((call (magent-agent-loop-tool-event-to-call loop event)))
+              (progn
+                (magent-agent-loop--record-tool-start
+                 loop
+                 (or (plist-get (nth 3 call) :id)
+                     (plist-get (nth 3 call) :call-id))
+                 (magent-agent-loop--tool-name (car call) (nth 3 call))
+                 (magent-agent-loop--tool-args-plist
+                  (car call) (cadr call) (nth 3 call)))
+                (push call known-calls))
+            (push (magent-agent-loop--unknown-tool-result
+                   loop event known-tool-names)
+                  failed-results))
+        (magent-agent-loop-invalid-tool-arguments
+         (push (magent-agent-loop--invalid-tool-arguments-result
+                loop event err)
+               failed-results))))
     (setq known-calls (nreverse known-calls))
     (if known-calls
         (let ((base-result-callback
@@ -832,7 +995,9 @@ request after model-visible tool output has been recorded."
                     (funcall
                      done-callback
                      (magent-agent-loop--tool-dispatch-outcome
-                      'tool-output 'completed)))))
+                      'tool-output
+                      (if failed-results 'failed 'completed)
+                      (car failed-results))))))
           (magent-tool-orchestrator-handle-tool-calls
            orchestrator known-calls))
       (when done-callback
@@ -840,8 +1005,8 @@ request after model-visible tool output has been recorded."
          done-callback
          (magent-agent-loop--tool-dispatch-outcome
           'tool-output
-          (if unknown-results 'failed 'completed)
-          (car unknown-results))))))
+          (if failed-results 'failed 'completed)
+          (car failed-results))))))
   loop)
 
 (defun magent-agent-loop-request-for-current-session (loop)
