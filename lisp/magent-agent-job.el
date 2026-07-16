@@ -109,11 +109,6 @@ Return JOB."
     (setf (magent-agent-job-error job) error))
   job)
 
-(defun magent-agent-job-terminal-p (job)
-  "Return non-nil when JOB has reached a durable terminal status."
-  (memq (magent-agent-job-status job)
-        '(completed failed closed cancelled)))
-
 (defun magent-agent-job-reconcile-after-restart (job &optional detail)
   "Cancel non-durable JOB state after an Emacs restart.
 DETAIL defaults to a stable explanatory message.  Return non-nil when JOB

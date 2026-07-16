@@ -42,10 +42,6 @@
   (make-hash-table :test #'eq :weakness 'key)
   "Per-submission starters kept outside the stable submission struct.")
 
-(defvar magent-runtime-queue--submission-request-contexts
-  (make-hash-table :test #'eq :weakness 'key)
-  "Per-submission request contexts kept outside the stable struct.")
-
 (defun magent-runtime-submission-starter (submission)
   "Return the request-local starter captured for SUBMISSION."
   (gethash submission magent-runtime-queue--submission-starters))
@@ -56,19 +52,6 @@
       (puthash submission starter magent-runtime-queue--submission-starters)
     (remhash submission magent-runtime-queue--submission-starters))
   starter)
-
-(defun magent-runtime-submission-request-context (submission)
-  "Return the request context captured for SUBMISSION."
-  (gethash submission magent-runtime-queue--submission-request-contexts))
-
-(defun magent-runtime-queue-set-submission-request-context
-    (submission request-context)
-  "Associate REQUEST-CONTEXT with SUBMISSION outside its stable struct."
-  (if request-context
-      (puthash submission request-context
-               magent-runtime-queue--submission-request-contexts)
-    (remhash submission magent-runtime-queue--submission-request-contexts))
-  request-context)
 
 (defvar magent-runtime-queue--active nil
   "Currently running `magent-runtime-submission'.")
@@ -505,12 +488,6 @@ started."
     (dolist (submission removed)
       (magent-runtime-queue-arbiter-cancel 'runtime submission))
     (nreverse removed)))
-
-(defun magent-runtime-queue-active-session-p (runtime-session)
-  "Return non-nil when exact RUNTIME-SESSION owns the active submission."
-  (and magent-runtime-queue--active
-       (eq (magent-runtime-submission-session magent-runtime-queue--active)
-           runtime-session)))
 
 (defun magent-runtime-queue--submission-session-object (submission)
   "Return the Magent session captured by runtime SUBMISSION, or nil."

@@ -30,7 +30,6 @@ Magent 拥有 Magent-owned agent loop 和 durable child-agent lifecycle。Root a
 
 - ~magent.el~ ：package entry point 和 lazy runtime initialization。
 - ~magent-agent-shell.el~ ：受支持的 interactive entry points。
-- ~magent-modeline.el~ ：UI-neutral mode-line 状态格式化。
 - ~magent-config.el~ ：UI-neutral runtime 与 feature customization。
 - ~magent-pkg.el~ ：package metadata。
 
@@ -281,15 +280,15 @@ interactive entry points。
 
 ** 5. ~magent-tools.el~
 
-*复杂原因：* 14 个 tool implementation 各自有 side effects、timeout、child-agent runtime state 和 error handling。 ~emacs_eval~ 要在正确 buffer context 中执行。
+*复杂原因：* 15 个 tool implementation 各自有 side effects、timeout、child-agent runtime state 和 error handling。 ~emacs_eval~ 要在正确 buffer context 中执行。
 
 *修改建议：* timeout handling 必须可靠； ~emacs_eval~ context capture、child-agent status persistence 和 parent/child request-context inheritance 都很关键。
 
 ** 6. ~magent-session.el~
 
-*复杂原因：* 它负责 project scoping、global fallback、JSON persistence、ledger-driven UI restoration、legacy buffer-content migration、child-agent job persistence 和 history trimming。
+*复杂原因：* 它负责 project scoping、global fallback、JSON persistence、ledger-driven UI restoration、child-agent job persistence 和 history trimming。
 
-*修改建议：* session directory 由 project root SHA1 派生。 ~buffer-content~ 和 ~agent-jobs~ 需要为恢复和 child transcript inspection 保持无损。
+*修改建议：* session directory 由 project root SHA1 派生。 ~agent-jobs~ 需要为 child transcript inspection 保持无损。
 
 * 开发流程
 

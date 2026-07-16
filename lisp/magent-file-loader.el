@@ -239,12 +239,6 @@ resource access may still canonicalize the target independently."
          (directory-file-name (expand-file-name directory)))
         (expand-file-name filepath))))
 
-(defun magent-file-loader-file-under-any-directory-p (filepath directories)
-  "Return non-nil when FILEPATH is inside one of DIRECTORIES."
-  (cl-some (lambda (directory)
-             (magent-file-loader-file-under-directory-p filepath directory))
-           (delq nil directories)))
-
 (defun magent-file-loader-project-root-for-file (filepath relative-dir)
   "Return the project root owning FILEPATH under RELATIVE-DIR, or nil.
 RELATIVE-DIR is the project-local subdirectory path such as
@@ -367,17 +361,6 @@ FILE-PATH-FUNCTION is called with each registry value."
        (and (eq (funcall source-layer-function value) 'project)
             (equal (funcall source-scope-function value) scope))))
    registry))
-
-(defun magent-file-loader-hash-remove-project-scope-entries
-    (table source-layer-function source-scope-function scope)
-  "Delete project-layer values from TABLE for SCOPE and return TABLE."
-  (maphash
-   (lambda (key value)
-     (when (and (eq (funcall source-layer-function value) 'project)
-                (equal (funcall source-scope-function value) scope))
-       (remhash key table)))
-   table)
-  table)
 
 (defun magent-file-loader-reload-file-backed-registry
     (registry-symbol file-path-function load-function &rest args)

@@ -174,16 +174,6 @@ Each directory can contain subdirectories with CAPABILITY.md files."
     (push (cons name capability) magent-capability--registry))
   capability)
 
-(defun magent-capability-unregister (name)
-  "Remove capability NAME from the registry."
-  (setq magent-capability--registry
-        (cl-remove-if (lambda (entry) (equal (car entry) name))
-                      magent-capability--registry)))
-
-(defun magent-capability-clear ()
-  "Clear the capability registry."
-  (setq magent-capability--registry nil))
-
 (defun magent-capability-remove-project-scope (scope)
   "Remove project-local capabilities registered for SCOPE."
   (setq magent-capability--registry
@@ -501,10 +491,6 @@ local capabilities after static definitions are reloaded."
   (setq magent-capability--local-disabled-capabilities nil
         magent-capability--local-enabled-capabilities nil))
 
-(defun magent-capability-locally-disabled-p (capability-name)
-  "Return non-nil when CAPABILITY-NAME is locally disabled."
-  (member capability-name magent-capability--local-disabled-capabilities))
-
 (defun magent-capability-toggle-locally (capability-name)
   "Toggle CAPABILITY-NAME for the current Emacs session only.
 Returns the new symbolic state: either `enabled' or `disabled'."
@@ -767,14 +753,6 @@ empty one."
                                        (magent-capability-name
                                         (magent-capability-match-capability b)))))))))))
 
-(defun magent-capability--dedupe-strings (strings)
-  "Return STRINGS without duplicates while preserving order."
-  (let (seen result)
-    (dolist (string strings (nreverse result))
-      (when (and string (not (member string seen)))
-        (push string seen)
-        (push string result)))))
-
 (defun magent-capability-match-to-plist (match)
   "Return a machine-readable plist for MATCH."
   (let ((capability (magent-capability-match-capability match)))
@@ -844,7 +822,7 @@ auto-activate."
          (suggested (cl-loop for match in matches
                              when (eq (magent-capability-match-status match) 'suggested)
                              collect match))
-         (skill-names (magent-capability--dedupe-strings
+         (skill-names (magent-skills-dedupe-names
                        (append explicit-skills
                                (cl-mapcan (lambda (match)
                                             (cl-remove-if-not

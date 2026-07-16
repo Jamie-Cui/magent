@@ -119,11 +119,6 @@ source reload from older Magent versions.")
                                   (copy-sequence value)
                                 value)))))
 
-(defun magent-request-context-audit-context (context)
-  "Return CONTEXT's frozen scalar audit snapshot as an independent copy."
-  (magent-request-context--copy-audit-snapshot
-   (gethash context magent-request-context--audit-contexts)))
-
 (defun magent-request-context--set-audit-context (context snapshot)
   "Freeze scalar audit SNAPSHOT for CONTEXT outside the struct layout."
   (puthash context

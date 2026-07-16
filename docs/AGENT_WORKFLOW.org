@@ -5,8 +5,8 @@
 
 Magent now models the agent loop as an explicit ~thread -> turn -> item~
 ledger. This is the source of truth for agent workflow state. Legacy
-session ~messages~ and ~context-items~ remain as derived projections for
-gptel prompt construction, migration, and older tests.
+session ~messages~ remain as a derived projection for gptel prompt
+construction and migration.
 
 * Codex Alignment
 
@@ -132,8 +132,8 @@ Session JSON now writes both:
 }
 #+end_src
 
-Older ~messages~ and ~context-items~ are kept as projections for gptel
-prompt reuse and migration. On load, Magent prefers replaying
+Older ~messages~ are kept as a projection for gptel prompt reuse and
+migration. On load, Magent prefers replaying
 ~snapshot + journal~; if
 those fields are absent, it migrates legacy ~messages~ into a thread
 ledger.
@@ -227,9 +227,8 @@ areas:
   item statuses because the Emacs session file is the durable source of
   truth.
 - Codex rollout history stores response items and turn context items.
-  Magent stores a ledger ~snapshot + journal~; ~messages~ and
-  ~context-items~ are projections used for gptel prompt reuse and
-  migration.
+  Magent stores a ledger ~snapshot + journal~; ~messages~ is the only
+  derived projection retained for gptel prompt reuse and migration.
 - Codex provider/model plumbing is native to codex-core. Magent keeps
   ~gptel-request~ as the provider transport and normalizes gptel events
   before the Magent-owned loop consumes them.

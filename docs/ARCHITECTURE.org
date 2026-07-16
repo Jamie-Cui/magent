@@ -70,7 +70,7 @@ The supported frontend is ~agent-shell~. ~magent-agent-shell.el~ registers the M
 
 The durable source of truth is a ~thread -> turn -> item~ ledger. ~magent-ledger.el~ defines the state objects, transitions, and journal events. ~magent-runtime-api.el~ creates user submissions, while ~magent-runtime-queue.el~ schedules active execution. ~magent-session.el~ atomically stores a materialized ~snapshot~ plus a bounded tail of the in-memory append-only ~journal~. The snapshot records ~last-event-seq~, so retained events at or below that watermark remain inspectable but are not replayed twice.
 
-Legacy ~messages~, ~context-items~, and ~buffer-content~ are projections or migration data. They are not the canonical UI source of truth.
+Legacy ~messages~ remain as the projection used for gptel prompt reuse and migration. They are not the canonical UI source of truth.
 
 ** Tools, Permissions, And Audit
 

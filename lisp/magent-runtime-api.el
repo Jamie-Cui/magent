@@ -172,11 +172,6 @@
    (or (magent-runtime-session-effort runtime-session)
        magent-default-effort)))
 
-(defun magent-runtime-session-effective-effort (runtime-session)
-  "Return RUNTIME-SESSION's provider-facing effort, or nil for auto."
-  (magent-effort-effective
-   (magent-runtime-session-effort-option runtime-session)))
-
 (defun magent-runtime-session-set-effort (runtime-session effort)
   "Set RUNTIME-SESSION effort option to EFFORT and return it."
   (magent-runtime-api--assert-session-available runtime-session)
@@ -202,15 +197,6 @@
     (setf (magent-runtime-session-metadata runtime-session)
           (plist-put metadata :capabilities-enabled (and enabled t))))
   (magent-runtime-session-capabilities-enabled-p runtime-session))
-
-(defun magent-runtime-session-toggle-pending-skill (runtime-session skill-name)
-  "Toggle one-shot SKILL-NAME for RUNTIME-SESSION."
-  (magent-runtime-api--assert-session-available runtime-session)
-  (let ((skills (magent-runtime-session-pending-skills runtime-session)))
-    (setf (magent-runtime-session-pending-skills runtime-session)
-          (if (member skill-name skills)
-              (remove skill-name skills)
-            (append skills (list skill-name))))))
 
 (defun magent-runtime-session-clear-pending-skills (runtime-session)
   "Clear one-shot skills for RUNTIME-SESSION."
@@ -430,8 +416,6 @@ Any active or queued work for the session is cancelled first."
                  :submission-id (magent-runtime-submission-id submission)
                  :live-p (lambda ()
                            (magent-runtime-api--submission-live-p submission)))))
-          (magent-runtime-queue-set-submission-request-context
-           submission request-context)
           (when (magent-runtime-api--submission-live-p submission)
             (magent-runtime-api--notify-submission submission 'turn-start))
           (when (magent-runtime-api--submission-live-p submission)

@@ -70,10 +70,6 @@ the historical `magent-lifecycle-events-context' layout.")
       (setq index (1+ index)))
     result))
 
-(defun magent-lifecycle-events-current-context ()
-  "Return the current turn context, or nil."
-  magent-lifecycle-events--current-context)
-
 (defun magent-lifecycle-events-add-sink (sink)
   "Register SINK as an event sink."
   (cl-pushnew sink magent-lifecycle-events--sinks :test #'eq)

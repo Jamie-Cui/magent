@@ -3,7 +3,7 @@
 #+magent_alt_url: /AGENT_WORKFLOW.html
 #+options: toc:nil num:nil
 
-Magent 现在把 agent loop 建模为显式的 ~thread -> turn -> item~ ledger。这个 ledger 是 agent workflow state 的 source of truth。旧 session ~messages~ 和 ~context-items~ 仍然保留，但只作为 gptel prompt construction、迁移和旧测试的 derived projections。
+Magent 现在把 agent loop 建模为显式的 ~thread -> turn -> item~ ledger。这个 ledger 是 agent workflow state 的 source of truth。旧 session ~messages~ 仍然保留，但只作为 gptel prompt construction 和迁移的 derived projection。
 
 * Codex 对齐
 
@@ -97,7 +97,7 @@ Session JSON 同时写入两者：
 }
 #+end_src
 
-旧 ~messages~ 和 ~context-items~ 是 prompt reuse 和迁移用的 projections。加载时，Magent 优先 replay ~snapshot + journal~ ；若不存在则把 legacy ~messages~ 迁移成 thread ledger。
+旧 ~messages~ 是 prompt reuse 和迁移用的 projection。加载时，Magent 优先 replay ~snapshot + journal~ ；若不存在则把 legacy ~messages~ 迁移成 thread ledger。
 
 Replay 语义：
 

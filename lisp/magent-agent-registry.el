@@ -168,10 +168,6 @@ Returns list of agent name strings."
   "List all primary agents (non-hidden, mode is primary or all)."
   (magent-agent-registry-list nil 'primary))
 
-(defun magent-agent-registry-subagents ()
-  "List all subagents (mode is subagent or all)."
-  (magent-agent-registry-list nil 'subagent))
-
 ;;; Agent utilities
 
 (defun magent-agent-registry-clear ()
@@ -179,11 +175,6 @@ Returns list of agent name strings."
 This does not affect built-in agents that will be reloaded on initialization."
   (clrhash magent-agent-registry--agents)
   (setq magent-agent-registry--initialized nil))
-
-(defun magent-agent-registry-reinit ()
-  "Reinitialize the registry, reloading all built-in agents."
-  (setq magent-agent-registry--initialized nil)
-  (magent-agent-registry-init))
 
 ;;; Helper functions
 

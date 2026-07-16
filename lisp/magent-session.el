@@ -22,7 +22,7 @@
 (require 'magent-ledger)
 (require 'magent-agent-job)
 
-(declare-function magent-agent-info-name "magent-agent-registry")
+(declare-function magent-agent-info-name "magent-agent-info")
 (declare-function magent-agent-registry-get "magent-agent-registry")
 
 ;;; Session state structure
@@ -34,9 +34,7 @@
   (max-history magent-max-history)
   (id nil)
   (agent nil)
-  (buffer-content nil)       ; Saved buffer text for lossless restore
   (approval-overrides nil)   ; Session-scoped approval memory
-  (context-items nil)        ; Structured Codex-like transcript items
   (agent-jobs nil)           ; Durable child-agent job state
   (thread nil)               ; Canonical thread/turn/item ledger
   (metadata nil))            ; Top-level session metadata alist
@@ -333,12 +331,10 @@ When VALUE is nil, remove KEY.  Return SESSION metadata."
     thread))
 
 (defun magent-session-refresh-projections (session)
-  "Refresh SESSION legacy message/context projections from its thread ledger."
+  "Refresh SESSION's message projection from its thread ledger."
   (when (and session (magent-session-thread session))
     (setf (magent-session-messages session)
-          (magent-thread-messages (magent-session-thread session)))
-    (setf (magent-session-context-items session)
-          (magent-thread-response-items (magent-session-thread session)))))
+          (magent-thread-messages (magent-session-thread session)))))
 
 (defun magent-session-thread-ledger (session)
   "Return SESSION's canonical thread ledger and refresh projections."
@@ -507,13 +503,6 @@ Return JOB."
   (and session
        (magent-agent-job-find (magent-session-agent-jobs session) id)))
 
-(defun magent-session-set-agent-job-status
-    (session id status &optional result error)
-  "Set SESSION child-agent job ID to STATUS.
-Optionally record RESULT or ERROR.  Return the updated job, or nil."
-  (when-let* ((job (magent-session-agent-job session id)))
-    (magent-agent-job-set-status job status result error)))
-
 (defun magent-session-activate (&optional scope)
   "Activate SCOPE and return its session.
 SCOPE must be either `global' or a normalized project root string."
@@ -542,9 +531,7 @@ selected agent, and history limit so runtime UI handles remain valid."
                   (magent-session--scope-storage-directory target-scope)))))
       (magent-session--cancel-deferred-save-for-session session target-scope)
       (setf (magent-session-messages session) nil
-            (magent-session-buffer-content session) nil
             (magent-session-approval-overrides session) nil
-            (magent-session-context-items session) nil
             (magent-session-agent-jobs session) nil
             (magent-session-thread session) nil
             (magent-session-metadata session) nil)
@@ -794,13 +781,6 @@ Fall back to the file modification time for legacy filenames."
   (format-time-string "%Y-%m-%d %H:%M:%S"
                       (magent-session--file-display-time filepath)))
 
-(defun magent-session--format-display-time (filepath)
-  "Return the time-of-day portion of FILEPATH's display timestamp."
-  (let ((timestamp (magent-session--format-display-timestamp filepath)))
-    (if (string-match "[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\} \\([0-9:]+\\)\\'" timestamp)
-        (match-string 1 timestamp)
-      timestamp)))
-
 ;;; Session persistence
 
 (defun magent-session--msg-to-alist (msg)
@@ -818,14 +798,6 @@ Fall back to the file modification time for legacy filenames."
                                         (plist-get content :args))))
                         (result . ,(plist-get content :result)))
                     (magent-session--content-to-string content))))))
-
-(defun magent-session--context-item-to-alist (item)
-  "Convert structured context ITEM to a JSON-serializable alist."
-  (magent-protocol-response-item-to-alist item))
-
-(defun magent-session--alist-to-context-item (alist)
-  "Reconstruct a structured context item from JSON-decoded ALIST."
-  (magent-protocol-response-item-from-alist alist))
 
 (defun magent-session--alist-to-msg (alist)
   "Reconstruct a session message from JSON-decoded ALIST."
@@ -851,9 +823,7 @@ Fall back to the file modification time for legacy filenames."
 (defun magent-session-save-for-session (session scope)
   "Synchronously save SESSION for explicit SCOPE as <session-id>.json.
 This is the persistence primitive for asynchronous callers: it never reads or
-temporarily rebinds the ambient current session or scope.
-The caller is responsible for updating `magent-session-buffer-content'
-before calling this function."
+temporarily rebinds the ambient current session or scope."
   (unless (magent-session-p session)
     (error "Expected a Magent session, got: %S" session))
   (unless scope
@@ -906,10 +876,6 @@ before calling this function."
                        ,@(when summary-title
                            `((summary-title . ,summary-title)))
                        (messages . ,(vconcat (mapcar #'magent-session--msg-to-alist messages)))
-                       (context-items . ,(vconcat
-                                          (mapcar
-                                           #'magent-session--context-item-to-alist
-                                           (magent-session-context-items session))))
                        (snapshot . ,(and thread
                                          (magent-thread-snapshot-to-alist thread)))
                        (journal . ,(vconcat
@@ -920,8 +886,7 @@ before calling this function."
                                        (mapcar
                                         #'magent-agent-job-to-alist
                                         (magent-session-agent-jobs session))))
-                       (approval-overrides . ,(vconcat approval-overrides))
-                       (buffer-content . ,(or (magent-session-buffer-content session) "")))))
+                       (approval-overrides . ,(vconcat approval-overrides)))))
           (magent-session--write-json-atomic filepath data)
           (remhash filepath magent-session--metadata-cache)
           (magent-log "INFO session saved to %s (%d messages) scope=%s"
@@ -934,15 +899,6 @@ Compatibility wrapper around `magent-session-save-for-session'."
   (when magent--current-session
     (magent-session-save-for-session
      magent--current-session magent-session--current-scope)))
-
-(defun magent-session-save-deferred (&optional delay)
-  "Schedule a session save to run after Emacs is idle.
-DELAY defaults to `magent-session-save-idle-delay'.  The active session
-and scope at scheduling time are saved even if the user switches scopes
-before the timer fires."
-  (when magent--current-session
-    (magent-session-save-deferred-for-session
-     magent--current-session magent-session--current-scope delay)))
 
 (defun magent-session-save-deferred-for-session (session &optional scope delay)
   "Schedule SESSION to be saved for SCOPE after Emacs is idle.
@@ -1029,12 +985,10 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
                (scope-name (cdr (assq 'scope data)))
                (project-root (cdr (assq 'project-root data)))
                (msgs-raw (cdr (assq 'messages data)))
-               (context-raw (cdr (assq 'context-items data)))
                (snapshot-raw (cdr (assq 'snapshot data)))
                (journal-raw (cdr (assq 'journal data)))
                (jobs-raw (cdr (assq 'agent-jobs data)))
                (approval-raw (cdr (assq 'approval-overrides data)))
-               (bc (or (cdr (assq 'buffer-content data)) ""))
                (scope (pcase scope-name
                         ("project"
                          (or (magent-session--normalize-project-root project-root)
@@ -1042,8 +996,6 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
                         ("global" 'global)
                         (_ (magent-session--infer-file-scope filepath))))
                (messages (mapcar #'magent-session--alist-to-msg msgs-raw))
-               (context-items (mapcar #'magent-session--alist-to-context-item
-                                      context-raw))
                (thread
                 (if snapshot-raw
                     (magent-thread-replay
@@ -1071,13 +1023,10 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
                          :id id
                          :metadata metadata
                          :messages messages
-                         :context-items context-items
                          :agent-jobs agent-jobs
                          :approval-overrides approval-overrides
-                         :thread thread
-                         :buffer-content (when (> (length bc) 0) bc))))
-          (unless context-raw
-            (magent-session-refresh-projections session))
+                         :thread thread)))
+          (magent-session-refresh-projections session)
           (puthash session filepath magent-session--loaded-sessions)
           (list :scope scope
                 :session session
@@ -1130,19 +1079,6 @@ current scope, clear it so Magent falls back to the default agent."
       (setf (magent-session-agent session)
             (magent-agent-registry-get (magent-agent-info-name agent)))))
   session)
-
-(defun magent-session-load (filepath)
-  "Load the session from FILEPATH.
-Restores `magent--current-session'.  Returns the session or nil."
-  (when-let* ((loaded (magent-session-read-file filepath))
-              (scope (plist-get loaded :scope))
-              (session (plist-get loaded :session)))
-    (magent-session-install scope session)
-    (magent-log "INFO session loaded from %s (%d messages) scope=%s"
-                (plist-get loaded :id)
-                (length (magent-session-messages session))
-                scope)
-    session))
 
 (defun magent-session-list-files ()
   "Return all session JSON files grouped by project for resume display."
@@ -1292,21 +1228,6 @@ message boundary."
             (when kept
               (setf (magent-thread-turn-items turn) (nreverse kept))
               (push turn trimmed))))))))
-
-(defun magent-session--trim-context-items-for-messages (items max-messages)
-  "Trim structured ITEMS to roughly MAX-MESSAGES message items.
-Non-message items are retained only after the retained message boundary."
-  (let ((message-count 0)
-        start)
-    (cl-loop for item in (reverse items)
-             for index from (1- (length items)) downto 0
-             do (when (eq (magent-response-item-type item) 'message)
-                  (cl-incf message-count)
-                  (when (<= message-count max-messages)
-                    (setq start index))))
-    (if start
-        (nthcdr start items)
-      items)))
 
 (defun magent-session-add-tool-message (session id name args result)
   "Add a structured tool result message to SESSION.

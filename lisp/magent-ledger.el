@@ -132,18 +132,6 @@
   "Return the current Unix timestamp as a float."
   (float-time))
 
-(defun magent-thread-status-p (status)
-  "Return non-nil when STATUS is a valid thread status."
-  (memq status magent-thread-statuses))
-
-(defun magent-turn-status-p (status)
-  "Return non-nil when STATUS is a valid turn status."
-  (memq status magent-turn-statuses))
-
-(defun magent-item-status-p (status)
-  "Return non-nil when STATUS is a valid item status."
-  (memq status magent-item-statuses))
-
 (defun magent-journal-event-type-p (type)
   "Return non-nil when TYPE is a valid journal event type."
   (memq type magent-journal-event-types))
@@ -884,24 +872,6 @@ Return the new `magent-thread-item'."
     (or (magent-thread--find-item thread (magent-thread-item-id item))
         item)))
 
-(defun magent-thread-update-item (thread item &rest args)
-  "Update ITEM in THREAD with ARGS and return ITEM."
-  (let ((incoming (apply #'magent-thread-item-create
-                         :id (magent-thread-item-id item)
-                         :turn-id (magent-thread-item-turn-id item)
-                         :type (magent-thread-item-type item)
-                         :status (magent-thread-item-status item)
-                         args)))
-    (magent-thread-append-event
-     thread
-     (magent-thread-event-create
-      :type 'item-updated
-      :thread-id (magent-thread-id thread)
-      :turn-id (magent-thread-item-turn-id item)
-      :item-id (magent-thread-item-id item)
-      :payload (magent-thread--item-event-payload incoming)))
-    item))
-
 (defun magent-thread-complete-item (thread item &rest args)
   "Mark ITEM completed in THREAD with ARGS."
   (let ((incoming (apply #'magent-thread-item-create
@@ -1052,49 +1022,6 @@ number of lifecycle objects changed."
   (apply #'append
          (mapcar #'magent-thread-turn-items
                  (magent-thread-turns thread))))
-
-(defun magent-thread-item-to-response-item (item)
-  "Convert ledger ITEM to a legacy `magent-response-item' projection."
-  (pcase (magent-thread-item-type item)
-    ('message
-     (magent-response-item-create
-      :id (magent-thread-item-id item)
-      :type 'message
-      :role (magent-thread-item-role item)
-      :content (magent-thread-item-content item)
-      :status (magent-thread-item-status item)
-      :phase (magent-thread-item-phase item)
-      :metadata (magent-thread-item-metadata item)))
-    ('tool
-     (magent-response-item-create
-      :id (magent-thread-item-id item)
-      :type 'tool
-      :name (magent-thread-item-name item)
-      :call-id (magent-thread-item-call-id item)
-      :content (magent-thread-item-input item)
-      :output (magent-thread-item-output item)
-      :status (magent-thread-item-status item)
-      :metadata (magent-thread-item-metadata item)))
-    ('reasoning
-     (magent-response-item-create
-      :id (magent-thread-item-id item)
-      :type 'reasoning
-      :content (magent-thread-item-content item)
-      :status (magent-thread-item-status item)
-      :metadata (magent-thread-item-metadata item)))
-    (_
-     (magent-response-item-create
-      :id (magent-thread-item-id item)
-      :type (magent-thread-item-type item)
-      :content (magent-thread-item-content item)
-      :output (magent-thread-item-output item)
-      :status (magent-thread-item-status item)
-      :metadata (magent-thread-item-metadata item)))))
-
-(defun magent-thread-response-items (thread)
-  "Return legacy response item projections for THREAD."
-  (mapcar #'magent-thread-item-to-response-item
-          (magent-thread-all-items thread)))
 
 (defun magent-thread-messages (thread)
   "Return legacy session message projections for THREAD."

@@ -87,4 +87,4 @@ coverage:
 
 clean:
 	@echo "Cleaning compiled files..."
-	@rm -f $(COMPILED)
+	@rm -f lisp/*.elc

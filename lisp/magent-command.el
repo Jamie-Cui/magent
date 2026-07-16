@@ -94,22 +94,9 @@ metadata for display and extension, for example `pipeline' or `agent-loop'."
   "Return registered Magent internal command NAME, or nil."
   (gethash (magent-command--normalize-name name) magent-command--registry))
 
-(defun magent-command-list ()
-  "Return registered Magent internal command specs."
-  (let (specs)
-    (maphash (lambda (_ spec) (push spec specs)) magent-command--registry)
-    (sort specs
-          (lambda (a b)
-            (string< (magent-command-spec-name a)
-                     (magent-command-spec-name b))))))
-
 (defun magent-command--metadata-set (session key value)
   "Set SESSION internal command metadata KEY to VALUE."
   (magent-session-set-metadata-value session key value))
-
-(defun magent-command--metadata (context)
-  "Return metadata alist for CONTEXT."
-  (magent-session-metadata (magent-command-context-session context)))
 
 (defun magent-command--status-string (status)
   "Return command STATUS as a string."
@@ -476,17 +463,6 @@ already recorded by the runtime."
                     id)))
     (format "%s  [%s]  %s  %s  <%s>"
             time status command title id)))
-
-(defun magent-command-list-sessions (&optional command)
-  "Return internal command session entries, optionally limited to COMMAND."
-  (mapcar
-   (lambda (file)
-     (let ((meta (magent-session--read-file-metadata-cached file)))
-       (append (list :file file
-                     :id (file-name-sans-extension
-                          (file-name-nondirectory file)))
-               meta)))
-   (magent-session-list-internal-files command)))
 
 (defun magent-command-active-contexts (&optional cancellable-only)
   "Return active internal command contexts.

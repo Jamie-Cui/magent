@@ -230,6 +230,30 @@ kept so unloading a project overlay restores the previous definition.")
                     (car entry)))
                 (magent-skills--effective-entries))))
 
+(defun magent-skills-dedupe-names (names)
+  "Return string NAMES without duplicates, preserving order."
+  (let (seen result)
+    (dolist (name names (nreverse result))
+      (when (and (stringp name) (not (member name seen)))
+        (push name seen)
+        (push name result)))))
+
+(defun magent-skills-command-names ()
+  "Return sorted instruction skill names with a default prompt."
+  (sort (cl-remove-if-not #'magent-skills-default-prompt
+                          (magent-skills-list-by-type 'instruction))
+        #'string<))
+
+(defun magent-skills-command-text (skill-name extra-instruction)
+  "Return SKILL-NAME's default prompt plus EXTRA-INSTRUCTION."
+  (let ((prompt (magent-skills-default-prompt skill-name))
+        (extra (string-trim (or extra-instruction ""))))
+    (unless prompt
+      (user-error "Magent: skill '%s' has no default prompt" skill-name))
+    (if (string-blank-p extra)
+        prompt
+      (concat prompt "\n\nAdditional instruction:\n" extra))))
+
 (defun magent-skills-missing-tools (skill-name available-tools)
   "Return SKILL-NAME's declared tools absent from AVAILABLE-TOOLS.
 Tool names may be strings or symbols.  An unknown skill has no requirements."

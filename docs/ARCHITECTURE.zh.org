@@ -63,7 +63,7 @@ manifest 和 package data recipe。
 
 持久化真相源是 ~thread -> turn -> item~ ledger。 ~magent-ledger.el~ 定义状态对象、状态转移和 journal events， ~magent-runtime-api.el~ 创建用户 submission， ~magent-runtime-queue.el~ 调度实际执行， ~magent-session.el~ 以原子替换方式保存 materialized ~snapshot~ 和内存 append-only ~journal~ 的有界尾部。snapshot 记录 ~last-event-seq~，因此保留的旧事件可供检查，但恢复时不会重复 replay。
 
-旧的 ~messages~ 、 ~context-items~ 和 ~buffer-content~ 只是 projection 或迁移数据，不是 UI 的 canonical source of truth。
+旧的 ~messages~ 仍作为 gptel prompt reuse 和迁移所需的 projection，但不是 UI 的 canonical source of truth。
 
 ** 工具、权限与审计
 

@@ -65,9 +65,6 @@
 ;;    (setq gptel-backend (gptel-make-anthropic "Claude" :key 'gptel-api-key-from-auth-source))
 ;;    or set the ANTHROPIC_API_KEY / OPENAI_API_KEY environment variable.
 ;;
-;; 2. Enable globally:
-;;    (global-magent-mode 1)
-
 ;;; Code:
 
 ;; Ensure the lisp/ directory is on load-path so sibling modules are
@@ -93,7 +90,6 @@
 (require 'magent-doctor)
 (require 'magent-agent-loop)
 (require 'magent-session)
-(require 'magent-transcript-context)
 (require 'magent-runtime)
 (require 'magent-runtime-queue)
 (require 'magent-project-instructions)
@@ -107,7 +103,6 @@
 (require 'magent-runtime-api)
 (require 'magent-acp)
 (require 'magent-agent-shell)
-(require 'magent-modeline)
 (require 'magent-agent-registry)
 (require 'magent-agent-file)
 (require 'magent-permission)
@@ -124,26 +119,10 @@
 
 (declare-function magent-runtime-ensure-initialized "magent-runtime")
 
-;;;###autoload
-(define-minor-mode magent-mode
-  "Minor mode for Magent AI coding agent.
-Supported interaction is provided by `magent-agent-shell-dwim' and
-agent-shell's own commands and bindings.
-
-\\{magent-mode-map}"
-  :init-value nil
-  :lighter magent-modeline-lighter
-  :keymap (make-sparse-keymap))
-
 (defun magent--ensure-initialized ()
   "Ensure magent is fully initialized.
 Called on first use of any magent command.  Loads agents and skills."
   (magent-runtime-ensure-initialized))
-
-;;;###autoload
-(define-globalized-minor-mode global-magent-mode magent-mode
-  (lambda () (magent-mode 1))
-  :group 'magent)
 
 (provide 'magent)
 

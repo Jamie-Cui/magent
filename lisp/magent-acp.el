@@ -32,10 +32,6 @@
 (defconst magent-acp-protocol-version 1
   "ACP protocol version supported by Magent.")
 
-(defun magent-acp--bool (value)
-  "Return ACP boolean VALUE."
-  (if value t :false))
-
 (defun magent-acp--content-block (text)
   "Return ACP text content block for TEXT."
   `((type . "text")
@@ -131,12 +127,6 @@
                   (name . "Disabled")
                   (description . "Use only explicitly selected instruction skills."))]))))
 
-(defun magent-acp--command-skill-names ()
-  "Return sorted instruction skill names that can act as slash commands."
-  (sort (cl-remove-if-not #'magent-skills-default-prompt
-                          (magent-skills-list-by-type 'instruction))
-        #'string<))
-
 (defun magent-acp--skill-command-entry (skill-name)
   "Return ACP available command entry for command-like SKILL-NAME."
   (let ((skill (magent-skills-get skill-name)))
@@ -166,7 +156,7 @@
       (lambda (entry)
         (assoc (map-elt entry 'name) magent-acp--control-commands))
       (mapcar #'magent-acp--skill-command-entry
-              (magent-acp--command-skill-names))))
+              (magent-skills-command-names))))
     (lambda (a b)
       (string< (map-elt a 'name)
                (map-elt b 'name))))))
@@ -284,13 +274,6 @@ keywords."
    ((stringp prompt) (list (magent-acp--content-block prompt)))
    (t nil)))
 
-(defun magent-acp--resource-text (block)
-  "Return embedded text content from ACP resource BLOCK, or nil."
-  (let ((resource (magent-acp--alist-plist-get block 'resource)))
-    (or (magent-acp--alist-plist-get block 'text)
-        (and resource
-             (magent-acp--alist-plist-get resource 'text)))))
-
 (defun magent-acp--resource-label (block type)
   "Return display label for ACP resource BLOCK of TYPE."
   (let ((resource (magent-acp--alist-plist-get block 'resource)))
@@ -300,32 +283,6 @@ keywords."
              (or (magent-acp--alist-plist-get resource 'uri)
                  (magent-acp--alist-plist-get resource 'name)))
         type)))
-
-(defun magent-acp--resource-prompt-text (block type)
-  "Return prompt text preserving ACP resource BLOCK contents."
-  (let ((label (magent-acp--resource-label block type))
-        (text (magent-acp--resource-text block)))
-    (if (and (stringp text) (not (string-empty-p text)))
-        (format "[Context resource: %s]\n%s" label text)
-      (format "[Context resource: %s]" label))))
-
-(defun magent-acp--prompt-text (prompt)
-  "Return plain text extracted from ACP PROMPT content blocks."
-  (let (parts unsupported)
-    (dolist (block (magent-acp--prompt-blocks prompt))
-      (let ((type (magent-acp--alist-plist-get block 'type)))
-        (cond
-         ((or (null type) (equal type "text"))
-          (push (or (magent-acp--alist-plist-get block 'text) "")
-                parts))
-         ((member type '("resource_link" "resource" "file"))
-          (push (magent-acp--resource-prompt-text block type) parts))
-         (t
-          (push type unsupported)))))
-    (when unsupported
-      (error "Unsupported ACP prompt content block(s): %s"
-             (string-join (nreverse unsupported) ", ")))
-    (string-trim (mapconcat #'identity (nreverse parts) "\n"))))
 
 (defun magent-acp--normalize-resource-block (block type)
   "Return normalized ACP resource BLOCK of TYPE."
@@ -447,26 +404,6 @@ keywords."
           result (plist-put result :content-blocks blocks))
     result))
 
-(defun magent-acp--dedupe-string-list (strings)
-  "Return STRINGS without duplicates, preserving order."
-  (let (seen result)
-    (dolist (string strings)
-      (when (and (stringp string)
-                 (not (member string seen)))
-        (push string seen)
-        (push string result)))
-    (nreverse result)))
-
-(defun magent-acp--skill-command-text (skill-name extra-instruction)
-  "Return default prompt text for SKILL-NAME plus EXTRA-INSTRUCTION."
-  (let ((prompt (magent-skills-default-prompt skill-name))
-        (extra (string-trim (or extra-instruction ""))))
-    (unless prompt
-      (error "Magent skill '%s' has no default prompt" skill-name))
-    (if (string-blank-p extra)
-        prompt
-      (concat prompt "\n\nAdditional instruction:\n" extra))))
-
 (defun magent-acp--slash-command-name (prompt)
   "Return `(NAME . REST)' parsed from slash PROMPT, or nil."
   (let ((trimmed (string-trim prompt)))
@@ -491,7 +428,7 @@ keywords."
      ((magent-skills-default-prompt name)
       (list :kind 'skill
             :name name
-            :prompt (magent-acp--skill-command-text name (cdr parsed))
+            :prompt (magent-skills-command-text name (cdr parsed))
             :skills (list name))))))
 
 (defun magent-acp--apply-slash-command (runtime-session prompt)
@@ -500,7 +437,7 @@ keywords."
       (if (eq (plist-get command :kind) 'skill)
           (let ((skills (plist-get command :skills)))
             (setf (magent-runtime-session-pending-skills runtime-session)
-                  (magent-acp--dedupe-string-list
+                  (magent-skills-dedupe-names
                    (append
                     (magent-runtime-session-pending-skills runtime-session)
                     skills)))

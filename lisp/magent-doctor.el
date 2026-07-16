@@ -48,7 +48,6 @@
 (defvar gptel-backend)
 (defvar gptel-model)
 (defvar gptel-temperature)
-(defvar magent-mode)
 
 (define-error 'magent-doctor-probe-timeout "Doctor probe timed out")
 (define-error 'magent-doctor-security-error "Doctor data failed validation")
@@ -163,14 +162,9 @@ values.  Custom probes execute as trusted Emacs Lisp and are not sandboxed."
          (thread (and parent (magent-session-thread-ledger parent)))
          (agent (and parent (magent-session-agent parent)))
          (active (and (fboundp 'magent-runtime-queue-active-submission)
-                      (magent-runtime-queue-active-submission)))
-         (origin-buffer (magent-doctor--origin-buffer context)))
+                      (magent-runtime-queue-active-submission))))
     `((emacs-version . ,emacs-version)
       (system-type . ,system-type)
-      (magent-mode
-       . ,(magent-doctor--json-bool
-           (and origin-buffer
-                (buffer-local-value 'magent-mode origin-buffer))))
       (origin-scope . ,(magent-command-context-origin-scope context))
       (parent-session-id
        . ,(and parent (magent-session-get-id parent)))

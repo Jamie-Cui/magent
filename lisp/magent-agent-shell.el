@@ -56,24 +56,9 @@
   "Return the current gptel model id for agent-shell display."
   (format "%s" (or (and (boundp 'gptel-model) gptel-model) "gptel")))
 
-(defun magent-agent-shell--dedupe-string-list (strings)
-  "Return STRINGS without duplicates, preserving order."
-  (let (seen result)
-    (dolist (string strings)
-      (when (and (stringp string)
-                 (not (member string seen)))
-        (push string seen)
-        (push string result)))
-    (nreverse result)))
-
 (defun magent-agent-shell--instruction-skill-names ()
   "Return sorted instruction skill names."
   (sort (copy-sequence (magent-skills-list-by-type 'instruction)) #'string<))
-
-(defun magent-agent-shell--command-skill-names ()
-  "Return sorted instruction skill names that have a default prompt."
-  (cl-remove-if-not #'magent-skills-default-prompt
-                    (magent-agent-shell--instruction-skill-names)))
 
 (defun magent-agent-shell--read-instruction-skill (prompt)
   "Read an instruction skill name with PROMPT."
@@ -81,16 +66,6 @@
     (unless names
       (user-error "Magent: no instruction skills are registered"))
     (completing-read prompt names nil t)))
-
-(defun magent-agent-shell--skill-command-text (skill-name extra-instruction)
-  "Return default prompt text for SKILL-NAME plus EXTRA-INSTRUCTION."
-  (let ((prompt (magent-skills-default-prompt skill-name))
-        (extra (string-trim (or extra-instruction ""))))
-    (unless prompt
-      (user-error "Magent: skill '%s' has no default prompt" skill-name))
-    (if (string-blank-p extra)
-        prompt
-      (concat prompt "\n\nAdditional instruction:\n" extra))))
 
 (defun magent-agent-shell--prepare-skill-context ()
   "Load project-local skill definitions for the current command context."
@@ -176,7 +151,7 @@ Return Magent's identifier for use as `agent-shell-preferred-agent-config'."
     (runtime-session skills)
   "Set RUNTIME-SESSION pending SKILLS."
   (setf (magent-runtime-session-pending-skills runtime-session)
-        (magent-agent-shell--dedupe-string-list skills)))
+        (magent-skills-dedupe-names skills)))
 
 (defun magent-agent-shell--sync-buffer-pending-skills
     (shell-buffer runtime-session)
@@ -203,7 +178,7 @@ Return Magent's identifier for use as `agent-shell-preferred-agent-config'."
 
 (defun magent-agent-shell--set-pending-skills (shell-buffer skills)
   "Set SHELL-BUFFER pending instruction SKILLS."
-  (let ((skills (magent-agent-shell--dedupe-string-list skills)))
+  (let ((skills (magent-skills-dedupe-names skills)))
     (if-let* ((runtime-session
                (magent-agent-shell--runtime-session shell-buffer)))
         (magent-agent-shell--set-runtime-pending-skills runtime-session skills)
@@ -242,7 +217,7 @@ Return non-nil when SKILL-NAME is selected after toggling."
             (append magent-agent-shell--prompt-skill-queue
                     (list (list :prompt prompt
                                 :skills
-                                (magent-agent-shell--dedupe-string-list
+                                (magent-skills-dedupe-names
                                  skills))))))))
 
 (defun magent-agent-shell--pop-prompt-skills
@@ -483,7 +458,7 @@ When EXTRA-INSTRUCTION is non-nil, append it to the skill's default prompt."
     (magent-agent-shell--prepare-skill-context)
     (let* ((shell-buffer (magent-agent-shell--buffer))
            (name (or skill-name
-                     (let ((names (magent-agent-shell--command-skill-names)))
+                     (let ((names (magent-skills-command-names)))
                        (unless names
                          (user-error
                           "Magent: no command-like skills are registered"))
@@ -492,8 +467,8 @@ When EXTRA-INSTRUCTION is non-nil, append it to the skill's default prompt."
                       extra-instruction
                     (read-string
                      (format "Extra instruction for %s (optional): " name))))
-           (text (magent-agent-shell--skill-command-text name extra))
-           (skills (magent-agent-shell--dedupe-string-list
+           (text (magent-skills-command-text name extra))
+           (skills (magent-skills-dedupe-names
                     (append (magent-agent-shell--pending-skills shell-buffer)
                             (list name)))))
       (magent-agent-shell--clear-pending-skills shell-buffer)

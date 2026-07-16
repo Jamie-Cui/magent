@@ -113,7 +113,7 @@ is the current pending/completed entry when applicable."
   "Clean up local prompt timers after approval state EVENT.
 REQUEST-ID and ENTRY follow `magent-approval-state-change-functions'."
   (pcase event
-    ((or 'resolved 'dropped 'cleared)
+    ((or 'resolved 'dropped)
      (when (or (null entry)
                (eq (plist-get entry :provider) #'magent-approval-local-request))
        (magent-approval--local-clear-prompt-timer request-id)))))
@@ -122,11 +122,6 @@ REQUEST-ID and ENTRY follow `magent-approval-state-change-functions'."
   "Return the pending request plist for REQUEST-ID, or nil."
   (when-let* ((entry (gethash request-id magent-approval--pending-requests)))
     (plist-get entry :request)))
-
-(defun magent-approval-request-provider (request-id)
-  "Return the provider function recorded for REQUEST-ID, or nil."
-  (when-let* ((entry (gethash request-id magent-approval--pending-requests)))
-    (plist-get entry :provider)))
 
 (defun magent-approval-completed-request (request-id)
   "Return the completed request entry for REQUEST-ID, or nil."
@@ -142,18 +137,6 @@ When PREDICATE is non-nil, count only requests for which
                          (funcall predicate request-id entry))
                  (setq count (1+ count))))
              magent-approval--pending-requests)
-    count))
-
-(defun magent-approval-completed-count (&optional predicate)
-  "Return the number of completed approval requests.
-When PREDICATE is non-nil, count only requests for which
-`(funcall PREDICATE REQUEST-ID ENTRY)' returns non-nil."
-  (let ((count 0))
-    (maphash (lambda (request-id entry)
-               (when (or (null predicate)
-                         (funcall predicate request-id entry))
-                 (setq count (1+ count))))
-             magent-approval--completed-requests)
     count))
 
 (defun magent-approval--completed-request-snapshot (request)
@@ -204,41 +187,6 @@ Return non-nil when a pending request was found."
                     (error-message-string err)))))
       (magent-approval--notify-state-change 'resolved request-id completed-entry))
     t))
-
-(defun magent-approval-clear-completed (&optional predicate)
-  "Remove completed requests matching PREDICATE.
-When PREDICATE is nil, clear all completed approvals."
-  (if (null predicate)
-      (progn
-        (clrhash magent-approval--completed-requests)
-        (magent-approval--notify-state-change 'cleared nil nil))
-    (let (request-ids)
-      (maphash (lambda (request-id entry)
-                 (when (funcall predicate request-id entry)
-                   (push request-id request-ids)))
-               magent-approval--completed-requests)
-      (dolist (request-id request-ids)
-        (when-let* ((entry (gethash request-id magent-approval--completed-requests)))
-          (remhash request-id magent-approval--completed-requests)
-          (magent-approval--notify-state-change 'cleared request-id entry))))))
-
-(defun magent-approval-cancel-requests (&optional predicate decision)
-  "Resolve pending requests matching PREDICATE with DECISION.
-PREDICATE follows the same calling convention as
-`magent-approval-pending-count'.  DECISION defaults to `deny-once'.
-Return the number of cancelled requests."
-  (let ((cancelled 0)
-        (decision (or decision 'deny-once))
-        request-ids)
-    (maphash (lambda (request-id entry)
-               (when (or (null predicate)
-                         (funcall predicate request-id entry))
-                 (push request-id request-ids)))
-             magent-approval--pending-requests)
-    (dolist (request-id request-ids)
-      (when (magent-approval-resolve-request request-id decision)
-        (setq cancelled (1+ cancelled))))
-    cancelled))
 
 (defun magent-approval-drop-requests (&optional predicate)
   "Discard pending requests matching PREDICATE without invoking callbacks.

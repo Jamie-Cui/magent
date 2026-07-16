@@ -29,7 +29,6 @@ The foundation layer that initializes the system and manages settings.
 *Key Files:*
 - ~magent.el~ — Package entry point and lazy runtime initialization
 - ~magent-agent-shell.el~ — Supported interactive entry points
-- ~magent-modeline.el~ — UI-neutral mode-line status formatting
 - ~magent-config.el~ — UI-neutral runtime and feature customization
 - ~magent-pkg.el~ — Package metadata
 
@@ -332,14 +331,14 @@ ACP conversion in ~magent-acp.el~, and agent-shell-specific behavior in
 *Approach carefully:* More specific patterns must come before less specific ones. Test with various glob patterns.
 
 ** 5. magent-tools.el (Medium Complexity)
-*Why it's complex:* 14 different tool implementations with varying side effects, timeouts, child-agent runtime state, and error handling. ~emacs_eval~ uses ~magent-tools--request-buffer-name~ to execute in correct buffer context.
+*Why it's complex:* 15 different tool implementations with varying side effects, timeouts, child-agent runtime state, and error handling. ~emacs_eval~ uses ~magent-tools--request-buffer-name~ to execute in correct buffer context.
 
 *Approach carefully:* Tools run in process filters. Timeout handling must be robust. Context capture for ~emacs_eval~, child-agent status persistence, and parent/child request-context inheritance are critical.
 
 ** 6. magent-session.el (Medium Complexity)
-*Why it's complex:* Per-project session scoping with global fallback, JSON persistence, ledger-driven UI restoration, legacy buffer-content migration, child-agent job persistence, and history trimming.
+*Why it's complex:* Per-project session scoping with global fallback, JSON persistence, ledger-driven UI restoration, child-agent job persistence, and history trimming.
 
-*Approach carefully:* Session directory calculation uses SHA1 of project root. Buffer content and ~agent-jobs~ must be preserved for lossless restore and child transcript inspection.
+*Approach carefully:* Session directory calculation uses SHA1 of project root. ~agent-jobs~ must be preserved for child transcript inspection.
 
 * Development Workflow
 

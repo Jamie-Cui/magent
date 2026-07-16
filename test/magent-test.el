@@ -116,11 +116,14 @@
           (insert-file-contents config-file)
           (should (re-search-forward regexp nil t)))))))
 
-(ert-deftest magent-test-aa-legacy-ui-files-and-symbols-are-removed ()
-  "Test production sources contain no removed frontend implementation."
+(ert-deftest magent-test-aa-retired-compatibility-files-and-symbols-are-removed ()
+  "Test production sources contain no retired compatibility implementation."
   (dolist (file '("lisp/magent-ui.el"
                   "lisp/magent-ui-legacy.el"
-                  "lisp/magent-evil.el"))
+                  "lisp/magent-evil.el"
+                  "lisp/magent-modeline.el"
+                  "lisp/magent-thread.el"
+                  "lisp/magent-transcript-context.el"))
     (should-not (file-exists-p
                  (expand-file-name file magent-test--root-directory))))
   (dolist (file (magent-test-source-files magent-test--root-directory))
@@ -6039,26 +6042,15 @@
                    (list (list :title "Result 1"
                                :url "https://example.com/1"))))))
 
-(ert-deftest magent-test-mode-line-lighter-renders-from-processing-state ()
-  "Test the mode-line lighter depends only on processing-state APIs."
-  (require 'magent-modeline)
-  (cl-letf (((symbol-function 'magent-runtime-processing-p) (lambda () nil)))
-    (let ((lighter (eval (cadr magent-modeline-lighter))))
-      (should (string-match-p "\\[M/" lighter))
-      (should-not (string-match-p "\\[busy\\]" lighter))))
-  (cl-letf (((symbol-function 'magent-runtime-processing-p) (lambda () t)))
-    (should (string-match-p "\\[busy\\]"
-                            (eval (cadr magent-modeline-lighter))))))
-
-(ert-deftest magent-test-tools-gptel-to-magent-tool ()
-  "Test conversion from gptel-tool to magent tool plist."
-  (require 'magent-tools)
+(ert-deftest magent-test-tool-runtime-from-gptel-tool ()
+  "Test conversion from gptel-tool to the runtime tool structure."
+  (require 'magent-tool-runtime)
   (let* ((gptel-tool (car magent-tools--all-gptel-tools))  ; read_file
-         (magent-tool (magent-tools--gptel-to-magent-tool gptel-tool)))
-    (should (plist-get magent-tool :name))
-    (should (plist-get magent-tool :description))
-    (should (plist-get magent-tool :function))
-    (should (plist-get magent-tool :perm-key))))
+         (runtime (magent-tool-runtime-from-gptel-tool gptel-tool)))
+    (should (magent-tool-runtime-name runtime))
+    (should (magent-tool-runtime-description runtime))
+    (should (magent-tool-runtime-function runtime))
+    (should (magent-tool-runtime-perm-key runtime))))
 
 (ert-deftest magent-test-agent-loop-tools-to-gptel-json-sanitizes-schema ()
   "Test gptel tool schemas are safe for strict JSON serialization."
@@ -7626,7 +7618,7 @@
                :agent-name "general")))
     (magent-session-add-agent-job session job)
     (should (eq (magent-session-agent-job session "agent-1") job))
-    (magent-session-set-agent-job-status session "agent-1" 'failed nil "boom")
+    (magent-agent-job-set-status job 'failed nil "boom")
     (should (eq (magent-agent-job-status job) 'failed))
     (should (equal (magent-agent-job-error job) "boom"))))
 
@@ -9593,7 +9585,7 @@
   (require 'magent-acp)
   (let ((magent-skills--registry nil))
     (magent-test--load-builtin-skills-only)
-    (should (equal (magent-acp--command-skill-names)
+    (should (equal (magent-skills-command-names)
                    magent-test--builtin-slash-command-names))
     (dolist (name magent-test--builtin-slash-command-names)
       (let ((default-prompt (magent-skills-default-prompt name)))
@@ -9703,24 +9695,6 @@
     (let ((capabilities (aref (map-elt response 'configOptions) 1)))
       (should (equal (map-elt capabilities 'id) "capabilities"))
       (should (equal (map-elt capabilities 'currentValue) "enabled")))))
-
-(ert-deftest magent-test-acp-prompt-text-preserves-embedded-resource ()
-  "Test ACP embedded resource blocks keep nested file text in prompts."
-  (require 'magent-acp)
-  (let ((text (magent-acp--prompt-text
-               '[((type . "text")
-                  (text . "Review this file"))
-                 ((type . "resource")
-                  (resource . ((uri . "file:///tmp/example.txt")
-                               (text . "line 1\nline 2"))))])))
-    (should (string-match-p (regexp-quote "Review this file") text))
-    (should (string-match-p
-             (regexp-quote "[Context resource: file:///tmp/example.txt]")
-             text))
-    (should (string-match-p (regexp-quote "line 1\nline 2") text))
-    (should-not (string-match-p
-                 (regexp-quote "[Context resource: resource]")
-                 text))))
 
 (ert-deftest magent-test-acp-prompt-input-preserves-resource-structure ()
   "Test ACP resources remain structured and separate from instruction text."
@@ -11437,32 +11411,6 @@
 ;;; Codex-like runtime skeleton tests
 ;; ──────────────────────────────────────────────────────────────────────
 
-(ert-deftest magent-test-session-records-structured-context-items ()
-  "Test session messages also populate Codex-like context items."
-  (require 'magent-session)
-  (let ((session (magent-session-create)))
-    (magent-session-add-message session 'user "hello")
-    (magent-session-add-message session 'assistant "world")
-    (let ((items (magent-session-context-items session)))
-      (should (= (length items) 2))
-      (should (eq (magent-response-item-type (car items)) 'message))
-      (should (eq (magent-response-item-role (car items)) 'user))
-      (should (equal (magent-response-item-content (cadr items)) "world")))))
-
-(ert-deftest magent-test-session-records-tool-results-in-structured-context ()
-  "Test tool result messages also populate Codex-like context items."
-  (require 'magent-session)
-  (let ((session (magent-session-create)))
-    (magent-session-add-tool-message
-     session "call-1" "grep" '(:pattern "foo") "match")
-    (let ((items (magent-session-context-items session)))
-      (should (= (length items) 1))
-      (should (eq (magent-response-item-type (car items)) 'tool))
-      (should (equal (magent-response-item-call-id (car items)) "call-1"))
-      (should (equal (magent-response-item-name (car items)) "grep"))
-      (should (equal (magent-response-item-output (car items)) "match"))
-      (should (eq (magent-response-item-status (car items)) 'completed)))))
-
 (ert-deftest magent-test-session-truncates-model-visible-tool-results ()
   "Test oversized tool results are truncated before session prompt reuse."
   (require 'magent-session)
@@ -11811,8 +11759,8 @@
       (setenv variable nil)
       (delete-directory project t))))
 
-(ert-deftest magent-test-session-save-load-sanitizes-structured-context ()
-  "Test structured context items persist with JSON-safe metadata."
+(ert-deftest magent-test-session-save-load-sanitizes-ledger-items ()
+  "Test canonical ledger items persist with JSON-safe values."
   (require 'magent-protocol)
   (require 'magent-ledger)
   (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
@@ -11841,17 +11789,20 @@
           (let* ((files (directory-files magent-session-directory t "\\.json$"))
                  (loaded (magent-session-read-file (car files)))
                  (loaded-session (plist-get loaded :session))
-                 (item (cadr (magent-session-context-items loaded-session))))
-            (should (equal (cdr (assq 'tool (magent-response-item-content item)))
+                 (item (cl-find 'tool
+                                (magent-thread-all-items
+                                 (magent-session-thread-ledger loaded-session))
+                                :key #'magent-thread-item-type)))
+            (should (equal (cdr (assq 'tool (magent-thread-item-input item)))
                            "emacs_eval"))
-            (should (equal (cdr (assq 'values (magent-response-item-content item)))
+            (should (equal (cdr (assq 'values (magent-thread-item-input item)))
                            '("emacs_eval" nil)))
-            (should (equal (magent-response-item-name item) "emacs_eval"))
-            (should (equal (cdr (assq 'result (magent-response-item-output item)))
+            (should (equal (magent-thread-item-name item) "emacs_eval"))
+            (should (equal (cdr (assq 'result (magent-thread-item-output item)))
                            "ok"))
-            (should (equal (cdr (assq 'provider (magent-response-item-metadata item)))
+            (should (equal (cdr (assq 'provider (magent-thread-item-metadata item)))
                            "gptel"))
-            (should (equal (cdr (assq 'tool (magent-response-item-metadata item)))
+            (should (equal (cdr (assq 'tool (magent-thread-item-metadata item)))
                            "emacs_eval"))))
       (delete-directory magent-session-directory t))))
 
@@ -12040,12 +11991,17 @@
     (unwind-protect
         (progn
           (with-temp-file legacy
-            (insert "{\"id\":\"legacy\",\"scope\":\"global\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}"))
+            (insert "{\"id\":\"legacy\",\"scope\":\"global\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"context-items\":[{\"type\":\"message\"}],\"buffer-content\":\"retired ui text\"}"))
           (with-temp-file future
             (insert (format
                      "{\"id\":\"future\",\"schema-version\":%d,\"scope\":\"global\",\"messages\":[]}"
                      (1+ magent-session-schema-version))))
-          (should (magent-session-read-file legacy))
+          (let* ((loaded (magent-session-read-file legacy))
+                 (session (plist-get loaded :session)))
+            (should loaded)
+            (should (equal (magent-msg-content
+                            (car (magent-session-messages session)))
+                           "hello")))
           (cl-letf (((symbol-function 'magent-log)
                      (lambda (format-string &rest args)
                        (push (apply #'format format-string args) logs))))

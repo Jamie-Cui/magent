@@ -1726,22 +1726,5 @@ This compatibility API delegates to
   (magent-tools-get-gptel-tools-for-permission
    (and agent-info (magent-agent-info-permission agent-info))))
 
-(defun magent-tools-get-magent-tools (agent-info)
-  "Return a list of magent tool plists allowed for AGENT-INFO.
-Filters by both `magent-enable-tools' global config and agent permissions.
-Returns tools in magent internal format (plists) instead of gptel-tool structs."
-  (let ((gptel-tools (magent-tools-get-gptel-tools agent-info)))
-    (mapcar #'magent-tools--gptel-to-magent-tool gptel-tools)))
-
-(defun magent-tools--gptel-to-magent-tool (gptel-tool)
-  "Convert a gptel-tool struct to magent tool plist format."
-  (let ((tool-name (gptel-tool-name gptel-tool)))
-    (list :name tool-name
-          :description (gptel-tool-description gptel-tool)
-          :args (gptel-tool-args gptel-tool)
-          :function (gptel-tool-function gptel-tool)
-          :async (gptel-tool-async gptel-tool)
-          :perm-key (magent-tools-permission-key tool-name))))
-
 (provide 'magent-tools)
 ;;; magent-tools.el ends here

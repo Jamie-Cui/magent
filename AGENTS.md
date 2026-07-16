@@ -85,7 +85,7 @@ Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and perm
 ### Module Dependency Graph
 
 ```
-magent.el (entry point: magent-mode, global-magent-mode)
+magent.el (package entry point and lazy runtime bootstrap)
   ├─ magent-log.el               (UI-neutral logging sinks and headless fallback)
   ├─ magent-config.el            (UI-neutral runtime and feature defcustoms)
   ├─ magent-json.el              (JSON-safe serialization helpers)
@@ -95,7 +95,6 @@ magent.el (entry point: magent-mode, global-magent-mode)
   ├─ magent-lifecycle-events.el  (lifecycle event sinks and context helpers)
   ├─ magent-ledger.el            (thread/turn/item state machine, journal, snapshot)
   ├─ magent-session.el           (thread ledger projections, JSON persistence)
-  ├─ magent-transcript-context.el (structured transcript context helpers)
   ├─ magent-agent-job.el         (durable child-agent job state and JSON shape)
   ├─ magent-runtime-queue.el     (UI-neutral global turn queue and session-scoped cancellation)
   ├─ magent-runtime-api.el       (UI/backend-facing runtime session and prompt API)
@@ -121,7 +120,6 @@ magent.el (entry point: magent-mode, global-magent-mode)
   ├─ magent-permission.el        (rule-based tool access control per agent)
   ├─ magent-acp.el               (in-process ACP adapter for agent-shell)
   ├─ magent-agent-shell.el       (agent-shell backend registration and routing)
-  ├─ magent-modeline.el          (UI-neutral mode-line formatting)
   ├─ magent-file-loader.el       (shared file-backed definition loader and frontmatter parser)
   └─ magent-skills.el            (skill registry, built-in skill definitions, file loading, and interactive commands)
 ```
@@ -152,7 +150,7 @@ magent.el (entry point: magent-mode, global-magent-mode)
 
 9. **Capabilities** (`magent-capability.el`): File-backed capability definitions score the current request context and attach matching instruction skills. Automatic activation requires a word-bounded prompt-keyword intent match in addition to context score; context-only matches remain suggested, and linked skills are filtered against the selected agent's exposed tools. Bundled, user, and project-local capability overlays all feed the same resolver.
 
-10. **Session and workflow ledger** (`magent-ledger.el`, `magent-session.el`): The canonical agent workflow state is an explicit thread/turn/item ledger. Thread statuses are `not-loaded`, `idle`, `active`, `system-error`, and `closed`; turn statuses are `queued`, `in-progress`, `completed`, `interrupted`, `failed`, and `dropped`; item statuses are `pending`, `in-progress`, `completed`, `failed`, and `cancelled`. Tool call/result is one `tool` item lifecycle keyed by call id. Session JSON is atomically replaced with a materialized `snapshot` and a bounded tail of the in-memory append-only `journal`; only events after `snapshot.last-event-seq` are replayed. The separate JSONL audit subsystem retains tool/permission audit records. Legacy `messages` and `context-items` are derived projections used for gptel prompt reuse and migration. `buffer-content` remains only legacy data; frontend restore comes from the ledger. `agent-jobs` stores durable child-agent metadata. Internal command session metadata is persisted alongside ordinary session JSON but stored outside normal session listing paths.
+10. **Session and workflow ledger** (`magent-ledger.el`, `magent-session.el`): The canonical agent workflow state is an explicit thread/turn/item ledger. Thread statuses are `not-loaded`, `idle`, `active`, `system-error`, and `closed`; turn statuses are `queued`, `in-progress`, `completed`, `interrupted`, `failed`, and `dropped`; item statuses are `pending`, `in-progress`, `completed`, `failed`, and `cancelled`. Tool call/result is one `tool` item lifecycle keyed by call id. Session JSON is atomically replaced with a materialized `snapshot` and a bounded tail of the in-memory append-only `journal`; only events after `snapshot.last-event-seq` are replayed. The separate JSONL audit subsystem retains tool/permission audit records. Legacy `messages` remain as a derived projection for gptel prompt reuse and migration. `agent-jobs` stores durable child-agent metadata. Internal command session metadata is persisted alongside ordinary session JSON but stored outside normal session listing paths.
 
 11. **Skills** (`magent-skills.el`): Two types — `instruction` (markdown injected into system prompt) and `tool` (invoked via `skill_invoke`). The module now contains the registry, built-in `skill-creator`, file-based skill loading, and interactive inspection commands. Skills load in priority order from (1) built-in `skills/`, (2) user directory `~/.emacs.d/magent-skills/<name>/SKILL.md`, and (3) project-local `.magent/skills/<name>/SKILL.md`.
 

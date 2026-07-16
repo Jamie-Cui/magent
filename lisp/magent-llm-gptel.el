@@ -207,11 +207,6 @@ requests, so Magent normalizes this boundary before curl serializes it."
     (puthash :terminal-emitted t state)
     (magent-llm-gptel--emit request event)))
 
-(defun magent-llm-gptel--reasoning-text (state)
-  "Return accumulated reasoning text from STATE."
-  (apply #'concat (nreverse (copy-sequence
-                             (gethash :reasoning-chunks state)))))
-
 (defun magent-llm-gptel--streamed-text (state)
   "Return accumulated streamed text from STATE."
   (apply #'concat (nreverse (copy-sequence
@@ -265,15 +260,6 @@ that put the final answer only in a reasoning field."
 
 (defconst magent-llm-gptel--textual-tool-call-max-length 200000
   "Maximum text length considered for textual DSML tool-call parsing.")
-
-(defun magent-llm-gptel--dsml-tool-call-text-p (text)
-  "Return non-nil when TEXT is exactly a textual DSML tool-call envelope."
-  (when (stringp text)
-    (let ((trimmed (string-trim text)))
-      (and (<= (length trimmed)
-               magent-llm-gptel--textual-tool-call-max-length)
-           (string-prefix-p magent-llm-gptel--dsml-tool-calls-open trimmed)
-           (string-suffix-p magent-llm-gptel--dsml-tool-calls-close trimmed)))))
 
 (defun magent-llm-gptel--parse-dsml-tag-attr
     (text pos tag attr)

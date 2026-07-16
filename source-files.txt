@@ -11,7 +11,6 @@ lisp/magent-protocol.el
 lisp/magent-audit.el
 lisp/magent-ledger.el
 lisp/magent-agent-job.el
-lisp/magent-thread.el
 lisp/magent-llm.el
 lisp/magent-llm-gptel.el
 lisp/magent-command.el
@@ -21,7 +20,6 @@ lisp/magent-agent-loop.el
 lisp/magent-approval.el
 lisp/magent-file-loader.el
 lisp/magent-session.el
-lisp/magent-transcript-context.el
 lisp/magent-runtime.el
 lisp/magent-runtime-queue.el
 lisp/magent-tools.el
@@ -36,7 +34,6 @@ lisp/magent-agent-shell.el
 lisp/magent-agent-registry.el
 lisp/magent-agent-file.el
 lisp/magent-permission.el
-lisp/magent-modeline.el
 lisp/magent-skills.el
 lisp/magent-skill-manager.el
 lisp/magent-capability.el
