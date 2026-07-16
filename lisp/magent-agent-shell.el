@@ -2,6 +2,7 @@
 
 ;; Copyright (C) 2026 Jamie Cui
 ;; SPDX-License-Identifier: GPL-3.0-or-later
+;; Assisted-by: Codex:GPT-5.6, Magent:deepseek-v4-pro
 
 ;;; Commentary:
 
@@ -14,7 +15,6 @@
 (require 'map)
 (require 'seq)
 (require 'subr-x)
-(require 'agent-shell)
 (require 'magent-acp)
 (require 'magent-config)
 (require 'magent-runtime)
@@ -24,6 +24,8 @@
 
 (defvar gptel-model)
 (defvar agent-shell--state)
+(defvar agent-shell-agent-configs)
+(defvar agent-shell-preferred-agent-config)
 (defvar agent-shell-session-strategy)
 (defvar comint-last-prompt)
 (defvar shell-maker--busy)
@@ -37,6 +39,8 @@
 (declare-function agent-shell-cwd "agent-shell-project")
 (declare-function agent-shell-status "agent-shell")
 (declare-function agent-shell-interrupt "agent-shell")
+(declare-function agent-shell-insert "agent-shell")
+(declare-function agent-shell-make-agent-config "agent-shell")
 (declare-function agent-shell-queue-request "agent-shell")
 (declare-function agent-shell-start "agent-shell")
 (declare-function shell-maker-busy "shell-maker")
@@ -51,6 +55,10 @@
 
 (defvar-local magent-agent-shell--prompt-skill-queue nil
   "Per-prompt instruction skills waiting for `agent-shell--send-command'.")
+
+(defun magent-agent-shell--ensure-loaded ()
+  "Load `agent-shell' before using its runtime API."
+  (require 'agent-shell))
 
 (defun magent-agent-shell--model-id ()
   "Return the current gptel model id for agent-shell display."
@@ -74,6 +82,7 @@
 ;;;###autoload
 (defun magent-agent-shell-make-config ()
   "Return the agent-shell configuration for Magent."
+  (magent-agent-shell--ensure-loaded)
   (agent-shell-make-agent-config
    :identifier magent-agent-shell--identifier
    :mode-line-name "Magent"
@@ -94,6 +103,7 @@
 (defun magent-agent-shell-ensure-config ()
   "Ensure Magent's config maker is registered with agent-shell.
 Return Magent's identifier for use as `agent-shell-preferred-agent-config'."
+  (magent-agent-shell--ensure-loaded)
   (setq agent-shell-agent-configs
         (cons #'magent-agent-shell-make-config
               (delq #'magent-agent-shell-make-config

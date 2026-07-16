@@ -1,4 +1,5 @@
 ;;; build-docs.el --- Build Magent Org docs for GitHub Pages -*- lexical-binding: t; -*-
+;; Assisted-by: Codex:GPT-5.6, Magent:deepseek-v4-pro
 
 ;;; Commentary:
 

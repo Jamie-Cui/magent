@@ -2,6 +2,7 @@
 
 ;; Copyright (C) 2026 Jamie Cui
 ;; SPDX-License-Identifier: GPL-3.0-or-later
+;; Assisted-by: Codex:GPT-5.6, Magent:deepseek-v4-pro
 
 ;; Author: Jamie Cui <jamie.cui@outlook.com>
 ;; Keywords: tools, ai
@@ -43,10 +44,6 @@
   "Name of the buffer used for Magent diagnostic logging."
   :type 'string
   :group 'magent)
-
-(defvar magent--prompt-file
-  (magent-prompt-path "system.org")
-  "Path to the bundled system prompt file.")
 
 (defcustom magent-system-prompt
   (magent-prompt-read "system.org")

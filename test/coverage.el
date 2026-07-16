@@ -2,6 +2,7 @@
 
 ;; Copyright (C) 2026 Jamie Cui
 ;; SPDX-License-Identifier: GPL-3.0-or-later
+;; Assisted-by: Codex:GPT-5.6, Magent:deepseek-v4-pro
 
 ;;; Code:
 
@@ -17,10 +18,6 @@
 (load (expand-file-name "test/magent-source-files.el"
                         magent-coverage--root-directory)
       nil t)
-
-(defvar magent--prompt-file
-  (expand-file-name "prompt/system.org" magent-coverage--root-directory)
-  "Prompt file used while instrumenting `magent-config'.")
 
 (defvar magent-coverage-min 0
   "Minimum total coverage percentage required by the batch coverage run.")

@@ -2,6 +2,7 @@
 
 ;; Copyright (C) 2026 Jamie Cui
 ;; SPDX-License-Identifier: GPL-3.0-or-later
+;; Assisted-by: Codex:GPT-5.6, Magent:deepseek-v4-pro
 
 ;; Author: Jamie Cui <jamie.cui@outlook.com>
 ;; Keywords: tools, ai
@@ -167,16 +168,6 @@ back to the permission system's default-allow behavior."
     (mapcar #'magent-agent-file--legacy-permission-entry permission-config))
    (t
    (error "Agent permissions must be a non-empty mapping or list"))))
-
-(defun magent-agent-file--parse-permission (permission-config)
-  "Compatibility parser for PERMISSION-CONFIG.
-Boolean mappings retain the old `tools' semantics; all other values use the
-strict canonical permissions parser."
-  (if (and (magent-agent-file--mapping-p permission-config)
-           (cl-every (lambda (entry) (memq (cdr entry) '(t nil)))
-                     (magent-agent-file--mapping-entries permission-config)))
-      (magent-agent-file--parse-tools permission-config)
-    (magent-agent-file--parse-permissions permission-config)))
 
 (defun magent-agent-file--parse-tools (tools-config)
   "Parse legacy TOOLS-CONFIG into a permission profile.

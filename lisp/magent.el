@@ -2,6 +2,7 @@
 
 ;; Copyright (C) 2026 Jamie Cui
 ;; SPDX-License-Identifier: GPL-3.0-or-later
+;; Assisted-by: Codex:GPT-5.6, Magent:deepseek-v4-pro
 
 ;; Author: Jamie Cui <jamie.cui@outlook.com>
 ;; Maintainer: Jamie Cui <jamie.cui@outlook.com>

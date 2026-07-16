@@ -2,6 +2,7 @@
 
 ;; Copyright (C) 2026 Jamie Cui
 ;; SPDX-License-Identifier: GPL-3.0-or-later
+;; Assisted-by: Codex:GPT-5.6, Magent:deepseek-v4-pro
 
 ;; Author: Jamie Cui <jamie.cui@outlook.com>
 ;; Keywords: tools, ai
@@ -737,9 +738,6 @@ CALLBACK is called with the command output (stdout + stderr)."
       (write . ,(symbol-name (magent-permission-resolve rules 'write)))
       (edit . ,(symbol-name (magent-permission-resolve rules 'edit)))
       (wildcard . ,(symbol-name (magent-permission-resolve rules '*))))))
-
-(defconst magent-tools--permission-keys magent-permission-keys
-  "Compatibility view of canonical `magent-permission-keys'.")
 
 (defun magent-tools--effective-child-permission (parent-context agent)
   "Return AGENT permission restricted by PARENT-CONTEXT's profile.
@@ -1718,13 +1716,6 @@ decision is \\='ask remain exposed so the orchestrator can request approval."
         (or (null permission)
             (magent-permission-tool-available-p permission perm-key)))))
    magent-tools--all-gptel-tools))
-
-(defun magent-tools-get-gptel-tools (agent-info)
-  "Return a list of gptel-tool structs available for AGENT-INFO.
-This compatibility API delegates to
-`magent-tools-get-gptel-tools-for-permission'."
-  (magent-tools-get-gptel-tools-for-permission
-   (and agent-info (magent-agent-info-permission agent-info))))
 
 (provide 'magent-tools)
 ;;; magent-tools.el ends here

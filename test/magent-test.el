@@ -1,4 +1,5 @@
 ;;; magent-test.el --- Tests for Magent agent processing  -*- lexical-binding: t; -*-
+;; Assisted-by: Codex:GPT-5.6, Magent:deepseek-v4-pro
 
 ;;; Commentary:
 
@@ -9,6 +10,8 @@
 (require 'ert)
 (require 'magent)
 (require 'gptel-openai)
+
+(defvar agent-shell-agent-configs)
 
 (defun magent-test--read-audit-records (directory)
   "Return all JSONL audit records stored under DIRECTORY."
@@ -3427,15 +3430,6 @@
   (should (eq (magent-agent-file--parse-mode "PRIMARY") 'primary))
   (should (eq (magent-agent-file--parse-mode "unknown") 'all)))
 
-(ert-deftest magent-test-agent-file-parse-permission ()
-  "Test permission generation from tools config."
-  (require 'magent-agent-file)
-  (let ((rules (magent-agent-file--parse-permission '(:bash nil :read t))))
-    ;; bash should be denied
-    (should (eq (cdr (assq 'bash rules)) 'deny))
-    ;; read should remain allowed
-    (should (eq (cdr (assq 'read rules)) 'allow))))
-
 (ert-deftest magent-test-agent-file-load-from-temp ()
   "Test loading an agent from a temporary file."
   (require 'magent-agent-file)
@@ -5614,7 +5608,8 @@
                               :rules '((read . allow)
                                        (write . deny)
                                        (* . allow)))))
-         (tools (magent-tools-get-gptel-tools agent)))
+         (tools (magent-tools-get-gptel-tools-for-permission
+                 (magent-agent-info-permission agent))))
     ;; Should have read_file
     (should (cl-find-if (lambda (tool) (string= (gptel-tool-name tool) "read_file")) tools))
     ;; Should NOT have write_file
@@ -5630,7 +5625,8 @@
                  :name "no-tools"
                  :permission (magent-permission-create
                               :rules '((* . deny)))))
-         (tools (magent-tools-get-gptel-tools agent)))
+         (tools (magent-tools-get-gptel-tools-for-permission
+                 (magent-agent-info-permission agent))))
     (should (= (length tools) 0))))
 
 (ert-deftest magent-test-tools-filtering-allow-all ()
@@ -5641,7 +5637,8 @@
                  :name "all-tools"
                  :permission (magent-permission-create
                               :rules '((* . allow)))))
-         (tools (magent-tools-get-gptel-tools agent)))
+         (tools (magent-tools-get-gptel-tools-for-permission
+                 (magent-agent-info-permission agent))))
     (should (= (length tools) (length magent-tools--all-gptel-tools)))))
 
 (ert-deftest magent-test-tools-filtering-no-permission ()
@@ -5649,7 +5646,8 @@
   (require 'magent-tools)
   (require 'magent-agent-registry)
   (let* ((agent (magent-agent-info-create :name "no-perm" :mode 'primary))
-         (tools (magent-tools-get-gptel-tools agent)))
+         (tools (magent-tools-get-gptel-tools-for-permission
+                 (magent-agent-info-permission agent))))
     (should (= (length tools) (length magent-tools--all-gptel-tools)))))
 
 (ert-deftest magent-test-tools-filtering-ask-included ()
@@ -5661,7 +5659,8 @@
                  :permission (magent-permission-create
                               :rules '((bash . ask)
                                        (* . deny)))))
-         (tools (magent-tools-get-gptel-tools agent)))
+         (tools (magent-tools-get-gptel-tools-for-permission
+                 (magent-agent-info-permission agent))))
     (should (cl-find-if (lambda (tool) (string= (gptel-tool-name tool) "bash")) tools))))
 
 (ert-deftest magent-test-tools-filtering-bypass-permission ()
@@ -5669,12 +5668,13 @@
   (require 'magent-tools)
   (require 'magent-agent-registry)
   (let* ((magent-bypass-permission t)
-         (magent-enable-tools magent-tools--permission-keys)
+         (magent-enable-tools magent-permission-keys)
          (agent (magent-agent-info-create
                  :name "no-tools"
                  :permission (magent-permission-create
                               :rules '((* . deny)))))
-         (tools (magent-tools-get-gptel-tools agent)))
+         (tools (magent-tools-get-gptel-tools-for-permission
+                 (magent-agent-info-permission agent))))
     (should (= (length tools) (length magent-tools--all-gptel-tools)))))
 
 (ert-deftest magent-test-tools-read-file ()
@@ -9039,48 +9039,15 @@
           (setq magent-session--current-scope project-root)
           (should (equal (magent-session-list-files)
                          (list project-file other-project-file global-file)))
-          (should (equal (magent-session--format-file project-file)
-                         (format "2026-03-17 10:00:00  (%s)  Project work item"
-                                 (abbreviate-file-name project-root))))
           (should (equal (magent-session--file-group project-file)
                          (format "Current Project: %s"
                                  (abbreviate-file-name project-root))))
           (should (equal (magent-session--file-group other-project-file)
                          (format "Project: %s"
-                                 (abbreviate-file-name other-project))))
-          (should (equal (magent-session--format-file global-file)
-                         "2026-03-16 10:00:00  (global)  Global chat")))
+                                 (abbreviate-file-name other-project)))))
       (delete-directory magent-session-directory t)
       (delete-directory project-root t)
       (delete-directory other-project t))))
-
-(ert-deftest magent-test-session-format-file-derives-summary-title-from-messages ()
-  "Test resume labels derive summary title from stored messages when needed."
-  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
-         (session-file (expand-file-name "session-20260317-120000.json"
-                                         magent-session-directory)))
-    (unwind-protect
-        (progn
-          (with-temp-file session-file
-            (insert
-             "{\"scope\":\"global\",\"messages\":[{\"role\":\"user\",\"content\":\"   Investigate resume menu title rendering regression   \"}]}"))
-          (should (equal (magent-session--format-file session-file)
-                         "2026-03-17 12:00:00  (global)  Investigate resume menu title rendering regre...")))
-      (delete-directory magent-session-directory t))))
-
-(ert-deftest magent-test-session-format-file-legacy-name-falls-back-to-mtime ()
-  "Test legacy session filenames still display a timestamp."
-  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
-         (session-file (expand-file-name "default.json" magent-session-directory))
-         (mtime (encode-time 6 5 4 3 2 2026)))
-    (unwind-protect
-        (progn
-          (with-temp-file session-file
-            (insert "{\"scope\":\"global\",\"summary-title\":\"Legacy session\"}"))
-          (set-file-times session-file mtime)
-          (should (equal (magent-session--format-file session-file)
-                         "2026-02-03 04:05:06  (global)  Legacy session")))
-      (delete-directory magent-session-directory t))))
 
 (ert-deftest magent-test-session-list-files-sorts-within-group-by-session-time ()
   "Test files inside one group are ordered newest-to-oldest by session time."
@@ -12226,7 +12193,7 @@
 (ert-deftest magent-test-tools-filter-explicit-permission-profile ()
   "Explicit effective permission profiles drive tool exposure."
   (require 'magent-tools)
-  (let* ((magent-enable-tools magent-tools--permission-keys)
+  (let* ((magent-enable-tools magent-permission-keys)
          (profile (magent-permission-intersect
                    '((edit . (("src/*.el" . allow) (* . deny)))
                      (bash . deny)
@@ -12240,7 +12207,7 @@
 (ert-deftest magent-test-tools-hide-empty-resource-permission-intersection ()
   "Do not expose a tool when intersected resource allowlists are disjoint."
   (require 'magent-tools)
-  (let* ((magent-enable-tools magent-tools--permission-keys)
+  (let* ((magent-enable-tools magent-permission-keys)
          (disjoint
           (magent-permission-intersect
            '((edit . (("src/*.el" . allow) (* . deny))))
@@ -12263,7 +12230,7 @@
 (ert-deftest magent-test-tools-expose-nontrivial-resource-glob-intersection ()
   "Exposure has no witness-heuristic false negative for overlapping globs."
   (require 'magent-tools)
-  (let* ((magent-enable-tools magent-tools--permission-keys)
+  (let* ((magent-enable-tools magent-permission-keys)
          (permission
           (magent-permission-intersect
            '((edit . (("src/*a.el" . allow) (* . deny))))

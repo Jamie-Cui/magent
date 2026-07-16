@@ -2,6 +2,7 @@
 
 ;; Copyright (C) 2026 Jamie Cui
 ;; SPDX-License-Identifier: GPL-3.0-or-later
+;; Assisted-by: Codex:GPT-5.6, Magent:deepseek-v4-pro
 
 ;; Author: Jamie Cui <jamie.cui@outlook.com>
 ;; Keywords: tools, ai
@@ -1089,22 +1090,6 @@ current scope, clear it so Magent falls back to the default agent."
         (or (not (plist-member metadata :valid))
             (plist-get metadata :valid))))
     (delq nil (magent-session--all-files)))))
-
-(defun magent-session--format-file (filepath)
-  "Return a human-readable label for session FILEPATH.
-Parses the session-YYYYMMDD-HHMMSS filename pattern into a date/time string."
-  (let* ((meta (magent-session--read-file-metadata-cached filepath))
-         (scope (plist-get meta :scope))
-         (project-root (plist-get meta :project-root))
-         (summary-title (plist-get meta :summary-title))
-         (timestamp (magent-session--format-display-timestamp filepath)))
-    (concat
-     (if (eq scope 'global)
-         (format "%s  (global)" timestamp)
-       (format "%s  (%s)" timestamp
-               (magent-session--project-label project-root)))
-     (when summary-title
-       (format "  %s" summary-title)))))
 
 (defun magent-session-get-id (session)
   "Get or generate a unique ID for SESSION."
