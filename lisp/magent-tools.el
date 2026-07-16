@@ -1408,7 +1408,7 @@ See `magent-agent-loop-filter-display-args'.")
 (defvar magent-tools--write-repo-summary-tool
   (gptel-make-tool
    :name "write_repo_summary"
-   :description "Create or update the current Git repository's single canonical org-roam summary note. Use only for /summarize. The tool controls the filename, exact repository title, Org ID, Git metadata, and full/scoped subtree upserts. Pass an Org fragment, not a complete document."
+   :description "Create or update the current Git repository's single canonical org-roam summary note. Use only for /summarize. The tool controls the filename, exact repository title, Org ID, Git metadata, and full/scoped subtree upserts. Pass an Org fragment, not a complete document. Do not include the managed heading itself: full-mode headings must start at **, and scoped-mode headings must start at ***."
    :args (list '(:name "mode"
                        :type string
                        :enum ["full" "scoped"]

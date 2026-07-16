@@ -41,6 +41,11 @@ runtime。面向用户的文档和示例必须使用 ~magent-agent-shell.el~ 导
 6. ACP prompt request 会保持 pending，直到对应 Magent turn completed、failed 或
    cancelled。
 
+* 配置
+
+- ~magent-agent-shell-session-strategy~ 用于选择受支持前端的 new、latest 或 prompt
+  session 流程。
+
 * 开发边界
 
 Core runtime behavior 不能依赖任何不受支持的 legacy UI workflow。Frontend-neutral

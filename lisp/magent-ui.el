@@ -84,17 +84,6 @@
                  (const :tag "Legacy Magent UI" legacy))
   :group 'magent-ui)
 
-(defcustom magent-agent-shell-session-strategy 'new
-  "Agent Shell session strategy used by Magent entry points.
-The default starts a fresh session immediately, avoiding agent-shell's global
-session picker on every `magent-dwim'.  Set this to `prompt' or `latest' when
-you want Magent's agent-shell backend to use agent-shell's session selection
-flow."
-  :type '(choice (const :tag "Always start new session" new)
-                 (const :tag "Load latest session" latest)
-                 (const :tag "Prompt for session" prompt))
-  :group 'magent-ui)
-
 (defcustom magent-buffer-name "*magent*"
   "Base name used when deriving Magent output buffer names.
 Output buffers are named like `*magent:global*' or

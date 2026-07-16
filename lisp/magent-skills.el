@@ -561,8 +561,11 @@ Returns number of skills loaded."
 
 (defun magent-skills-load-project-scope (scope)
   "Load project-local skill definitions for SCOPE."
-  (magent-skills-load-all
-   (magent-file-loader-project-subdir-for-scope ".magent/skills" scope)))
+  (if-let* ((directories
+             (magent-file-loader-project-subdir-for-scope
+              ".magent/skills" scope)))
+      (magent-skills-load-all directories)
+    0))
 
 (defun magent-skills-reload ()
   "Reload all skills from files.

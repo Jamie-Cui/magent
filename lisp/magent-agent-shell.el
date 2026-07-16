@@ -25,7 +25,6 @@
 (defvar gptel-model)
 (defvar agent-shell--state)
 (defvar agent-shell-session-strategy)
-(defvar magent-agent-shell-session-strategy)
 (defvar comint-last-prompt)
 (defvar shell-maker--busy)
 (defvar shell-maker--request-process)
@@ -149,6 +148,10 @@ Return Magent's identifier for use as `agent-shell-preferred-agent-config'."
               (eq (map-nested-elt agent-shell--state
                                   '(:agent-config :identifier))
                   magent-agent-shell--identifier)))))
+
+;; Remove the shared-history compaction advice installed by an earlier build.
+(advice-remove 'shell-maker--write-input-ring-history
+               'magent-agent-shell--write-sanitized-input-history)
 
 (defun magent-agent-shell--runtime-session (&optional shell-buffer)
   "Return the runtime session for SHELL-BUFFER, or nil."

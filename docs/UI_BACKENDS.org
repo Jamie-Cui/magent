@@ -47,6 +47,11 @@ present in another checkout or introduced during cleanup.
 6. ACP prompt requests remain pending until the corresponding Magent turn
    completes, fails, or is cancelled.
 
+* Configuration
+
+- ~magent-agent-shell-session-strategy~ selects the supported frontend's new,
+  latest, or prompt-based session flow.
+
 * Development Boundary
 
 Core runtime behavior must not depend on an unsupported legacy UI workflow.

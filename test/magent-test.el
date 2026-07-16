@@ -153,7 +153,6 @@
         (ui-file (expand-file-name "lisp/magent-ui.el"
                                    magent-test--root-directory))
         (symbols '(magent-ui-backend
-                   magent-agent-shell-session-strategy
                    magent-buffer-name
                    magent-compose-window-height
                    magent-enable-logging
@@ -172,6 +171,24 @@
         (with-temp-buffer
           (insert-file-contents ui-file)
           (should (re-search-forward regexp nil t)))))))
+
+(ert-deftest magent-test-aa-supported-agent-shell-config-lives-in-core-config ()
+  "Test supported agent-shell settings load without the UI router."
+  (let ((config-file (expand-file-name "lisp/magent-config.el"
+                                       magent-test--root-directory))
+        (ui-file (expand-file-name "lisp/magent-ui.el"
+                                   magent-test--root-directory))
+        (symbols '(magent-agent-shell-session-strategy)))
+    (dolist (symbol symbols)
+      (let ((regexp
+             (format "^(defcustom %s\\_>"
+                     (regexp-quote (symbol-name symbol)))))
+        (with-temp-buffer
+          (insert-file-contents config-file)
+          (should (re-search-forward regexp nil t)))
+        (with-temp-buffer
+          (insert-file-contents ui-file)
+          (should-not (re-search-forward regexp nil t)))))))
 
 (ert-deftest magent-test-aa-core-does-not-name-legacy-ui-state ()
   "Test runtime modules do not depend on legacy UI implementation state."
@@ -4005,6 +4022,20 @@
                          "Updated description")))
       (delete-directory project-root t))))
 
+(ert-deftest magent-test-skills-empty-project-scope-skips-static-fallback ()
+  "Test a missing project skill directory does not reload static skills."
+  (require 'magent-skills)
+  (let ((project-root (make-temp-file "magent-project-" t))
+        called)
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-skills-load-all)
+                   (lambda (&optional directories)
+                     (setq called directories)
+                     1)))
+          (should (= (magent-skills-load-project-scope project-root) 0))
+          (should-not called))
+      (delete-directory project-root t))))
+
 (ert-deftest magent-test-reload-skills-prepares-project-context ()
   "Test interactive skill reload restores project-local skills on first use."
   (require 'magent-skills)
@@ -4835,6 +4866,27 @@
           (should (equal (magent-capability-prompt-keywords
                           (magent-capability-get "project-cap"))
                          '("second"))))
+      (delete-directory project-root t))))
+
+(ert-deftest magent-test-capability-empty-project-scope-skips-static-fallback ()
+  "Test missing project capability directories do not reload static files."
+  (require 'magent-capability)
+  (let ((project-root (make-temp-file "magent-project-" t))
+        skill-called
+        capability-called)
+    (unwind-protect
+        (cl-letf (((symbol-function
+                    'magent-capability-load-skill-capabilities)
+                   (lambda (&optional directories)
+                     (setq skill-called directories)
+                     1))
+                  ((symbol-function 'magent-capability-load-all)
+                   (lambda (&optional directories)
+                     (setq capability-called directories)
+                     1)))
+          (should (= (magent-capability-load-project-scope project-root) 0))
+          (should-not skill-called)
+          (should-not capability-called))
       (delete-directory project-root t))))
 
 (ert-deftest magent-test-reload-capabilities-prepares-project-context ()
@@ -5682,6 +5734,18 @@
     (should (string-match-p "titles and URLs only" description))
     (should (string-match-p "does not fetch result pages" description))
     (should (string-match-p "do not claim to have read page content"
+                            description))))
+
+(ert-deftest magent-test-tools-write-repo-summary-description-defines-headings ()
+  "Test write_repo_summary explains its managed heading boundaries."
+  (require 'magent-tools)
+  (let ((description
+         (gptel-tool-description magent-tools--write-repo-summary-tool)))
+    (should (string-match-p "Do not include the managed heading itself"
+                            description))
+    (should (string-match-p "full-mode headings must start at \\*\\*"
+                            description))
+    (should (string-match-p "scoped-mode headings must start at \\*\\*\\*"
                             description))))
 
 (ert-deftest magent-test-tools-skill-invoke-description-matches-activation ()

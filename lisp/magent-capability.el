@@ -443,10 +443,18 @@ capabilities."
 
 (defun magent-capability-load-project-scope (scope)
   "Load project-local capability definitions for SCOPE."
-  (magent-capability-load-skill-capabilities
-   (magent-file-loader-project-subdir-for-scope ".magent/skills" scope))
-  (magent-capability-load-all
-   (magent-file-loader-project-subdir-for-scope ".magent/capabilities" scope)))
+  (let ((skill-directories
+         (magent-file-loader-project-subdir-for-scope
+          ".magent/skills" scope))
+        (capability-directories
+         (magent-file-loader-project-subdir-for-scope
+          ".magent/capabilities" scope)))
+    (+ (if skill-directories
+           (magent-capability-load-skill-capabilities skill-directories)
+         0)
+       (if capability-directories
+           (magent-capability-load-all capability-directories)
+         0))))
 
 (defun magent-capability-reload ()
   "Reload all file-backed capabilities.

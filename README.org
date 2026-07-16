@@ -13,6 +13,9 @@ homepage: https://jamie-cui.github.io/magent/
 
 Magent now uses a durable child-agent lifecycle for collaborative agent work: spawn, message, wait, list, resume/inspect, and close. The lifecycle is implemented on top of the Magent-owned agent loop while provider integration stays with ~gptel-request~.
 
+#+CAPTION: Magent architecture boundary and the recommended agent-shell frontend path
+[[file:docs/assets/img/diagrams/architecture-boundary.svg]]
+
 See [[file:docs/UI_BACKENDS.org][docs/UI_BACKENDS.org]] for the supported agent-shell frontend boundary.
 
 * Requirements
