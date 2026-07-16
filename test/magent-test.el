@@ -99,85 +99,14 @@
     (cl-letf (((symbol-function 'magent-log) #'ignore))
       (magent-capability-initialize-static))))
 
-(defun magent-test--count-heading-lines (buffer label)
-  "Return the number of top-level Magent headings matching LABEL in BUFFER."
-  (with-current-buffer buffer
-    (save-excursion
-      (goto-char (point-min))
-      (let ((count 0)
-            (regexp (concat "^\\* " (regexp-quote label) " +$")))
-        (while (re-search-forward regexp nil t)
-          (cl-incf count))
-        count))))
-
-(defun magent-test--count-overlays-with-face (buffer face)
-  "Return the number of overlays using FACE in BUFFER."
-  (with-current-buffer buffer
-    (cl-count-if (lambda (ov)
-                   (eq (overlay-get ov 'face) face))
-                 (overlays-in (point-min) (point-max)))))
-
-(defun magent-test--compose-with-text (scope text)
-  "Return SCOPE's compose buffer filled with TEXT."
-  (let ((buffer (magent-ui-compose-buffer scope)))
-    (with-current-buffer buffer
-      (erase-buffer)
-      (insert text))
-    buffer))
-
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Integration tests
 ;; ──────────────────────────────────────────────────────────────────────
 
-(ert-deftest magent-test-aa-ui-router-default-does-not-load-legacy ()
-  "Test plain default dispatch stays on agent-shell without loading legacy UI."
-  (skip-unless (not (featurep 'magent-ui-legacy)))
-  (let ((magent-ui-backend 'agent-shell)
-        captured)
-    (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-              ((symbol-function 'magent-ui--require-legacy)
-               (lambda ()
-                 (error "legacy UI should not be loaded")))
-              ((symbol-function 'magent-agent-shell-send-prompt)
-               (lambda (prompt &rest _args)
-                 (setq captured prompt))))
-      (magent-ui-dispatch-prompt "hello" 'prompt nil nil t))
-    (should (equal captured "hello"))
-    (should-not (featurep 'magent-ui-legacy))
-    (should-not (featurep 'magent-legacy-queue))))
-
-(ert-deftest magent-test-aa-ui-owns-ui-configuration ()
-  "Test core config no longer owns UI customization declarations."
-  (let ((config-file (expand-file-name "lisp/magent-config.el"
-                                       magent-test--root-directory))
-        (ui-file (expand-file-name "lisp/magent-ui.el"
-                                   magent-test--root-directory))
-        (symbols '(magent-ui-backend
-                   magent-buffer-name
-                   magent-compose-window-height
-                   magent-enable-logging
-                   magent-assistant-prompt
-                   magent-ui-result-max-length
-                   magent-auto-context
-                   magent-user-header
-                   magent-tool-header)))
-    (dolist (symbol symbols)
-      (let ((regexp
-             (format "^(\\(?:defcustom\\|defface\\) %s\\_>"
-                     (regexp-quote (symbol-name symbol)))))
-        (with-temp-buffer
-          (insert-file-contents config-file)
-          (should-not (re-search-forward regexp nil t)))
-        (with-temp-buffer
-          (insert-file-contents ui-file)
-          (should (re-search-forward regexp nil t)))))))
-
 (ert-deftest magent-test-aa-supported-agent-shell-config-lives-in-core-config ()
-  "Test supported agent-shell settings load without the UI router."
+  "Test supported agent-shell settings live in core configuration."
   (let ((config-file (expand-file-name "lisp/magent-config.el"
                                        magent-test--root-directory))
-        (ui-file (expand-file-name "lisp/magent-ui.el"
-                                   magent-test--root-directory))
         (symbols '(magent-agent-shell-session-strategy)))
     (dolist (symbol symbols)
       (let ((regexp
@@ -185,47 +114,23 @@
                      (regexp-quote (symbol-name symbol)))))
         (with-temp-buffer
           (insert-file-contents config-file)
-          (should (re-search-forward regexp nil t)))
-        (with-temp-buffer
-          (insert-file-contents ui-file)
-          (should-not (re-search-forward regexp nil t)))))))
+          (should (re-search-forward regexp nil t)))))))
 
-(ert-deftest magent-test-aa-core-does-not-name-legacy-ui-state ()
-  "Test runtime modules do not depend on legacy UI implementation state."
-  (dolist (spec '(("lisp/magent-runtime.el"
-                   "magent-output-mode\\|magent-ui--buffer-scope")
-                  ("lisp/magent-capability.el"
-                   "magent-output-mode")
-                  ("lisp/magent-agent-loop.el"
-                   "magent-ui-\\(?:result-max-length\\|result-preview-length\\|tool-input-max-length\\)")
-                  ("lisp/magent-runtime-queue.el"
-                   "magent-legacy-queue")
-                  ("lisp/magent-agent.el" "magent-ui")
-                  ("lisp/magent-doctor.el" "magent-ui")))
+(ert-deftest magent-test-aa-legacy-ui-files-and-symbols-are-removed ()
+  "Test production sources contain no removed frontend implementation."
+  (dolist (file '("lisp/magent-ui.el"
+                  "lisp/magent-ui-legacy.el"
+                  "lisp/magent-evil.el"))
+    (should-not (file-exists-p
+                 (expand-file-name file magent-test--root-directory))))
+  (dolist (file (magent-test-source-files magent-test--root-directory))
     (with-temp-buffer
       (insert-file-contents
-       (expand-file-name (car spec) magent-test--root-directory))
-      (should-not (re-search-forward (cadr spec) nil t)))))
-
-(ert-deftest magent-test-aa-ui-router-region-submits-agent-shell-prompt ()
-  "Test region prompts submit selected text through Magent's agent-shell path."
-  (require 'magent-ui)
-  (let ((magent-ui-backend 'agent-shell)
-        captured)
-    (cl-letf (((symbol-function 'magent-agent-shell-send-prompt)
-               (lambda (prompt &rest _args)
-                 (setq captured prompt))))
-      (with-temp-buffer
-        (insert "zero selected tail")
-        (magent-prompt-region 6 14)))
-    (should (equal captured "selected"))))
-
-(ert-deftest magent-test-ab-ui-router-legacy-shim-loads-legacy ()
-  "Test legacy-only functions load the isolated legacy UI module lazily."
-  (skip-unless (not (featurep 'magent-ui-legacy)))
-  (let ((buffer (magent-ui-get-buffer 'global)))
-    (should (buffer-live-p buffer))
-    (should (featurep 'magent-ui-legacy))))
+       (expand-file-name file magent-test--root-directory))
+      (should-not
+       (re-search-forward
+        "magent-\\(?:ui\\|legacy-queue\\|output-mode\\|compose-mode\\|evil\\)"
+        nil t)))))
 
 (ert-deftest magent-test-simple-prompt ()
   "Test basic prompt without tools returns response and records session."
@@ -241,10 +146,7 @@
                  ;; Simulate gptel streaming: string chunks then t with :content
                  (let* ((callback (plist-get kwargs :callback)))
                    (funcall callback "Hello from AI" nil)
-                   (funcall callback t (list :content "Hello from AI")))))
-              ((symbol-function 'magent-ui-start-streaming) #'ignore)
-              ((symbol-function 'magent-ui-insert-streaming) #'ignore)
-              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+                   (funcall callback t (list :content "Hello from AI"))))))
       (magent-agent-process "Hello" (lambda (r) (setq response r))))
     (should (= call-count 1))
     (should (stringp response))
@@ -261,10 +163,7 @@
                (lambda (prompt &rest kwargs)
                  (let* ((callback (plist-get kwargs :callback)))
                    (funcall callback "AI response" nil)
-                   (funcall callback t (list :content "AI response")))))
-              ((symbol-function 'magent-ui-start-streaming) #'ignore)
-              ((symbol-function 'magent-ui-insert-streaming) #'ignore)
-              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+                   (funcall callback t (list :content "AI response"))))))
       (magent-session-reset)
       (magent-agent-process
        "User message"
@@ -295,10 +194,7 @@
                    (funcall callback "Checking buffers. " '(:stream t))
                    (funcall callback t '(:content "Done.")))))
               ((symbol-function 'magent-tool-runtime-for-permission)
-               (lambda (_agent) nil))
-              ((symbol-function 'magent-ui-start-streaming) #'ignore)
-              ((symbol-function 'magent-ui-finish-streaming-fontify)
-               #'ignore))
+               (lambda (_agent) nil)))
       (magent-session-reset)
       (magent-agent-process
        "Hello"
@@ -346,38 +242,6 @@
                            (nreverse events)))
              '("MAGENT_HELLO")))))
 
-(ert-deftest magent-test-agent-process-closes-reasoning-before-completed-text ()
-  "Test completed text after reasoning is rendered outside the reasoning row."
-  (require 'magent-ui)
-  (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
-        (gptel-model 'gpt-4o-mini)
-        (gptel-tools nil)
-        (gptel-use-tools nil)
-        (magent-include-reasoning t)
-        (response nil))
-    (magent-session-reset)
-    (magent-ui-clear-buffer)
-    (cl-letf (((symbol-function 'gptel-request)
-               (lambda (_prompt &rest kwargs)
-                 (let ((callback (plist-get kwargs :callback)))
-                   (funcall callback '(reasoning . "thinking") '(:stream t))
-                   (funcall callback t '(:content "Hello from AI")))))
-              ((symbol-function 'magent-tool-runtime-for-permission)
-               (lambda (_agent) nil)))
-      (magent-agent-process
-       "Hello"
-       (lambda (result)
-         (setq response result))))
-    (should (equal response "Hello from AI"))
-    (with-current-buffer (magent-ui-get-buffer)
-      (let* ((text (buffer-string))
-             (reasoning (string-match-p "Reasoning \\[done\\] 8 chars" text))
-             (assistant (string-match-p "^ASSISTANT +$" text)))
-        (should reasoning)
-        (should assistant)
-        (should (< reasoning assistant))
-        (should-not (string-match-p "thinking" text))))))
-
 (ert-deftest magent-test-agent-process-error-returns-failed-result ()
   "Test provider errors are returned as failed agent results."
   (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
@@ -391,8 +255,7 @@
                           nil
                           '(:status "Request timed out after 5 seconds"))))
               ((symbol-function 'magent-tool-runtime-for-permission)
-               (lambda (_agent) nil))
-              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+               (lambda (_agent) nil)))
       (magent-session-reset)
       (magent-agent-process
        "Hello"
@@ -461,18 +324,18 @@
                  (let ((callback (plist-get kwargs :callback)))
                    (pcase call-count
                      (1
-                     (funcall
-                      callback
-                      "Checking buffers. "
-                      '(:tool-use ((:id "call-1"
-                                    :name "emacs_eval"
-                                    :args (:sexp "(+ 1 2)")))))
+                      (funcall
+                       callback
+                       "Checking buffers. "
+                       '(:tool-use ((:id "call-1"
+					 :name "emacs_eval"
+					 :args (:sexp "(+ 1 2)")))))
                       (funcall
                        callback
                        '(tool-call . ((nil ("(+ 1 2)") nil
                                            (:id "call-1"
-                                            :name "emacs_eval"
-                                            :args (:sexp "(+ 1 2)")))))
+						:name "emacs_eval"
+						:args (:sexp "(+ 1 2)")))))
                        '(:tool-use t)))
                      (2
                       (funcall callback "Done." '(:content "Done.")))
@@ -482,8 +345,7 @@
               ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
               ((symbol-function 'magent-lifecycle-events-begin-turn)
                (lambda (_title) 'turn))
-              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
-              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
       (magent-agent-process
        "Run eval"
        (lambda (result) (setq response result))
@@ -541,8 +403,8 @@
                        callback
                        '(tool-call . ((nil ("(+ 1 2)") nil
                                            (:id "call-1"
-                                            :name "emacs_eval"
-                                            :args (:sexp "(+ 1 2)")))))
+						:name "emacs_eval"
+						:args (:sexp "(+ 1 2)")))))
                        '(:tool-use t)))
                      (2
                       (funcall callback t '(:content "")))
@@ -554,8 +416,7 @@
               ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
               ((symbol-function 'magent-lifecycle-events-begin-turn)
                (lambda (_title) 'turn))
-              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
-              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
       (magent-agent-process
        "Run eval"
        (lambda (result) (setq response result))
@@ -620,8 +481,8 @@
                        callback
                        '(tool-call . ((nil ("(+ 1 2)") nil
                                            (:id "call-1"
-                                            :name "emacs_eval"
-                                            :args (:sexp "(+ 1 2)")))))
+						:name "emacs_eval"
+						:args (:sexp "(+ 1 2)")))))
                        '(:tool-use t)))
                      ((or 2 3)
                       (funcall callback t '(:content "")))
@@ -631,8 +492,7 @@
               ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
               ((symbol-function 'magent-lifecycle-events-begin-turn)
                (lambda (_title) 'turn))
-              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
-              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
       (magent-agent-process
        "Run eval"
        (lambda (result) (setq response result))
@@ -666,10 +526,10 @@
    (equal
     (magent-agent--metadata-without-retry-flags
      '(:temperature 0.3
-       :final-response-retry t
-       :top-p 0.8
-       :disable-provider-tools t
-       :effort xhigh))
+		    :final-response-retry t
+		    :top-p 0.8
+		    :disable-provider-tools t
+		    :effort xhigh))
     '(:temperature 0.3 :top-p 0.8 :effort xhigh))))
 
 (ert-deftest magent-test-agent-abort-error-detects-duplicate-status ()
@@ -678,9 +538,9 @@
          (magent-llm-error-event
           "Request aborted"
           '(:provider gptel
-            :status "HTTP/1.1 200 Connection established"
-            :http-status "200"
-            :status abort))))
+		      :status "HTTP/1.1 200 Connection established"
+		      :http-status "200"
+		      :status abort))))
     (should (magent-agent--abort-error-event-p event))))
 
 (ert-deftest magent-test-agent-process-runs-textual-tool-call-from-empty-retry ()
@@ -733,8 +593,8 @@
                        callback
                        '(tool-call . ((nil ("(+ 1 2)") nil
                                            (:id "call-1"
-                                            :name "emacs_eval"
-                                            :args (:sexp "(+ 1 2)")))))
+						:name "emacs_eval"
+						:args (:sexp "(+ 1 2)")))))
                        '(:tool-use t)))
                      (2
                       (funcall callback t '(:content "")))
@@ -750,8 +610,7 @@
               ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
               ((symbol-function 'magent-lifecycle-events-begin-turn)
                (lambda (_title) 'turn))
-              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
-              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
       (magent-agent-process
        "Run eval"
        (lambda (result) (setq response result))
@@ -823,8 +682,7 @@
               ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
               ((symbol-function 'magent-lifecycle-events-begin-turn)
                (lambda (_title) 'turn))
-              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
-              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
       (magent-agent-process
        "Run eval"
        (lambda (result) (setq response result))
@@ -834,8 +692,8 @@
        (nth 0 callbacks)
        '(tool-call . ((nil ("(+ 1 2)") nil
                            (:id "call-1"
-                            :name "emacs_eval"
-                            :args (:sexp "(+ 1 2)")))))
+				:name "emacs_eval"
+				:args (:sexp "(+ 1 2)")))))
        '(:tool-use t))
       (should (= call-count 2))
       (funcall (nth 1 callbacks) t '(:content ""))
@@ -902,8 +760,7 @@
               ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
               ((symbol-function 'magent-lifecycle-events-begin-turn)
                (lambda (_title) 'turn))
-              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
-              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
       (magent-agent-process
        "Run eval"
        (lambda (result) (setq response result))
@@ -913,8 +770,8 @@
        (nth 0 callbacks)
        '(tool-call . ((nil ("(+ 1 2)") nil
                            (:id "call-1"
-                            :name "emacs_eval"
-                            :args (:sexp "(+ 1 2)")))))
+				:name "emacs_eval"
+				:args (:sexp "(+ 1 2)")))))
        '(:tool-use t))
       (should (= call-count 2))
       (funcall (nth 1 callbacks)
@@ -975,8 +832,7 @@
               ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
               ((symbol-function 'magent-lifecycle-events-begin-turn)
                (lambda (_title) 'turn))
-              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
-              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
       (magent-agent-process
        "Run eval"
        (lambda (result) (setq response result))
@@ -986,8 +842,8 @@
        (nth 0 callbacks)
        '(tool-call . ((nil ("(+ 1 2)") nil
                            (:id "call-1"
-                            :name "emacs_eval"
-                            :args (:sexp "(+ 1 2)")))))
+				:name "emacs_eval"
+				:args (:sexp "(+ 1 2)")))))
        '(:tool-use t))
       (should (= call-count 2))
       (funcall (nth 1 callbacks)
@@ -1048,8 +904,7 @@
               ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
               ((symbol-function 'magent-lifecycle-events-begin-turn)
                (lambda (_title) 'turn))
-              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
-              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
       (magent-agent-process
        "Run eval"
        (lambda (result) (setq response result))
@@ -1059,8 +914,8 @@
        (nth 0 callbacks)
        '(tool-call . ((nil ("(+ 1 2)") nil
                            (:id "call-1"
-                            :name "emacs_eval"
-                            :args (:sexp "(+ 1 2)")))))
+				:name "emacs_eval"
+				:args (:sexp "(+ 1 2)")))))
        '(:tool-use t))
       (should (= call-count 2))
       (setq fake-time 10.0)
@@ -1126,8 +981,7 @@
               ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
               ((symbol-function 'magent-lifecycle-events-begin-turn)
                (lambda (_title) 'turn))
-              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
-              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
       (magent-agent-process
        "Run eval"
        (lambda (result) (setq response result))
@@ -1137,8 +991,8 @@
        (nth 0 callbacks)
        '(tool-call . ((nil ("(+ 1 2)") nil
                            (:id "call-1"
-                            :name "emacs_eval"
-                            :args (:sexp "(+ 1 2)")))))
+				:name "emacs_eval"
+				:args (:sexp "(+ 1 2)")))))
        '(:tool-use t))
       (should (= call-count 2))
       (funcall (nth 1 callbacks) t '(:content ""))
@@ -1211,8 +1065,7 @@
               ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
               ((symbol-function 'magent-lifecycle-events-begin-turn)
                (lambda (_title) 'turn))
-              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
-              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
       (magent-agent-process
        "Run eval"
        (lambda (result) (setq response result))
@@ -1222,8 +1075,8 @@
        (nth 0 callbacks)
        '(tool-call . ((nil ("(+ 1 2)") nil
                            (:id "call-1"
-                            :name "emacs_eval"
-                            :args (:sexp "(+ 1 2)")))))
+				:name "emacs_eval"
+				:args (:sexp "(+ 1 2)")))))
        '(:tool-use t))
       (should (= call-count 2))
       (funcall (nth 1 callbacks) t '(:content ""))
@@ -1291,8 +1144,8 @@
                        callback
                        '(tool-call . ((nil ("(+ 1 2)") nil
                                            (:id "call-1"
-                                            :name "emacs_eval"
-                                            :args (:sexp "(+ 1 2)")))))
+						:name "emacs_eval"
+						:args (:sexp "(+ 1 2)")))))
                        '(:tool-use t)))
                      (2
                       (funcall callback "Budget final." '(:content "Budget final.")))
@@ -1302,8 +1155,7 @@
               ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
               ((symbol-function 'magent-lifecycle-events-begin-turn)
                (lambda (_title) 'turn))
-              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
-              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
       (magent-agent-process
        "Run eval"
        (lambda (result) (setq response result))
@@ -1480,14 +1332,6 @@
     (should (= (plist-get fm :top-p) 0.9))
     (should (= (plist-get fm :max-tokens) 100))))
 
-(ert-deftest magent-test-md2org-convert-inline-restores-bold-markers ()
-  "Test inline markdown conversion restores Org bold markers."
-  (require 'magent-markdown-to-org)
-  (let ((converted (magent-markdown-to-org-convert-string "Plain **foo** and *bar* with `baz`.")))
-    (should (equal converted "Plain *foo* and /bar/ with ~baz~."))
-    (should-not (string-match-p (regexp-quote (string 1)) converted))
-    (should-not (string-match-p (regexp-quote (string 2)) converted))))
-
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Permission system tests
 ;; ──────────────────────────────────────────────────────────────────────
@@ -1518,8 +1362,8 @@
   (require 'magent-permission)
   (let ((perm (magent-permission-create
                :rules '((read . allow)
-                         (bash . deny)
-                         (* . ask)))))
+                        (bash . deny)
+                        (* . ask)))))
     (should (eq (magent-permission-resolve perm 'read) 'allow))
     (should (eq (magent-permission-resolve perm 'bash) 'deny))
     (should (eq (magent-permission-resolve perm 'grep) 'ask))))
@@ -1569,7 +1413,7 @@
   "Test nested file rules when no file is specified."
   (require 'magent-permission)
   (let ((rules '((read . (("*.el" . allow)
-                           (* . deny))))))
+                          (* . deny))))))
     ;; No file specified: should use wildcard default
     (should (eq (magent-permission-resolve rules 'read) 'deny))))
 
@@ -1577,7 +1421,7 @@
   "Test file-based permission with exact path match."
   (require 'magent-permission)
   (let ((rules '((read . (("secret.key" . deny)
-                           (* . allow))))))
+                          (* . allow))))))
     (should-not (magent-permission-allow-p rules 'read "secret.key"))
     (should (magent-permission-allow-p rules 'read "other.txt"))))
 
@@ -1585,8 +1429,8 @@
   "Resource globs distinguish one-level `*' from recursive `**'."
   (require 'magent-permission)
   (let ((rules '((read . (("src/*.el" . allow)
-                           ("src/**/*.el" . ask)
-                           (* . deny))))))
+                          ("src/**/*.el" . ask)
+                          (* . deny))))))
     (should (eq (magent-permission-resolve rules 'read "src/top.el")
                 'allow))
     (should (eq (magent-permission-resolve rules 'read "src/deep/item.el")
@@ -1598,8 +1442,8 @@
   "Specific resource rules are first-match; bare `*' remains fallback."
   (require 'magent-permission)
   (let ((rules '((read . ((* . allow)
-                           ("src/**" . ask)
-                           ("src/private/**" . deny))))))
+                          ("src/**" . ask)
+                          ("src/private/**" . deny))))))
     ;; The catch-all is a fallback even when declared first.  Between the two
     ;; matching specific rules, the first rule wins.
     (should (eq (magent-permission-resolve
@@ -1612,7 +1456,7 @@
   "A slash-free resource glob applies to basenames at every depth."
   (require 'magent-permission)
   (let ((rules '((read . (("*.env" . deny)
-                           (* . allow))))))
+                          (* . allow))))))
     (should (eq (magent-permission-resolve
                  rules 'read "nested/config.env")
                 'deny))
@@ -1660,7 +1504,7 @@
   "Test tool-available-p with nested file rules containing some allow."
   (require 'magent-permission)
   (let ((rules '((edit . (("*.md" . allow)
-                           (* . deny))))))
+                          (* . deny))))))
     ;; edit has nested rules where at least one grants access
     (should (magent-permission-tool-available-p rules 'edit))))
 
@@ -1865,9 +1709,9 @@
       (should (equal (nth 0 prompt-list) '(prompt . "Run ls")))
       (should (equal (nth 1 prompt-list)
                      '(tool . (:id "call_1"
-                               :name "bash"
-                               :args (:command "ls")
-                               :result "file1.txt\nfile2.txt"))))
+				   :name "bash"
+				   :args (:command "ls")
+				   :result "file1.txt\nfile2.txt"))))
       (should (equal (nth 2 prompt-list)
                      '(response . "Here are the files."))))))
 
@@ -1886,8 +1730,8 @@
       (should (equal (plist-get tool :name) "emacs_eval"))
       (should (equal args
                      '(:sexp "(+ 20 22)"
-                       :tool "emacs_eval"
-                       :values ["emacs_eval" :null])))
+			     :tool "emacs_eval"
+			     :values ["emacs_eval" :null])))
       (should
        (if (fboundp 'json-serialize)
            (json-serialize (list :name (plist-get tool :name)
@@ -3324,9 +3168,9 @@
   "Test OpenAI-compatible chat effort maps xhigh according to policy."
   (require 'magent-llm-gptel)
   (let ((backend (gptel-make-openai
-                     "chat"
-                   :host "openai-compatible.local"
-                   :key "key"))
+                  "chat"
+                  :host "openai-compatible.local"
+                  :key "key"))
         (magent-effort-unsupported-policy 'warn-and-downgrade)
         captured-params)
     (cl-letf (((symbol-function 'gptel-request)
@@ -4207,8 +4051,8 @@
     (let* ((resolution (magent-capability-resolve
                         "Refile this subtree"
                         '(:major-mode org-mode
-                          :major-mode-family (org-mode text-mode)
-                          :features (org))
+				      :major-mode-family (org-mode text-mode)
+				      :features (org))
                         nil))
            (active (magent-capability-resolution-active-capabilities resolution)))
       (should (equal (mapcar (lambda (match)
@@ -4233,8 +4077,8 @@
     (let* ((resolution (magent-capability-resolve
                         "Please reorganize this heading"
                         '(:major-mode org-mode
-                          :major-mode-family (org-mode text-mode)
-                          :features (org))
+				      :major-mode-family (org-mode text-mode)
+				      :features (org))
                         nil))
            (match (car (magent-capability-resolution-matches resolution))))
       (should (eq (magent-capability-match-status match) 'hidden))
@@ -4258,8 +4102,8 @@
     (let* ((resolution (magent-capability-resolve
                         "Refactor this subtree"
                         '(:major-mode org-mode
-                          :major-mode-family (org-mode outline-mode text-mode)
-                          :features (org))
+				      :major-mode-family (org-mode outline-mode text-mode)
+				      :features (org))
                         nil))
            (match (car (magent-capability-resolution-matches resolution))))
       (should (eq (magent-capability-match-status match) 'hidden))
@@ -4310,9 +4154,9 @@
                     (magent-capability-resolve
                      "Commit after reorganizing this subtree"
                      '(:major-mode org-mode
-                       :major-mode-family (org-mode outline-mode text-mode)
-                       :file-path "/tmp/COMMIT_EDITMSG"
-                       :features (org))
+				   :major-mode-family (org-mode outline-mode text-mode)
+				   :file-path "/tmp/COMMIT_EDITMSG"
+				   :features (org))
                      nil))))
       (should (string-match-p "Auto capabilities: org-structure" summary))
       (should (string-match-p "Suggested: git-workflow" summary)))))
@@ -4333,8 +4177,8 @@
     (let ((resolution (magent-capability-resolve
                        "Please reorganize this heading"
                        '(:major-mode org-mode
-                         :major-mode-family (org-mode text-mode)
-                         :features (org))
+				     :major-mode-family (org-mode text-mode)
+				     :features (org))
                        '("manual-skill"))))
       (should-not (magent-capability-resolution-active-capabilities resolution))
       (should (equal (magent-capability-resolution-skill-names resolution)
@@ -4356,10 +4200,10 @@
     (let* ((resolution (magent-capability-resolve
                         "Please reorganize this heading"
                         '(:major-mode org-mode
-                          :major-mode-family (org-mode text-mode)
-                          :file-path "/tmp/notes.org"
-                          :file-extension "org"
-                          :features (org))
+				      :major-mode-family (org-mode text-mode)
+				      :file-path "/tmp/notes.org"
+				      :file-extension "org"
+				      :features (org))
                         nil))
            (match (car (magent-capability-resolution-active-capabilities resolution)))
            (contributions (plist-get (magent-capability-match-details match)
@@ -4393,8 +4237,8 @@
             (magent-capability-resolve
              "Hello there"
              '(:major-mode emacs-lisp-mode
-               :major-mode-family (emacs-lisp-mode prog-mode)
-               :features (project))))
+			   :major-mode-family (emacs-lisp-mode prog-mode)
+			   :features (project))))
            (match (car (magent-capability-resolution-matches resolution))))
       (should (= (magent-capability-match-score match) 5))
       (should (eq (magent-capability-match-status match) 'suggested))
@@ -4472,8 +4316,8 @@
     (let* ((resolution (magent-capability-resolve
                         "Please commit the result after reorganizing this subtree"
                         '(:major-mode org-mode
-                          :major-mode-family (org-mode text-mode)
-                          :features (org))
+				      :major-mode-family (org-mode text-mode)
+				      :features (org))
                         nil))
            (matches (magent-capability-resolution-matches resolution)))
       (should (equal (magent-capability-name
@@ -4499,7 +4343,7 @@
     (let* ((resolution (magent-capability-resolve
                         "Help me commit these changes"
                         '(:major-mode magit-status-mode
-                          :major-mode-family (magit-status-mode magit-mode special-mode fundamental-mode))
+				      :major-mode-family (magit-status-mode magit-mode special-mode fundamental-mode))
                         nil))
            (match (car (magent-capability-resolution-active-capabilities resolution))))
       (should match)
@@ -4950,8 +4794,8 @@
     (let* ((resolution (magent-capability-resolve
                         "Diagnose why this hook and key binding are shadowed"
                         '(:major-mode emacs-lisp-mode
-                          :major-mode-family (emacs-lisp-mode prog-mode)
-                          :features (emacs))
+				      :major-mode-family (emacs-lisp-mode prog-mode)
+				      :features (emacs))
                         nil))
            (active-names (mapcar (lambda (match)
                                    (magent-capability-name
@@ -4967,8 +4811,8 @@
     (let* ((resolution (magent-capability-resolve
                         "Inspect this command and variable binding for me"
                         '(:major-mode lisp-interaction-mode
-                          :major-mode-family (lisp-interaction-mode emacs-lisp-mode prog-mode)
-                          :features (emacs))
+				      :major-mode-family (lisp-interaction-mode emacs-lisp-mode prog-mode)
+				      :features (emacs))
                         nil))
            (active-names (mapcar (lambda (match)
                                    (magent-capability-name
@@ -4984,9 +4828,9 @@
     (let* ((resolution (magent-capability-resolve
                         "Diagnose why reloading init.el leaves stale package state"
                         '(:major-mode emacs-lisp-mode
-                          :major-mode-family (emacs-lisp-mode prog-mode)
-                          :file-path "/tmp/init.el"
-                          :features (emacs))
+				      :major-mode-family (emacs-lisp-mode prog-mode)
+				      :file-path "/tmp/init.el"
+				      :features (emacs))
                         nil))
            (active-names (mapcar (lambda (match)
                                    (magent-capability-name
@@ -5002,8 +4846,8 @@
     (let* ((resolution (magent-capability-resolve
                         "Switch project and show me the current project root"
                         '(:major-mode emacs-lisp-mode
-                          :major-mode-family (emacs-lisp-mode prog-mode)
-                          :features (project))
+				      :major-mode-family (emacs-lisp-mode prog-mode)
+				      :features (project))
                         nil))
            (active-names (mapcar (lambda (match)
                                    (magent-capability-name
@@ -5019,8 +4863,8 @@
     (let* ((resolution (magent-capability-resolve
                         "Use diagnostics and rename symbol across the workspace"
                         '(:major-mode python-mode
-                          :major-mode-family (python-mode prog-mode)
-                          :features (lsp-mode))
+				      :major-mode-family (python-mode prog-mode)
+				      :features (lsp-mode))
                         nil))
            (active-names (mapcar (lambda (match)
                                    (magent-capability-name
@@ -5036,17 +4880,17 @@
     (let* ((resolution (magent-capability-resolve
                         "Hello there"
                         '(:major-mode fundamental-mode
-                          :major-mode-family (fundamental-mode)
-                          :features (project lsp-mode org magit))
+				      :major-mode-family (fundamental-mode)
+				      :features (project lsp-mode org magit))
                         nil))
            (active-names (mapcar (lambda (match)
                                    (magent-capability-name
                                     (magent-capability-match-capability match)))
                                  (magent-capability-resolution-active-capabilities resolution))))
-    (should-not (member "project-workflow" active-names))
-    (should-not (member "lsp-workspace-workflow" active-names))
-    (should-not (member "magit-workflow" active-names))
-    (should-not (member "org-structure-workflow" active-names)))))
+      (should-not (member "project-workflow" active-names))
+      (should-not (member "lsp-workspace-workflow" active-names))
+      (should-not (member "magit-workflow" active-names))
+      (should-not (member "org-structure-workflow" active-names)))))
 
 (ert-deftest magent-test-ensure-initialized-loads-skills-before-capabilities ()
   "Test Magent initialization loads skills before capabilities."
@@ -5114,7 +4958,7 @@
               "\\`[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}t[0-9]\\{4\\}\\.org\\'"
               (file-name-nondirectory first-path)))
             (should (= (length (directory-files roam-directory nil
-                                                 "\\.org\\'"))
+                                                "\\.org\\'"))
                        1))
             (with-temp-buffer
               (insert-file-contents first-path)
@@ -5146,7 +4990,7 @@
              repository "full" "The full repository summary was updated.")
 
             (should (= (length (directory-files roam-directory nil
-                                                 "\\.org\\'"))
+                                                "\\.org\\'"))
                        1))
             (with-temp-buffer
               (insert-file-contents first-path)
@@ -5392,7 +5236,7 @@
                           :skill-names '("parent-skill")
                           :capability-context
                           '(:skill-names ("parent-skill")
-                            :context (:project-root "/tmp/project-parent"))
+					 :context (:project-root "/tmp/project-parent"))
                           :permission-profile
                           (magent-permission-from-config
                            '((agent . ask)
@@ -5491,7 +5335,7 @@
                      '("parent-skill")))
       (should (equal (magent-request-context-capability-context child-state)
                      '(:skill-names ("parent-skill")
-                       :context (:project-root "/tmp/project-parent"))))
+				    :context (:project-root "/tmp/project-parent"))))
       (should (equal (magent-permission-resolve
                       (magent-request-context-permission-profile child-state)
                       'agent)
@@ -5588,14 +5432,12 @@
                 ((symbol-function 'magent-agent-process)
                  (lambda (_prompt callback _agent-info _skill-names
                                   _event-context _request-context
-                                  _capability-resolution _ui-callback
+                                  _capability-resolution _text-callback
                                   _request-live-p _request-state)
                    (funcall callback
                             (magent-agent-result-failed
                              "Request timed out after 5 seconds"))
-                   nil))
-                ((symbol-function 'magent-ui--snapshot-buffer-content)
-                 #'ignore))
+                   nil)))
         (magent-tools--spawn-agent
          (lambda (value) (setq result value))
          "explore"
@@ -5679,7 +5521,7 @@
                   ((symbol-function 'magent-agent-process)
                    (lambda (prompt callback _agent-info _skill-names
                                    _event-context _request-context
-                                   _capability-resolution _ui-callback
+                                   _capability-resolution _text-callback
                                    _request-live-p _request-state)
                      (push prompt captured-prompts)
                      (funcall callback (concat "reply: " prompt))
@@ -6072,7 +5914,7 @@
     (unwind-protect
         (progn
           (magent-tools--write-file (lambda (r) (setq result r))
-                                   tmpfile "new content")
+                                    tmpfile "new content")
           (should (string-match-p "Successfully" result))
           (should (equal (with-temp-buffer
                            (insert-file-contents tmpfile)
@@ -6089,7 +5931,7 @@
     (unwind-protect
         (progn
           (magent-tools--write-file (lambda (r) (setq result r))
-                                   filepath "nested content")
+                                    filepath "nested content")
           (should (string-match-p "Successfully" result))
           (should (file-exists-p filepath)))
       (delete-directory tmpdir t))))
@@ -6124,7 +5966,7 @@
           (with-temp-file tmpfile
             (insert "hello world"))
           (magent-tools--edit-file (lambda (r) (setq result r))
-                                  tmpfile "hello" "goodbye")
+                                   tmpfile "hello" "goodbye")
           (should (string-match-p "Successfully" result))
           (should (equal (with-temp-buffer
                            (insert-file-contents tmpfile)
@@ -6142,7 +5984,7 @@
           (with-temp-file tmpfile
             (insert "hello world"))
           (magent-tools--edit-file (lambda (r) (setq result r))
-                                  tmpfile "nonexistent" "replacement")
+                                   tmpfile "nonexistent" "replacement")
           (should (string-match-p "not found" result)))
       (delete-file tmpfile))))
 
@@ -6156,7 +5998,7 @@
           (with-temp-file tmpfile
             (insert "hello hello hello"))
           (magent-tools--edit-file (lambda (r) (setq result r))
-                                  tmpfile "hello" "bye")
+                                   tmpfile "hello" "bye")
           (should (string-match-p "found 3 times" result)))
       (delete-file tmpfile))))
 
@@ -6200,22 +6042,13 @@
 (ert-deftest magent-test-mode-line-lighter-renders-from-processing-state ()
   "Test the mode-line lighter depends only on processing-state APIs."
   (require 'magent-modeline)
-  (cl-letf (((symbol-function 'magent-ui-processing-p) (lambda () nil)))
+  (cl-letf (((symbol-function 'magent-runtime-processing-p) (lambda () nil)))
     (let ((lighter (eval (cadr magent-modeline-lighter))))
       (should (string-match-p "\\[M/" lighter))
       (should-not (string-match-p "\\[busy\\]" lighter))))
-  (cl-letf (((symbol-function 'magent-ui-processing-p) (lambda () t)))
+  (cl-letf (((symbol-function 'magent-runtime-processing-p) (lambda () t)))
     (should (string-match-p "\\[busy\\]"
                             (eval (cadr magent-modeline-lighter))))))
-
-(ert-deftest magent-test-modeline-install-is-idempotent ()
-  "Test installing the legacy output construct does not duplicate it."
-  (require 'magent-modeline)
-  (let ((global-mode-string nil))
-    (should (magent-modeline-install))
-    (should-not (magent-modeline-install))
-    (should (equal global-mode-string
-                   (list magent-modeline--legacy-output-construct)))))
 
 (ert-deftest magent-test-tools-gptel-to-magent-tool ()
   "Test conversion from gptel-tool to magent tool plist."
@@ -6234,12 +6067,12 @@
                  (list (list :name "emacs_eval"
                              :description "Eval"
                              :args '((:name "sexp"
-                                      :type string
-                                      :description "Expression")
+					    :type string
+					    :description "Expression")
                                      (:name "timeout"
-                                      :type integer
-                                      :description "Timeout"
-                                      :optional t))
+					    :type integer
+					    :description "Timeout"
+					    :optional t))
                              :function #'ignore
                              :async t))))
          (tool (car tools))
@@ -6469,53 +6302,6 @@
     (should-not decision)
     (should-not (magent-approval-pending-request "req-local"))))
 
-(ert-deftest magent-test-ui-interrupt-renders-plain-status-line ()
-  "Test interrupt renders plain text instead of an error heading."
-  (require 'magent-agent-loop)
-  (let ((buffer (magent-ui-get-buffer))
-        (magent--current-request-handle (magent-agent-loop-create))
-        (magent-ui--request-generation 0))
-    (with-current-buffer buffer
-      (let ((inhibit-read-only t))
-        (erase-buffer)))
-    (cl-letf (((symbol-function 'magent-agent-loop-abort) #'ignore)
-              ((symbol-function 'magent-approval-drop-requests) #'ignore)
-              ((symbol-function 'magent-ui--clear-processing) #'ignore)
-              ((symbol-function 'magent-ui--maybe-show-input-prompt) #'ignore))
-      (magent-interrupt))
-    (with-current-buffer buffer
-      (should (string-match-p (regexp-quote "[Interrupted by user]")
-                              (buffer-string)))
-      (should-not (string-match-p
-                   (concat "^\\* " (regexp-quote magent-error-prompt) " +$")
-                   (buffer-string))))))
-
-(ert-deftest magent-test-ui-interrupt-does-not-double-abort-turn-loop ()
-  "Test interrupt aborts the active turn loop only once."
-  (require 'magent-agent-loop)
-  (require 'magent-ui-legacy)
-  (let* ((buffer (magent-ui-get-buffer))
-         (loop (magent-agent-loop-create))
-         (magent--current-request-handle loop)
-         (magent-legacy-queue--current-request-handle loop)
-         (magent-legacy-queue--active
-          (magent-legacy-queue-submission-create
-           :id "sub-interrupt"
-           :op (magent-protocol-interrupt-op)
-           :status 'running))
-         (magent-legacy-queue--pending nil)
-         aborted)
-    (with-current-buffer buffer
-      (let ((inhibit-read-only t))
-        (erase-buffer)))
-    (cl-letf (((symbol-function 'magent-agent-loop-abort)
-               (lambda (value) (push value aborted)))
-              ((symbol-function 'magent-approval-drop-requests) #'ignore)
-              ((symbol-function 'magent-ui--clear-processing) #'ignore)
-              ((symbol-function 'magent-ui--maybe-show-input-prompt) #'ignore))
-      (magent-interrupt))
-    (should (equal aborted (list loop)))))
-
 (ert-deftest magent-test-emacs-eval-cancel-cleanup-prevents-late-callback ()
   "Test cancelling emacs_eval before its timer fires suppresses the callback."
   (require 'magent-tools)
@@ -6698,29 +6484,29 @@
         (progn
           (magent-audit-enable)
           (magent-lifecycle-events-emit 'tool-call-start
-                              :context context
-                              :audit-context audit-context
-                              :call-id "call-summary"
-                              :tool-name "write_repo_summary"
-                              :summary "full"
-                              :args '(:mode "full"
-                                      :content "private repository details"))
+					:context context
+					:audit-context audit-context
+					:call-id "call-summary"
+					:tool-name "write_repo_summary"
+					:summary "full"
+					:args '(:mode "full"
+						      :content "private repository details"))
           (magent-lifecycle-events-emit 'tool-call-start
-                              :context context
-                              :audit-context audit-context
-                              :call-id "call-write"
-                              :tool-name "write_file"
-                              :summary "notes.txt"
-                              :args '(:path "notes.txt" :content "super secret body"))
+					:context context
+					:audit-context audit-context
+					:call-id "call-write"
+					:tool-name "write_file"
+					:summary "notes.txt"
+					:args '(:path "notes.txt" :content "super secret body"))
           (magent-lifecycle-events-emit 'tool-call-start
-                              :context context
-                              :audit-context audit-context
-                              :call-id "call-edit"
-                              :tool-name "edit_file"
-                              :summary "notes.txt"
-                              :args '(:path "notes.txt"
-                                      :old_text "old secret"
-                                      :new_text "new secret value"))
+					:context context
+					:audit-context audit-context
+					:call-id "call-edit"
+					:tool-name "edit_file"
+					:summary "notes.txt"
+					:args '(:path "notes.txt"
+						      :old_text "old secret"
+						      :new_text "new secret value"))
           (magent-audit--flush-pending)
           (let* ((records
                   (magent-test--read-audit-records magent-audit-directory))
@@ -6827,13 +6613,13 @@
         (dolist (case
                  `(("grep"
                     (:pattern ,home-path
-                     :path ,(expand-file-name "src" project-root)))
+			      :path ,(expand-file-name "src" project-root)))
                    ("glob"
                     (:pattern "**/*.el"
-                     :path ,(expand-file-name "lisp" project-root)))
+			      :path ,(expand-file-name "lisp" project-root)))
                    ("custom_tool"
                     (:project_file ,(expand-file-name "README.org" project-root)
-                     :home_file ,home-path))))
+				   :home_file ,home-path))))
           (let* ((record
                   (magent-audit--build-record
                    'permission-decision
@@ -7006,8 +6792,8 @@
                 "sexp-secret-7318")
                ("spawn_agent"
                 (:agent "explore"
-                 :task_name "task-secret-6914"
-                 :prompt "prompt-secret-8735")
+			:task_name "task-secret-6914"
+			:prompt "prompt-secret-8735")
                 prompt_length
                 :prompt
                 "prompt-secret-8735")
@@ -7242,8 +7028,8 @@
                  (subagent-id (cdr (assq 'subagent_id start))))
             (should (= (length records) 2))
             (should (equal (mapcar (lambda (record)
-                                    (cdr (assq 'event record)))
-                                  records)
+                                     (cdr (assq 'event record)))
+                                   records)
                            '("subagent-start" "subagent-stop")))
             (should (stringp subagent-id))
             (should (equal (cdr (assq 'subagent_id stop)) subagent-id))
@@ -7422,7 +7208,7 @@
             :args-to-plist-function #'magent-agent-loop-args-to-plist
             :summarize-function #'magent-agent-loop-summarize-args)
            (list (list tool (list "echo hi") (lambda (value)
-                                                (setq result value)))))
+                                               (setq result value)))))
           (should (equal result "ran echo hi"))
           (magent-audit--flush-pending)
           (let* ((records (magent-test--read-audit-records magent-audit-directory))
@@ -7465,7 +7251,7 @@
             :args-to-plist-function #'magent-agent-loop-args-to-plist
             :summarize-function #'magent-agent-loop-summarize-args)
            (list (list tool (list ".env") (lambda (value)
-                                             (setq result value)))))
+                                            (setq result value)))))
           (should (string-match-p "access denied" result))
           (magent-audit--flush-pending)
           (let* ((records (magent-test--read-audit-records magent-audit-directory))
@@ -7766,9 +7552,9 @@
             (should (= (length messages) 2))
             (should (equal (magent-msg-content (nth 1 messages))
                            '(:id "call_1"
-                             :name "bash"
-                             :args (:command "ls")
-                             :result "ok")))))
+				 :name "bash"
+				 :args (:command "ls")
+				 :result "ok")))))
       (delete-directory magent-session-directory t))))
 
 (ert-deftest magent-test-session-save-load-sanitizes-symbol-tool-args ()
@@ -7793,11 +7579,11 @@
                  (messages (magent-session-get-messages loaded-session)))
             (should (equal (magent-msg-content (nth 1 messages))
                            '(:id "call_1"
-                             :name "emacs_eval"
-                             :args (:sexp "(+ 20 22)"
-                                    :tool "emacs_eval"
-                                    :values ("emacs_eval" nil))
-                             :result "42")))))
+				 :name "emacs_eval"
+				 :args (:sexp "(+ 20 22)"
+					      :tool "emacs_eval"
+					      :values ("emacs_eval" nil))
+				 :result "42")))))
       (delete-directory magent-session-directory t))))
 
 (ert-deftest magent-test-agent-job-create-and-transition ()
@@ -7916,7 +7702,7 @@
                     ((symbol-function 'magent-agent-process)
                      (lambda (prompt callback _agent-info _skill-names
                                      _event-context _request-context
-                                     _capability-resolution _ui-callback
+                                     _capability-resolution _text-callback
                                      _request-live-p request-state)
                        (magent-session-add-message
                         (magent-request-context-session request-state)
@@ -7994,11 +7780,11 @@
          (round-tripped (magent-llm-event-from-plist plist)))
     (should (equal plist
                    '(:type tool-call
-                     :id "call-1"
-                     :name "bash"
-                     :arguments (:command "pwd")
-                     :raw raw
-                     :metadata (:provider gptel))))
+			   :id "call-1"
+			   :name "bash"
+			   :arguments (:command "pwd")
+			   :raw raw
+			   :metadata (:provider gptel))))
     (should (eq (magent-llm-event-type round-tripped) 'tool-call))
     (should (equal (magent-llm-event-id round-tripped) "call-1"))
     (should (equal (magent-llm-event-name round-tripped) "bash"))
@@ -8157,8 +7943,8 @@
          (state (magent-llm-gptel--make-state))
          (fsm (gptel-make-fsm
                :info '(:status "ok"
-                       :tokens (:total 3)
-                       :stop-reason "stop"))))
+			       :tokens (:total 3)
+			       :stop-reason "stop"))))
     (unwind-protect
         (progn
           (magent-llm-gptel--callback
@@ -8295,8 +8081,8 @@
                    '("lisp/magent-agent-loop.el" 121 100)))
     (should (equal (plist-get raw-call :args)
                    '(:path "lisp/magent-agent-loop.el"
-                     :start_line 121
-                     :line_count 100)))))
+			   :start_line 121
+			   :line_count 100)))))
 
 (ert-deftest magent-test-agent-loop-rejects-unknown-textual-dsml-argument ()
   "Test textual DSML arguments outside the schema become tool errors."
@@ -8485,8 +8271,8 @@
          (request (magent-llm-request-create
                    :stream nil
                    :metadata '(:final-response-retry t
-                               :strict-final-response-retry t
-                               :disable-provider-tools t)
+						     :strict-final-response-retry t
+						     :disable-provider-tools t)
                    :callback (lambda (event) (push event events))))
          (buffer (generate-new-buffer " *magent-test-gptel*"))
          (state (magent-llm-gptel--make-state)))
@@ -8537,8 +8323,8 @@
            request state buffer
            '(tool-call . ((nil (:path "README.org") nil
                                (:id "call-1"
-                                :name "read_file"
-                                :args (:path "README.org")))))
+                                    :name "read_file"
+                                    :args (:path "README.org")))))
            '(:status "ok"))
           (should (= (length events) 2))
           (let ((batch-end (car events))
@@ -8563,7 +8349,7 @@
                      :tool-use (list (list :id "call-1"
                                            :name 'emacs_eval
                                            :args '(:sexp (+ 20 22)
-                                                   :missing nil)))))
+							 :missing nil)))))
          (tool-call (car (plist-get info :tool-use))))
     (magent-llm-gptel--sanitize-info info)
     (should (equal (plist-get tool-call :name) "emacs_eval"))
@@ -8575,7 +8361,7 @@
   (require 'magent-llm-gptel)
   (let* ((func (list :name 'emacs_eval
                      :arguments '(:sexp (+ 20 22)
-                                  :ignored nil)))
+					:ignored nil)))
          (tool-call (list :type "function"
                           :id "call-1"
                           :function func))
@@ -8728,17 +8514,17 @@
     (magent-agent-loop-record-tool-result
      loop nil '(:path "README.org")
      '(:id "call-1"
-       :name "read_file"
-       :approval-decision allow
-       :approval-source rule-allow)
+	   :name "read_file"
+	   :approval-decision allow
+	   :approval-source rule-allow)
      "content")
     (let* ((thread (magent-session-thread-ledger session))
            (turn (car (magent-thread-turns thread)))
            (item (car (magent-thread-turn-items turn))))
       (should (equal (magent-thread-item-metadata item)
                      '(:source "tool-result"
-                       :approval-decision "allow"
-                       :approval-source "rule-allow"))))))
+			       :approval-decision "allow"
+			       :approval-source "rule-allow"))))))
 
 (ert-deftest magent-test-agent-loop-dispatches-known-tool-call ()
   "Test agent loop dispatches known tools through the orchestrator."
@@ -8879,12 +8665,11 @@
     (should (= (length results) 2))
     (should (equal (nreverse results) '("result 1" "result 2")))))
 
-(ert-deftest magent-test-agent-loop-run-tool-emits-events-and-renders-visible-ui ()
-  "Test loop tool events carry enough data for the UI projection sink."
+(ert-deftest magent-test-agent-loop-run-tool-emits-visible-events ()
+  "Test loop tool events carry normalized visible presentation data."
   (require 'magent-agent-loop)
   (require 'gptel)
   (let* ((events nil)
-         (ui-events nil)
          (result nil)
          (tool (gptel-make-tool
                 :name "bash"
@@ -8900,19 +8685,10 @@
          (loop (magent-agent-loop-create)))
     (cl-letf (((symbol-function 'magent-lifecycle-events-emit)
                (lambda (type &rest props)
-                 (push (cons type props) events)))
-              ((symbol-function 'magent-ui-insert-tool-call)
-               (lambda (name summary)
-                 (push (list 'call name summary) ui-events)))
-              ((symbol-function 'magent-ui-insert-tool-result)
-               (lambda (name summary)
-                 (push (list 'result name summary) ui-events))))
+                 (push (cons type props) events))))
       (magent-agent-loop-run-tool
        loop context tool (lambda (value) (setq result value))
-       (list "echo hi" "inspect shell"))
-      (dolist (event (nreverse (copy-sequence events)))
-        (magent-ui--lifecycle-render-sink
-         (append (list :type (car event)) (cdr event)))))
+       (list "echo hi" "inspect shell")))
     (should (equal result "ran echo hi"))
     (let ((ordered-events (nreverse events)))
       (should (equal (mapcar #'car ordered-events)
@@ -8922,10 +8698,7 @@
         (should (equal (plist-get start :tool-name) "bash"))
         (should (plist-get start :ui-visible))
         (should (equal (plist-get start :summary)
-                       "[inspect shell] echo hi"))))
-    (should (equal (nreverse ui-events)
-                   '((call "bash" "[inspect shell] echo hi")
-                     (result "bash" "ran echo hi"))))))
+                       "[inspect shell] echo hi"))))))
 
 (ert-deftest magent-test-agent-loop-start-installs-request-abort-controller ()
   "Test loop start exposes its abort controller on request context."
@@ -9138,35 +8911,11 @@
     (should (eq (car saved) session))
     (should (equal (cadr saved) "/tmp/project"))))
 
-(ert-deftest magent-test-ui-interrupt-aborts-agent-loop ()
-  "Test UI interrupt aborts the active Magent-owned loop."
-  (require 'magent-ui)
-  (require 'magent-ui-legacy)
-  (let ((buffer (magent-ui-get-buffer))
-        (loop (magent-agent-loop-create))
-        (magent-legacy-queue--current-request-handle nil)
-        (magent-legacy-queue--active nil)
-        (magent-legacy-queue--pending nil)
-        (magent-ui--request-generation 0)
-        aborted)
-    (setq magent--current-request-handle loop)
-    (with-current-buffer buffer
-      (let ((inhibit-read-only t))
-        (erase-buffer)))
-    (cl-letf (((symbol-function 'magent-agent-loop-abort)
-               (lambda (value) (setq aborted value)))
-              ((symbol-function 'magent-approval-drop-requests) #'ignore)
-              ((symbol-function 'magent-ui--clear-processing) #'ignore)
-              ((symbol-function 'magent-ui--maybe-show-input-prompt) #'ignore))
-    (magent-interrupt))
-    (should (eq aborted loop))
-    (should-not magent--current-request-handle)))
-
-(ert-deftest magent-test-agent-loop-run-tool-hides-summary-only-ui ()
-  "Test summary-only request contexts suppress direct tool UI rendering."
+(ert-deftest magent-test-agent-loop-run-tool-marks-summary-only-events-hidden ()
+  "Test summary-only request contexts mark lifecycle events non-visible."
   (require 'magent-agent-loop)
   (require 'gptel)
-  (let* ((ui-events nil)
+  (let* ((events nil)
          (result nil)
          (tool (gptel-make-tool
                 :name "read_file"
@@ -9177,16 +8926,18 @@
          (context (magent-request-context-create
                    :ui-visibility 'summary-only))
          (loop (magent-agent-loop-create)))
-    (cl-letf (((symbol-function 'magent-ui-insert-tool-call)
-               (lambda (&rest args) (push args ui-events)))
-              ((symbol-function 'magent-ui-insert-tool-result)
-               (lambda (&rest args) (push args ui-events)))
-              ((symbol-function 'magent-lifecycle-events-emit) #'ignore))
+    (cl-letf (((symbol-function 'magent-lifecycle-events-emit)
+               (lambda (type &rest props)
+                 (push (cons type props) events))))
       (magent-agent-loop-run-tool
        loop context tool (lambda (value) (setq result value))
        (list "README.org")))
     (should (equal result "read README.org"))
-    (should-not ui-events)))
+    (let ((ordered (nreverse events)))
+      (should (equal (mapcar #'car ordered)
+                     '(tool-call-start tool-call-end)))
+      (dolist (event ordered)
+        (should-not (plist-get (cdr event) :ui-visible))))))
 
 (ert-deftest magent-test-agent-loop-tool-queue-serializes-async-tools ()
   "Test loop tool queue runs the next tool after async completion."
@@ -9323,56 +9074,6 @@
              "{\"scope\":\"global\",\"messages\":[{\"role\":\"user\",\"content\":\"   Investigate resume menu title rendering regression   \"}]}"))
           (should (equal (magent-session--format-file session-file)
                          "2026-03-17 12:00:00  (global)  Investigate resume menu title rendering regre...")))
-      (delete-directory magent-session-directory t))))
-
-(ert-deftest magent-test-resume-session-candidates-include-time ()
-  "Test `magent-resume-session' presents timestamps with time-of-day."
-  (require 'magent-ui)
-  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
-         (session-file (expand-file-name "session-20260317-120000.json"
-                                         magent-session-directory))
-         captured-collection)
-    (unwind-protect
-        (progn
-          (with-temp-file session-file
-            (insert "{\"scope\":\"global\",\"summary-title\":\"Resume label\"}"))
-          (cl-letf (((symbol-function 'magent-ui--activate-context-session) #'ignore)
-                    ((symbol-function 'completing-read)
-                     (lambda (_prompt collection &rest _args)
-                       (setq captured-collection collection)
-                       nil))
-                    ((symbol-function 'message) #'ignore))
-            (magent-resume-session))
-          (should (equal captured-collection
-                         '("2026-03-17 12:00:00  (global)  Resume label"))))
-      (delete-directory magent-session-directory t))))
-
-(ert-deftest magent-test-resume-session-affixation-shows-time ()
-  "Test `magent-resume-session' provides a visible date/time prefix."
-  (require 'magent-ui)
-  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
-         (session-file (expand-file-name "session-20260317-120000.json"
-                                         magent-session-directory))
-         captured-collection
-         captured-properties)
-    (unwind-protect
-        (progn
-          (with-temp-file session-file
-            (insert "{\"scope\":\"global\",\"summary-title\":\"Resume label\"}"))
-          (cl-letf (((symbol-function 'magent-ui--activate-context-session) #'ignore)
-                    ((symbol-function 'completing-read)
-                     (lambda (_prompt collection &rest _args)
-                       (setq captured-collection collection
-                             captured-properties completion-extra-properties)
-                       nil))
-                    ((symbol-function 'message) #'ignore))
-            (magent-resume-session))
-          (let* ((affixation (plist-get captured-properties :affixation-function))
-                 (rows (funcall affixation captured-collection)))
-            (should (equal rows
-                           '(("2026-03-17 12:00:00  (global)  Resume label"
-                              "[2026-03-17 12:00:00] "
-                              ""))))))
       (delete-directory magent-session-directory t))))
 
 (ert-deftest magent-test-session-format-file-legacy-name-falls-back-to-mtime ()
@@ -9586,706 +9287,12 @@
                      (scope ,project-root)
                      (scope ,project-root))))))
 
-(ert-deftest magent-test-ui-scope-switch-does-not-snapshot-workspace ()
-  "Test switching project scopes does not persist workspace buffer text."
-  (require 'magent-ui)
-  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (magent--current-request-handle nil)
-         (project-a (make-temp-file "magent-project-a-" t))
-         (project-b (make-temp-file "magent-project-b-" t))
-         (buffer-a nil)
-         (buffer-b nil)
-         (magent-project-root-function
-          (lambda ()
-            (cond
-             ((string-prefix-p project-a default-directory) project-a)
-             ((string-prefix-p project-b default-directory) project-b)
-             (t nil)))))
-    (unwind-protect
-        (progn
-          (with-temp-buffer
-            (setq default-directory (file-name-as-directory project-a))
-            (magent-ui--activate-context-session))
-          (setq buffer-a (magent-ui-get-buffer))
-          (with-current-buffer buffer-a
-            (let ((inhibit-read-only t))
-              (erase-buffer)
-              (insert "project-a snapshot")))
-          (let ((session-a (magent-session-get)))
-            (with-temp-buffer
-              (setq default-directory (file-name-as-directory project-b))
-              (magent-ui--activate-context-session))
-            (setq buffer-b (magent-ui-get-buffer))
-            (should (null (magent-session-buffer-content session-a)))
-            (should (equal (magent-session-current-scope)
-                           (file-truename (directory-file-name project-b))))
-            (should-not (eq buffer-a buffer-b))
-            (should-not (equal (with-current-buffer buffer-b (buffer-string))
-                               "project-a snapshot"))))
-      (when (buffer-live-p buffer-a)
-        (kill-buffer buffer-a))
-      (when (buffer-live-p buffer-b)
-        (kill-buffer buffer-b))
-      (delete-directory project-a t)
-      (delete-directory project-b t))))
-
-(ert-deftest magent-test-ui-uses-distinct-buffers-per-scope ()
-  "Test global and project scopes resolve to distinct Magent buffers."
-  (require 'magent-ui)
-  (let* ((magent-buffer-name "*magent-test*")
-         (parent-a (make-temp-file "magent-parent-a-" t))
-         (parent-b (make-temp-file "magent-parent-b-" t))
-         (project-a (expand-file-name "app" parent-a))
-         (project-b (expand-file-name "app" parent-b))
-         (scope-a nil)
-         (scope-b nil)
-         (global-buffer nil)
-         (buffer-a nil)
-         (buffer-b nil))
-    (unwind-protect
-        (progn
-          (make-directory project-a t)
-          (make-directory project-b t)
-          (setq scope-a (file-truename (directory-file-name project-a))
-                scope-b (file-truename (directory-file-name project-b))
-                global-buffer (magent-ui-get-buffer 'global)
-                buffer-a (magent-ui-get-buffer scope-a)
-                buffer-b (magent-ui-get-buffer scope-b))
-          (should (equal (buffer-name global-buffer) "*magent-test:global*"))
-          (should (equal (buffer-name buffer-a) "*magent-test:app*"))
-          (should-not (eq buffer-a buffer-b))
-          (should (string-match-p "\\`\\*magent-test:app#" (buffer-name buffer-b)))
-          (with-current-buffer buffer-a
-            (should (equal magent-ui--buffer-scope scope-a)))
-          (with-current-buffer buffer-b
-            (should (equal magent-ui--buffer-scope scope-b))))
-      (when (buffer-live-p global-buffer)
-        (kill-buffer global-buffer))
-      (when (buffer-live-p buffer-a)
-        (kill-buffer buffer-a))
-      (when (buffer-live-p buffer-b)
-        (kill-buffer buffer-b))
-      (delete-directory parent-a t)
-      (delete-directory parent-b t))))
-
-(ert-deftest magent-test-ui-context-scope-prefers-buffer-local-scope ()
-  "Test Magent buffers keep their own scope even when another session is active."
-  (require 'magent-ui)
-  (let* ((magent-buffer-name "*magent-scope*")
-         (project-a (make-temp-file "magent-project-a-" t))
-         (project-b (make-temp-file "magent-project-b-" t))
-         (scope-a (file-truename (directory-file-name project-a)))
-         (scope-b (file-truename (directory-file-name project-b)))
-         (buffer-a nil))
-    (unwind-protect
-        (progn
-          (setq buffer-a (magent-ui-get-buffer scope-a))
-          (magent-session-activate scope-b)
-          (with-current-buffer buffer-a
-            (should (equal (magent-ui--context-scope) scope-a))))
-      (when (buffer-live-p buffer-a)
-        (kill-buffer buffer-a))
-      (delete-directory project-a t)
-      (delete-directory project-b t))))
-
-(ert-deftest magent-test-input-submit-reactivates-buffer-scope ()
-  "Test submitting from an older compose buffer reactivates that scope."
-  (require 'magent-ui)
-  (let* ((magent-buffer-name "*magent-submit*")
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (project-a (make-temp-file "magent-project-a-" t))
-         (project-b (make-temp-file "magent-project-b-" t))
-         (scope-a (file-truename (directory-file-name project-a)))
-         (scope-b (file-truename (directory-file-name project-b)))
-         (buffer-a nil)
-         (captured nil))
-    (unwind-protect
-        (progn
-          (magent-session-activate scope-a)
-          (setq buffer-a (magent-test--compose-with-text
-                          scope-a "hello from project a"))
-          (magent-session-activate scope-b)
-          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-                    ((symbol-function 'magent-ui-process)
-                     (lambda (text &optional source display skills agent)
-                       (setq captured (list text source display skills agent
-                                            (magent-session-current-scope))))))
-            (with-current-buffer buffer-a
-              (magent-input-submit)))
-          (should (equal (car captured) "hello from project a"))
-          (should (eq (nth 1 captured) 'compose))
-          (should (equal (nth 5 captured) scope-a))
-          (should (equal (magent-session-current-scope) scope-a)))
-      (when (buffer-live-p buffer-a)
-        (kill-buffer buffer-a))
-      (delete-directory project-a t)
-      (delete-directory project-b t))))
-
-(ert-deftest magent-test-open-compose-displays-bottom-popup ()
-  "Test opening compose uses a bottom side-window display action."
-  (require 'magent-ui)
-  (let* ((magent-compose-window-height 7)
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         displayed
-         action)
-    (unwind-protect
-        (progn
-          (magent-session-activate 'global)
-          (cl-letf (((symbol-function 'display-buffer)
-                     (lambda (buffer action-arg &rest _args)
-                       (setq displayed buffer)
-                       (setq action action-arg)
-                       nil)))
-            (magent-ui-open-compose 'global "draft"))
-          (should (eq displayed (magent-ui-compose-buffer 'global)))
-          (should (equal (car action) '(display-buffer-in-side-window)))
-          (should (eq (cdr (assq 'side action)) 'bottom))
-          (should (= (cdr (assq 'window-height action)) 7))
-          (with-current-buffer (magent-ui-compose-buffer 'global)
-            (should (equal (buffer-string) "draft\n"))))
-      (when (buffer-live-p (magent-ui-compose-buffer 'global))
-        (kill-buffer (magent-ui-compose-buffer 'global)))
-      (magent-session-reset))))
-
-(ert-deftest magent-test-input-submit-closes-compose-and-focuses-workspace ()
-  "Test prompt submission closes compose and selects the workspace by default."
-  (require 'magent-ui)
-  (let* ((magent-buffer-name "*magent-submit-close*")
-         (magent-compose-close-after-submit t)
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (workspace nil)
-         (compose nil)
-         (captured nil)
-         (closed-window nil)
-         (selected-window nil))
-    (unwind-protect
-        (progn
-          (magent-session-activate 'global)
-          (setq workspace (magent-ui-get-buffer 'global))
-          (setq compose (magent-test--compose-with-text 'global "send it"))
-          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-                    ((symbol-function 'magent-ui-process)
-                     (lambda (text &optional source display skills agent)
-                       (setq captured (list text source display skills agent))))
-                    ((symbol-function 'display-buffer)
-                     (lambda (buffer &rest _args)
-                       (if (eq buffer workspace)
-                           'workspace-window
-                         'other-window)))
-                    ((symbol-function 'get-buffer-window)
-                     (lambda (buffer &optional _all-frames)
-                       (when (eq buffer compose)
-                         'compose-window)))
-                    ((symbol-function 'windowp)
-                     (lambda (value)
-                       (memq value '(workspace-window compose-window))))
-                    ((symbol-function 'window-live-p)
-                     (lambda (value)
-                       (memq value '(workspace-window compose-window))))
-                    ((symbol-function 'quit-window)
-                     (lambda (&optional _kill window)
-                       (setq closed-window window)))
-                    ((symbol-function 'select-window)
-                     (lambda (window &optional _norecord)
-                       (setq selected-window window))))
-            (with-current-buffer compose
-              (magent-input-submit)))
-          (should (equal (car captured) "send it"))
-          (should (eq closed-window 'compose-window))
-          (should (eq selected-window 'workspace-window))
-          (with-current-buffer compose
-            (should (equal (buffer-string) ""))))
-      (when (buffer-live-p compose)
-        (kill-buffer compose))
-      (when (buffer-live-p workspace)
-        (kill-buffer workspace))
-      (magent-session-reset))))
-
-(ert-deftest magent-test-input-submit-can-keep-compose-open ()
-  "Test `magent-compose-close-after-submit' can keep compose visible."
-  (require 'magent-ui)
-  (let* ((magent-buffer-name "*magent-submit-keep-compose*")
-         (magent-compose-close-after-submit nil)
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (workspace nil)
-         (compose nil)
-         (captured nil)
-         (closed nil)
-         (selected nil))
-    (unwind-protect
-        (progn
-          (magent-session-activate 'global)
-          (setq workspace (magent-ui-get-buffer 'global))
-          (setq compose (magent-test--compose-with-text 'global "keep window"))
-          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-                    ((symbol-function 'magent-ui-process)
-                     (lambda (text &optional source display skills agent)
-                       (setq captured (list text source display skills agent))))
-                    ((symbol-function 'display-buffer)
-                     (lambda (&rest _args) 'workspace-window))
-                    ((symbol-function 'quit-window)
-                     (lambda (&rest _args) (setq closed t)))
-                    ((symbol-function 'select-window)
-                     (lambda (&rest _args) (setq selected t))))
-            (with-current-buffer compose
-              (magent-input-submit)))
-          (should (equal (car captured) "keep window"))
-          (should-not closed)
-          (should-not selected)
-          (with-current-buffer compose
-            (should (equal (buffer-string) ""))))
-      (when (buffer-live-p compose)
-        (kill-buffer compose))
-      (when (buffer-live-p workspace)
-        (kill-buffer workspace))
-      (magent-session-reset))))
-
-(ert-deftest magent-test-input-submit-runs-submit-hook ()
-  "Test successful input submission runs `magent-ui-after-input-submit-hook'."
-  (require 'magent-ui)
-  (let* ((magent-buffer-name "*magent-submit-hook*")
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (buffer nil)
-         (captured nil)
-         (hook-called nil))
-    (unwind-protect
-        (progn
-          (magent-session-activate 'global)
-          (setq buffer (magent-test--compose-with-text
-                        'global "run submit hook"))
-          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-                    ((symbol-function 'magent-ui-process)
-                     (lambda (text &optional source display skills agent)
-                       (setq captured (list text source display skills agent)))))
-            (with-current-buffer buffer
-              (add-hook 'magent-ui-after-input-submit-hook
-                        (lambda () (setq hook-called t))
-                        nil t)
-              (magent-input-submit)))
-          (should hook-called)
-          (should (equal (car captured) "run submit hook"))
-          (should (eq (nth 1 captured) 'compose)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest magent-test-input-submit-former-clear-command-is-prompt-text ()
-  "Test formerly special @clear input is now sent as prompt text."
-  (require 'magent-ui)
-  (let* ((magent-buffer-name "*magent-submit-clear*")
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (buffer nil)
-         (captured nil))
-    (unwind-protect
-        (progn
-          (magent-session-activate 'global)
-          (magent-session-add-message (magent-session-get) 'user "old context")
-          (setq buffer (magent-test--compose-with-text 'global "@clear"))
-          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-                    ((symbol-function 'magent-ui-process)
-                     (lambda (text &optional source display skills agent)
-                       (setq captured (list text source display skills agent)))))
-            (with-current-buffer buffer
-              (magent-input-submit)))
-          (should (equal (nth 0 captured) "@clear"))
-          (should (eq (nth 1 captured) 'compose))
-          (should (null (nth 3 captured)))
-          (should (= (length (magent-session-messages (magent-session-get))) 1)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest magent-test-input-submit-uses-and-clears-pending-skills ()
-  "Test compose submission consumes one-shot skills selected for the scope."
-  (require 'magent-ui)
-  (let* ((magent-buffer-name "*magent-submit-clear-text*")
-         (magent-ui--pending-skills-by-scope (make-hash-table :test #'equal))
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (buffer nil)
-         (captured nil))
-    (unwind-protect
-        (progn
-          (magent-session-activate 'global)
-          (magent-ui--set-pending-skills
-           'global '("magit-workflow" "git-workflow"))
-          (setq buffer (magent-test--compose-with-text
-                        'global "review this change"))
-          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-                    ((symbol-function 'magent-ui-process)
-                     (lambda (text &optional source display skills agent)
-                       (setq captured (list text source display skills agent)))))
-            (with-current-buffer buffer
-              (magent-input-submit)))
-          (should (equal (nth 0 captured) "review this change"))
-          (should (eq (nth 1 captured) 'compose))
-          (should (equal (nth 3 captured)
-                         '("magit-workflow" "git-workflow")))
-          (should-not (magent-ui--pending-skills 'global)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest magent-test-input-submit-former-init-command-is-prompt-text ()
-  "Test formerly special @init input is now ordinary prompt text."
-  (require 'magent-ui)
-  (let* ((magent-buffer-name "*magent-submit-init*")
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (buffer nil)
-         (captured nil))
-    (unwind-protect
-        (progn
-          (magent-session-activate 'global)
-          (setq buffer (magent-test--compose-with-text 'global "@init"))
-          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-                    ((symbol-function 'magent-ui-process)
-                     (lambda (text &optional source display skills agent)
-                       (setq captured (list text source display skills agent)))))
-            (with-current-buffer buffer
-              (magent-input-submit)))
-          (should (equal (nth 0 captured) "@init"))
-          (should (eq (nth 1 captured) 'compose))
-          (should (null (nth 3 captured))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest magent-test-toggle-skill-for-next-request-uses-instruction-skills ()
-  "Test pending skill toggling only accepts instruction skills."
-  (require 'magent-ui)
-  (let ((magent-skills--registry nil)
-        (magent-ui--pending-skills-by-scope (make-hash-table :test #'equal)))
-    (magent-skills-register
-     (magent-skill-create :name "inst" :type 'instruction))
-    (magent-skills-register
-     (magent-skill-create :name "tool-skill" :type 'tool))
-    (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-              ((symbol-function 'magent-ui--activate-command-context)
-               (lambda () 'global)))
-      (magent-ui-toggle-skill-for-next-request "inst")
-      (should (equal (magent-ui--pending-skills 'global) '("inst")))
-      (magent-ui-toggle-skill-for-next-request "inst")
-      (should-not (magent-ui--pending-skills 'global))
-      (should-error
-       (magent-ui-toggle-skill-for-next-request "tool-skill")
-       :type 'user-error))))
-
-(ert-deftest magent-test-run-skill-command-dispatches-default-prompt ()
-  "Test command-like skills dispatch default prompt with extra instruction."
-  (require 'magent-ui)
-  (let ((magent-skills--registry nil)
-        (magent-ui--pending-skills-by-scope (make-hash-table :test #'equal))
-        captured)
-    (magent-skills-register
-     (magent-skill-create
-      :name "init"
-      :type 'instruction
-      :default-prompt "Initialize AGENTS.md."))
-    (magent-ui--set-pending-skills 'global '("git-workflow"))
-    (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-              ((symbol-function 'magent-ui--activate-command-context)
-               (lambda () 'global))
-              ((symbol-function 'magent-ui--dispatch-from-command-context)
-               (lambda (prompt source display skills agent)
-                 (setq captured (list prompt source display skills agent)))))
-      (magent-ui-run-skill-command "init" "focus on tests")
-      (should (string-match-p "Initialize AGENTS\\.md\\." (nth 0 captured)))
-      (should (string-match-p "Additional instruction:\nfocus on tests"
-                              (nth 0 captured)))
-      (should (eq (nth 1 captured) 'skill-command))
-      (should (equal (nth 3 captured) '("git-workflow" "init")))
-      (should-not (magent-ui--pending-skills 'global)))))
-
-(ert-deftest magent-test-transient-submenus-are-commands ()
-  "Test Magent's grouped transient submenus are interactive commands."
-  (require 'magent-ui)
-  (dolist (command '(magent-transient-menu
-                     magent-transient-agent-menu
-                     magent-transient-skill-menu
-                     magent-transient-session-menu
-                     magent-transient-log-menu
-                     magent-transient-health-menu
-                     magent-transient-buffer-menu))
-    (should (commandp command))))
-
-(ert-deftest magent-test-transient-agent-menu-uses-mnemonic-agent-keys ()
-  "Test dynamic agent suffixes prefer mnemonic keys in the Agent submenu."
-  (require 'magent-ui)
-  (let* ((agents (list (magent-agent-info-create :name "build" :mode 'primary)
-                       (magent-agent-info-create :name "plan" :mode 'primary)
-                       (magent-agent-info-create :name "explore" :mode 'primary)))
-         (pairs (magent-transient-menu--assign-agent-keys agents)))
-    (should (equal (mapcar #'car pairs) '("b" "p" "e")))))
-
-(ert-deftest magent-test-header-line-shows-pending-skills ()
-  "Test workspace header-line displays scope, agent, status, and skills."
-  (require 'magent-ui)
-  (let* ((magent-buffer-name "*magent-header*")
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (magent-ui--pending-skills-by-scope (make-hash-table :test #'equal))
-         (buffer nil))
-    (unwind-protect
-        (progn
-          (magent-session-activate 'global)
-          (setq buffer (magent-ui-get-buffer 'global))
-          (magent-ui--set-pending-skills 'global '("git-workflow"))
-          (with-current-buffer buffer
-            (let ((line (magent-ui--header-line)))
-              (should (string-match-p "scope: global" line))
-              (should (string-match-p "agent: build" line))
-              (should (string-match-p "thread: idle" line))
-              (should (string-match-p "request: idle" line))
-              (should (string-match-p "queue: 0" line))
-              (should (string-match-p "session:" line))
-              (should (string-match-p "skills: git-workflow" line)))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest magent-test-evil-mode-input-submit-restores-normal-state ()
-  "Test optional Evil integration returns to normal state after submission."
-  (skip-unless (require 'evil nil t))
-  (require 'magent-evil)
-  (let* ((magent-buffer-name "*magent-evil-submit*")
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (buffer nil)
-         (captured nil)
-         (normal-state-called nil)
-         (magent-evil-mode nil)
-         (magent-evil--enabled nil)
-         (magent-evil-reset-input-method-after-submit t))
-    (magent-evil-mode 1)
-    (unwind-protect
-        (progn
-          (magent-session-activate 'global)
-          (setq buffer (magent-test--compose-with-text
-                        'global "return to normal"))
-          (with-current-buffer buffer
-            (evil-local-mode 1)
-            (setq-local evil-input-method "rime"))
-          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-                    ((symbol-function 'magent-ui-process)
-                     (lambda (text &optional source display skills agent)
-                       (setq captured (list text source display skills agent))))
-                    ((symbol-function 'evil-normal-state)
-                     (lambda ()
-                       (setq normal-state-called t))))
-            (with-current-buffer buffer
-              (magent-input-submit)))
-          (should normal-state-called)
-          (should (equal (car captured) "return to normal"))
-          (should (eq (nth 1 captured) 'compose))
-          (with-current-buffer buffer
-            (should-not evil-input-method)))
-      (magent-evil-mode -1)
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest magent-test-evil-mode-input-submit-can-preserve-input-method ()
-  "Test Evil input method reset after Magent submission is configurable."
-  (skip-unless (require 'evil nil t))
-  (require 'magent-evil)
-  (let* ((magent-buffer-name "*magent-evil-submit-input-method*")
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (buffer nil)
-         (captured nil)
-         (magent-evil-mode nil)
-         (magent-evil--enabled nil)
-         (magent-evil-reset-input-method-after-submit nil))
-    (magent-evil-mode 1)
-    (unwind-protect
-        (progn
-          (magent-session-activate 'global)
-          (setq buffer (magent-test--compose-with-text
-                        'global "keep input method"))
-          (with-current-buffer buffer
-            (evil-local-mode 1)
-            (setq-local evil-input-method "rime"))
-          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-                    ((symbol-function 'magent-ui-process)
-                     (lambda (text &optional source display skills agent)
-                       (setq captured (list text source display skills agent))))
-                    ((symbol-function 'evil-normal-state) #'ignore))
-            (with-current-buffer buffer
-              (magent-input-submit)))
-          (should (equal (car captured) "keep input method"))
-          (with-current-buffer buffer
-            (should (equal evil-input-method "rime"))))
-      (magent-evil-mode -1)
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest magent-test-evil-mode-input-submit-deactivates-input-method ()
-  "Test Magent submission deactivates a live input method, not just Evil's copy.
-Regression: clearing `evil-input-method' alone left `current-input-method'
-active, so an activated input method (e.g. rime) stayed on after submit."
-  (skip-unless (require 'evil nil t))
-  (require 'magent-evil)
-  (let* ((magent-buffer-name "*magent-evil-submit-deactivate-im*")
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (buffer nil)
-         (captured nil)
-         (magent-evil-mode nil)
-         (magent-evil--enabled nil)
-         (magent-evil-reset-input-method-after-submit t))
-    (magent-evil-mode 1)
-    (unwind-protect
-        (progn
-          (magent-session-activate 'global)
-          (setq buffer (magent-test--compose-with-text
-                        'global "deactivate input method"))
-          (with-current-buffer buffer
-            (evil-local-mode 1)
-            ;; Activate a real, always-available input method the proper
-            ;; way (same mechanism rime uses via `current-input-method').
-            (activate-input-method "greek"))
-          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-                    ((symbol-function 'magent-ui-process)
-                     (lambda (text &optional source display skills agent)
-                       (setq captured (list text source display skills agent))))
-                    ((symbol-function 'evil-normal-state) #'ignore))
-            (with-current-buffer buffer
-              (magent-input-submit)))
-          (should (equal (car captured) "deactivate input method"))
-          (with-current-buffer buffer
-            (should-not current-input-method)
-            (should-not evil-input-method)))
-      (magent-evil-mode -1)
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest magent-test-output-submit-or-interrupt-confirms-running-request ()
-  "Test output `C-c C-c' confirms before interrupting an active request."
-  (require 'magent-ui)
-  (let ((prompt nil)
-        (interrupted nil))
-    (cl-letf (((symbol-function 'magent-ui-processing-p)
-               (lambda () t))
-              ((symbol-function 'y-or-n-p)
-               (lambda (prompt-arg)
-                 (setq prompt prompt-arg)
-                 t))
-              ((symbol-function 'magent-interrupt)
-               (lambda () (setq interrupted t))))
-      (magent-ui-submit-or-interrupt))
-    (should (equal prompt "Interrupt current Magent request? "))
-    (should interrupted)))
-
-(ert-deftest magent-test-output-submit-or-interrupt-respects-no-answer ()
-  "Test output `C-c C-c' leaves an active request alone when declined."
-  (require 'magent-ui)
-  (let ((interrupted nil))
-    (cl-letf (((symbol-function 'magent-ui-processing-p)
-               (lambda () t))
-              ((symbol-function 'y-or-n-p)
-               (lambda (&rest _args) nil))
-              ((symbol-function 'magent-interrupt)
-               (lambda () (setq interrupted t))))
-      (magent-ui-submit-or-interrupt))
-    (should-not interrupted)))
-
-(ert-deftest magent-test-output-submit-or-interrupt-opens-compose-when-idle ()
-  "Test output `C-c C-c' opens compose when no request is active."
-  (require 'magent-ui)
-  (let ((opened nil))
-    (cl-letf (((symbol-function 'magent-ui-processing-p)
-               (lambda () nil))
-              ((symbol-function 'magent-ui-open-compose)
-               (lambda (&optional scope initial-text)
-                 (setq opened (list scope initial-text)))))
-      (with-temp-buffer
-        (magent-output-mode)
-        (setq-local magent-ui--buffer-scope 'global)
-        (magent-ui-submit-or-interrupt)))
-    (should (equal opened '(global nil)))))
-
-(ert-deftest magent-test-output-compose-command-opens-current-scope ()
-  "Test explicit output compose command opens compose for current scope."
-  (require 'magent-ui)
-  (let ((opened nil))
-    (cl-letf (((symbol-function 'magent-ui-open-compose)
-               (lambda (&optional scope initial-text)
-                 (setq opened (list scope initial-text)))))
-      (with-temp-buffer
-        (magent-output-mode)
-        (setq-local magent-ui--buffer-scope 'global)
-        (magent-ui-compose-from-output)))
-    (should (equal opened '(global nil)))))
-
-(ert-deftest magent-test-output-mode-c-g-is-not-magent-interrupt ()
-  "Test `C-g' in Magent output mode keeps its normal quit role."
-  (require 'magent-ui)
-  (with-temp-buffer
-    (magent-output-mode)
-    (should-not (eq (key-binding (kbd "C-g")) 'magent-interrupt))
-    (should (eq (lookup-key magent-output-mode-map (kbd "C-c C-c"))
-                'magent-ui-submit-or-interrupt))
-    (should (eq (lookup-key magent-output-mode-map (kbd "C-c C-o"))
-                'magent-ui-compose-from-output))
-    (should (eq (lookup-key magent-output-mode-map (kbd "TAB"))
-                'magent-ui-toggle-section))
-    (should (eq (lookup-key magent-output-mode-map (kbd "<tab>"))
-                'magent-ui-toggle-section))))
-
-(ert-deftest magent-test-evil-mode-does-not-override-c-g-in-output-mode ()
-  "Test optional Evil integration leaves output `C-g' for quit behavior."
-  (skip-unless (require 'evil nil t))
-  (require 'magent-evil)
-  (let ((magent-evil-mode nil)
-        (magent-evil--enabled nil))
-    (magent-evil-mode 1)
-    (unwind-protect
-        (with-temp-buffer
-          (magent-output-mode)
-          (evil-local-mode 1)
-          (evil-normal-state)
-          (should-not (eq (key-binding (kbd "C-g")) 'magent-interrupt))
-          (should (eq (key-binding (kbd "C-c C-c"))
-                      'magent-ui-submit-or-interrupt))
-          (should (eq (key-binding (kbd "i"))
-                      'magent-ui-compose-from-output)))
-      (magent-evil-mode -1))))
-
-(ert-deftest magent-test-evil-does-not-modify-agent-shell-keymap ()
-  "Test optional Evil integration only modifies Magent-owned keymaps."
-  (require 'magent-evil)
-  (let ((magent-evil--enabled t)
-        touched-keymaps)
-    (cl-letf (((symbol-function 'evil-define-key*)
-               (lambda (_state keymap _key _definition &rest _bindings)
-                 (push keymap touched-keymaps))))
-      (magent-evil--setup-keys)
-      (magent-evil--unset-keys))
-    (should touched-keymaps)
-    (should (seq-every-p (lambda (keymap)
-                           (eq keymap magent-output-mode-map))
-                         touched-keymaps))))
-
-(ert-deftest magent-test-config-reload-preserves-ui-logger ()
-  "Test reloading config preserves the core logger and UI sink."
-  (require 'magent-ui)
+(ert-deftest magent-test-config-reload-preserves-buffer-logger ()
+  "Test reloading config preserves the core logger and buffer sink."
+  (require 'magent-log)
   (let* ((config-file (expand-file-name "lisp/magent-config.el"
                                         magent-test--root-directory))
-         (buffer (magent-ui-get-log-buffer))
+         (buffer (magent-log-buffer))
          (before-file (symbol-file 'magent-log 'defun))
          (before-fn (symbol-function 'magent-log)))
     (unwind-protect
@@ -10304,92 +9311,28 @@ active, so an activated input method (e.g. rime) stayed on after submit."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest magent-test-ui-log-level-info-hides-debug ()
-  "Test INFO log level suppresses DEBUG messages."
-  (require 'magent-ui)
-  (let ((magent-enable-logging t)
-        (magent-log-level 'info)
-        (buffer (magent-ui-get-log-buffer)))
-    (unwind-protect
-        (progn
-          (with-current-buffer buffer
-            (let ((inhibit-read-only t))
-              (erase-buffer)))
-          (magent-log "DEBUG hidden")
-          (magent-log "INFO shown")
-          (magent-log "PERM shown")
-          (magent-log "plain shown")
-          (with-current-buffer buffer
-            (let ((contents (buffer-string)))
-              (should-not (string-match-p "DEBUG hidden" contents))
-              (should (string-match-p "INFO shown" contents))
-              (should (string-match-p "PERM shown" contents))
-              (should (string-match-p "plain shown" contents)))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest magent-test-ui-log-level-warn-hides-info-and-perm ()
-  "Test WARN log level keeps only WARN and ERROR messages."
-  (require 'magent-ui)
+(ert-deftest magent-test-log-buffer-respects-level ()
+  "Test the built-in log sink filters messages by configured severity."
   (let ((magent-enable-logging t)
         (magent-log-level 'warn)
-        (buffer (magent-ui-get-log-buffer)))
+        (magent-log-buffer-name "*magent-test-log-level*"))
     (unwind-protect
         (progn
-          (with-current-buffer buffer
-            (let ((inhibit-read-only t))
-              (erase-buffer)))
           (magent-log "INFO hidden")
-          (magent-log "PERM hidden")
-          (magent-log "WARN shown")
-          (magent-log "ERROR shown")
-          (with-current-buffer buffer
-            (let ((contents (buffer-string)))
-              (should-not (string-match-p "INFO hidden" contents))
-              (should-not (string-match-p "PERM hidden" contents))
-              (should (string-match-p "WARN shown" contents))
-              (should (string-match-p "ERROR shown" contents)))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+          (magent-log "WARN visible")
+          (with-current-buffer (magent-log-buffer)
+            (should-not (string-match-p "hidden" (buffer-string)))
+            (should (string-match-p "visible" (buffer-string)))))
+      (when (get-buffer magent-log-buffer-name)
+        (kill-buffer magent-log-buffer-name)))))
 
-(ert-deftest magent-test-ui-log-level-disabled-suppresses-output ()
-  "Test disabled logging suppresses all log output."
-  (require 'magent-ui)
+(ert-deftest magent-test-log-buffer-can-be-disabled ()
+  "Test disabling buffer logging suppresses all buffer writes."
   (let ((magent-enable-logging nil)
         (magent-log-level 'debug)
-        (buffer (magent-ui-get-log-buffer)))
-    (unwind-protect
-        (progn
-          (with-current-buffer buffer
-            (let ((inhibit-read-only t))
-              (erase-buffer)))
-          (magent-log "ERROR hidden")
-          (with-current-buffer buffer
-            (should (equal (buffer-string) ""))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest magent-test-ui-scope-switch-blocked-while-processing ()
-  "Test scope switching is refused while a request is in flight."
-  (require 'magent-ui)
-  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (project-a (make-temp-file "magent-project-a-" t))
-         (project-b (make-temp-file "magent-project-b-" t)))
-    (unwind-protect
-        (progn
-          (magent-session-activate (file-truename (directory-file-name project-a)))
-          (let ((magent-ui--processing t))
-            (cl-letf (((symbol-function 'magent-ui--context-scope)
-                       (lambda ()
-                         (file-truename (directory-file-name project-b)))))
-              (should-error (magent-ui--activate-context-session)
-                            :type 'user-error)))
-          (should (equal (magent-session-current-scope)
-                         (file-truename (directory-file-name project-a)))))
-      (delete-directory project-a t)
-      (delete-directory project-b t))))
+        (magent-log-buffer-name "*magent-test-log-disabled*"))
+    (magent-log "ERROR hidden")
+    (should-not (get-buffer magent-log-buffer-name))))
 
 (ert-deftest magent-test-session-reset-clears-only-active-scope ()
   "Test resetting a session only clears the active scope."
@@ -10408,716 +9351,9 @@ active, so an activated input method (e.g. rime) stayed on after submit."
           (should (gethash 'global magent-session--scoped-sessions))
           (magent-session-activate 'global)
           (should (equal (magent-msg-content
-                         (car (magent-session-get-messages (magent-session-get))))
+                          (car (magent-session-get-messages (magent-session-get))))
                          "global")))
       (delete-directory project-root t))))
-
-(ert-deftest magent-test-ui-render-history-rehydrates-saved-headings ()
-  "Test rendering history uses the ledger instead of saved buffer text."
-  (require 'magent-ui)
-  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (buffer (magent-ui-get-buffer))
-         (session (magent-session-create :id "rehydrate")))
-    (unwind-protect
-        (progn
-          (magent-session-install 'global session)
-          (magent-session-add-message session 'user "hello")
-          (magent-session-add-message session 'assistant "world")
-          (setf (magent-session-buffer-content session)
-                "stale saved buffer text")
-          (magent-ui-render-history t)
-          (with-current-buffer buffer
-            (let ((text (buffer-string)))
-              (should-not (string-match-p "active=" text))
-              (should-not (string-match-p "^Magent  " text))
-              (should (string-match-p
-                       "- \\[DONE\\] Turn 1  [0-9][0-9]:[0-9][0-9]  hello"
-                       text))
-              (should (string-match-p "  - Prompt" text))
-              (should (string-match-p "    hello" text))
-              (should (string-match-p "  - Response" text))
-              (should-not (string-match-p "Response \\[completed\\]" text))
-              (should (string-match-p "    world" text))
-              (should-not (string-match-p "stale saved buffer text" text)))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (magent-session-reset))))
-
-(ert-deftest magent-test-ui-render-history-preserves-fragment-fold-state ()
-  "Test workspace turn fold state survives ledger re-rendering."
-  (require 'magent-ui)
-  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (session (magent-session-create :id "fold"))
-         (buffer (magent-ui-get-buffer)))
-    (unwind-protect
-        (progn
-          (magent-session-install 'global session)
-          (magent-session-add-message session 'user "hello")
-          (magent-session-add-message session 'assistant "world")
-          (magent-ui-render-history t)
-          (with-current-buffer buffer
-            (goto-char (point-min))
-            (search-forward "Turn 1")
-            (beginning-of-line)
-            (magent-ui-toggle-section)
-            (should
-             (cl-some (lambda (ov) (overlay-get ov 'magent-ui-fold))
-                      (overlays-in (point-min) (point-max)))))
-          (magent-ui-render-history t)
-          (with-current-buffer buffer
-            (should
-             (cl-some (lambda (ov) (overlay-get ov 'magent-ui-fold))
-                      (overlays-in (point-min) (point-max))))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (magent-session-reset))))
-
-(ert-deftest magent-test-ui-turn-section-title-uses-fixed-status-and-start-time ()
-  "Test timeline turn titles use fixed-width status and started-at time."
-  (require 'magent-ui)
-  (let* ((turn (magent-thread-turn-create
-                :status 'queued
-                :input "pending prompt"
-                :started-at nil))
-         (labels (mapcar
-                  #'magent-ui--turn-status-label
-                  '(queued in-progress completed failed interrupted dropped))))
-    (should (equal (delete-dups (mapcar #'length labels)) '(4)))
-    (should (equal (magent-ui--turn-section-title turn 7)
-                   "[WAIT] Turn 7  --:--  pending prompt"))))
-
-(ert-deftest magent-test-ui-toggle-section-only-toggles-current-fragment ()
-  "Test TAB on a parent section ignores folded child sections."
-  (require 'magent-ui)
-  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (session (magent-session-create :id "parent-fold"))
-         (buffer (magent-ui-get-buffer)))
-    (unwind-protect
-        (progn
-          (magent-session-install 'global session)
-          (magent-session-add-message session 'user "use a tool")
-          (magent-session-add-tool-message
-           session "call-1" "grep" '(:pattern "foo") "foo:1:match")
-          (magent-session-add-message session 'assistant "done")
-          (magent-ui-render-history t)
-          (with-current-buffer buffer
-            (goto-char (point-min))
-            (search-forward "Turn 1")
-            (beginning-of-line)
-            (let* ((header-pos (point))
-                   (start (get-text-property
-                           header-pos 'magent-ui-fragment-body-start))
-                   (end (get-text-property
-                         header-pos 'magent-ui-fragment-body-end)))
-              (should
-               (cl-some
-                (lambda (ov)
-                  (and (overlay-get ov 'magent-ui-fold)
-                       (not (and (= (overlay-start ov) start)
-                                 (= (overlay-end ov) end)))))
-                (overlays-in start end)))
-              (magent-ui-toggle-section)
-              (should
-               (cl-some
-                (lambda (ov)
-                  (and (overlay-get ov 'magent-ui-fold)
-                       (= (overlay-start ov) start)
-                       (= (overlay-end ov) end)))
-                (overlays-in start end))))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (magent-session-reset))))
-
-(ert-deftest magent-test-ui-render-history-parses-context-into-meta ()
-  "Test auto-context is removed from Prompt and rendered as Meta fields."
-  (require 'magent-ui)
-  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (session (magent-session-create :id "context-meta"))
-         (buffer (magent-ui-get-buffer)))
-    (unwind-protect
-        (progn
-          (magent-session-install 'global session)
-          (magent-session-add-message
-           session
-           'user
-           "[Context: buffer=\"notes.org\" file=\"/tmp/notes.org\" mode=org-mode line=7]\nhello")
-          (magent-session-add-message session 'assistant "world")
-          (magent-ui-render-history t)
-          (with-current-buffer buffer
-            (let ((text (buffer-string)))
-              (should (string-match-p "    hello" text))
-              (should-not (string-match-p
-                           "Prompt\n[[:space:]]*\\[Context:"
-                           text))
-              (should (string-match-p (regexp-quote "  + Meta") text))
-              (should (string-match-p "buffer: notes.org" text))
-              (should (string-match-p "file: /tmp/notes.org" text))
-              (should (string-match-p "mode: org-mode" text))
-              (should (string-match-p "line: 7" text)))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (magent-session-reset))))
-
-(ert-deftest magent-test-ui-render-history-skips-empty-response-fragment ()
-  "Test an empty-content assistant item renders no toggle-breaking fragment.
-An assistant turn that produced no text (e.g. tool-only or an empty
-completion) must not emit a Response header whose empty body makes
-`magent-ui-toggle-section' signal an error."
-  (require 'magent-ui)
-  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (session (magent-session-create :id "tool-only-turn"))
-         (buffer (magent-ui-get-buffer)))
-    (unwind-protect
-        (progn
-          (magent-session-install 'global session)
-          (magent-session-add-message session 'user "run a tool")
-          (magent-session-add-message session 'assistant "")
-          (magent-ui-render-history t)
-          (with-current-buffer buffer
-            (let ((text (buffer-string)))
-              (should (string-match-p "  - Prompt" text))
-              (should-not (string-match-p "Response" text)))
-            ;; Toggling the turn section must not error even though the
-            ;; turn body is otherwise sparse.
-            (goto-char (point-min))
-            (search-forward "Turn 1")
-            (beginning-of-line)
-            (magent-ui-toggle-section)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (magent-session-reset))))
-
-(ert-deftest magent-test-ui-render-history-highlights-indented-markdown-heading ()
-  "Test markdown headings in assistant text are highlighted despite indentation.
-Workspace Response bodies are indented, so the heading regex must
-tolerate leading whitespace."
-  (require 'magent-ui)
-  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (session (magent-session-create :id "indented-heading"))
-         (buffer (magent-ui-get-buffer)))
-    (unwind-protect
-        (progn
-          (magent-session-install 'global session)
-          (magent-session-add-message session 'user "summarize")
-          (magent-session-add-message session 'assistant "# Summary\nbody text")
-          (magent-ui-render-history t)
-          (with-current-buffer buffer
-            (goto-char (point-min))
-            (should (search-forward "Summary" nil t))
-            (let ((face (get-text-property (match-beginning 0) 'face)))
-              (should (eq face 'font-lock-function-name-face)))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (magent-session-reset))))
-
-(ert-deftest magent-test-ui-render-history-timeline-latest-open-history-folded ()
-  (require 'magent-ui)
-  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (session (magent-session-create :id "timeline-folds"))
-         (buffer (magent-ui-get-buffer)))
-    (unwind-protect
-        (progn
-          (magent-session-install 'global session)
-          (magent-session-add-message session 'user "first")
-          (magent-session-add-message session 'assistant "one")
-          (magent-session-add-message session 'user "second")
-          (magent-session-add-message session 'assistant "two")
-          (magent-ui-render-history t)
-          (with-current-buffer buffer
-            (let ((text (buffer-string)))
-              (should (string-match-p
-                       "[+] \\[DONE\\] Turn 1  [0-9][0-9]:[0-9][0-9]  first"
-                       text))
-              (should (string-match-p
-                       "- \\[DONE\\] Turn 2  [0-9][0-9]:[0-9][0-9]  second"
-                       text))
-              (should-not (string-match-p "Current Turn" text))
-              (should-not (string-match-p "Recent Turns" text)))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (magent-session-reset))))
-
-(ert-deftest magent-test-ui-render-history-shows-all-timeline-turns ()
-  "Test workspace timeline does not truncate to the last four turns."
-  (require 'magent-ui)
-  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (session (magent-session-create :id "all-turns"))
-         (buffer (magent-ui-get-buffer)))
-    (unwind-protect
-        (progn
-          (magent-session-install 'global session)
-          (cl-loop for i from 1 to 5
-                   do
-                   (magent-session-add-message
-                    session 'user (format "prompt-%d" i))
-                   (magent-session-add-message
-                    session 'assistant (format "reply-%d" i)))
-          (magent-ui-render-history t)
-          (with-current-buffer buffer
-            (let ((text (buffer-string))
-                  (pos 0))
-              (cl-loop for i from 1 to 5
-                       do
-                       (setq pos
-                             (or (string-match
-                                  (format
-                                   "\\[DONE\\] Turn %d  [0-9][0-9]:[0-9][0-9]  prompt-%d"
-                                   i i)
-                                  text
-                                  pos)
-                                 (ert-fail
-                                  (format "Missing timeline turn %d" i))))
-                       (setq pos (match-end 0))))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (magent-session-reset))))
-
-(ert-deftest magent-test-ui-render-history-applies-assistant-text-properties ()
-  "Test assistant history text gets lightweight markdown properties."
-  (require 'magent-ui)
-  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (session (magent-session-create :id "markdown-props"))
-         (buffer (magent-ui-get-buffer)))
-    (unwind-protect
-        (progn
-          (magent-session-install 'global session)
-          (magent-session-add-message session 'user "hello")
-          (magent-session-add-message
-           session 'assistant "# Title\nUse `code` and **bold**.")
-          (magent-ui-render-history t)
-          (with-current-buffer buffer
-            (goto-char (point-min))
-            (search-forward "code")
-            (should (eq (get-text-property (match-beginning 0) 'face)
-                        'font-lock-constant-face))
-            (goto-char (point-min))
-            (search-forward "bold")
-            (should (eq (get-text-property (match-beginning 0) 'face)
-                        'bold))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (magent-session-reset))))
-
-(ert-deftest magent-test-ui-render-history-renders-tool-details ()
-  "Test workspace tool rows include approval and clickable file details."
-  (require 'magent-ui)
-  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (session (magent-session-create :id "tool-details"))
-         (thread (magent-session-thread-ledger session))
-         (turn (magent-thread-create-turn thread "grep"))
-         (buffer (magent-ui-get-buffer)))
-    (unwind-protect
-        (progn
-          (magent-thread-record-tool-result
-           thread
-           (magent-thread-turn-id turn)
-           "call-1"
-           "grep"
-           '(:path "magent-ui.el" :line 10)
-           "magent-ui.el:10:match"
-           '(:approval-decision allow :approval-source rule-allow))
-          (magent-thread-complete-turn thread (magent-thread-turn-id turn))
-          (magent-session-install 'global session)
-          (magent-session-refresh-projections session)
-          (magent-ui-render-history t)
-          (with-current-buffer buffer
-            (let ((text (buffer-string)))
-              (should (string-match-p (regexp-quote "  + Tools (1)") text))
-              (should (string-match-p
-                       "approval: allow (rule-allow)"
-                       text))
-              (should (string-match-p "match: magent-ui.el:10" text)))
-            (goto-char (point-min))
-            (search-forward "  path: ")
-            (let ((button (button-at (point))))
-              (should button)
-              (should (equal (button-get button 'magent-ui-line) 10))
-              (should (string-suffix-p
-                       "/magent-ui.el"
-                       (button-get button 'magent-ui-file))))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (magent-session-reset))))
-
-(ert-deftest magent-test-ui-revert-buffer-preserves-draft-without-duplicate-prompt ()
-  "Test `revert-buffer' leaves compose drafts outside the workspace."
-  (require 'magent-ui)
-  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (buffer nil)
-         (session (magent-session-create :id "revert")))
-    (unwind-protect
-        (progn
-          (magent-session-install 'global session)
-          (setq buffer (magent-ui-get-buffer 'global))
-          (magent-session-add-message session 'user "hello")
-          (magent-session-add-message session 'assistant "world")
-          (magent-test--compose-with-text 'global "draft")
-          (magent-ui--revert-buffer nil nil)
-          (with-current-buffer buffer
-            (let ((text (buffer-string)))
-              (should (string-match-p "  - Prompt" text))
-              (should (string-match-p "    hello" text))
-              (should (string-match-p "  - Response" text))
-              (should-not (string-match-p "Response \\[completed\\]" text))
-              (should (string-match-p "    world" text))
-              (should-not (string-match-p "draft" text))))
-          (with-current-buffer (magent-ui-compose-buffer 'global)
-            (should (equal (buffer-string) "draft"))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (magent-session-reset))))
-
-(ert-deftest magent-test-input-prompt-heading-is-editable-until-submit ()
-  "Test compose text is editable and cleared after submit."
-  (require 'magent-ui)
-  (let* ((magent-buffer-name "*magent-editable-input*")
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (buffer nil)
-         (captured nil)
-         (section-start nil))
-    (unwind-protect
-        (progn
-          (magent-session-activate 'global)
-          (setq buffer (magent-test--compose-with-text
-                        'global "editable compose prompt"))
-          (with-current-buffer buffer
-            (setq section-start (point-min))
-            (should-not (get-text-property (point-min) 'read-only)))
-          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-                    ((symbol-function 'magent-ui-process)
-                     (lambda (text &optional source display skills agent)
-                       (setq captured (list text source display skills agent)))))
-            (with-current-buffer buffer
-              (magent-input-submit)))
-          (should (equal (car captured) "editable compose prompt"))
-          (with-current-buffer buffer
-            (should (equal (buffer-string) ""))
-            (should-not (get-text-property section-start 'read-only))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest magent-test-input-submit-allows-deleted-prompt-heading ()
-  "Test editing compose content before submit does not corrupt submitted text."
-  (require 'magent-ui)
-  (let* ((magent-buffer-name "*magent-deleted-input-heading*")
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (buffer nil)
-         (captured nil))
-    (unwind-protect
-        (progn
-          (magent-session-activate 'global)
-          (setq buffer (magent-test--compose-with-text
-                        'global "deleted prefix body survives"))
-          (with-current-buffer buffer
-            (delete-region (point-min) (+ (point-min) (length "deleted prefix "))))
-          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-                    ((symbol-function 'magent-ui-process)
-                     (lambda (text &optional source display skills agent)
-                       (setq captured (list text source display skills agent)))))
-            (with-current-buffer buffer
-              (magent-input-submit)))
-          (should (equal (car captured) "body survives")))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest magent-test-resume-session-restores-loaded-buffer-content ()
-  "Test resuming a session renders loaded ledger content."
-  (require 'magent-ui)
-  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (buffer (magent-ui-get-buffer))
-         (loaded-session (magent-session-create
-                          :id "loaded"
-                          :buffer-content "* [ASSISTANT]\nLoaded session\n")))
-    (unwind-protect
-        (progn
-          (magent-session-add-message loaded-session 'user "hello")
-          (magent-session-add-message loaded-session 'assistant "Loaded session")
-          (with-current-buffer buffer
-            (let ((inhibit-read-only t))
-              (erase-buffer)
-              (insert "stale buffer content")))
-          (setq magent--current-session (magent-session-create
-                                         :id "current"
-                                         :buffer-content "stale snapshot"))
-          (cl-letf (((symbol-function 'magent-session-list-files)
-                     (lambda () '("/tmp/session.json")))
-                    ((symbol-function 'completing-read)
-                     (lambda (&rest _args) "2026-03-16 10:00:00  (global)  Loaded session"))
-                    ((symbol-function 'magent-session--format-file)
-                     (lambda (_filepath) "2026-03-16 10:00:00  (global)  Loaded session"))
-                    ((symbol-function 'magent-session-read-file)
-                     (lambda (_filepath)
-                       (list :scope 'global :session loaded-session :id "loaded")))
-                    ((symbol-function 'magent-session-install)
-                     (lambda (scope session)
-                       (puthash scope session magent-session--scoped-sessions)
-                       (setq magent-session--current-scope scope
-                             magent--current-session session)
-                       session))
-                    ((symbol-function 'message) #'ignore))
-            (magent-resume-session))
-          (with-current-buffer buffer
-            (should (string-match-p "Loaded session" (buffer-string)))
-            (should-not (string-prefix-p "stale buffer content"
-                                         (buffer-string)))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (magent-session-reset))))
-
-(ert-deftest magent-test-resume-session-restores-loaded-prompt-state ()
-  "Test resuming a session ignores saved prompt text and renders ledger."
-  (require 'magent-ui)
-  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (buffer (magent-ui-get-buffer))
-         (loaded-session (magent-session-create :id "loaded"))
-         (current-session (magent-session-create :id "current"
-                                                 :buffer-content "stale snapshot")))
-    (unwind-protect
-        (progn
-          (magent-session-add-message loaded-session 'user "hello")
-          (magent-session-add-message loaded-session 'assistant "world")
-          (setf (magent-session-buffer-content loaded-session)
-                "legacy draft should not render")
-          (with-current-buffer buffer
-            (let ((inhibit-read-only t))
-              (erase-buffer)
-              (insert "stale buffer content")))
-          (setq magent--current-session current-session)
-          (cl-letf (((symbol-function 'magent-session-list-files)
-                     (lambda () '("/tmp/session.json")))
-                    ((symbol-function 'completing-read)
-                     (lambda (&rest _args) "2026-03-16 10:00:00  (global)  Loaded session"))
-                    ((symbol-function 'magent-session--format-file)
-                     (lambda (_filepath) "2026-03-16 10:00:00  (global)  Loaded session"))
-                    ((symbol-function 'magent-session-read-file)
-                     (lambda (_filepath)
-                       (list :scope 'global :session loaded-session :id "loaded")))
-                    ((symbol-function 'magent-session-install)
-                     (lambda (scope session)
-                       (puthash scope session magent-session--scoped-sessions)
-                       (setq magent-session--current-scope scope
-                             magent--current-session session)
-                       session))
-                    ((symbol-function 'message) #'ignore))
-            (magent-resume-session))
-          (with-current-buffer buffer
-            (should (string-match-p "  - Prompt" (buffer-string)))
-            (should (string-match-p "    hello" (buffer-string)))
-            (should (string-match-p "  - Response" (buffer-string)))
-            (should-not (string-match-p "Response \\[completed\\]"
-                                        (buffer-string)))
-            (should (string-match-p "    world" (buffer-string)))
-            (should-not (string-match-p "legacy draft should not render"
-                                        (buffer-string)))
-            (should-not (string-prefix-p "stale buffer content"
-                                         (buffer-string)))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (magent-session-reset))))
-
-(ert-deftest magent-test-resume-session-snapshots-current-session-before-cross-scope-load ()
-  "Test resuming another scope does not snapshot outgoing workspace text."
-  (require 'magent-ui)
-  (let* ((buffer (magent-ui-get-buffer))
-         (current-session (magent-session-create :id "current"))
-         (loaded-session (magent-session-create :id "loaded"
-                                                :buffer-content "* [ASSISTANT]\nLoaded\n"))
-         (captured-snapshot nil))
-    (unwind-protect
-        (progn
-          (setq magent--current-session current-session)
-          (with-current-buffer buffer
-            (let ((inhibit-read-only t))
-              (erase-buffer)
-              (insert "* [USER]\nUnsaved current content\n")))
-          (cl-letf (((symbol-function 'magent-session-list-files)
-                     (lambda () '("/tmp/session.json")))
-                    ((symbol-function 'completing-read)
-                     (lambda (&rest _args) "2026-03-16 10:00:00  (global)  Loaded"))
-                    ((symbol-function 'magent-session--format-file)
-                     (lambda (_filepath) "2026-03-16 10:00:00  (global)  Loaded"))
-                    ((symbol-function 'magent-session-read-file)
-                     (lambda (_filepath)
-                       (setq captured-snapshot
-                             (magent-session-buffer-content current-session))
-                       (list :scope 'global :session loaded-session :id "loaded")))
-                    ((symbol-function 'magent-session-install)
-                     (lambda (_scope session)
-                       (setq magent--current-session session)
-                       session))
-                    ((symbol-function 'message) #'ignore))
-            (magent-resume-session))
-          (should (null captured-snapshot)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (magent-session-reset))))
-
-(ert-deftest magent-test-resume-session-displays-target-project-buffer ()
-  "Test resuming another project displays that project's workspace."
-  (require 'magent-ui)
-  (let* ((magent-buffer-name "*magent-resume*")
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (project-a (make-temp-file "magent-project-a-" t))
-         (project-b (make-temp-file "magent-project-b-" t))
-         (scope-a (file-truename (directory-file-name project-a)))
-         (scope-b (file-truename (directory-file-name project-b)))
-         (current-session (magent-session-create :id "current"))
-         (loaded-session (magent-session-create
-                          :id "loaded"
-                          :buffer-content "* [ASSISTANT]\nLoaded project buffer\n"))
-         (buffer-a nil)
-         (buffer-b nil)
-         (displayed nil))
-    (unwind-protect
-        (progn
-          (magent-session-add-message loaded-session 'user "hello")
-          (magent-session-add-message loaded-session 'assistant
-                                      "Loaded project buffer")
-          (magent-session-install scope-a current-session)
-          (setq buffer-a (magent-ui-get-buffer scope-a))
-          (with-current-buffer buffer-a
-            (let ((inhibit-read-only t))
-              (erase-buffer)
-              (insert "* [USER]\nProject A draft\n")))
-          (cl-letf (((symbol-function 'magent-session-list-files)
-                     (lambda () '("/tmp/project-b-session.json")))
-                    ((symbol-function 'completing-read)
-                     (lambda (&rest _args) "project-b session"))
-                    ((symbol-function 'magent-session--format-file)
-                     (lambda (_filepath) "project-b session"))
-                    ((symbol-function 'magent-session-read-file)
-                     (lambda (_filepath)
-                       (list :scope scope-b :session loaded-session :id "loaded")))
-                    ((symbol-function 'display-buffer)
-                     (lambda (buffer &rest _args)
-                       (setq displayed buffer)
-                       buffer))
-                    ((symbol-function 'message) #'ignore))
-            (magent-resume-session))
-          (setq buffer-b (magent-ui-get-buffer scope-b))
-          (should (eq displayed buffer-b))
-          (with-current-buffer buffer-b
-            (should (string-match-p "Loaded project buffer"
-                                    (buffer-string))))
-          (with-current-buffer buffer-a
-            (should (string-prefix-p "* [USER]\nProject A draft\n"
-                                     (buffer-string)))))
-      (when (buffer-live-p buffer-a)
-        (kill-buffer buffer-a))
-      (when (buffer-live-p buffer-b)
-        (kill-buffer buffer-b))
-      (delete-directory project-a t)
-      (delete-directory project-b t))))
-
-(ert-deftest magent-test-resume-session-restores-agent-jobs-for-inspection ()
-  "Test resuming a session restores child-agent jobs for transcript inspect."
-  (require 'magent-ui)
-  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (loaded-session (magent-session-create
-                          :id "loaded"
-                          :buffer-content "* [ASSISTANT]\nLoaded\n"))
-         displayed)
-    (magent-session-add-agent-job
-     loaded-session
-     (magent-agent-job-create
-      :id "agent-1"
-      :agent-name "explore"
-      :task-name "scan"
-      :status 'completed
-      :transcript '(((role . "assistant") (content . "found it")))
-      :result "found it"))
-    (unwind-protect
-        (progn
-          (cl-letf (((symbol-function 'magent-session-list-files)
-                     (lambda () '("/tmp/session.json")))
-                    ((symbol-function 'completing-read)
-                     (lambda (_prompt collection &rest _args)
-                       (car collection)))
-                    ((symbol-function 'magent-session--format-file)
-                     (lambda (_filepath) "loaded session"))
-                    ((symbol-function 'magent-session-read-file)
-                     (lambda (_filepath)
-                       (list :scope 'global :session loaded-session :id "loaded")))
-                    ((symbol-function 'display-buffer)
-                     (lambda (buffer &rest _args)
-                       buffer))
-                    ((symbol-function 'message) #'ignore))
-            (magent-resume-session))
-          (should (eq (magent-session-agent-job
-                       (magent-session-get)
-                       "agent-1")
-                      (car (magent-session-agent-jobs loaded-session))))
-          (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-                    ((symbol-function 'magent-ui--activate-context-session)
-                     (lambda () (magent-session-get)))
-                    ((symbol-function 'completing-read)
-                     (lambda (_prompt collection &rest _args)
-                       (car collection)))
-                    ((symbol-function 'display-buffer)
-                     (lambda (buffer &rest _args)
-                       (setq displayed buffer)
-                       buffer)))
-            (magent-show-agent-transcript))
-          (with-current-buffer displayed
-            (should (string-match-p "found it" (buffer-string)))))
-      (when (get-buffer "*Magent Agent: agent-1*")
-        (kill-buffer "*Magent Agent: agent-1*")))))
-
-(ert-deftest magent-test-ui-revert-buffer-keeps-buffer-local-scope ()
-  "Test reverting an inactive Magent buffer uses that buffer's scope."
-  (require 'magent-ui)
-  (let* ((magent-buffer-name "*magent-revert*")
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (project-a (make-temp-file "magent-project-a-" t))
-         (project-b (make-temp-file "magent-project-b-" t))
-         (scope-a (file-truename (directory-file-name project-a)))
-         (scope-b (file-truename (directory-file-name project-b)))
-         (session-a (magent-session-create :id "a"))
-         (session-b (magent-session-create :id "b"))
-         (buffer-a nil))
-    (unwind-protect
-        (progn
-          (magent-session-install scope-a session-a)
-          (magent-session-add-message session-a 'user "Project A")
-          (magent-session-add-message session-a 'assistant "Project A")
-          (setq buffer-a (magent-ui-get-buffer scope-a))
-          (with-current-buffer buffer-a
-            (let ((inhibit-read-only t))
-              (erase-buffer)
-              (insert "* [ASSISTANT]\nProject A\n")))
-          (magent-session-install scope-b session-b)
-          (with-current-buffer buffer-a
-            (magent-ui--revert-buffer nil nil))
-          (with-current-buffer buffer-a
-            (should (string-match-p "Project A" (buffer-string))))
-          (should (null (magent-session-buffer-content session-a))))
-      (when (buffer-live-p buffer-a)
-        (kill-buffer buffer-a))
-      (delete-directory project-a t)
-      (delete-directory project-b t))))
 
 (ert-deftest magent-test-agent-process-emits-turn-events ()
   "Test `magent-agent-process' emits turn lifecycle and text events."
@@ -11129,12 +9365,9 @@ tolerate leading whitespace."
                (lambda (_prompt &rest kwargs)
                  (let ((cb (plist-get kwargs :callback)))
                    (funcall cb "Hello" '(:stream t))
-                   (funcall cb t (list :content "Hello")))))
-              ((symbol-function 'magent-ui-start-streaming) #'ignore)
-              ((symbol-function 'magent-ui-insert-streaming) #'ignore)
-              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+                   (funcall cb t (list :content "Hello"))))))
       (unwind-protect
-        (progn
+          (progn
             (magent-lifecycle-events-add-sink (lambda (event) (push event captured)))
             (magent-agent-process "Hello" #'ignore))
         (magent-lifecycle-events-clear-sinks)))
@@ -11180,10 +9413,7 @@ tolerate leading whitespace."
                (lambda (_prompt &rest kwargs)
                  (let ((callback (plist-get kwargs :callback)))
                    (funcall callback "Hello" nil)
-                   (funcall callback t (list :content "Hello")))))
-              ((symbol-function 'magent-ui-start-streaming) #'ignore)
-              ((symbol-function 'magent-ui-insert-streaming) #'ignore)
-              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+                   (funcall callback t (list :content "Hello"))))))
       (magent-agent-process
        "Please reorganize this heading"
        #'ignore
@@ -11207,10 +9437,7 @@ tolerate leading whitespace."
                (lambda (_prompt &rest kwargs)
                  (let ((callback (plist-get kwargs :callback)))
                    (funcall callback "Hello" nil)
-                   (funcall callback t (list :content "Hello")))))
-              ((symbol-function 'magent-ui-start-streaming) #'ignore)
-              ((symbol-function 'magent-ui-insert-streaming) #'ignore)
-              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+                   (funcall callback t (list :content "Hello"))))))
       (magent-agent-process
        "Diagnose why this hook is not running"
        #'ignore
@@ -11248,10 +9475,7 @@ tolerate leading whitespace."
                (lambda (_prompt &rest kwargs)
                  (let ((callback (plist-get kwargs :callback)))
                    (funcall callback "Hello" nil)
-                   (funcall callback t (list :content "Hello")))))
-              ((symbol-function 'magent-ui-start-streaming) #'ignore)
-              ((symbol-function 'magent-ui-insert-streaming) #'ignore)
-              ((symbol-function 'magent-ui-finish-streaming-fontify) #'ignore))
+                   (funcall callback t (list :content "Hello"))))))
       (unwind-protect
           (progn
             (magent-lifecycle-events-add-sink (lambda (event) (push event captured)))
@@ -11272,34 +9496,6 @@ tolerate leading whitespace."
       (should (equal (plist-get resolution :skill-names)
                      '("auto-skill"))))))
 
-(ert-deftest magent-test-diagnose-emacs-dispatches-structured-prompt ()
-  "Test `magent-diagnose-emacs' dispatches a structured diagnosis request."
-  (require 'magent-ui)
-  (let ((agent (magent-agent-info-create :name "build" :mode 'primary))
-        captured)
-    (cl-letf (((symbol-function 'magent-ui--capture-buffer-context)
-               (lambda ()
-                 "[Context: buffer=\"*scratch*\" mode=lisp-interaction-mode line=1]"))
-              ((symbol-function 'magent-agent-registry-get)
-               (lambda (name)
-                 (and (equal name "build") agent)))
-              ((symbol-function 'magent-agent-registry-get-default)
-               (lambda ()
-                 agent))
-              ((symbol-function 'magent-ui-dispatch-prompt)
-               (lambda (prompt &optional source display skills activate-context agent-info)
-                 (setq captured (list prompt source display skills activate-context agent-info)))))
-      (magent-diagnose-emacs))
-    (should (string-match-p "Diagnose problems in the current Emacs session"
-                            (nth 0 captured)))
-    (should (string-match-p "\\*Messages\\*" (nth 0 captured)))
-    (should (string-match-p "\\[Context: buffer=\"\\*scratch\\*\"" (nth 0 captured)))
-    (should (equal (nth 1 captured) 'diagnose-emacs))
-    (should (equal (nth 2 captured) "Diagnose the current Emacs session."))
-    (should (equal (nth 3 captured) '("emacs-runtime-inspection")))
-    (should (eq (nth 4 captured) t))
-    (should (eq (nth 5 captured) agent))))
-
 (ert-deftest magent-test-run-doctor-dispatches-internal-command ()
   "Test `magent-run-doctor' dispatches the doctor internal command."
   (require 'magent-command)
@@ -11309,79 +9505,6 @@ tolerate leading whitespace."
                  (setq captured (cons name args)))))
       (magent-run-doctor))
     (should (equal (car captured) "doctor"))))
-
-(ert-deftest magent-test-ui-dispatch-prompt-forwards-agent-override ()
-  "Test `magent-ui-dispatch-prompt' forwards per-request agent overrides."
-  (require 'magent-ui)
-  (let ((agent (magent-agent-info-create :name "build" :mode 'primary))
-        captured)
-    (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-              ((symbol-function 'magent-ui--activate-context-session) (lambda () 'session))
-              ((symbol-function 'magent-capability-capture-context)
-               (lambda () '(:buffer-name "*scratch*" :major-mode emacs-lisp-mode)))
-              ((symbol-function 'magent-capability-resolve-for-turn)
-               (lambda (_prompt _request-context _skills)
-                 'resolution))
-              ((symbol-function 'magent-ui--enqueue)
-               (lambda (prompt source &optional display skills agent-info request-context capability-resolution)
-                 (setq captured (list prompt source display skills agent-info request-context capability-resolution)))))
-      (magent-ui-dispatch-prompt "diag" 'diagnose "display" '("emacs-runtime-inspection") t agent))
-    (should (equal (nth 0 captured) "diag"))
-    (should (equal (nth 1 captured) 'diagnose))
-    (should (equal (nth 2 captured) "display"))
-    (should (equal (nth 3 captured) '("emacs-runtime-inspection")))
-    (should (eq (nth 4 captured) agent))
-    (should (equal (nth 5 captured)
-                   '(:buffer-name "*scratch*" :major-mode emacs-lisp-mode)))
-    (should (eq (nth 6 captured) 'resolution))))
-
-(ert-deftest magent-test-ui-dispatch-prompt-defaults-to-agent-shell ()
-  "Test default UI backend dispatches plain prompts through agent-shell."
-  (require 'magent-ui)
-  (let ((magent-ui-backend 'agent-shell)
-        captured)
-    (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-              ((symbol-function 'magent-agent-shell-send-prompt)
-               (lambda (prompt &rest _args)
-                 (setq captured prompt)))
-              ((symbol-function 'magent-ui--enqueue)
-               (lambda (&rest _args)
-                 (error "legacy enqueue should not be called"))))
-      (magent-ui-dispatch-prompt "hello" 'prompt nil nil t))
-    (should (equal captured "hello"))))
-
-(ert-deftest magent-test-ui-dispatch-prompt-with-skills-uses-agent-shell ()
-  "Test skill-bearing prompts stay on the agent-shell backend."
-  (require 'magent-ui)
-  (let ((magent-ui-backend 'agent-shell)
-        captured)
-    (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-              ((symbol-function 'magent-agent-shell-send-prompt)
-               (lambda (prompt &rest args)
-                 (setq captured (list prompt (plist-get args :skills)))))
-              ((symbol-function 'magent-ui--legacy-call)
-               (lambda (&rest _args)
-                 (error "legacy dispatch should not be called"))))
-      (magent-ui-dispatch-prompt
-       "hello with skill" 'prompt nil '("init") t))
-    (should (equal captured '("hello with skill" ("init"))))))
-
-(ert-deftest magent-test-ui-dispatch-prompt-with-skills-after-legacy-load-uses-agent-shell ()
-  "Test skill-bearing prompts keep agent-shell routing after legacy UI loads."
-  (require 'magent-ui)
-  (require 'magent-ui-legacy)
-  (let ((magent-ui-backend 'agent-shell)
-        captured)
-    (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-              ((symbol-function 'magent-agent-shell-send-prompt)
-               (lambda (prompt &rest args)
-                 (setq captured (list prompt (plist-get args :skills)))))
-              ((symbol-function 'magent-ui-process)
-               (lambda (&rest _args)
-                 (error "legacy process should not be called"))))
-      (magent-ui-dispatch-prompt
-       "hello after legacy" 'prompt nil '("init") t))
-    (should (equal captured '("hello after legacy" ("init"))))))
 
 (ert-deftest magent-test-acp-request-sender-initialize ()
   "Test in-process ACP request sender handles initialize."
@@ -11498,8 +9621,8 @@ tolerate leading whitespace."
     (should (equal (magent-acp--slash-command
                     "/compact preserve the failing test")
                    '(:kind control
-                     :name "compact"
-                     :argument "preserve the failing test")))))
+			   :name "compact"
+			   :argument "preserve the failing test")))))
 
 (ert-deftest magent-test-acp-session-new-notifies-available-commands ()
   "Test ACP session creation notifies agent-shell of slash commands."
@@ -11945,10 +10068,10 @@ tolerate leading whitespace."
   (require 'magent-acp)
   (let ((raw-input (magent-acp--raw-input-object
                     '(:command "pwd"
-                      :timeout nil
-                      :count 2
-                      :flag t
-                      :nested (:path "/tmp")))))
+			       :timeout nil
+			       :count 2
+			       :flag t
+			       :nested (:path "/tmp")))))
     (should (equal raw-input
                    '((command . "pwd")
                      (count . 2)
@@ -12063,10 +10186,10 @@ tolerate leading whitespace."
          (observer (magent-acp--observer client "session-1")))
     (funcall observer
              '(:type tool-call-complete
-               :tool-id "tool-1"
-               :name "bash"
-               :status completed
-               :output-preview "done"))
+		     :tool-id "tool-1"
+		     :name "bash"
+		     :status completed
+		     :output-preview "done"))
     (let* ((notification (car notifications))
            (params (map-elt notification 'params))
            (update (map-elt params 'update))
@@ -12089,19 +10212,19 @@ tolerate leading whitespace."
          (summary "[Find callers] capability in lisp"))
     (funcall observer
              `(:type tool-call-start
-               :tool-id "tool-1"
-               :name "grep"
-               :kind grep
-               :summary ,summary
-               :raw-input (:pattern "capability"
-                           :path "lisp"
-                           :reason "Find callers")))
+		     :tool-id "tool-1"
+		     :name "grep"
+		     :kind grep
+		     :summary ,summary
+		     :raw-input (:pattern "capability"
+					  :path "lisp"
+					  :reason "Find callers")))
     (funcall observer
              '(:type tool-call-complete
-               :tool-id "tool-1"
-               :name "grep"
-               :status completed
-               :output-preview "lisp/magent.el:118"))
+		     :tool-id "tool-1"
+		     :name "grep"
+		     :status completed
+		     :output-preview "lisp/magent.el:118"))
     (let* ((updates
             (mapcar (lambda (notification)
                       (map-nested-elt notification '(params update)))
@@ -12167,13 +10290,13 @@ tolerate leading whitespace."
          (observer (magent-acp--observer client "session-1")))
     (funcall observer
              '(:type tool-call-start
-               :tool-id "tool-1"
-               :name "bash"
-               :kind bash
-               :summary "pwd"
-               :raw-input (:command "pwd"
-                           :timeout nil
-                           :reason "Print current directory")))
+		     :tool-id "tool-1"
+		     :name "bash"
+		     :kind bash
+		     :summary "pwd"
+		     :raw-input (:command "pwd"
+					  :timeout nil
+					  :reason "Print current directory")))
     (let* ((update (map-nested-elt (car notifications) '(params update)))
            (raw-input (map-elt update 'rawInput)))
       (should (equal (map-elt update 'sessionUpdate) "tool_call"))
@@ -12193,10 +10316,10 @@ tolerate leading whitespace."
                           (push request requests)))))))
     (funcall (magent-acp--approval-provider client "session-1")
              '(:request-id "request-1"
-               :tool-name "bash"
-               :summary "pwd"
-               :perm-key bash
-               :args (:command "pwd" :timeout nil)))
+			   :tool-name "bash"
+			   :summary "pwd"
+			   :perm-key bash
+			   :args (:command "pwd" :timeout nil)))
     (let ((raw-input (map-nested-elt (car requests)
                                      '(params toolCall rawInput))))
       (should (equal raw-input '((command . "pwd"))))
@@ -12334,7 +10457,7 @@ tolerate leading whitespace."
                 #'magent-acp--request-sender))
     (should (eq (map-elt client :notification-sender)
                 #'magent-acp--notification-sender))
-      (should (eq (map-elt client :response-sender)
+    (should (eq (map-elt client :response-sender)
                 #'magent-acp--response-sender))))
 
 (ert-deftest magent-test-agent-shell-start-uses-magent-session-strategy ()
@@ -12495,30 +10618,30 @@ tolerate leading whitespace."
         callbacks notifications started save-calls)
     (cl-labels
         ((make-runtime-session
-          (id scope)
-          (magent-runtime-session-create
-           :id id
-           :scope scope
-           :magent-session (magent-session-create :id id)))
+           (id scope)
+           (magent-runtime-session-create
+            :id id
+            :scope scope
+            :magent-session (magent-session-create :id id)))
          (make-submission
-          (id session)
-          (let* ((session-id (magent-runtime-session-id session))
-                 (magent-session
-                  (magent-runtime-session-magent-session session))
-                 (thread (magent-session-thread-ledger magent-session))
-                 (turn (magent-thread-queue-turn
-                        thread id nil (list :source 'test))))
-            (magent-runtime-submission-create
-             :id id
-             :session session
-             :session-id session-id
-             :turn-id (magent-thread-turn-id turn)
-             :observer
-             (lambda (event)
-               (push (list id (plist-get event :type)) notifications))
-             :on-complete
-             (lambda (status result)
-               (push (list id status result) callbacks))))))
+           (id session)
+           (let* ((session-id (magent-runtime-session-id session))
+                  (magent-session
+                   (magent-runtime-session-magent-session session))
+                  (thread (magent-session-thread-ledger magent-session))
+                  (turn (magent-thread-queue-turn
+                         thread id nil (list :source 'test))))
+             (magent-runtime-submission-create
+              :id id
+              :session session
+              :session-id session-id
+              :turn-id (magent-thread-turn-id turn)
+              :observer
+              (lambda (event)
+		(push (list id (plist-get event :type)) notifications))
+              :on-complete
+              (lambda (status result)
+		(push (list id status result) callbacks))))))
       (let* ((session-a (make-runtime-session "session-a" "/tmp/project-a"))
              (session-b (make-runtime-session "session-b" "/tmp/project-b"))
              (active-a (make-submission "active-a" session-a))
@@ -12933,11 +11056,11 @@ tolerate leading whitespace."
       (should
        (equal (magent-runtime-list-sessions)
               `((:id "session-20260705-231500"
-                 :file ,file
-                 :scope global
-                 :project-root nil
-                 :title "Hello"
-                 :updated-at 0.0)))))))
+                     :file ,file
+                     :scope global
+                     :project-root nil
+                     :title "Hello"
+                     :updated-at 0.0)))))))
 
 (ert-deftest magent-test-agent-shell-buffer-selects-only-magent-shells ()
   "Test Magent backend ignores non-Magent agent-shell buffers."
@@ -12994,9 +11117,8 @@ tolerate leading whitespace."
 
 (ert-deftest magent-test-agent-shell-processing-p-is-side-effect-free ()
   "Test processing checks do not initialize runtime or inspect projects."
-  (require 'magent-ui)
-  (let ((magent-ui-backend 'agent-shell)
-        (initialized nil)
+  (require 'magent-agent-shell)
+  (let ((initialized nil)
         (configured nil)
         (project-looked-up nil)
         (runtime-checked nil))
@@ -13017,11 +11139,10 @@ tolerate leading whitespace."
                  (setq runtime-checked t)
                  nil)))
       (should-not (magent-agent-shell-processing-p))
-      (should-not (magent-ui-processing-p))
       (should-not initialized)
       (should-not configured)
       (should-not project-looked-up)
-      (should runtime-checked))))
+      (should-not runtime-checked))))
 
 (ert-deftest magent-test-agent-shell-send-recovers-stale-busy ()
   "Test prompt dispatch clears agent-shell busy state when no work is live."
@@ -13139,231 +11260,6 @@ tolerate leading whitespace."
           (should-not (magent-agent-shell-processing-p)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
-
-(ert-deftest magent-test-ui-run-item-shows-capability-summary ()
-  "Test `magent-ui--run-item' renders a capability summary for the turn."
-  (require 'magent-ui)
-  (let* ((buffer (magent-ui-get-buffer))
-         (resolution (magent-capability-resolution-create
-                      :active-capabilities
-                      (list (magent-capability-match-create
-                             :capability (magent-capability-create :name "org-structure")
-                             :status 'active))
-                      :suggested-capabilities
-                      (list (magent-capability-match-create
-                             :capability (magent-capability-create :name "git-workflow")
-                             :status 'suggested))))
-         (item (magent-ui--request-create
-                :prompt "hello"
-                :source 'prompt
-                :capability-resolution resolution)))
-    (magent-ui-clear-buffer)
-    (cl-letf (((symbol-function 'magent-ui-display-buffer) #'ignore)
-              ((symbol-function 'magent-agent-process)
-               (lambda (&rest _args) 'fsm)))
-      (magent-ui--run-item item))
-    (with-current-buffer buffer
-      (should (string-match-p "Capability resolver: Auto capabilities: org-structure | Suggested: git-workflow"
-                              (buffer-string))))))
-
-(ert-deftest magent-test-ui-finish-processing-restores-prompt-before-save ()
-  "Test request completion ensures compose exists before session save."
-  (require 'magent-ui)
-  (let* ((magent-buffer-name "*magent-finish-order*")
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (magent-ui--processing t)
-         (magent-legacy-queue--active nil)
-         (magent-legacy-queue--pending nil)
-         (buffer nil)
-         (prompt-visible-at-save nil))
-    (unwind-protect
-        (progn
-          (magent-session-activate 'global)
-          (setq buffer (magent-ui-get-buffer 'global))
-          (cl-letf (((symbol-function
-                      'magent-session-save-deferred-for-session)
-                     (lambda (_session _scope &optional _delay)
-                       (setq prompt-visible-at-save
-                             (buffer-live-p
-                              (magent-ui-compose-buffer 'global))))))
-            (magent-ui--finish-processing "done"))
-          (should-not magent-ui--processing)
-          (should (buffer-live-p (magent-ui-compose-buffer 'global)))
-          (should prompt-visible-at-save))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest magent-test-ui-finish-processing-failed-result-releases-input ()
-  "Test failed agent results release processing and keep compose available."
-  (require 'magent-ui)
-  (let* ((magent-buffer-name "*magent-finish-failed*")
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (magent-ui--processing t)
-         (magent-legacy-queue--active nil)
-         (magent-legacy-queue--pending nil)
-         (buffer nil))
-    (unwind-protect
-        (progn
-          (magent-session-activate 'global)
-          (setq buffer (magent-ui-get-buffer 'global))
-          (cl-letf (((symbol-function 'magent-session-save-deferred) #'ignore))
-            (magent-ui--finish-processing
-             (magent-agent-result-failed "Request timed out after 5 seconds")))
-          (should-not magent-ui--processing)
-          (should (buffer-live-p (magent-ui-compose-buffer 'global))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest magent-test-ui-capability-summary-renders-status-line ()
-  "Test capability summaries render as compact status lines."
-  (require 'magent-ui)
-  (magent-ui-clear-buffer)
-  (magent-ui-insert-capability-summary "Auto capabilities: org-structure")
-  (with-current-buffer (magent-ui-get-buffer)
-    (should (equal (buffer-string)
-                   "Capability resolver: Auto capabilities: org-structure\n"))))
-
-(ert-deftest magent-test-ui-streaming-applies-text-properties-to-flushed-chunk ()
-  "Test streaming text properties are applied to newly flushed chunks."
-  (require 'magent-ui)
-  (magent-ui-clear-buffer)
-  (magent-ui-start-streaming)
-  (magent-ui-insert-streaming "Use `code`")
-  (magent-ui--flush-streaming-batch)
-  (with-current-buffer (magent-ui-get-buffer)
-    (goto-char (point-min))
-    (search-forward "code")
-    (should (eq (get-text-property (match-beginning 0) 'face)
-                'font-lock-constant-face))))
-
-(ert-deftest magent-test-ui-reasoning-block-stays-expanded ()
-  "Test reasoning renders as a compact status row."
-  (require 'magent-ui)
-  (let ((fold-call nil))
-    (magent-ui-clear-buffer)
-    (cl-letf (((symbol-function 'magent-ui--fold-block-at)
-               (lambda (pos block-re)
-                 (setq fold-call (list pos block-re)))))
-      (magent-ui-insert-reasoning-start)
-      (magent-ui-insert-reasoning-text "alpha")
-      (magent-ui-insert-reasoning-end))
-    (should-not fold-call)
-    (with-current-buffer (magent-ui-get-buffer)
-      (should (equal (buffer-string)
-                     "Reasoning [done] 5 chars\n"))
-      (should (null magent-ui--reasoning-start))
-      (should magent-ui--streaming-has-text))))
-
-(ert-deftest magent-test-ui-tool-call-renders-symbol-args ()
-  "Test tool-call rendering tolerates symbol values in structured args."
-  (require 'magent-ui)
-  (magent-ui-clear-buffer)
-  (magent-ui-insert-tool-call
-   "emacs_eval"
-   '(:tool emacs_eval :values [emacs_eval nil]))
-  (with-current-buffer (magent-ui-get-buffer)
-    (let ((text (buffer-string)))
-      (should (string-match-p "Tool emacs_eval running" text))
-      (should (string-match-p "\"tool\":\"emacs_eval\"" text))
-      (should (string-match-p "\"values\":\\[\"emacs_eval\",null\\]" text)))))
-
-(ert-deftest magent-test-ui-agent-job-event-renders-compact-block ()
-  "Test child-agent lifecycle UI renders compact metadata only."
-  (require 'magent-ui)
-  (let* ((buffer (magent-ui-get-buffer))
-         (job (magent-agent-job-create
-               :id "agent-1"
-               :agent-name "explore"
-               :task-name "scan"
-               :status 'completed
-               :transcript '(((role . "assistant")
-                              (content . "large transcript body")))
-               :result "answer"))
-         fold-call)
-    (magent-ui-clear-buffer)
-    (cl-letf (((symbol-function 'magent-ui--fold-block-at)
-               (lambda (pos block-re)
-                 (setq fold-call (list pos block-re)))))
-      (magent-ui-insert-agent-job-event 'completed job "answer"))
-    (with-current-buffer buffer
-      (let ((text (buffer-string)))
-        (should (string-match-p "Agent completed agent-1" text))
-        (should (string-match-p "agent: explore" text))
-        (should (string-match-p "task: scan" text))
-        (should (string-match-p "status: completed" text))
-        (should (string-match-p "detail: answer" text))
-        (should-not (string-match-p "large transcript body" text))))
-    (should-not fold-call)))
-
-(ert-deftest magent-test-show-agent-transcript-displays-session-job ()
-  "Test child-agent transcript inspection displays persisted job details."
-  (require 'magent-ui)
-  (let* ((magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session (magent-session-create :id "parent"))
-         (job (magent-agent-job-create
-               :id "agent-1"
-               :agent-name "explore"
-               :task-name "scan"
-               :status 'completed
-               :prompt "inspect files"
-               :metadata '((project-root . "/tmp/project")
-                           (skill-names . ["search"]))
-               :transcript '(((role . "user") (content . "inspect"))
-                             ((role . "assistant") (content . "found it")))
-               :result "found it"))
-         displayed)
-    (magent-session-add-agent-job magent--current-session job)
-    (unwind-protect
-        (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-                  ((symbol-function 'magent-ui--activate-context-session)
-                   (lambda () magent--current-session))
-                  ((symbol-function 'completing-read)
-                   (lambda (_prompt collection &rest _args)
-                     (car collection)))
-                  ((symbol-function 'display-buffer)
-                   (lambda (buffer &rest _args)
-                     (setq displayed buffer)
-                     buffer)))
-          (magent-show-agent-transcript)
-          (should displayed)
-          (with-current-buffer displayed
-            (let ((text (buffer-string)))
-              (should (string-match-p "Child Agent agent-1" text))
-              (should (string-match-p "Agent: explore" text))
-              (should (string-match-p "Task: scan" text))
-              (should (string-match-p "Status: completed" text))
-              (should (string-match-p "Prompt" text))
-              (should (string-match-p "inspect files" text))
-              (should (string-match-p "found it" text))
-              (should (string-match-p "skill-names: search" text)))))
-      (when (get-buffer "*Magent Agent: agent-1*")
-        (kill-buffer "*Magent Agent: agent-1*")))))
-
-(ert-deftest magent-test-mode-map-binds-entry-points ()
-  "Test `magent-mode-map' keeps prompt and transient entry points."
-  (require 'magent)
-  (should (eq (lookup-key magent-mode-map (kbd "C-c m p"))
-              'magent-dwim))
-  (should (eq (lookup-key magent-mode-map (kbd "C-c m r"))
-              'magent-prompt-region))
-  (should (eq (lookup-key magent-mode-map (kbd "C-c m a"))
-              'magent-ask-at-point))
-  (should (eq (lookup-key magent-mode-map (kbd "C-c m ?"))
-              'magent-transient-menu)))
-
-(ert-deftest magent-test-mode-map-keeps-formal-commands-in-transient ()
-  "Test formal commands are not directly bound under `magent-mode-map'."
-  (require 'magent)
-  (dolist (key '("C-c m d" "C-c m D" "C-c m c" "C-c m R"
-                 "C-c m x" "C-c m e" "C-c m k" "C-c m l"
-                 "C-c m L" "C-c m t" "C-c m A" "C-c m T"
-                 "C-c m j" "C-c m i" "C-c m v"))
-    (should-not (lookup-key magent-mode-map (kbd key)))))
 
 (ert-deftest magent-test-list-agents-loads-project-scope-before-first-prompt ()
   "Test listing agents loads project-local agents without a prior prompt."
@@ -13540,35 +11436,6 @@ tolerate leading whitespace."
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Codex-like runtime skeleton tests
 ;; ──────────────────────────────────────────────────────────────────────
-
-(ert-deftest magent-test-turn-runtime-queues-submissions ()
-  "Test turn runtime queues submissions and starts the next one on finish."
-  (require 'magent-ui-legacy)
-  (let ((magent-legacy-queue--active nil)
-        (magent-legacy-queue--pending nil)
-        (magent-legacy-queue--current-request-handle nil)
-        started)
-    (cl-letf (((symbol-function 'run-at-time)
-               (lambda (_secs _repeat fn &rest args)
-                 (apply fn args)
-                 'timer)))
-      (magent-legacy-queue-submit
-       (magent-protocol-user-input-op "one")
-       "one"
-       (lambda (submission)
-         (push (magent-legacy-queue-submission-payload submission) started)))
-      (magent-legacy-queue-submit
-       (magent-protocol-user-input-op "two")
-       "two"
-       (lambda (submission)
-         (push (magent-legacy-queue-submission-payload submission) started)))
-      (should (equal (nreverse started) '("one")))
-      (should (magent-legacy-queue-processing-p))
-      (should (magent-legacy-queue-pending-p))
-      (magent-legacy-queue-finish 'completed)
-      (should (equal (nreverse started) '("one" "two")))
-      (should (magent-legacy-queue-processing-p))
-      (should-not (magent-legacy-queue-pending-p)))))
 
 (ert-deftest magent-test-session-records-structured-context-items ()
   "Test session messages also populate Codex-like context items."
@@ -14016,25 +11883,25 @@ tolerate leading whitespace."
               :result 'ok
               :error nil
               :metadata '((permission-profile . (agent bash emacs_eval))
-                           (model . gpt-4o-mini)))))
-            (magent-session-save))
-          (let* ((files (directory-files magent-session-directory t "\\.json$"))
-                 (loaded (magent-session-read-file (car files)))
-                 (loaded-session (plist-get loaded :session))
-                 (job (magent-session-agent-job loaded-session "agent-1")))
-            (should (equal (magent-agent-job-result job) "ok"))
-            (let ((entry (car (magent-agent-job-transcript job))))
-              (should (equal (cdr (assq 'role entry)) "assistant"))
-              (let ((content (cdr (assq 'content entry))))
-                (should (equal (cdr (assq 'tool content)) "emacs_eval"))
-                (should (equal (cdr (assq 'values content))
-                               '("emacs_eval" nil)))))
-            (let ((metadata (magent-agent-job-metadata job)))
-              (should (equal (cdr (assq 'permission-profile metadata))
-                             '("agent" "bash" "emacs_eval")))
-              (should (equal (cdr (assq 'model metadata))
-                             "gpt-4o-mini")))))
-      (delete-directory magent-session-directory t)))
+                          (model . gpt-4o-mini)))))
+          (magent-session-save))
+      (let* ((files (directory-files magent-session-directory t "\\.json$"))
+             (loaded (magent-session-read-file (car files)))
+             (loaded-session (plist-get loaded :session))
+             (job (magent-session-agent-job loaded-session "agent-1")))
+        (should (equal (magent-agent-job-result job) "ok"))
+        (let ((entry (car (magent-agent-job-transcript job))))
+          (should (equal (cdr (assq 'role entry)) "assistant"))
+          (let ((content (cdr (assq 'content entry))))
+            (should (equal (cdr (assq 'tool content)) "emacs_eval"))
+            (should (equal (cdr (assq 'values content))
+                           '("emacs_eval" nil)))))
+        (let ((metadata (magent-agent-job-metadata job)))
+          (should (equal (cdr (assq 'permission-profile metadata))
+                         '("agent" "bash" "emacs_eval")))
+          (should (equal (cdr (assq 'model metadata))
+                         "gpt-4o-mini")))))
+    (delete-directory magent-session-directory t)))
 
 (ert-deftest magent-test-session-live-legacy-messages-migrate-before-projection ()
   "A live legacy session must not lose messages when its ledger is created."
@@ -14356,7 +12223,7 @@ tolerate leading whitespace."
        (lambda (_plan continue) (setq old-continue continue)))
       (magent-memory-run
        'clear :confirm-fn
-      (lambda (_plan continue) (setq new-continue continue)))
+       (lambda (_plan continue) (setq new-continue continue)))
       (funcall old-continue t)
       (should (= writes 0))
       (funcall new-continue t)
@@ -14419,11 +12286,11 @@ tolerate leading whitespace."
   (require 'magent-tools)
   (let* ((magent-enable-tools magent-tools--permission-keys)
          (disjoint
-         (magent-permission-intersect
+          (magent-permission-intersect
            '((edit . (("src/*.el" . allow) (* . deny))))
            '((edit . (("docs/*.md" . allow) (* . deny))))))
          (overlapping
-         (magent-permission-intersect
+          (magent-permission-intersect
            '((edit . (("src/*.el" . allow) (* . deny))))
            '((edit . (("src/**" . ask) (* . deny))))))
          (disjoint-names
@@ -14585,7 +12452,7 @@ tolerate leading whitespace."
               (accept-process-output nil 0.05)))
           (should (magent-tool-result-success-p single-result))
           (should (string-match-p "needle" (magent-tool-result-output-string
-                                             single-result)))
+                                            single-result)))
           (magent-tools--grep
            (lambda (value) (setq global-result value)) "needle" root t)
           (let ((deadline (+ (float-time) 5)))
@@ -14982,78 +12849,6 @@ tolerate leading whitespace."
       (should (eq (magent-skills-get "same") base-skill))
       (should (eq (magent-capability-get "same") base-cap)))))
 
-(ert-deftest magent-test-global-arbiter-preserves-cross-backend-fifo ()
-  "Legacy and runtime submissions share one arrival-ordered global FIFO."
-  (require 'magent-ui-legacy)
-  (let ((magent-runtime-queue--active nil)
-        (magent-runtime-queue--pending nil)
-        (magent-runtime-queue--arbiter-active nil)
-        (magent-runtime-queue--arbiter-pending nil)
-        (magent-legacy-queue--active nil)
-        (magent-legacy-queue--pending nil)
-        (magent-legacy-queue--current-request-handle nil)
-        order)
-    (cl-letf (((symbol-function 'magent-session-get) (lambda () nil))
-              ((symbol-function 'magent-session-current-scope)
-               (lambda () 'global))
-              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
-              ((symbol-function 'run-at-time)
-               (lambda (_secs _repeat fn &rest args)
-                 (apply fn args)
-                 'timer)))
-      (magent-legacy-queue-submit
-       nil "L1" (lambda (_submission) (setq order (append order '(L1)))))
-      (magent-runtime-queue-submit
-       (magent-runtime-submission-create :id "R1")
-       (lambda (_submission) (setq order (append order '(R1)))))
-      (magent-legacy-queue-submit
-       nil "L2" (lambda (_submission) (setq order (append order '(L2)))))
-      (should (equal order '(L1)))
-      (magent-legacy-queue-finish 'completed)
-      (should (equal order '(L1 R1)))
-      (magent-runtime-queue-finish-active 'completed)
-      (should (equal order '(L1 R1 L2)))
-      (magent-legacy-queue-finish 'completed)
-      (magent-runtime-queue-submit
-       (magent-runtime-submission-create :id "R2")
-       (lambda (_submission) (setq order (append order '(R2)))))
-      (magent-legacy-queue-submit
-       nil "L3" (lambda (_submission) (setq order (append order '(L3)))))
-      (magent-runtime-queue-submit
-       (magent-runtime-submission-create :id "R3")
-       (lambda (_submission) (setq order (append order '(R3)))))
-      (magent-runtime-queue-finish-active 'completed)
-      (magent-legacy-queue-finish 'completed)
-      (magent-runtime-queue-finish-active 'completed)
-      (should (equal order '(L1 R1 L2 R2 L3 R3)))
-      (should-not (magent-runtime-queue-arbiter-owner)))))
-
-(ert-deftest magent-test-legacy-interrupt-invalidates-deferred-dispatch ()
-  "An interrupted legacy submission's zero-delay timer cannot dispatch."
-  (require 'magent-ui-legacy)
-  (let ((magent-runtime-queue--active nil)
-        (magent-runtime-queue--pending nil)
-        (magent-runtime-queue--arbiter-active nil)
-        (magent-runtime-queue--arbiter-pending nil)
-        (magent-legacy-queue--active nil)
-        (magent-legacy-queue--pending nil)
-        (magent-legacy-queue--current-request-handle nil)
-        deferred dispatched)
-    (cl-letf (((symbol-function 'magent-session-get) (lambda () nil))
-              ((symbol-function 'magent-session-current-scope)
-               (lambda () 'global))
-              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
-              ((symbol-function 'run-at-time)
-               (lambda (_secs _repeat fn &rest args)
-                 (setq deferred (cons fn args))
-                 'timer)))
-      (magent-legacy-queue-submit
-       nil "stale" (lambda (_submission) (setq dispatched t)))
-      (magent-legacy-queue-interrupt)
-      (apply (car deferred) (cdr deferred))
-      (should-not dispatched)
-      (should-not (magent-runtime-queue-arbiter-owner)))))
-
 (ert-deftest magent-test-global-arbiter-rolls-back-failed-starter-before-next ()
   "A failed backend starter is rolled back before the next FIFO ticket starts."
   (require 'magent-runtime-queue)
@@ -15115,180 +12910,6 @@ tolerate leading whitespace."
     (should next-started)
     (should (eq magent-runtime-queue--active next))))
 
-(ert-deftest magent-test-legacy-starter-error-rolls-back-backend-and-ledger ()
-  "A synchronous legacy startup error leaves neither backend nor turn active."
-  (require 'magent-ui-legacy)
-  (let* ((magent-runtime-queue--active nil)
-         (magent-runtime-queue--pending nil)
-         (magent-runtime-queue--arbiter-active nil)
-         (magent-runtime-queue--arbiter-pending nil)
-         (magent-legacy-queue--active nil)
-         (magent-legacy-queue--pending nil)
-         (magent-legacy-queue--current-request-handle nil)
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--loaded-sessions (make-hash-table :test #'eq :weakness 'key))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (session (magent-session-create :id "legacy-start-failure")))
-    (magent-session-install 'global session)
-    (cl-letf (((symbol-function 'magent-runtime-activate-scope) #'ignore)
-              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
-              ((symbol-function 'run-at-time)
-               (lambda (&rest _args) (error "timer setup failed"))))
-      (should-error
-       (magent-legacy-queue-submit nil "prompt" #'ignore)
-       :type 'error))
-    (should-not magent-legacy-queue--active)
-    (should-not magent-legacy-queue--pending)
-    (should-not (magent-runtime-queue-arbiter-owner))
-    (let ((turn (car (magent-thread-turns
-                      (magent-session-thread-ledger session)))))
-      (should (eq (magent-thread-turn-status turn) 'failed)))))
-
-(ert-deftest magent-test-legacy-queue-start-and-finish-use-captured-session ()
-  "Legacy start and finish never mutate another ambient session's ledger."
-  (require 'magent-ui-legacy)
-  (let* ((magent-runtime-queue--active nil)
-         (magent-runtime-queue--pending nil)
-         (magent-runtime-queue--arbiter-active nil)
-         (magent-runtime-queue--arbiter-pending nil)
-         (magent-legacy-queue--active nil)
-         (magent-legacy-queue--pending nil)
-         (magent-legacy-queue--current-request-handle nil)
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--loaded-sessions (make-hash-table :test #'eq :weakness 'key))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (session-a (magent-session-create :id "legacy-a"))
-         (session-b (magent-session-create :id "legacy-b"))
-         (scope-a "/tmp/magent-legacy-a")
-         (scope-b "/tmp/magent-legacy-b")
-         timers
-         dispatched)
-    (cl-letf (((symbol-function 'magent-runtime-activate-scope) #'ignore)
-              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
-              ((symbol-function 'run-at-time)
-               (lambda (_secs _repeat fn &rest args)
-                 (setq timers (append timers (list (cons fn args))))
-                 'timer)))
-      (magent-session-install scope-a session-a)
-      (magent-legacy-queue-submit
-       nil "prompt-a"
-       (lambda (_submission)
-         (push (list 'a (magent-session-current-scope)
-                     (magent-session-get))
-               dispatched)))
-      ;; Switch ambient state before queueing B and before A's timer runs.
-      (magent-session-install scope-b session-b)
-      (magent-legacy-queue-submit
-       nil "prompt-b"
-       (lambda (_submission)
-         (push (list 'b (magent-session-current-scope)
-                     (magent-session-get))
-               dispatched)))
-      (apply (caar timers) (cdar timers))
-      (should (equal (car dispatched) (list 'a scope-a session-a)))
-      (magent-session-install scope-b session-b)
-      (magent-legacy-queue-finish 'completed)
-      (let* ((turn-a (car (magent-thread-turns
-                           (magent-session-thread-ledger session-a))))
-             (turn-b (car (magent-thread-turns
-                           (magent-session-thread-ledger session-b)))))
-        (should (eq (magent-thread-turn-status turn-a) 'completed))
-        (should (eq (magent-thread-turn-status turn-b) 'in-progress)))
-      (apply (caadr timers) (cdadr timers))
-      (should (equal (car dispatched) (list 'b scope-b session-b)))
-      (magent-session-install scope-a session-a)
-      (magent-legacy-queue-finish 'completed)
-      (let ((turn-b (car (magent-thread-turns
-                          (magent-session-thread-ledger session-b)))))
-        (should (eq (magent-thread-turn-status turn-b) 'completed)))
-      (should (equal (mapcar #'magent-msg-content
-                            (magent-session-messages session-a))
-                     '("prompt-a")))
-      (should (equal (mapcar #'magent-msg-content
-                            (magent-session-messages session-b))
-                     '("prompt-b"))))))
-
-(ert-deftest magent-test-legacy-stale-zero-timer-cannot-touch-new-active ()
-  "An old zero-delay timer cannot dispatch or finish a replacement submission."
-  (require 'magent-ui-legacy)
-  (let ((magent-runtime-queue--active nil)
-        (magent-runtime-queue--pending nil)
-        (magent-runtime-queue--arbiter-active nil)
-        (magent-runtime-queue--arbiter-pending nil)
-        (magent-legacy-queue--active nil)
-        (magent-legacy-queue--pending nil)
-        (magent-legacy-queue--current-request-handle nil)
-        timers
-        dispatched)
-    (cl-letf (((symbol-function 'magent-session-get) (lambda () nil))
-              ((symbol-function 'magent-session-current-scope)
-               (lambda () 'global))
-              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
-              ;; Reusing ids makes this a regression for identity checks, not
-              ;; merely for the normal uniqueness of generated ids.
-              ((symbol-function 'magent-protocol-generate-id)
-               (lambda (&optional _prefix) "reused-id"))
-              ((symbol-function 'run-at-time)
-               (lambda (_secs _repeat fn &rest args)
-                 (setq timers (append timers (list (cons fn args))))
-                 'timer)))
-      (magent-legacy-queue-submit
-       nil "old" (lambda (_submission) (push 'old dispatched)))
-      (let ((old-timer (car timers)))
-        (magent-legacy-queue-interrupt)
-        (magent-legacy-queue-submit
-         nil "new" (lambda (_submission) (push 'new dispatched)))
-        (let ((new-active (magent-legacy-queue-active-submission))
-              (new-timer (cadr timers)))
-          (should (equal (magent-legacy-queue-submission-id new-active)
-                         "reused-id"))
-          (apply (car old-timer) (cdr old-timer))
-          (should-not dispatched)
-          (should (eq (magent-legacy-queue-active-submission) new-active))
-          (should (eq (magent-legacy-queue-submission-status new-active)
-                      'running))
-          (apply (car new-timer) (cdr new-timer))
-          (should (equal dispatched '(new)))
-          (should (eq (magent-legacy-queue-active-submission) new-active)))))))
-
-(ert-deftest magent-test-ui-finish-saves-captured-legacy-session-and-scope ()
-  "Legacy UI completion persists the completed submission, not ambient state."
-  (require 'magent-ui)
-  ;; Load the implementation before installing function mocks; otherwise the
-  ;; thin router's lazy load would legitimately replace those mock bindings.
-  (require 'magent-ui-legacy)
-  (let* ((magent-runtime-queue--arbiter-active nil)
-         (magent-runtime-queue--arbiter-pending nil)
-         (magent-legacy-queue--pending nil)
-         (session-a (magent-session-create :id "ui-a"))
-         (session-b (magent-session-create :id "ui-b"))
-         (submission
-          (magent-legacy-queue-submission-create
-           :id "ui-a-turn" :session session-a :scope "/tmp/ui-a"
-           :status 'running))
-         (magent-legacy-queue--active submission)
-         (magent--current-session session-b)
-         (magent-session--current-scope "/tmp/ui-b")
-         saved
-         snapshots
-         rendered)
-    (cl-letf (((symbol-function 'magent-ui--refresh-header-line) #'ignore)
-              ((symbol-function 'magent-ui-render-history)
-               (lambda (_skip scope) (push scope rendered)))
-              ((symbol-function 'magent-ui--maybe-show-input-prompt) #'ignore)
-              ((symbol-function 'magent-ui--snapshot-buffer-content)
-               (lambda (session scope) (push (list session scope) snapshots)))
-              ((symbol-function 'magent-session-save-deferred-for-session)
-               (lambda (session scope &optional _delay)
-                 (push (list session scope) saved))))
-      (magent-ui--finish-processing "done" "ui-a-turn" submission))
-    (should (equal saved (list (list session-a "/tmp/ui-a"))))
-    (should (equal snapshots (list (list session-a "/tmp/ui-a"))))
-    (should (equal rendered '("/tmp/ui-a")))
-    (should-not magent-legacy-queue--active)))
-
 (ert-deftest magent-test-acp-session-list-filters-exact-cwd-scope ()
   "ACP session/list exposes only sessions belonging to the requested cwd."
   (require 'magent-acp)
@@ -15297,9 +12918,9 @@ tolerate leading whitespace."
             ((symbol-function 'magent-runtime-list-sessions)
              (lambda ()
                '((:id "a" :scope "/project-a" :project-root "/project-a"
-                  :updated-at 0.0)
+                      :updated-at 0.0)
                  (:id "b" :scope "/project-b" :project-root "/project-b"
-                  :updated-at 0.0)
+                      :updated-at 0.0)
                  (:id "g" :scope global :project-root nil :updated-at 0.0)))))
     (let ((project (map-elt (magent-acp--session-list-response "/project-a")
                             'sessions))
@@ -15453,114 +13074,6 @@ tolerate leading whitespace."
                       (magent-session-thread-ledger session)))))
       (should (eq (magent-thread-turn-status turn) 'interrupted)))))
 
-(ert-deftest magent-test-legacy-finish-is-reentrant-safe ()
-  "A finishing lifecycle sink cannot advance twice and clobber its successor."
-  (require 'magent-ui-legacy)
-  (let ((magent-runtime-queue--active nil)
-        (magent-runtime-queue--pending nil)
-        (magent-runtime-queue--arbiter-active nil)
-        (magent-runtime-queue--arbiter-pending nil)
-        (magent-legacy-queue--active nil)
-        (magent-legacy-queue--pending nil)
-        (magent-legacy-queue--current-request-handle nil)
-        (magent-lifecycle-events--sinks nil)
-        first
-        second
-        reentered)
-    (cl-letf (((symbol-function 'magent-session-get) (lambda () nil))
-              ((symbol-function 'magent-session-current-scope)
-               (lambda () 'global))
-              ((symbol-function 'magent-runtime-activate-scope) #'ignore)
-              ((symbol-function 'run-at-time)
-               (lambda (&rest _args) 'timer)))
-      (magent-lifecycle-events-add-sink
-       (lambda (event)
-         (when (and (eq (plist-get event :type) 'submission-finished)
-                    (equal (plist-get event :submission-id)
-                           (magent-legacy-queue-submission-id first))
-                    (not reentered))
-           (setq reentered t)
-           (magent-legacy-queue-finish 'completed))))
-      (magent-legacy-queue-submit nil "first" #'ignore)
-      (setq first (magent-legacy-queue-active-submission))
-      (magent-legacy-queue-submit nil "second" #'ignore)
-      (setq second (car magent-legacy-queue--pending))
-      (magent-legacy-queue-finish-submission first 'completed)
-      (should reentered)
-      (should (eq (magent-legacy-queue-active-submission) second))
-      (should (eq (magent-legacy-queue-submission-status second) 'running)))))
-
-(ert-deftest magent-test-legacy-received-reentry-preserves-fifo ()
-  "A received sink may submit more work without overtaking its current token."
-  (require 'magent-ui-legacy)
-  (let ((magent-runtime-queue--active nil)
-        (magent-runtime-queue--pending nil)
-        (magent-runtime-queue--arbiter-active nil)
-        (magent-runtime-queue--arbiter-pending nil)
-        (magent-legacy-queue--active nil)
-        (magent-legacy-queue--pending nil)
-        (magent-legacy-queue--current-request-handle nil)
-        (magent-lifecycle-events--sinks nil)
-        spawned
-        order)
-    (cl-letf (((symbol-function 'magent-session-get) (lambda () nil))
-              ((symbol-function 'magent-session-current-scope)
-               (lambda () 'global))
-              ((symbol-function 'magent-runtime-activate-scope) #'ignore)
-              ((symbol-function 'run-at-time)
-               (lambda (_secs _repeat fn &rest args)
-                 (apply fn args)
-                 'timer)))
-      (magent-lifecycle-events-add-sink
-       (lambda (event)
-         (when (and (eq (plist-get event :type) 'submission-received)
-                    (not spawned))
-           (setq spawned t)
-           (magent-legacy-queue-submit
-            nil "second"
-            (lambda (_submission) (setq order (append order '(second))))))))
-      (magent-legacy-queue-submit
-       nil "first"
-       (lambda (_submission) (setq order (append order '(first)))))
-      (should (equal order '(first)))
-      (magent-legacy-queue-finish 'completed)
-      (should (equal order '(first second))))))
-
-(ert-deftest magent-test-legacy-interrupt-invalidates-before-sync-abort-callback ()
-  "A synchronous abort callback observes the interrupted token as stale."
-  (require 'magent-ui-legacy)
-  (let ((magent-runtime-queue--active nil)
-        (magent-runtime-queue--pending nil)
-        (magent-runtime-queue--arbiter-active nil)
-        (magent-runtime-queue--arbiter-pending nil)
-        (magent-legacy-queue--active nil)
-        (magent-legacy-queue--pending nil)
-        (magent-legacy-queue--current-request-handle nil)
-        active
-        queued
-        abort-saw-active)
-    (cl-letf (((symbol-function 'magent-session-get) (lambda () nil))
-              ((symbol-function 'magent-session-current-scope)
-               (lambda () 'global))
-              ((symbol-function 'magent-runtime-activate-scope) #'ignore)
-              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
-              ((symbol-function 'run-at-time)
-               (lambda (&rest _args) 'timer)))
-      (magent-legacy-queue-submit nil "active" #'ignore)
-      (setq active (magent-legacy-queue-active-submission))
-      (magent-legacy-queue-set-current-request-handle 'handle active)
-      (magent-legacy-queue-submit nil "queued" #'ignore)
-      (setq queued (car magent-legacy-queue--pending))
-      (magent-legacy-queue-interrupt
-       (lambda (_handle)
-         (setq abort-saw-active (magent-legacy-queue-active-submission))
-         (magent-legacy-queue-finish-submission active 'completed))))
-    (should-not abort-saw-active)
-    (should (eq (magent-legacy-queue-submission-status active) 'interrupted))
-    (should (eq (magent-legacy-queue-submission-status queued) 'dropped))
-    (should-not (magent-legacy-queue-active-submission))
-    (should-not (magent-runtime-queue-arbiter-owner))))
-
 (ert-deftest magent-test-runtime-prepare-context-refuses-cross-scope-during-lease ()
   "Interactive registry activation cannot steal another turn's project scope."
   (require 'magent-runtime)
@@ -15658,56 +13171,6 @@ tolerate leading whitespace."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest magent-test-ui-sync-completion-does-not-store-stale-handle ()
-  "A synchronously completed legacy turn cannot attach its handle to the next."
-  (require 'magent-ui-legacy)
-  (let* ((magent-runtime-queue--active nil)
-         (magent-runtime-queue--pending nil)
-         (magent-runtime-queue--arbiter-active nil)
-         (magent-runtime-queue--arbiter-pending nil)
-         (magent-legacy-queue--active nil)
-         (magent-legacy-queue--pending nil)
-         (magent-legacy-queue--current-request-handle nil)
-         (magent-ui--request-generation 0)
-         (magent--current-request-handle nil)
-         (item (magent-ui--request-create :prompt "first" :source 'prompt))
-         timers
-         first
-         second)
-    (cl-letf (((symbol-function 'magent-session-get) (lambda () nil))
-              ((symbol-function 'magent-session-current-scope)
-               (lambda () 'global))
-              ((symbol-function 'magent-runtime-activate-scope) #'ignore)
-              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
-              ((symbol-function 'run-at-time)
-               (lambda (_secs _repeat fn &rest args)
-                 (setq timers (append timers (list (cons fn args))))
-                 'timer))
-              ((symbol-function 'magent-ui-display-buffer) #'ignore)
-              ((symbol-function 'magent-ui-render-history) #'ignore)
-              ((symbol-function 'magent-log) #'ignore)
-              ((symbol-function 'magent-agent-process)
-               (lambda (_prompt callback &rest _args)
-                 (funcall callback "done")
-                 'stale-handle))
-              ((symbol-function 'magent-ui--finish-processing)
-               (lambda (_response _submission-id submission)
-                 (magent-legacy-queue-finish-submission
-                  submission 'completed "done"))))
-      (magent-legacy-queue-submit
-       nil item
-       (lambda (submission)
-         (magent-ui--run-item
-          item (magent-legacy-queue-submission-id submission))))
-      (setq first (magent-legacy-queue-active-submission))
-      (magent-legacy-queue-submit nil "second" #'ignore)
-      (setq second (car magent-legacy-queue--pending))
-      (apply (caar timers) (cdar timers)))
-    (should (magent-legacy-queue-submission-finalized first))
-    (should (eq (magent-legacy-queue-active-submission) second))
-    (should-not magent--current-request-handle)
-    (should-not (magent-legacy-queue-current-request-handle))))
-
 (ert-deftest magent-test-acp-client-session-binding-survives-buffer-cwd-change ()
   "ACP prompt and cancel keep the scope captured at session bootstrap."
   (require 'magent-acp)
@@ -15752,7 +13215,7 @@ tolerate leading whitespace."
              `((:method . "session/prompt")
                (:params . ((sessionId . ,session-id)
                            (prompt . [((type . "text")
-                                      (text . "hello"))]))))
+                                       (text . "hello"))]))))
              #'ignore
              (lambda (err &optional _raw) (setq failure err)))
             (magent-acp--notification-sender
@@ -15949,28 +13412,6 @@ tolerate leading whitespace."
     (should-error (magent-runtime-session-clear runtime) :type 'user-error)
     (should (eq (magent-session-get-if-present 'global) registered))))
 
-(ert-deftest magent-test-legacy-clear-terminalizes-all-before-drop-sinks ()
-  "The first dropped sink observes every detached token as terminal."
-  (require 'magent-ui-legacy)
-  (let* ((magent-legacy-queue--submission-metadata
-          (make-hash-table :test #'eq :weakness 'key))
-         (magent-legacy-queue--active nil)
-         (magent-legacy-queue--pending nil)
-         (magent-lifecycle-events--sinks nil)
-         (first (magent-legacy-queue-submission-create :id "first"))
-         (second (magent-legacy-queue-submission-create :id "second"))
-         observed)
-    (setq magent-legacy-queue--pending (list first second))
-    (magent-lifecycle-events-add-sink
-     (lambda (event)
-       (when (and (eq (plist-get event :type) 'submission-dropped)
-                  (equal (plist-get event :submission-id) "first"))
-         (setq observed
-               (list (magent-legacy-queue-submission-finalized second)
-                     (magent-legacy-queue-submission-status second))))))
-    (should (= (magent-legacy-queue-clear) 2))
-    (should (equal observed '(t dropped)))))
-
 (ert-deftest magent-test-session-id-validation-and-filename-consistency ()
   "Unsafe ids cannot escape storage and mismatched files cannot load."
   (let* ((directory (make-temp-file "magent-session-id-" t))
@@ -16010,38 +13451,6 @@ tolerate leading whitespace."
           (should (equal (magent-session-list-files) (list legacy))))
       (delete-directory directory t))))
 
-(ert-deftest magent-test-queue-finish-public-contract-returns-id-or-nil ()
-  "Public finish APIs never leak the arbiter's internal handled sentinel."
-  (require 'magent-ui-legacy)
-  (let ((magent-runtime-queue--active nil)
-        (magent-runtime-queue--pending nil)
-        (magent-runtime-queue--arbiter-active nil)
-        (magent-runtime-queue--arbiter-pending nil)
-        (magent-legacy-queue--active nil)
-        (magent-legacy-queue--pending nil)
-        (magent-legacy-queue--current-request-handle nil))
-    (let ((first (magent-runtime-submission-create :id "runtime-first"))
-          (second (magent-runtime-submission-create :id "runtime-second")))
-      (magent-runtime-queue-submit first #'ignore)
-      (magent-runtime-queue-submit second #'ignore)
-      (should (equal (magent-runtime-queue-finish-active 'completed)
-                     "runtime-second"))
-      (should-not (magent-runtime-queue-finish-active 'completed)))
-    (cl-letf (((symbol-function 'magent-session-get) (lambda () nil))
-              ((symbol-function 'magent-session-current-scope)
-               (lambda () 'global))
-              ((symbol-function 'magent-runtime-activate-scope) #'ignore)
-              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
-              ((symbol-function 'run-at-time)
-               (lambda (&rest _args) 'timer)))
-      (let ((first-id (magent-legacy-queue-submit nil "first" #'ignore))
-            second-id)
-        (ignore first-id)
-        (setq second-id
-              (magent-legacy-queue-submit nil "second" #'ignore))
-        (should (equal (magent-legacy-queue-finish 'completed) second-id))
-        (should-not (magent-legacy-queue-finish 'completed))))))
-
 (ert-deftest magent-test-agent-shell-interrupt-honors-force-argument ()
   "Magent forwards nil and non-nil FORCE without forcing confirmation off."
   (require 'magent-agent-shell)
@@ -16061,12 +13470,10 @@ tolerate leading whitespace."
 (ert-deftest magent-test-live-reload-struct-layouts-remain-stable ()
   "Runtime side metadata must not invalidate objects created before reload."
   (require 'magent-agent-loop)
-  (require 'magent-ui-legacy)
   (should (= (length (magent-lifecycle-events-context-create)) 5))
   (should (= (length (magent-request-context-create)) 27))
   (should (= (length (magent-agent-loop-create)) 19))
-  (should (= (length (magent-runtime-submission-create)) 21))
-  (should (= (length (magent-legacy-queue-submission-create)) 10)))
+  (should (= (length (magent-runtime-submission-create)) 21)))
 
 (ert-deftest magent-test-live-reload-adopts-preserved-runtime-queue ()
   "Pre-arbiter active work keeps its lease and queued work starts once."

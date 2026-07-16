@@ -201,9 +201,8 @@ tagged by runtime session id so cancellation is session-scoped: cancelling one
 ACP session removes that session's queued work and aborts its active turn
 without dropping other sessions' queued turns.
 
-~magent-ui.el~, ~magent-ui-legacy.el~, and the other legacy UI names covered by
-~docs/UI_BACKENDS.org~ are retained unsupported code. They are not part of the
-supported UI projection or public command surface.
+This agent-shell + ACP path is the complete UI projection and public command
+surface. Shared runtime behavior remains frontend-neutral.
 
 * Codex Differences Still Preserved
 

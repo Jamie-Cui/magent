@@ -57,11 +57,7 @@ manifest 和 package data recipe。
 
 ** UI 与 Runtime API
 
-受支持的 frontend 是 ~agent-shell~ 。 ~magent-agent-shell.el~ 注册 Magent 的 agent-shell 配置， ~magent-acp.el~ 实现进程内 ACP adapter， ~magent-runtime-api.el~ 接收 prompt submission。ACP text 与 resource block 会分开规范化：完整结构化输入存进 turn metadata，并以 user role 重建给模型；本地 ~file://~ resource 只额外提供 scoped file path，供项目指令发现与 capability resolution 使用。 ~magent-runtime-queue.el~ 当前采用全局单执行模型，同时保留 session-scoped cancellation 和队列状态。
-
-~magent-ui.el~ 、 ~magent-ui-legacy.el~ 以及 ~docs/UI_BACKENDS.org~ 命名规则覆盖的
-legacy UI 文件是保留但不受支持的代码，不是可选 frontend；它们不能成为 agent-shell
-runtime 路径的依赖。
+受支持的 frontend 是 ~agent-shell~ 。 ~magent-agent-shell.el~ 注册 Magent 的 agent-shell 配置， ~magent-acp.el~ 实现进程内 ACP adapter， ~magent-runtime-api.el~ 接收 prompt submission。ACP text 与 resource block 会分开规范化：完整结构化输入存进 turn metadata，并以 user role 重建给模型；本地 ~file://~ resource 只额外提供 scoped file path，供项目指令发现与 capability resolution 使用。 ~magent-runtime-queue.el~ 当前采用全局单执行模型，同时保留 session-scoped cancellation 和队列状态。Magent 不维护并行的交互 frontend。
 
 ** Ledger 与持久化
 

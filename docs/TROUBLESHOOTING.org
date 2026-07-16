@@ -93,7 +93,7 @@ make compile  # Auto-detects dependencies in ~/.emacs.d/elpa/
 #+end_src
 
 If dependencies live outside ~~/.emacs.d/elpa/~, pass the relevant Makefile
-variables explicitly, such as ~GPTEL_DIR~, ~TRANSIENT_DIR~, ~COMPAT_DIR~, or
+variables explicitly, such as ~GPTEL_DIR~, ~COMPAT_DIR~, or
 ~YAML_DIR~.
 
 ** Runtime Issues

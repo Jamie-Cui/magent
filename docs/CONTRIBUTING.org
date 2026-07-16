@@ -19,7 +19,6 @@ sandboxing, seatbelt, bubblewrap, and shell isolation parity are out of scope.
 ** Prerequisites
 - Emacs 29.1+
 - gptel 0.9.8+
-- transient 0.7.8+
 - compat 30.1+
 - yaml 1.0+
 - acp 0.12.2+
@@ -37,9 +36,8 @@ make clean      # Remove compiled files
 #+end_src
 
 The Makefile auto-detects ELPA dependency directories under
-~~/.emacs.d/elpa/~. Override variables such as ~GPTEL_DIR~, ~TRANSIENT_DIR~,
-~COMPAT_DIR~, or ~YAML_DIR~ when testing against nonstandard dependency
-checkouts.
+~~/.emacs.d/elpa/~. Override variables such as ~GPTEL_DIR~, ~COMPAT_DIR~, or
+~YAML_DIR~ when testing against nonstandard dependency checkouts.
 
 * Code Style
 
@@ -47,7 +45,7 @@ checkouts.
 - Internal functions and variables use ~magent-module--name~ with a double dash.
 - Public functions, commands, and variables use ~magent-module-name~ with a single dash.
 - Tool implementations follow ~magent-tools--<name>~ for the internal function and ~magent-tools--<name>-tool~ for the ~gptel-tool~ variable.
-- Optional integration code stays in its own module, for example Evil-specific behavior belongs in ~magent-evil.el~.
+- Optional integration code stays in its own module and must not leak dependencies into the core runtime.
 - Do not use personal-config prefixes such as ~+module/name~ in Magent source files.
 
 ** File Headers

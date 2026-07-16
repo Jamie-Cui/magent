@@ -21,7 +21,7 @@ make coverage   # Run ERT under testcover and write coverage/testcover-summary.t
 make clean      # Remove compiled .elc files
 ```
 
-The Makefile auto-detects dependency paths (`gptel`, `transient`, `acp`, `shell-maker`, `agent-shell`, `cond-let`, `compat`, `evil`, `yaml`, `llama`, `with-editor`) by scanning `~/.emacs.d/elpa/`. Override any with e.g. `GPTEL_DIR=/path/to/gptel`.
+The Makefile auto-detects dependency paths (`gptel`, `acp`, `shell-maker`, `agent-shell`, `cond-let`, `compat`, `yaml`, `llama`, `with-editor`) by scanning `~/.emacs.d/elpa/`. Override any with e.g. `GPTEL_DIR=/path/to/gptel`.
 
 Single-file compilation:
 ```bash
@@ -38,7 +38,7 @@ emacs -Q --batch -L lisp -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'gptel-*' -
 
 ### Unit Tests
 
-`test/magent-test.el` contains the main ERT suite. Tests mock `gptel-request` and UI functions via `cl-letf`. Key patterns:
+`test/magent-test.el` contains the main ERT suite. Tests mock `gptel-request` and frontend/runtime functions via `cl-letf`. Key patterns:
 - Registry tests bind `magent-agent-registry--agents` to a fresh hash table
 - Skills tests bind `magent-skills--registry` to nil
 - Session tests call `magent-session-reset` to clear global state
@@ -121,12 +121,8 @@ magent.el (entry point: magent-mode, global-magent-mode)
   ├─ magent-permission.el        (rule-based tool access control per agent)
   ├─ magent-acp.el               (in-process ACP adapter for agent-shell)
   ├─ magent-agent-shell.el       (agent-shell backend registration and routing)
-  ├─ magent-ui.el                (unsupported UI compatibility code)
-  ├─ magent-modeline.el          (mode-line formatting and status construct installation)
-  ├─ magent-ui-legacy.el         (unsupported legacy UI implementation)
+  ├─ magent-modeline.el          (UI-neutral mode-line formatting)
   ├─ magent-file-loader.el       (shared file-backed definition loader and frontmatter parser)
-  ├─ magent-markdown-to-org.el   (legacy markdown → org-mode compatibility helpers)
-  ├─ magent-evil.el              (optional Evil integration; not loaded by magent by default)
   └─ magent-skills.el            (skill registry, built-in skill definitions, file loading, and interactive commands)
 ```
 
@@ -146,28 +142,26 @@ magent.el (entry point: magent-mode, global-magent-mode)
    - `magent-agent-run-turn` is the low-level backend entry point; `magent-agent-process` remains the compatibility wrapper
    - See `docs/UI_BACKENDS.org` for the boundary contract
 
-5. **Unsupported UI code** (`magent-ui.el`, `magent-ui-legacy.el`): These files are retained compatibility and unfinished legacy code, not supported frontends or public APIs. Do not add user-facing behavior, documentation, or new dependencies on their commands, keybindings, customization options, workspace, compose buffer, transient menu, or rendering path. The same rule applies to files named `magent-legacy-ui.el` or matching `magent-legacy-*.el` if present.
+5. **Agent processing** (`magent-agent.el`): `magent-agent-run-turn` is the UI-neutral low-level entry point for runtime backends. `magent-agent-process` builds a gptel prompt list from the session, discovers applicable `AGENTS.md` files from project root toward request-local resources within a bounded project scope, applies per-agent overrides (model, temperature via `default-value` — intentionally avoids buffer-local gptel settings), exposes filtered tools to the provider, then starts `magent-agent-loop`.
 
-6. **Agent processing** (`magent-agent.el`): `magent-agent-run-turn` is the UI-neutral low-level entry point for runtime backends. `magent-agent-process` builds a gptel prompt list from the session, discovers applicable `AGENTS.md` files from project root toward request-local resources within a bounded project scope, applies per-agent overrides (model, temperature via `default-value` — intentionally avoids buffer-local gptel settings), exposes filtered tools to the provider, then starts `magent-agent-loop`.
+6. **Tools** (`magent-tools.el`): 15 `gptel-tool` structs — `read_file`, `write_file`, `write_repo_summary`, `edit_file`, `grep`, `glob`, `bash`, `emacs_eval`, `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, `close_agent`, `skill_invoke`, `web_search`. Tools are registered globally but filtered per-agent through permissions. `write_repo_summary` delegates canonical single-file Org updates to `magent-repo-summary.el` and shares the `write` permission key. The child-agent tools share the `agent` permission key. `web_search` uses DuckDuckGo via `url-retrieve` + `libxml-parse-html-region` (requires Emacs built with `--with-xml2`).
 
-7. **Tools** (`magent-tools.el`): 15 `gptel-tool` structs — `read_file`, `write_file`, `write_repo_summary`, `edit_file`, `grep`, `glob`, `bash`, `emacs_eval`, `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, `close_agent`, `skill_invoke`, `web_search`. Tools are registered globally but filtered per-agent through permissions. `write_repo_summary` delegates canonical single-file Org updates to `magent-repo-summary.el` and shares the `write` permission key. The child-agent tools share the `agent` permission key. `web_search` uses DuckDuckGo via `url-retrieve` + `libxml-parse-html-region` (requires Emacs built with `--with-xml2`).
+7. **Agent Loop**: `magent-agent.el` starts the Magent-owned loop through `magent-agent-loop.el`. `magent-llm.el` defines normalized request/events, including `tool-call-batch-end`, and `magent-llm-gptel.el` calls `gptel-request` while hiding gptel callback/FSM details. The loop owns tool dispatch through `magent-tool-orchestrator`, serial tool queueing, permission audit hooks, structured lifecycle event emission, request abort cleanup, and tool-result session recording. Runtime observers project visible tool events to supported frontends. `magent-agent-process` owns Codex-style continuation policy: tool results are fed back to the model, sampling limits force a no-tool final request, and a post-tool empty assistant completion gets one no-tool final-response retry. Reasoning events stay separate from assistant text and are not used as final-answer fallback.
 
-8. **Agent Loop**: `magent-agent.el` starts the Magent-owned loop through `magent-agent-loop.el`. `magent-llm.el` defines normalized request/events, including `tool-call-batch-end`, and `magent-llm-gptel.el` calls `gptel-request` while hiding gptel callback/FSM details. The loop owns tool dispatch through `magent-tool-orchestrator`, serial tool queueing, permission audit hooks, structured lifecycle event emission, request abort cleanup, and tool-result session recording. UI sinks project visible tool events. `magent-agent-process` owns Codex-style continuation policy: tool results are fed back to the model, sampling limits force a no-tool final request, and a post-tool empty assistant completion gets one no-tool final-response retry. Reasoning events stay separate from assistant text and are not used as final-answer fallback.
+8. **Permissions** (`magent-permission.el`): Rules map tool names to `allow`/`deny`/`ask`, with optional file-pattern sub-rules (glob syntax). Resolution: exact tool match → file-pattern rules → wildcard (`*`) fallback → **default allow**. File-pattern rules are order-dependent (first match wins); more specific patterns must come before less specific ones.
 
-9. **Permissions** (`magent-permission.el`): Rules map tool names to `allow`/`deny`/`ask`, with optional file-pattern sub-rules (glob syntax). Resolution: exact tool match → file-pattern rules → wildcard (`*`) fallback → **default allow**. File-pattern rules are order-dependent (first match wins); more specific patterns must come before less specific ones.
+9. **Capabilities** (`magent-capability.el`): File-backed capability definitions score the current request context and attach matching instruction skills. Automatic activation requires a word-bounded prompt-keyword intent match in addition to context score; context-only matches remain suggested, and linked skills are filtered against the selected agent's exposed tools. Bundled, user, and project-local capability overlays all feed the same resolver.
 
-10. **Capabilities** (`magent-capability.el`): File-backed capability definitions score the current request context and attach matching instruction skills. Automatic activation requires a word-bounded prompt-keyword intent match in addition to context score; context-only matches remain suggested, and linked skills are filtered against the selected agent's exposed tools. Bundled, user, and project-local capability overlays all feed the same resolver.
+10. **Session and workflow ledger** (`magent-ledger.el`, `magent-session.el`): The canonical agent workflow state is an explicit thread/turn/item ledger. Thread statuses are `not-loaded`, `idle`, `active`, `system-error`, and `closed`; turn statuses are `queued`, `in-progress`, `completed`, `interrupted`, `failed`, and `dropped`; item statuses are `pending`, `in-progress`, `completed`, `failed`, and `cancelled`. Tool call/result is one `tool` item lifecycle keyed by call id. Session JSON is atomically replaced with a materialized `snapshot` and a bounded tail of the in-memory append-only `journal`; only events after `snapshot.last-event-seq` are replayed. The separate JSONL audit subsystem retains tool/permission audit records. Legacy `messages` and `context-items` are derived projections used for gptel prompt reuse and migration. `buffer-content` remains only legacy data; frontend restore comes from the ledger. `agent-jobs` stores durable child-agent metadata. Internal command session metadata is persisted alongside ordinary session JSON but stored outside normal session listing paths.
 
-11. **Session and workflow ledger** (`magent-ledger.el`, `magent-session.el`): The canonical agent workflow state is an explicit thread/turn/item ledger. Thread statuses are `not-loaded`, `idle`, `active`, `system-error`, and `closed`; turn statuses are `queued`, `in-progress`, `completed`, `interrupted`, `failed`, and `dropped`; item statuses are `pending`, `in-progress`, `completed`, `failed`, and `cancelled`. Tool call/result is one `tool` item lifecycle keyed by call id. Session JSON is atomically replaced with a materialized `snapshot` and a bounded tail of the in-memory append-only `journal`; only events after `snapshot.last-event-seq` are replayed. The separate JSONL audit subsystem retains tool/permission audit records. Legacy `messages` and `context-items` are derived projections used for gptel prompt reuse and migration. `buffer-content` remains only legacy data; UI restore comes from the ledger. `agent-jobs` stores durable child-agent metadata. Internal command session metadata is persisted alongside ordinary session JSON but stored outside normal session listing paths.
-
-12. **Skills** (`magent-skills.el`): Two types — `instruction` (markdown injected into system prompt) and `tool` (invoked via `skill_invoke`). The module now contains the registry, built-in `skill-creator`, file-based skill loading, and interactive inspection commands. Skills load in priority order from (1) built-in `skills/`, (2) user directory `~/.emacs.d/magent-skills/<name>/SKILL.md`, and (3) project-local `.magent/skills/<name>/SKILL.md`.
+11. **Skills** (`magent-skills.el`): Two types — `instruction` (markdown injected into system prompt) and `tool` (invoked via `skill_invoke`). The module now contains the registry, built-in `skill-creator`, file-based skill loading, and interactive inspection commands. Skills load in priority order from (1) built-in `skills/`, (2) user directory `~/.emacs.d/magent-skills/<name>/SKILL.md`, and (3) project-local `.magent/skills/<name>/SKILL.md`.
 
 ### Gotchas
 
 - **Only supported frontend is agent-shell**: interactive use goes through `magent-agent-shell.el` and `magent-acp.el`.
 - **Internal commands are not slash commands**: keep Magent maintenance workflows behind explicit `M-x magent-run-*` commands and `magent-command-register`; do not add `/magent-*` local command handling back to `magent-acp.el`.
 - **Doctor never receives general tools**: keep `magent-run-doctor` on the trusted probe plus one tool-free request path. Do not expose `emacs_eval`, shell, file tools, backend objects, credentials, environment variables, or raw provider logs through Doctor probes.
-- **Unsupported UI files stay isolated**: do not expose or extend `magent-ui.el`, `magent-ui-legacy.el`, `magent-legacy-ui.el`, or `magent-legacy-*.el` as user interfaces. Keep UI-independent behavior in `magent-runtime-api.el`, ACP conversion in `magent-acp.el`, and supported frontend behavior in `magent-agent-shell.el`.
+- **Frontend code stays on the supported path**: keep UI-independent behavior in `magent-runtime-api.el`, ACP conversion in `magent-acp.el`, and agent-shell behavior in `magent-agent-shell.el`.
 - **Core logging is UI-neutral**: `magent-log.el` dispatches formatted messages to sinks and falls back to `message` for warnings/errors when headless.
 - **Tool execution helpers live in `magent-agent-loop.el`**: serial queueing, abort cleanup, lifecycle event emission, and tool-result recording are all loop-owned; UI sinks own visible rendering. As with Codex, repeated tool use is steered by prompt/context rather than a hard `emacs_eval` call-count guard. Keep final-response retry policy in `magent-agent.el`, not in tool dispatch.
 - **Provider transport stays in gptel**: `magent-llm-gptel.el` may use gptel private FSM details internally for one sampling request, but the Magent loop consumes only normalized events.
@@ -196,7 +190,7 @@ Tool-type skills can have companion `.el` files defining `magent-skill-<name>-in
 
 ### Configuration
 
-UI-neutral `defcustom` variables live in `magent-config.el` under `customize-group magent`. Options and faces in unsupported UI files are not a supported configuration surface. LLM provider/model/key settings are managed entirely by gptel.
+UI-neutral `defcustom` variables live in `magent-config.el` under `customize-group magent`. LLM provider/model/key settings are managed entirely by gptel.
 
 Key settings: `magent-default-agent` (`"build"`), `magent-enable-tools` (list of enabled tool symbols), `magent-org-roam-directory` (repository summary destination; nil falls back to `org-roam-directory`), `magent-include-reasoning` (`t`/`ignore`/`nil`), `magent-request-timeout` (120s), `magent-bash-timeout` (30s), `magent-emacs-eval-timeout` (10s), `magent-max-history` (100).
 
@@ -213,8 +207,7 @@ Key settings: `magent-default-agent` (`"build"`), `magent-enable-tools` (list of
 | `magent-agent-shell-run-skill-command` | Run a command-like skill |
 
 Use agent-shell's own bindings, session options, mode selector, and slash
-commands for interaction. Do not document the `C-c m` compatibility bindings or
-legacy transient surface as supported entry points.
+commands for interaction.
 
 ## Conventions
 

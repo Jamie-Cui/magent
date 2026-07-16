@@ -225,8 +225,7 @@ Any active or queued work for the session is cancelled first."
   (magent-runtime-api--assert-session-available runtime-session)
   (let* ((session (magent-runtime-session-magent-session runtime-session))
          (scope (magent-runtime-session-scope runtime-session))
-         (installed (magent-session-get-if-present scope))
-         (owners (magent-runtime-queue-session-busy-owners session)))
+         (installed (magent-session-get-if-present scope)))
     ;; A stale wrapper with the same persisted id must never delete or replace
     ;; the registered session's file.  Different ids have independent files
     ;; and may be cleared without stealing the scope's current-session slot.
@@ -236,11 +235,6 @@ Any active or queued work for the session is cancelled first."
                       (magent-session-id session)))
       (user-error
        "Magent: refusing to clear a stale session with a reused id"))
-    ;; Runtime cancellation cannot safely terminalize legacy work that happens
-    ;; to capture the same session object.
-    (when (memq 'legacy owners)
-      (user-error
-       "Magent: cannot clear a session used by legacy queued or active work"))
     (puthash runtime-session t magent-runtime-api--clearing-sessions)
     (unwind-protect
         (progn

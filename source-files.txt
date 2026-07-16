@@ -36,11 +36,7 @@ lisp/magent-agent-shell.el
 lisp/magent-agent-registry.el
 lisp/magent-agent-file.el
 lisp/magent-permission.el
-lisp/magent-markdown-to-org.el
-lisp/magent-ui.el
 lisp/magent-modeline.el
-lisp/magent-ui-legacy.el
-lisp/magent-evil.el
 lisp/magent-skills.el
 lisp/magent-skill-manager.el
 lisp/magent-capability.el

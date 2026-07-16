@@ -7,18 +7,12 @@ Magent supports one user frontend: ~agent-shell~, connected to the Magent
 runtime through the in-process ACP adapter.  User documentation and examples
 must use the commands exported by ~magent-agent-shell.el~ or agent-shell itself.
 
-* Support Status
+* Public Interface
 
-The code in ~magent-ui.el~ and ~magent-ui-legacy.el~ is currently unsupported
-for user interaction.  Do not use commands, keybindings, customization options,
-or extension points from those files as a public interface.  They are retained
-only as internal compatibility and unfinished legacy code, and may change or be
-removed without compatibility guarantees.
-
-The current source tree names the legacy implementation
-~magent-ui-legacy.el~.  The same unsupported status applies to legacy UI files
-named ~magent-legacy-ui.el~ or matching ~magent-legacy-*.el~ if such files are
-present in another checkout or introduced during cleanup.
+The agent-shell integration is the complete interactive interface.  Magent does
+not maintain a parallel workspace, compose buffer, command menu, or custom
+output-buffer frontend.  New interactive behavior belongs in agent-shell or in
+the ACP adapter; shared behavior belongs in the runtime API.
 
 * Supported Modules
 
@@ -54,12 +48,9 @@ present in another checkout or introduced during cleanup.
 
 * Development Boundary
 
-Core runtime behavior must not depend on an unsupported legacy UI workflow.
 Keep frontend-neutral behavior in ~magent-runtime-api.el~, ACP conversion in
-~magent-acp.el~, and supported frontend behavior in
-~magent-agent-shell.el~.  Do not add new user-facing behavior to
-~magent-ui.el~, ~magent-ui-legacy.el~, ~magent-legacy-ui.el~, or
-~magent-legacy-*.el~.
+~magent-acp.el~, and supported frontend behavior in ~magent-agent-shell.el~.
+Do not introduce a second interactive frontend inside the core runtime.
 
 * Current Limitations
 

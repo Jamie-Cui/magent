@@ -11,7 +11,7 @@
 
 - *语言：* Emacs Lisp
 - *主要依赖：* [[https://github.com/karthink/gptel][gptel]]，负责全部 LLM 通信
-- *要求：* Emacs 29.1+，gptel，transient，compat，yaml，acp，agent-shell，ripgrep
+- *要求：* Emacs 29.1+，gptel，compat，yaml，acp，agent-shell，ripgrep
 - *目标：* 在 live Emacs runtime 内提供 AI-assisted coding，同时保持 provider transport 在 gptel 内，并让工具访问显式、可审计
 
 * 当前 Agent 工作流
@@ -30,9 +30,8 @@ Magent 拥有 Magent-owned agent loop 和 durable child-agent lifecycle。Root a
 
 - ~magent.el~ ：package entry point 和 lazy runtime initialization。
 - ~magent-agent-shell.el~ ：受支持的 interactive entry points。
-- ~magent-modeline.el~ ：mode-line 格式化和状态 construct 安装。
+- ~magent-modeline.el~ ：UI-neutral mode-line 状态格式化。
 - ~magent-config.el~ ：UI-neutral runtime 与 feature customization。
-- ~magent-ui.el~ ：保留但不受支持的 compatibility code。
 - ~magent-pkg.el~ ：package metadata。
 
 *职责：* 第一次调用受支持的 agent-shell 命令时， ~magent--ensure-initialized~ 触发
@@ -113,11 +112,10 @@ agent-shell 是唯一受支持的 frontend。
 - ~magent-runtime-api.el~ ：UI/backend-facing runtime API。
 - ~magent-runtime-queue.el~ ：runtime queue 和 session-scoped cancellation。
 - ~magent-file-loader.el~ ：agent/skill/capability 共享 frontmatter parser。
-- ~magent-ui.el~ / ~magent-ui-legacy.el~ ：保留但不受支持的 UI code，不是公共接口。
 
 *职责：* Prompt 走 agent-shell 和进程内 ACP adapter。ACP session/prompt request
 提交到 ~magent-runtime-api.el~ ，直到对应 Magent turn 完成才返回。修改该层前先读
-~docs/UI_BACKENDS.org~ 中的不受支持 legacy-file 边界。
+~docs/UI_BACKENDS.org~ 中的 frontend 开发边界。
 
 ** 第 7 层：Events
 
@@ -214,9 +212,8 @@ interactive entry points。
 ** Step 2：UI 边界
 
 读 ~docs/UI_BACKENDS.org~ ，再读 ~magent-agent-shell.el~ 、 ~magent-acp.el~ 和
-~magent-runtime-api.el~ 。关键点：agent-shell 是唯一受支持的交互体验。只有在移除或
-隔离 unsupported compatibility code 时才读 ~magent-ui.el~ 和
-~magent-ui-legacy.el~ 。
+~magent-runtime-api.el~ 。关键点：agent-shell 是唯一受支持的交互体验，共享行为必须
+留在 runtime API。
 
 ** Step 3：请求生命周期
 
@@ -271,12 +268,10 @@ interactive entry points。
 ** 3. Frontend boundary
 
 *复杂原因：* 受支持的 frontend 横跨 ~magent-agent-shell.el~ 、 ~magent-acp.el~ 、
-~magent-runtime-api.el~ 和 ~magent-runtime-queue.el~ 。Unsupported compatibility
-code 仍保留在 ~magent-ui.el~ 和 ~magent-ui-legacy.el~ 。
+~magent-runtime-api.el~ 和 ~magent-runtime-queue.el~ 。
 
 *修改建议：* Frontend-neutral 行为放 ~magent-runtime-api.el~ ，ACP conversion 放
-~magent-acp.el~ ，agent-shell-specific 行为放 ~magent-agent-shell.el~ 。不要向不受支持的
-UI 文件增加用户入口。
+~magent-acp.el~ ，agent-shell-specific 行为放 ~magent-agent-shell.el~ 。
 
 ** 4. ~magent-permission.el~
 

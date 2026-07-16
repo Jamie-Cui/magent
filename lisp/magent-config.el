@@ -26,6 +26,24 @@
   :group 'tools
   :link '(url-link :tag "GitHub" "https://github.com/jamie-cui/magent"))
 
+(defcustom magent-enable-logging t
+  "Whether to write Magent diagnostics to `magent-log-buffer-name'."
+  :type 'boolean
+  :group 'magent)
+
+(defcustom magent-log-level 'info
+  "Minimum severity written to the Magent diagnostic log buffer."
+  :type '(choice (const :tag "Debug" debug)
+                 (const :tag "Info" info)
+                 (const :tag "Warn" warn)
+                 (const :tag "Error" error))
+  :group 'magent)
+
+(defcustom magent-log-buffer-name "*magent-log*"
+  "Name of the buffer used for Magent diagnostic logging."
+  :type 'string
+  :group 'magent)
+
 (defvar magent--prompt-file
   (magent-prompt-path "system.org")
   "Path to the bundled system prompt file.")

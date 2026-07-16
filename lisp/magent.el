@@ -7,7 +7,7 @@
 ;; Maintainer: Jamie Cui <jamie.cui@outlook.com>
 ;; Keywords: tools, ai, copilot
 ;; Package-Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (gptel "0.9.8") (transient "0.7.8") (yaml "1.0.0") (compat "30.1.0.0") (acp "0.12.2") (agent-shell "20260714.1645"))
+;; Package-Requires: ((emacs "29.1") (gptel "0.9.8") (yaml "1.0.0") (compat "30.1.0.0") (acp "0.12.2") (agent-shell "20260714.1645"))
 ;; URL: https://github.com/jamie-cui/magent
 
 ;; This file is not part of GNU Emacs.
@@ -39,7 +39,7 @@
 ;; - Shell command execution
 ;; - Streaming responses
 ;; - Session management with conversation history
-;; - Minibuffer interface for quick prompts
+;; - agent-shell frontend through an in-process ACP adapter
 ;; - Agent system with specialized agents and permission control
 ;;
 ;; Agent System:
@@ -55,12 +55,10 @@
 ;;   M-x customize-group RET magent RET
 ;;
 ;; Usage:
-;;   M-x magent                - Send a prompt to the AI
-;;   M-x magent-transient-menu - Open the command menu
-;;   M-x magent-prompt-region  - Send the selected region to the AI
-;;   M-x magent-ask-at-point   - Ask about the symbol at point
-;; Commands such as diagnosis, session clearing, agent selection, logs, and
-;; one-shot skills are available from `magent-transient-menu'.
+;;   M-x magent-agent-shell-dwim         - Open or reuse the project session
+;;   M-x magent-agent-shell-start        - Start a fresh Magent session
+;;   M-x magent-agent-shell-prompt-region - Send the selected region
+;;   M-x magent-agent-shell-ask-at-point - Ask about the symbol at point
 ;;
 ;; Setup:
 ;; 1. Configure gptel with your provider and API key:
@@ -81,7 +79,6 @@
     (add-to-list 'load-path (file-name-directory load-file-name))))
 
 ;; Required modules
-(require 'transient)
 (require 'magent-config)
 (require 'magent-json)
 (require 'magent-lifecycle-events)
@@ -110,7 +107,6 @@
 (require 'magent-runtime-api)
 (require 'magent-acp)
 (require 'magent-agent-shell)
-(require 'magent-ui)
 (require 'magent-modeline)
 (require 'magent-agent-registry)
 (require 'magent-agent-file)
@@ -128,35 +124,16 @@
 
 (declare-function magent-runtime-ensure-initialized "magent-runtime")
 
-(defconst magent--mode-bindings
-  '(("C-c m p" . magent-dwim)
-    ("C-c m r" . magent-prompt-region)
-    ("C-c m a" . magent-ask-at-point)
-    ("C-c m ?" . magent-transient-menu))
-  "Declarative keybinding table for `magent-mode'.")
-
-(defun magent--populate-mode-map (map)
-  "Install `magent-mode' bindings into MAP."
-  (dolist (binding magent--mode-bindings map)
-    (define-key map (kbd (car binding)) (cdr binding))))
-
 ;;;###autoload
 (define-minor-mode magent-mode
   "Minor mode for Magent AI coding agent.
-When enabled, Magent commands are available.
+Supported interaction is provided by `magent-agent-shell-dwim' and
+agent-shell's own commands and bindings.
 
 \\{magent-mode-map}"
   :init-value nil
   :lighter magent-modeline-lighter
-  :keymap (magent--populate-mode-map (make-sparse-keymap))
-  (when magent-mode
-    ;; Minimal initialization on mode enable
-    (when (magent-modeline-install)
-      (magent-log "INFO magent mode enabled (lazy init)"))))
-
-;; `define-minor-mode' does not replace an already defined keymap on reload.
-;; Re-apply the full binding table so live development stays in sync.
-(magent--populate-mode-map magent-mode-map)
+  :keymap (make-sparse-keymap))
 
 (defun magent--ensure-initialized ()
   "Ensure magent is fully initialized.

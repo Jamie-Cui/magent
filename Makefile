@@ -7,26 +7,22 @@ SOURCE_MANIFEST ?= source-files.txt
 
 # Auto-detect dependency paths
 GPTEL_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'gptel-[0-9]*' -type d 2>/dev/null | head -1)
-TRANSIENT_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'transient-*' -type d 2>/dev/null | head -1)
 ACP_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'acp-*' -type d 2>/dev/null | head -1)
 SHELL_MAKER_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'shell-maker-*' -type d 2>/dev/null | head -1)
 AGENT_SHELL_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'agent-shell-*' -type d 2>/dev/null | head -1)
 COND_LET_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'cond-let-*' -type d 2>/dev/null | head -1)
 COMPAT_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'compat-*' -type d 2>/dev/null | head -1)
-EVIL_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'evil-*' -type d 2>/dev/null | head -1)
 YAML_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'yaml-[0-9]*' -type d 2>/dev/null | head -1)
 LLAMA_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'llama-*' -type d 2>/dev/null | head -1)
 WITH_EDITOR_DIR ?= $(shell find $(HOME)/.emacs.d/elpa -maxdepth 1 -name 'with-editor-*' -type d 2>/dev/null | head -1)
 
 LOADPATH = -L lisp \
 	$(if $(GPTEL_DIR),-L $(GPTEL_DIR)) \
-	$(if $(TRANSIENT_DIR),-L $(TRANSIENT_DIR)) \
 	$(if $(ACP_DIR),-L $(ACP_DIR)) \
 	$(if $(SHELL_MAKER_DIR),-L $(SHELL_MAKER_DIR)) \
 	$(if $(AGENT_SHELL_DIR),-L $(AGENT_SHELL_DIR)) \
 	$(if $(COND_LET_DIR),-L $(COND_LET_DIR)) \
 	$(if $(COMPAT_DIR),-L $(COMPAT_DIR)) \
-	$(if $(EVIL_DIR),-L $(EVIL_DIR)) \
 	$(if $(YAML_DIR),-L $(YAML_DIR)) \
 	$(if $(LLAMA_DIR),-L $(LLAMA_DIR)) \
 	$(if $(WITH_EDITOR_DIR),-L $(WITH_EDITOR_DIR))

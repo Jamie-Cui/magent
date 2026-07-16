@@ -91,7 +91,7 @@ emacsclient -s magent-ci --eval '(kill-emacs)'
 make compile
 #+end_src
 
-如果依赖不在 ~~/.emacs.d/elpa/~ ，显式传入 Makefile 变量，例如 ~GPTEL_DIR~ 、 ~TRANSIENT_DIR~ 、 ~COMPAT_DIR~ 或 ~YAML_DIR~ 。
+如果依赖不在 ~~/.emacs.d/elpa/~ ，显式传入 Makefile 变量，例如 ~GPTEL_DIR~ 、 ~COMPAT_DIR~ 或 ~YAML_DIR~ 。
 
 ** Runtime 问题
 

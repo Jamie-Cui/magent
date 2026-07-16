@@ -19,7 +19,7 @@
 - [[file:../ARCHITECTURE.zh.html][ARCHITECTURE.zh.org]] ：产品定位、系统边界、模块层次、请求流和扩展模型。
 - [[file:../AGENT_WORKFLOW.zh.html][AGENT_WORKFLOW.zh.org]] ： ~thread -> turn -> item~ 状态机、循环流程、 ~snapshot + journal~ 持久化、UI 投影和 Codex 差异。
 - [[file:../AGENT_JOBS.zh.html][AGENT_JOBS.zh.org]] ：durable child-agent job 生命周期、工具面、持久化、UI 和边界。
-- [[file:../UI_BACKENDS.zh.html][UI_BACKENDS.zh.org]] ：受支持的 agent-shell + ACP 流程，以及不受支持的 legacy UI 边界。
+- [[file:../UI_BACKENDS.zh.html][UI_BACKENDS.zh.org]] ：受支持的 agent-shell + ACP 流程，以及 frontend 开发边界。
 - [[file:../DOCTOR.zh.html][DOCTOR.zh.org]] ：Doctor probe API、信任边界、脱敏、session 和取消。
 
 ** 贡献

@@ -57,12 +57,10 @@
   (dolist (pattern '("\\`gptel-[0-9]"
                      "\\`magit-[0-9]"
                      "\\`magit-section-"
-                     "\\`transient-"
                      "\\`acp-"
                      "\\`shell-maker-"
                      "\\`agent-shell-"
                      "\\`cond-let-"
-                     "\\`evil-"
                      "\\`yaml-[0-9]"
                      "\\`llama-"
                      "\\`with-editor-"))
@@ -102,23 +100,6 @@
        (format "Live test did not load Magent from repo %s: %s"
                root
                (string-join (nreverse mismatches) "; "))))))
-
-(defun magent-live-test--dispatch-active-turn-now ()
-  "Dispatch the active Magent turn immediately when tests block timer dispatch.
-`magent-legacy-queue--start' normally defers dispatch with a zero-delay timer.  When a
-live smoke test itself is running synchronously under `emacsclient --eval', the
-test can end up waiting for the turn before that timer is serviced.  This
-helper cancels the pending dispatcher timer for the active submission and runs
-the same dispatcher directly."
-  (when-let* ((submission (and (boundp 'magent-legacy-queue--active)
-                               magent-legacy-queue--active))
-              (dispatcher (magent-legacy-queue-submission-dispatcher submission)))
-    (when (and (eq (magent-legacy-queue-submission-status submission) 'running)
-               (null (magent-legacy-queue-current-request-handle)))
-      (dolist (timer (copy-sequence timer-list))
-        (when (memq submission (timer--args timer))
-          (cancel-timer timer)))
-      (funcall dispatcher submission))))
 
 (defun magent-live-test-reload-source ()
   "Reload Magent source files into the live Emacs instance."
@@ -184,7 +165,9 @@ the same dispatcher directly."
         :llm-gptel (magent-live-test--feature-source 'magent-llm-gptel)
         :agent-loop (magent-live-test--feature-source 'magent-agent-loop)
         :agent (magent-live-test--feature-source 'magent-agent)
-        :ui (magent-live-test--feature-source 'magent-ui)))
+        :runtime-api (magent-live-test--feature-source 'magent-runtime-api)
+        :acp (magent-live-test--feature-source 'magent-acp)
+        :agent-shell (magent-live-test--feature-source 'magent-agent-shell)))
 
 (defun magent-live-test--debug-state ()
   "Return compact live Magent state for assertion failures."
@@ -192,17 +175,16 @@ the same dispatcher directly."
                   " turn-active=%S turn-queue=%S session-scopes=%S"
                   " current-messages=%S current-turns=%S"
                   " timers=%S"
-                  " magent-buffer=%S log-tail=%S"
+                  " log-tail=%S"
                   " messages-tail=%S backtrace-tail=%S gptel-summary=%S")
-          (and (fboundp 'magent-ui-processing-p)
-               (magent-ui-processing-p))
+          (and (fboundp 'magent-runtime-processing-p)
+               (magent-runtime-processing-p))
           (and (fboundp 'magent-session-current-scope)
                (magent-session-current-scope))
-          (and (boundp 'magent-legacy-queue--active)
-               magent-legacy-queue--active
-               (magent-legacy-queue-submission-status magent-legacy-queue--active))
-          (and (fboundp 'magent-legacy-queue-length)
-               (magent-legacy-queue-length))
+          (and (fboundp 'magent-runtime-queue-active-submission)
+               (magent-runtime-queue-active-submission))
+          (and (fboundp 'magent-runtime-queue-length)
+               (magent-runtime-queue-length))
           (and (boundp 'magent-session--scoped-sessions)
                (hash-table-p magent-session--scoped-sessions)
                (let (scopes)
@@ -238,13 +220,6 @@ the same dispatcher directly."
                                 ((functionp fn) 'function)
                                 (t (type-of fn))))))
            timer-list)
-          (when (fboundp 'magent-ui-get-buffer)
-            (let ((buffer (magent-ui-get-buffer (magent-session-current-scope))))
-              (when (buffer-live-p buffer)
-                (with-current-buffer buffer
-                  (buffer-substring-no-properties
-                   (max (point-min) (- (point-max) 1200))
-                   (point-max))))))
           (when (and (boundp 'magent-log-buffer-name)
                      (get-buffer magent-log-buffer-name))
             (with-current-buffer magent-log-buffer-name
@@ -446,16 +421,16 @@ the same dispatcher directly."
          (last-msg (car (last messages)))
          (assistant-msg (magent-live-test--latest-assistant-message messages))
          (tool-msg (magent-live-test--latest-tool-message messages))
-         (loop (or (and (boundp 'magent--current-request-handle)
-                        magent--current-request-handle)
-                   (and (fboundp 'magent-legacy-queue-current-request-handle)
-                        (magent-legacy-queue-current-request-handle)))))
-    (list :processing (and (fboundp 'magent-ui-processing-p)
-                           (magent-ui-processing-p))
-          :turn-active (and (fboundp 'magent-legacy-queue-processing-p)
-                            (magent-legacy-queue-processing-p))
-          :turn-pending (and (fboundp 'magent-legacy-queue-pending-p)
-                             (magent-legacy-queue-pending-p))
+         (submission
+          (and (fboundp 'magent-runtime-queue-active-submission)
+               (magent-runtime-queue-active-submission)))
+         (loop (and submission
+                    (magent-runtime-submission-handle submission))))
+    (list :processing (and (fboundp 'magent-runtime-processing-p)
+                           (magent-runtime-processing-p))
+          :turn-active (and submission t)
+          :turn-pending (and (fboundp 'magent-runtime-queue-pending-p)
+                             (magent-runtime-queue-pending-p))
           :loop-status (and (fboundp 'magent-agent-loop-p)
                             (magent-agent-loop-p loop)
                             (magent-agent-loop-status loop))
@@ -481,30 +456,29 @@ the same dispatcher directly."
 (defun magent-live-test--reset-async-runtime ()
   "Reset Magent globals for an async live diagnostic run."
   (magent-live-test-reload-source)
-  (setq magent-buffer-name "*magent-live-test*"
-        magent-log-buffer-name "*magent-live-test-log*"
+  (setq magent-log-buffer-name "*magent-live-test-log*"
         magent-audit-buffer-name "*magent-live-test-audit*"
         magent-session-directory (make-temp-file "magent-live-sessions-" t)
         magent-audit-directory (make-temp-file "magent-live-audit-" t)
         magent-enable-audit-log nil
         magent-enable-capabilities nil
-        magent-auto-context nil
-        magent-auto-scroll nil
         magent-bypass-permission nil
-        magent-ui-batch-insert-delay 0.01
-        magent-ui--processing nil
-        magent-ui--request-generation 0
-        magent--current-request-handle nil
         magent--current-session nil
-        magent-legacy-queue--active nil
-        magent-legacy-queue--pending nil
-        magent-legacy-queue--current-request-handle nil
+        magent-runtime-queue--active nil
+        magent-runtime-queue--pending nil
+        magent-runtime-api--sessions (make-hash-table :test #'equal)
         magent-session--current-scope 'global
         magent-session--scoped-sessions (make-hash-table :test #'equal)
         magent-runtime--active-project-scope nil
         magent-load-custom-agents nil)
   (magent-live-test--kill-magent-test-buffers)
   (magent-session-activate 'global))
+
+(defun magent-live-test--submit-prompt (prompt)
+  "Submit PROMPT through the supported runtime and return its session."
+  (let ((runtime-session (magent-runtime-session-current)))
+    (magent-runtime-submit runtime-session prompt)
+    runtime-session))
 
 (defun magent-live-test--async-real-kind (selector)
   "Return async real diagnostic kind for SELECTOR, or nil."
@@ -523,6 +497,7 @@ return that path."
                         ('emacs-eval-tool 240)
                         (_ 150))))
          (deadline (+ (float-time) timeout))
+         runtime-session
          timer)
     (setq magent-live-test--async-status-file file)
     (condition-case err
@@ -533,20 +508,20 @@ return that path."
             ('simple
              (setq magent-enable-tools nil
                    magent-include-reasoning 'ignore)
-             (magent-ui-dispatch-prompt
-              "Reply with exactly MAGENT_LIVE_OK and no other text."
-              'live-test nil nil t))
+             (setq runtime-session
+                   (magent-live-test--submit-prompt
+                    "Reply with exactly MAGENT_LIVE_OK and no other text.")))
             ('emacs-eval-tool
              (setq magent-enable-tools '(emacs_eval)
                    magent-bypass-permission t
                    magent-include-reasoning 'ignore)
-             (magent-ui-dispatch-prompt
-              (concat
-               "Use the emacs_eval tool exactly once to evaluate this "
-               "Emacs Lisp form: (+ 20 22). After the tool result, "
-               "reply exactly MAGENT_TOOL_OK=42 and no other text. "
-               "Do not answer from memory; call the tool.")
-              'live-test nil nil t))
+             (setq runtime-session
+                   (magent-live-test--submit-prompt
+                    (concat
+                     "Use the emacs_eval tool exactly once to evaluate this "
+                     "Emacs Lisp form: (+ 20 22). After the tool result, "
+                     "reply exactly MAGENT_TOOL_OK=42 and no other text. "
+                     "Do not answer from memory; call the tool."))))
             (_ (error "Unknown async live diagnostic kind: %S" kind)))
           (magent-live-test--write-async-status
            file 'running
@@ -601,8 +576,9 @@ return that path."
                                 :state state
                                 :debug-state (magent-live-test--debug-state)))
                        ((>= (float-time) deadline)
-                        (when (and (fboundp 'magent-interrupt) processing)
-                          (ignore-errors (magent-interrupt)))
+                        (when (and runtime-session processing)
+                          (ignore-errors
+                            (magent-runtime-cancel runtime-session)))
                         (finish 'timeout
                                 :error "Timed out waiting for live turn"
                                 :state state
@@ -636,7 +612,7 @@ return that path."
             (messages (magent-session-get-messages session))
             (last-msg (car (last messages)))
             (content (and last-msg (magent-msg-content last-msg))))
-       (and (not (magent-ui-processing-p))
+       (and (not (magent-runtime-processing-p))
             (eq (and last-msg (magent-msg-role last-msg)) 'assistant)
             (stringp content)
             (not (string-empty-p (string-trim content)))
@@ -660,110 +636,44 @@ return that path."
       (kill-buffer buffer))))
 
 (defmacro magent-live-test--with-isolated-runtime (&rest body)
-  "Run BODY with isolated Magent session, audit, and UI state."
+  "Run BODY with isolated Magent session, audit, and runtime state."
   (declare (indent 0))
-  `(let* ((magent-buffer-name "*magent-live-test*")
-          (magent-log-buffer-name "*magent-live-test-log*")
+  `(let* ((magent-log-buffer-name "*magent-live-test-log*")
           (magent-audit-buffer-name "*magent-live-test-audit*")
           (magent-session-directory (make-temp-file "magent-live-sessions-" t))
           (magent-audit-directory (make-temp-file "magent-live-audit-" t))
           (magent-enable-audit-log nil)
           (magent-enable-capabilities nil)
-          (magent-auto-context nil)
-          (magent-auto-scroll nil)
           (magent-bypass-permission nil)
-          (magent-ui-batch-insert-delay 0.01)
-          (magent-ui--processing nil)
-          (magent-ui--request-generation 0)
-          (magent--current-request-handle nil)
           (magent--current-session nil)
-          (magent-legacy-queue--active nil)
-          (magent-legacy-queue--pending nil)
-          (magent-legacy-queue--current-request-handle nil)
           (magent-runtime-queue--active nil)
           (magent-runtime-queue--pending nil)
+          (magent-runtime-queue--arbiter-active nil)
+          (magent-runtime-queue--arbiter-pending nil)
+          (magent-runtime-queue--arbiter-bootstrap-complete t)
+          (magent-runtime-queue--arbiter-ticket-adapters
+           (make-hash-table :test #'eq))
           (magent-runtime-api--sessions (make-hash-table :test #'equal))
           (magent-session--current-scope 'global)
           (magent-session--scoped-sessions (make-hash-table :test #'equal))
           (magent-runtime--active-project-scope nil)
-          (magent-ui-backend 'legacy)
           (magent-load-custom-agents nil))
      (unwind-protect
          (progn
            (magent-live-test--kill-magent-test-buffers)
            (magent-session-activate 'global)
            ,@body)
-       (when (and (fboundp 'magent-interrupt)
-                  (boundp 'magent-ui--processing)
-                  magent-ui--processing)
-         (ignore-errors (magent-interrupt)))
+       (when-let* ((submission
+                    (and (fboundp 'magent-runtime-queue-active-submission)
+                         (magent-runtime-queue-active-submission)))
+                   (runtime-session
+                    (magent-runtime-submission-session submission)))
+         (ignore-errors (magent-runtime-cancel runtime-session)))
        (magent-live-test--kill-magent-test-buffers)
        (when (file-directory-p magent-session-directory)
          (delete-directory magent-session-directory t))
        (when (file-directory-p magent-audit-directory)
          (delete-directory magent-audit-directory t)))))
-
-(ert-deftest magent-live-test-aa-agent-shell-router-dispatches-without-legacy ()
-  "Dispatch through the default agent-shell backend without loading legacy UI."
-  :tags '(:magent-live-smoke)
-  (require 'magent)
-  (magent-live-test--with-isolated-runtime
-    (let ((magent-ui-backend 'agent-shell)
-          (sent nil)
-          (legacy-loaded nil))
-      (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-                ((symbol-function 'magent-agent-shell-send-prompt)
-                 (lambda (prompt &rest _args)
-                   (setq sent prompt)))
-                ((symbol-function 'magent-ui--require-legacy)
-                 (lambda ()
-                   (setq legacy-loaded t)
-                   (error "Legacy UI should not load"))))
-        (magent-ui-dispatch-prompt "hello from agent-shell" 'live-test nil nil t)
-        (should (equal sent "hello from agent-shell"))
-        (should-not legacy-loaded)))))
-
-(ert-deftest magent-live-test-buffer-input-submits-through-timer ()
-  "Submit editable buffer input through the real live UI dispatch timer."
-  :tags '(:magent-live-smoke)
-  (require 'magent)
-  (magent-live-test--with-isolated-runtime
-    (let ((response nil))
-      (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-                ((symbol-function 'magent-runtime-activate-scope) #'ignore)
-                ((symbol-function 'magent-capability-capture-context) (lambda () nil))
-                ((symbol-function 'magent-capability-resolve-for-turn) (lambda (&rest _) nil))
-                ((symbol-function 'magent-agent-process)
-                 (lambda (_prompt callback &rest _args)
-                   (run-at-time
-                    0 nil
-                    (lambda ()
-                      (magent-ui-start-streaming)
-                      (magent-ui-insert-streaming "live response")
-                      (magent-ui-finish-streaming-fontify)
-                      (magent-session-add-message
-                       (magent-session-get) 'assistant "live response")
-                      (setq response "live response")
-                      (funcall callback "live response")))
-                   'magent-live-test-loop)))
-        (let ((buffer (magent-ui-get-buffer 'global))
-              (compose (magent-ui-compose-buffer 'global)))
-          (with-current-buffer compose
-            (erase-buffer)
-            (insert "hello from live buffer")
-            (magent-input-submit))
-          (magent-live-test--wait-until
-           (lambda ()
-             (and response (not (magent-ui-processing-p))))
-           5 "Magent live buffer input did not finish")
-          (with-current-buffer buffer
-            (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-              (should (string-match-p "  - Prompt" text))
-              (should (string-match-p "hello from live buffer" text))
-              (should (string-match-p "  - Response" text))
-              (should (string-match-p "live response" text))
-              (should-not (string-match-p "^\\* USER" text))
-              (should-not (string-match-p "^\\* ASSISTANT" text)))))))))
 
 (ert-deftest magent-live-test-loop-runs-emacs-eval-and-continues ()
   "Run a live Magent turn through loop tool execution and continuation."
@@ -821,11 +731,10 @@ return that path."
                            (funcall callback nil
                                     (list :error "unexpected extra request")))))))
                    nil)))
-        (magent-ui-dispatch-prompt "count live buffers" 'send-prompt nil nil t)
-        (magent-live-test--dispatch-active-turn-now)
+        (magent-live-test--submit-prompt "count live buffers")
         (magent-live-test--wait-until
          (lambda ()
-           (when (not (magent-ui-processing-p))
+           (when (not (magent-runtime-processing-p))
              (let* ((session (magent-session-get))
                     (messages (magent-session-get-messages session))
                     (assistant-msg
@@ -850,32 +759,7 @@ return that path."
           (should (equal (plist-get tool-content :id) "call_live_1"))
           (should (equal (plist-get tool-content :name) "emacs_eval"))
           (should (string-match-p "\\`[0-9]+\\'"
-                                  (plist-get tool-content :result))))
-        (with-current-buffer (magent-ui-get-buffer (magent-session-current-scope))
-          (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "Tool emacs_eval" text))
-            (should (string-match-p "Checking buffers\\." text))
-            (should (string-match-p "Done\\." text))))))))
-
-(ert-deftest magent-live-test-timer-renders-symbol-tool-args ()
-  "Render non-string tool args from a timer without leaking JSON errors."
-  :tags '(:magent-live-smoke)
-  (require 'magent-ui)
-  (magent-live-test--with-isolated-runtime
-    (let ((done nil))
-      (run-at-time
-       0 nil
-       (lambda ()
-         (magent-ui-insert-tool-call "emacs_eval"
-                                     '(:tool emacs_eval :args [emacs_eval]))
-         (setq done t)))
-      (magent-live-test--wait-until
-       (lambda () done)
-       3 "Magent live timer did not render symbol tool args")
-      (with-current-buffer (magent-ui-get-buffer 'global)
-        (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-          (should (string-match-p "Tool emacs_eval running" text))
-          (should (string-match-p "emacs_eval" text)))))))
+                                  (plist-get tool-content :result))))))))
 
 (ert-deftest magent-live-test-real-simple-prompt ()
   "Send a real non-tool request through the configured gptel provider."
@@ -886,16 +770,9 @@ return that path."
     (let ((magent-enable-tools nil)
           (magent-include-reasoning 'ignore)
           (prompt "Reply with exactly MAGENT_LIVE_OK and no other text."))
-      (magent-ui-dispatch-prompt prompt 'live-test nil nil t)
+      (magent-live-test--submit-prompt prompt)
       (let ((response (magent-live-test--wait-for-assistant 120)))
-        (should (string-match-p "MAGENT_LIVE_OK" response))
-        (with-current-buffer (magent-ui-get-buffer (magent-session-current-scope))
-          (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "  - Prompt" text))
-            (should (string-match-p "  - Response" text))
-            (should-not (string-match-p "^\\* USER" text))
-            (should-not (string-match-p "^\\* ASSISTANT" text))
-            (should (string-match-p "MAGENT_LIVE_OK" text))))))))
+        (should (string-match-p "MAGENT_LIVE_OK" response))))))
 
 (ert-deftest magent-live-test-real-emacs-eval-tool ()
   "Send a real tool-use request through gptel and execute emacs_eval."
@@ -911,7 +788,7 @@ return that path."
                    "Emacs Lisp form: (+ 20 22). After the tool result, "
                    "reply exactly MAGENT_TOOL_OK=42 and no other text. "
                    "Do not answer from memory; call the tool.")))
-      (magent-ui-dispatch-prompt prompt 'live-test nil nil t)
+      (magent-live-test--submit-prompt prompt)
       (let ((response (magent-live-test--wait-for-assistant 180)))
         (should (string-match-p "MAGENT_TOOL_OK=42" response))
         (let* ((messages (magent-session-get-messages (magent-session-get)))
@@ -923,11 +800,7 @@ return that path."
                           messages))
                (tool-content (and tool-msg (magent-msg-content tool-msg))))
           (should tool-msg)
-          (should (equal (plist-get tool-content :result) "42")))
-        (with-current-buffer (magent-ui-get-buffer (magent-session-current-scope))
-          (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-            (should (string-match-p "Tool emacs_eval" text))
-            (should (string-match-p "MAGENT_TOOL_OK=42" text))))))))
+          (should (equal (plist-get tool-content :result) "42")))))))
 
 (defun magent-live-test--result-description (result)
   "Return a compact description for ERT RESULT."

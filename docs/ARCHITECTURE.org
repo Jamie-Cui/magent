@@ -64,11 +64,7 @@ new prompt layer must update the manifest as well as the package data recipe.
 
 ** UI And Runtime API
 
-The supported frontend is ~agent-shell~. ~magent-agent-shell.el~ registers the Magent agent-shell configuration, ~magent-acp.el~ implements the in-process ACP adapter, and ~magent-runtime-api.el~ receives prompt submissions. ACP text and resource blocks are normalized separately: the full structured input is persisted in turn metadata and reconstructed as user-role model context, while local ~file://~ resources contribute scoped file paths for project-instruction and capability resolution. ~magent-runtime-queue.el~ currently runs one active turn globally, while preserving session-scoped cancellation and queue bookkeeping.
-
-~magent-ui.el~, ~magent-ui-legacy.el~, and legacy UI files covered by the naming
-rules in ~docs/UI_BACKENDS.org~ are retained unsupported code, not alternative
-frontends. They must not become dependencies of the agent-shell runtime path.
+The supported frontend is ~agent-shell~. ~magent-agent-shell.el~ registers the Magent agent-shell configuration, ~magent-acp.el~ implements the in-process ACP adapter, and ~magent-runtime-api.el~ receives prompt submissions. ACP text and resource blocks are normalized separately: the full structured input is persisted in turn metadata and reconstructed as user-role model context, while local ~file://~ resources contribute scoped file paths for project-instruction and capability resolution. ~magent-runtime-queue.el~ currently runs one active turn globally, while preserving session-scoped cancellation and queue bookkeeping. Magent does not maintain a parallel interactive frontend.
 
 ** Ledger And Persistence
 
@@ -171,8 +167,8 @@ Magent is closest to gptel plus a stateful agent runtime, not a replacement for 
 The practical consequence is that new work should preserve these boundaries:
 
 - Keep provider work in gptel and ~magent-llm-gptel.el~.
-- Keep supported frontend work in ~magent-agent-shell.el~ and out of the
-  unsupported UI files.
+- Keep frontend work in ~magent-agent-shell.el~, ACP conversion in
+  ~magent-acp.el~, and shared runtime behavior in ~magent-runtime-api.el~.
 - Keep durable workflow state in the ledger.
 - Keep child-agent behavior aligned with ~docs/AGENT_JOBS.org~.
 - Treat permissions as confirmation/audit workflow, not as sandbox security.

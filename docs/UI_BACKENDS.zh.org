@@ -7,16 +7,11 @@ Magent 只支持一个用户前端： ~agent-shell~ 。它通过进程内 ACP ad
 runtime。面向用户的文档和示例必须使用 ~magent-agent-shell.el~ 导出的命令，或者
 直接使用 agent-shell。
 
-* 支持状态
+* 公共接口
 
-~magent-ui.el~ 和 ~magent-ui-legacy.el~ 中的代码目前不支持用于用户交互。不要把
-这些文件中的命令、快捷键、customization options 或 extension points 当作公共接口。
-它们只作为内部兼容代码和未完成的 legacy code 暂时保留，后续可能变更或移除，不提供
-兼容性保证。
-
-当前源码树中的 legacy 实现名为 ~magent-ui-legacy.el~ 。如果其他 checkout 中存在
-~magent-legacy-ui.el~ 或匹配 ~magent-legacy-*.el~ 的 legacy UI 文件，或者清理期间
-引入了这些文件，它们同样属于不支持使用的范围。
+agent-shell integration 是完整的交互接口。Magent 不再维护并行的 workspace、compose
+buffer、command menu 或自定义 output-buffer frontend。新的交互行为放在 agent-shell
+或 ACP adapter，共享行为放在 runtime API。
 
 * 受支持的模块
 
@@ -48,11 +43,9 @@ runtime。面向用户的文档和示例必须使用 ~magent-agent-shell.el~ 导
 
 * 开发边界
 
-Core runtime behavior 不能依赖任何不受支持的 legacy UI workflow。Frontend-neutral
-行为放在 ~magent-runtime-api.el~ ，ACP conversion 放在 ~magent-acp.el~ ，受支持的
-frontend 行为放在 ~magent-agent-shell.el~ 。不要向 ~magent-ui.el~ 、
-~magent-ui-legacy.el~ 、 ~magent-legacy-ui.el~ 或 ~magent-legacy-*.el~ 增加新的
-用户入口。
+Frontend-neutral 行为放在 ~magent-runtime-api.el~ ，ACP conversion 放在
+~magent-acp.el~ ，受支持的 frontend 行为放在 ~magent-agent-shell.el~ 。不要在 core
+runtime 内引入第二套交互 frontend。
 
 * 当前限制
 

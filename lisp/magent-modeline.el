@@ -14,8 +14,8 @@
 
 (require 'magent-agent-info)
 (require 'magent-config)
+(require 'magent-runtime-api)
 (require 'magent-session)
-(require 'magent-ui)
 
 (defun magent-modeline--current-agent-name ()
   "Return the current agent name, falling back to the configured default."
@@ -26,7 +26,7 @@
 (defun magent-modeline--status-string ()
   "Return the Magent mode-line status string."
   (concat " [M/" (magent-modeline--current-agent-name) "] "
-          (when (magent-ui-processing-p)
+          (when (magent-runtime-processing-p)
             (propertize "[busy]" 'face 'warning
                         'help-echo "Magent: request in progress"))))
 
@@ -34,23 +34,6 @@
   '(:eval (magent-modeline--status-string))
   "Mode-line lighter for `magent-mode'.")
 (put 'magent-modeline-lighter 'risky-local-variable t)
-
-(defun magent-modeline--legacy-output-string ()
-  "Return Magent status for a legacy output buffer, or nil elsewhere."
-  (when (derived-mode-p 'magent-output-mode)
-    (magent-modeline--status-string)))
-
-(defconst magent-modeline--legacy-output-construct
-  '(:eval (magent-modeline--legacy-output-string))
-  "Mode-line construct for legacy Magent output buffers.")
-(put 'magent-modeline--legacy-output-construct 'risky-local-variable t)
-
-(defun magent-modeline-install ()
-  "Install the legacy output status construct.
-Return non-nil when the construct was newly installed."
-  (unless (member magent-modeline--legacy-output-construct global-mode-string)
-    (push magent-modeline--legacy-output-construct global-mode-string)
-    t))
 
 (provide 'magent-modeline)
 ;;; magent-modeline.el ends here

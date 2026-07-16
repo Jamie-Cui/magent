@@ -11,7 +11,7 @@
 
 - *Languages:* Emacs Lisp
 - *Primary Dependency:* [[https://github.com/karthink/gptel][gptel]] (handles all LLM communication)
-- *Requirements:* Emacs 29.1+, gptel, transient, compat, yaml, acp, agent-shell, ripgrep
+- *Requirements:* Emacs 29.1+, gptel, compat, yaml, acp, agent-shell, ripgrep
 - *Purpose:* Provide AI-assisted coding capabilities inside the live Emacs runtime, while keeping provider transport in gptel and keeping tool access explicit and auditable
 
 * Current Agent Workflow
@@ -29,9 +29,8 @@ The foundation layer that initializes the system and manages settings.
 *Key Files:*
 - ~magent.el~ — Package entry point and lazy runtime initialization
 - ~magent-agent-shell.el~ — Supported interactive entry points
-- ~magent-modeline.el~ — Mode-line formatting and status construct installation
+- ~magent-modeline.el~ — UI-neutral mode-line status formatting
 - ~magent-config.el~ — UI-neutral runtime and feature customization
-- ~magent-ui.el~ — Retained unsupported compatibility code
 - ~magent-pkg.el~ — Package metadata
 
 *What it does:* Lazy initialization is triggered by the first supported
@@ -105,13 +104,12 @@ agent-shell is the only supported frontend.
 - ~magent-agent-shell.el~ — Magent agent-shell config and prompt routing
 - ~magent-acp.el~ — In-process ACP adapter for agent-shell
 - ~magent-file-loader.el~ — Shared frontmatter parser for agent/skill/capability files
-- ~magent-ui.el~ / ~magent-ui-legacy.el~ — Retained unsupported UI code; not a public interface
 
 *What it does:* Prompts route through
 ~magent-agent-shell.el~ and the in-process ACP adapter. ACP session/prompt
 requests submit to ~magent-runtime-api.el~ and remain pending until the
 corresponding Magent turn completes. See ~docs/UI_BACKENDS.org~ for the
-unsupported legacy-file boundary before changing this layer.
+frontend development boundary before changing this layer.
 
 ** Layer 7: Events
 
@@ -214,8 +212,7 @@ Begin at ~magent.el~ for package initialization, then read
 
 Read ~docs/UI_BACKENDS.org~, then ~magent-agent-shell.el~, ~magent-acp.el~, and
 ~magent-runtime-api.el~. Key insight: agent-shell is the only supported
-interactive experience. Read ~magent-ui.el~ or ~magent-ui-legacy.el~ only when
-removing or isolating unsupported compatibility code.
+interactive experience; shared behavior must remain in the runtime API.
 
 ** Step 3: Follow a Request Lifecycle
 
@@ -288,7 +285,6 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 - *magent-acp.el* — In-process ACP adapter
 - *magent-runtime-api.el* — UI/backend-facing runtime API
 - *magent-runtime-queue.el* — Runtime queue and session-scoped cancellation
-- *magent-ui.el* / *magent-ui-legacy.el* — Retained unsupported UI code
 - *magent-file-loader.el* — Shared frontmatter parser
 
 ** Events
@@ -324,12 +320,11 @@ These areas require careful attention when modifying:
 *Approach carefully:* Keep provider transport concerns here and loop behavior in ~magent-agent-loop.el~. Do not add new main-loop dependencies on gptel private FSM handlers.
 
 ** 3. Frontend boundary (High Complexity)
-*Why it's complex:* The supported frontend spans ~magent-agent-shell.el~, ~magent-acp.el~, ~magent-runtime-api.el~, and ~magent-runtime-queue.el~. Unsupported compatibility code remains in ~magent-ui.el~ and ~magent-ui-legacy.el~.
+*Why it's complex:* The supported frontend spans ~magent-agent-shell.el~, ~magent-acp.el~, ~magent-runtime-api.el~, and ~magent-runtime-queue.el~.
 
 *Approach carefully:* Keep frontend-neutral behavior in ~magent-runtime-api.el~,
 ACP conversion in ~magent-acp.el~, and agent-shell-specific behavior in
-~magent-agent-shell.el~. Do not add user-facing behavior to unsupported UI
-files.
+~magent-agent-shell.el~.
 
 ** 4. magent-permission.el (Medium Complexity)
 *Why it's complex:* Order-dependent file-pattern matching with glob syntax. Resolution order matters: exact match → file patterns → wildcard → default allow.
