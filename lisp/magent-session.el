@@ -549,14 +549,13 @@ selected agent, and history limit so runtime UI handles remain valid."
 
 (defun magent-session-reset ()
   "Reset the current session, clearing all messages and permission overrides."
-  (interactive)
   (let ((session magent--current-session))
     (when session
       (magent-session-clear-approval-overrides session)))
   (remhash magent-session--current-scope magent-session--scoped-sessions)
   (setq magent--current-session nil)
-  (when (fboundp 'magent-capability-clear-local-overrides)
-    (magent-capability-clear-local-overrides))
+  (when (fboundp 'magent-clear-capability-overrides)
+    (magent-clear-capability-overrides))
   (magent-log "INFO session cleared for scope %s" magent-session--current-scope))
 
 (defun magent-session--scope-storage-directory (scope)

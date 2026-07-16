@@ -170,6 +170,27 @@ was not already emitted as text deltas."
                skill-name
                (mapconcat #'symbol-name missing ", "))))))
 
+(defun magent-agent--fail-request-turn
+    (session turn-id request-scope detail)
+  "Fail SESSION's TURN-ID with DETAIL.
+REQUEST-SCOPE is used when scheduling persistence.  This helper is
+idempotent so higher-level runtime error handling may safely repeat it."
+  (when-let* ((thread (magent-session-thread-ledger session))
+              (turn (and turn-id
+                         (magent-thread-find-turn thread turn-id))))
+    (unless (magent-thread-terminal-turn-p turn)
+      (dolist (item (magent-thread-turn-items turn))
+        (when (eq (magent-thread-item-status item) 'in-progress)
+          (magent-thread-fail-item thread item detail)))
+      (magent-thread-fail-turn thread turn-id detail)
+      (magent-session-refresh-projections session)
+      (condition-case err
+          (magent-session-save-deferred-for-session
+           session request-scope)
+        (error
+         (magent-log "ERROR startup failure session save failed: %s"
+                     (error-message-string err)))))))
+
 (defun magent-agent--context-system-message (project-root)
   "Return prompt context for PROJECT-ROOT."
   (when (and (stringp project-root)
@@ -254,7 +275,10 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
          (owns-context (null inherited-context))
          (context (or inherited-context
                       (magent-lifecycle-events-begin-turn
-                       (format "Agent %s" (magent-agent-info-name agent))))))
+                       (format "Agent %s" (magent-agent-info-name agent)))))
+         (process-turn-id
+          (and request-state
+               (magent-request-context-turn-id request-state))))
     (condition-case err
         (progn
           (when request-state
@@ -269,25 +293,27 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
           (when request-state
             (magent-request-context-audit-snapshot request-state))
           (let* ((thread (magent-session-thread-ledger session))
-           (state-turn-id (and request-state
-                               (magent-request-context-turn-id request-state)))
-           (state-turn (and state-turn-id
-                            (magent-thread-find-turn thread state-turn-id))))
-      (if state-turn
-          (progn
-            (magent-thread-record-user-message-if-needed
-             thread state-turn-id user-prompt nil
-             (list :source 'agent-process))
-            (magent-session-refresh-projections session))
-        (magent-session-add-message session 'user user-prompt))
-      (when request-state
-        (let* ((active-turn (magent-thread-active-turn
-                             (magent-session-thread-ledger session)))
-               (turn-id (or (and state-turn state-turn-id)
-                            (and active-turn
-                                 (magent-thread-turn-id active-turn)))))
-          (when turn-id
-            (setf (magent-request-context-turn-id request-state) turn-id)))))
+                 (state-turn-id process-turn-id)
+                 (state-turn
+                  (and state-turn-id
+                       (magent-thread-find-turn thread state-turn-id))))
+            (if state-turn
+                (progn
+                  (magent-thread-record-user-message-if-needed
+                   thread state-turn-id user-prompt nil
+                   (list :source 'agent-process))
+                  (magent-session-refresh-projections session))
+              (magent-session-add-message session 'user user-prompt))
+            (let* ((active-turn (magent-thread-active-turn
+                                 (magent-session-thread-ledger session)))
+                   (turn-id
+                    (or (and state-turn state-turn-id)
+                        (and active-turn
+                             (magent-thread-turn-id active-turn)))))
+              (setq process-turn-id turn-id)
+              (when (and request-state turn-id)
+                (setf (magent-request-context-turn-id request-state)
+                      turn-id))))
     (let* ((current-turn-id (and request-state
                                  (magent-request-context-turn-id request-state)))
            (prompt-list (magent-session-to-gptel-prompt-list
@@ -303,22 +329,29 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
             (mapcar (lambda (tool)
                       (intern (plist-get tool :name)))
                     tools))
+           (explicit-skill-names
+            (magent-skills-dedupe-names
+             (append skill-names
+                     (and request-state
+                          (magent-request-context-skill-names
+                           request-state)))))
            (_skill-tool-validation
             (magent-agent--validate-explicit-skill-tools
-             skill-names available-tool-names))
+             explicit-skill-names available-tool-names))
            (capability-resolution
             (or capability-resolution
                 (when (and (magent-agent--capabilities-enabled-p request-context)
                            (require 'magent-capability nil t))
                   (magent-capability-resolve
-                   user-prompt request-context skill-names
+                   user-prompt request-context explicit-skill-names
                    available-tool-names))))
            (resolved-skill-names
             (magent-skills-dedupe-names
-             (or (and capability-resolution
-                      (magent-capability-resolution-skill-names
-                       capability-resolution))
-                 skill-names)))
+             (append
+              explicit-skill-names
+              (and capability-resolution
+                   (magent-capability-resolution-skill-names
+                    capability-resolution)))))
            (skill-prompts (when (and (require 'magent-skills nil t)
                                      resolved-skill-names)
                             (magent-skills-get-instruction-prompts
@@ -387,8 +420,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                    (or (magent-request-context-effort request-state)
                        effort-option)
                    (magent-request-context-skill-names request-state)
-                   (or (magent-request-context-skill-names request-state)
-                       resolved-skill-names)
+                   (copy-sequence resolved-skill-names)
                    (magent-request-context-capability-context request-state)
                    (or (magent-request-context-capability-context request-state)
                        (and capability-resolution
@@ -1028,12 +1060,19 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                     (magent-request-context-turn-id
                                      request-state))
                       :sampler #'magent-llm-gptel-sample))
+               (magent-agent-loop-abort-controller-register
+                (magent-agent-loop-abort-controller loop)
+                (lambda ()
+                  (cancel-post-tool-reasoning-idle-timer)
+                  (cancel-post-tool-reasoning-deadline-timer)))
                (sample)
                loop)))))))
       (error
-       (when owns-context
-         (magent-lifecycle-events-end-turn
-          context 'failed (error-message-string err)))
+       (let ((message (error-message-string err)))
+         (magent-agent--fail-request-turn
+          session process-turn-id request-scope message)
+         (when owns-context
+           (magent-lifecycle-events-end-turn context 'failed message)))
        (signal (car err) (cdr err))))))
 
 (cl-defun magent-agent-run-turn

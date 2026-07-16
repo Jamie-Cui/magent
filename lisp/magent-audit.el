@@ -216,8 +216,9 @@ PROPS accepts the same plist keys as `magent-audit-record'."
         (magent-audit-mode)))
     buffer))
 
-(defun magent-show-audit ()
-  "Display the Magent audit browser."
+;;;###autoload
+(defun magent-open-audit ()
+  "Open the Magent audit browser."
   (interactive)
   (magent-audit--flush-pending)
   (let ((buffer (magent-audit-get-buffer)))

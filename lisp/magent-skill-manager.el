@@ -231,7 +231,7 @@ Bundled and project-local skills are intentionally excluded."
         (kill-buffer response-buffer)))))
 
 ;;;###autoload
-(defun magent-skill-find (query)
+(defun magent-find-skill (query)
   "Search skills.sh for QUERY in a dedicated finder buffer."
   (interactive (list (read-string "Find Magent skill: ")))
   (when (string-blank-p query)
@@ -270,7 +270,7 @@ Bundled and project-local skills are intentionally excluded."
 (defun magent-skill-manager-finder-refresh ()
   "Run a new finder search, defaulting to the current query."
   (interactive)
-  (magent-skill-find
+  (magent-find-skill
    (read-string "Find Magent skill: " magent-skill-manager--finder-query)))
 
 (defun magent-skill-manager--github-source (source)
@@ -618,7 +618,7 @@ Prefer SUBDIRECTORY, otherwise select EXPECTED-NAME or prompt when needed."
           (delete-directory backup t))))))
 
 ;;;###autoload
-(defun magent-skill-install (source)
+(defun magent-install-skill (source)
   "Install one instruction skill from SOURCE into Magent's user directory.
 SOURCE may be a local directory, OWNER/REPO@SKILL, or a public GitHub URL."
   (interactive (list (read-string "Install Magent skill from: ")))
@@ -666,7 +666,7 @@ SOURCE may be a local directory, OWNER/REPO@SKILL, or a public GitHub URL."
   "Install the finder skill at point without copying a repository name."
   (interactive)
   (let ((candidate (magent-skill-manager--candidate-at-point)))
-    (magent-skill-install
+    (magent-install-skill
      (format "%s@%s"
              (magent-skill-candidate-source candidate)
              (magent-skill-candidate-name candidate)))
@@ -674,7 +674,7 @@ SOURCE may be a local directory, OWNER/REPO@SKILL, or a public GitHub URL."
     (tabulated-list-print t)))
 
 ;;;###autoload
-(defun magent-skill-delete ()
+(defun magent-delete-skill ()
   "Permanently delete one user-level Magent skill after one confirmation."
   (interactive)
   (let* ((installations (magent-skill-manager--user-installations))

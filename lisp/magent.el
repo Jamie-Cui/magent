@@ -111,11 +111,11 @@
 (require 'magent-capability)
 
 ;; Skill management is optional and network-aware, so keep it lazy.
-(autoload 'magent-skill-find "magent-skill-manager"
+(autoload 'magent-find-skill "magent-skill-manager"
   "Search skills.sh for user-installable Magent skills." t)
-(autoload 'magent-skill-install "magent-skill-manager"
+(autoload 'magent-install-skill "magent-skill-manager"
   "Install one user-level Magent instruction skill." t)
-(autoload 'magent-skill-delete "magent-skill-manager"
+(autoload 'magent-delete-skill "magent-skill-manager"
   "Permanently delete one user-level Magent skill." t)
 
 (declare-function magent-runtime-ensure-initialized "magent-runtime")

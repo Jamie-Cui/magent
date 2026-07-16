@@ -596,12 +596,7 @@ Returns number of skills loaded."
   "Reload all skills from files.
 When a project overlay is currently active, restore that project's
 local skills after static definitions are reloaded."
-  (interactive)
-  (let ((project-scope
-         (or (when (called-interactively-p 'interactive)
-               (magent-runtime-prepare-command-context)
-               (magent-runtime-active-project-scope))
-             (magent-runtime-active-project-scope))))
+  (let ((project-scope (magent-runtime-active-project-scope)))
     (magent-file-loader-reload-file-backed-registry
      'magent-skills--registry
      #'magent-skill-file-path

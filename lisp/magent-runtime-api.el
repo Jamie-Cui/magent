@@ -235,8 +235,8 @@ Any active or queued work for the session is cancelled first."
           ;; when no session has ever been installed there.
           (unless (magent-session-get-if-present scope)
             (magent-session-install scope session))
-          (when (fboundp 'magent-capability-clear-local-overrides)
-            (magent-capability-clear-local-overrides))
+          (when (fboundp 'magent-clear-capability-overrides)
+            (magent-clear-capability-overrides))
           (magent-log "INFO runtime session cleared: %s"
                       (magent-runtime-session-id runtime-session))
           runtime-session)
