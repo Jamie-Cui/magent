@@ -138,6 +138,34 @@
         "magent-\\(?:ui\\|legacy-queue\\|output-mode\\|compose-mode\\|evil\\)"
         nil t)))))
 
+(ert-deftest magent-test-aa-interactive-command-names-are-canonical ()
+  "Test public commands use canonical verb-first names."
+  (dolist (command '(magent-find-skill
+                     magent-install-skill
+                     magent-delete-skill
+                     magent-open-memory
+                     magent-open-memory-status
+                     magent-open-audit
+                     magent-command-open-session
+                     magent-clear-capability-overrides
+                     magent-open-active-capabilities))
+    (should (commandp command)))
+  (dolist (api '(magent-skills-reload
+                 magent-capability-reload
+                 magent-session-reset))
+    (should (fboundp api))
+    (should-not (commandp api)))
+  (dolist (retired '(magent-skill-find
+                     magent-skill-install
+                     magent-skill-delete
+                     magent-memory-open
+                     magent-memory-status
+                     magent-show-audit
+                     magent-command-show-session
+                     magent-capability-clear-local-overrides
+                     magent-show-active-capabilities))
+    (should-not (fboundp retired))))
+
 (ert-deftest magent-test-simple-prompt ()
   "Test basic prompt without tools returns response and records session."
   (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
@@ -794,6 +822,72 @@
                '(:content "Final answer.")))
     (should (equal response "Final answer."))
     (should (equal (nreverse sampled-tool-use) '(t t nil)))))
+
+(ert-deftest magent-test-agent-process-abort-cancels-post-tool-retry-timer ()
+  "Aborting a turn prevents an agent-owned reasoning timer from resampling."
+  (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+         (gptel-model 'gpt-4o-mini)
+         (magent-max-sampling-requests 0)
+         (magent-post-tool-reasoning-idle-retry-delay 0.01)
+         (call-count 0)
+         (callbacks nil)
+         (session (magent-session-create :id "session-abort-retry"))
+         (request-state (magent-request-context-create
+                         :session session
+                         :ui-visibility 'summary-only))
+         (agent (magent-agent-info-create
+                 :name "build"
+                 :mode 'primary
+                 :permission '((emacs_eval . allow)
+                               (* . allow))))
+         (tool-runtime
+          (magent-tool-runtime-create
+           :name "emacs_eval"
+           :description "Eval"
+           :args (list '(:name "sexp" :type string))
+           :function (lambda (_sexp) "eval:3")
+           :async nil))
+         loop)
+    (cl-letf (((symbol-function 'magent-session-get)
+               (lambda () session))
+              ((symbol-function 'magent-tool-runtime-for-permission)
+               (lambda (_agent) (list tool-runtime)))
+              ((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (cl-incf call-count)
+                 (setq callbacks
+                       (append callbacks
+                               (list (plist-get kwargs :callback))))))
+              ((symbol-function 'gptel-abort) #'ignore)
+              ((symbol-function 'magent-log) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-begin-turn)
+               (lambda (_title) 'turn))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
+              ((symbol-function 'magent-session-save-deferred-for-session)
+               #'ignore))
+      (setq loop
+            (magent-agent-process
+             "Run eval" nil agent nil nil nil nil nil nil request-state))
+      (funcall
+       (nth 0 callbacks)
+       '(tool-call . ((nil ("(+ 1 2)") nil
+                           (:id "call-1"
+				:name "emacs_eval"
+				:args (:sexp "(+ 1 2)")))))
+       '(:tool-use t))
+      (should (= call-count 2))
+      (funcall (nth 1 callbacks)
+               '(reasoning . "I have enough information.")
+               '(:stream t))
+      (funcall (nth 1 callbacks)
+               '(reasoning . t)
+               '(:stream t))
+      (magent-agent-loop-abort loop)
+      (cl-loop repeat 20
+               do (accept-process-output nil 0.01))
+      (should (= call-count 2))
+      (should (eq (magent-agent-loop-status loop) 'cancelled)))))
 
 (ert-deftest magent-test-agent-process-retries-post-tool-reasoning-stream ()
   "Test continuous post-tool reasoning without text is eventually retried."
@@ -2188,6 +2282,44 @@
                       'agent)
                      'ask)))))
 
+(ert-deftest magent-test-agent-process-normalizes-request-context-skills ()
+  "Inherited and capability skills share one normalized request-state value."
+  (require 'magent-agent)
+  (require 'magent-capability)
+  (let* ((backend (gptel-make-openai "skills" :key "key"))
+         (gptel-backend backend)
+         (gptel-model 'skills-model)
+         (agent (magent-agent-info-create
+                 :name "explore"
+                 :mode 'subagent))
+         (session (magent-session-create :id "child-skills"))
+         (request-state (magent-request-context-create
+                         :session session
+                         :skill-names '("parent-skill")))
+         (resolution
+          (magent-capability-resolution-create
+           :prompt "inspect"
+           :skill-names '("auto-skill")))
+         captured-skills)
+    (cl-letf (((symbol-function 'magent-agent-loop-start)
+               (lambda (_loop) 'started))
+              ((symbol-function 'magent-tool-runtime-for-permission)
+               (lambda (_permission) nil))
+              ((symbol-function 'magent-skills-get-instruction-prompts)
+               (lambda (skill-names)
+                 (setq captured-skills skill-names)
+                 '("captured skill prompt")))
+              ((symbol-function 'magent-log) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-begin-turn)
+               (lambda (_title) 'turn))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
+      (magent-agent-process
+       "inspect" nil agent nil nil nil resolution nil nil request-state))
+    (should (equal captured-skills '("parent-skill" "auto-skill")))
+    (should (equal (magent-request-context-skill-names request-state)
+                   '("parent-skill" "auto-skill")))))
+
 (ert-deftest magent-test-agent-process-startup-error-respects-context-ownership ()
   "Startup errors close owned contexts and preserve inherited contexts."
   (require 'magent-agent)
@@ -2230,6 +2362,8 @@
                  nil))
               ((symbol-function 'magent-agent-loop-start)
                (lambda (_loop) (error "sampler startup failed")))
+              ((symbol-function 'magent-session-save-deferred-for-session)
+               #'ignore)
               ((symbol-function 'magent-log) #'ignore))
       (should-error
        (magent-agent-process
@@ -2241,6 +2375,14 @@
     (should (= (length ended) 1))
     (should (eq (caar ended) owned-event))
     (should (eq (cadar ended) 'failed))
+    (dolist (state (list owned-state inherited-state))
+      (let* ((session (magent-request-context-session state))
+             (turn (magent-thread-find-turn
+                    (magent-session-thread-ledger session)
+                    (magent-request-context-turn-id state))))
+        (should (eq (magent-thread-turn-status turn) 'failed))
+        (should (equal (magent-thread-turn-error turn)
+                       "sampler startup failed"))))
     (should (equal (nreverse exposed-permissions)
                    (list request-permission agent-permission)))))
 
@@ -2819,7 +2961,7 @@
           (let ((file (car (magent-session-list-internal-files "viewer-test"))))
             (cl-letf (((symbol-function 'display-buffer)
                        (lambda (value &rest _args) value)))
-              (magent-command-show-session file))
+              (magent-command-open-session file))
             (setq buffer
                   (get-buffer
                    (format "*Magent Internal Session: %s*"
@@ -3146,6 +3288,45 @@
         :metadata '(:temperature 0.25)
         :callback #'ignore)))
     (should (= captured-temperature 0.25))))
+
+(ert-deftest magent-test-llm-gptel-applies-top-p-metadata-openai ()
+  "Test the gptel adapter maps top-p to OpenAI request params."
+  (require 'magent-llm-gptel)
+  (let ((backend (gptel-make-openai "test" :key "key"))
+        (gptel--request-params '(:seed 7))
+        captured-params)
+    (cl-letf (((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (setq captured-params gptel--request-params)
+                 (funcall (plist-get kwargs :callback)
+                          t
+                          (list :content "ok")))))
+      (magent-llm-gptel-sample
+       (magent-llm-request-create
+        :prompt '("hello")
+        :system "sys"
+        :backend backend
+        :model 'test-model
+        :stream t
+        :metadata '(:top-p 0.37)
+        :callback #'ignore)))
+    (should (= (plist-get captured-params :top_p) 0.37))
+    (should (= (plist-get captured-params :seed) 7))))
+
+(ert-deftest magent-test-llm-gptel-merges-top-p-into-gemini-data ()
+  "Test Gemini top-p preserves gptel's generated sampling config."
+  (require 'magent-llm-gptel)
+  (require 'gptel-gemini)
+  (let* ((backend (gptel-make-gemini "test" :key "key"))
+         (info (list :backend backend
+                     :context '(:magent-llm-gptel t :top-p 0.37)
+                     :data '(:generationConfig
+                             (:temperature 0.2 :maxOutputTokens 100)))))
+    (magent-llm-gptel--apply-top-p-to-info info)
+    (let ((config (plist-get (plist-get info :data) :generationConfig)))
+      (should (= (plist-get config :topP) 0.37))
+      (should (= (plist-get config :temperature) 0.2))
+      (should (= (plist-get config :maxOutputTokens) 100)))))
 
 (ert-deftest magent-test-llm-gptel-applies-effort-metadata-openai-responses ()
   "Test the gptel adapter maps effort to OpenAI Responses request params."
@@ -3689,7 +3870,7 @@
           (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
                     ((symbol-function 'magent-skills-reload)
                      (lambda () (cl-incf reload-count))))
-            (magent-skill-install source))
+            (magent-install-skill source))
           (let ((destination (expand-file-name "copied-skill" root)))
             (should (file-exists-p (expand-file-name "SKILL.md" destination)))
             (should (file-exists-p
@@ -3714,7 +3895,7 @@
           (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
                     ((symbol-function 'magent-skills-reload)
                      (lambda () (error "reload failed"))))
-            (should-error (magent-skill-install source)))
+            (should-error (magent-install-skill source)))
           (should-not (file-exists-p
                        (expand-file-name "rollback-skill" root))))
       (delete-directory root t)
@@ -3740,11 +3921,11 @@
           (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
                     ((symbol-function 'magent-skills-reload)
                      (lambda () (cl-incf reload-count))))
-            (magent-skill-install source)
+            (magent-install-skill source)
             (with-temp-file (expand-file-name "SKILL.md" source)
               (insert "---\nname: reinstall-skill\ndescription: Reinstall\n---\nVersion two\n"))
-            (magent-skill-install source)
-            (should-error (magent-skill-install other) :type 'user-error))
+            (magent-install-skill source)
+            (should-error (magent-install-skill other) :type 'user-error))
           (should (= reload-count 2))
           (with-temp-buffer
             (insert-file-contents
@@ -3774,7 +3955,7 @@
                      (lambda (&rest _) (cl-incf confirm-count) t))
                     ((symbol-function 'magent-skills-reload)
                      (lambda () (cl-incf reload-count))))
-            (magent-skill-delete))
+            (magent-delete-skill))
           (should (= confirm-count 1))
           (should (= reload-count 1))
           (should-not (file-symlink-p link))
@@ -7327,7 +7508,7 @@
               (decision . "deny")
               (tool_name . "read_file")
               (summary . "stale audit record"))))
-          (setq buffer (magent-show-audit))
+          (setq buffer (magent-open-audit))
           (with-current-buffer buffer
             (should (derived-mode-p 'magent-audit-mode))
             (should (= (length magent-audit--all-records) 1))
@@ -7364,7 +7545,7 @@
               (request_id . "req-deny")
               (summary . "blocked env read")
               (args_preview . ((path . ".env"))))))
-          (setq buffer (magent-show-audit))
+          (setq buffer (magent-open-audit))
           (with-current-buffer buffer
             (magent-audit--set-filter-value :decision "deny")
             (should (= (length magent-audit--visible-records) 1))
@@ -7403,7 +7584,7 @@
                 (tool_name . "bash")
                 (summary . "valid record after malformed line"))))
             (insert "\n"))
-          (setq buffer (magent-show-audit))
+          (setq buffer (magent-open-audit))
           (with-current-buffer buffer
             (should (= magent-audit--load-errors 1))
             (should (= (length magent-audit--visible-records) 1))
@@ -10679,7 +10860,7 @@
                        (setq cancelled session)
                        0))
                     ((symbol-function
-                      'magent-capability-clear-local-overrides)
+                      'magent-clear-capability-overrides)
                      (lambda () (setq overrides-cleared t))))
             (magent-runtime-session-clear runtime-session))
           (let ((new-session
@@ -13312,7 +13493,7 @@
     (magent-session-install 'global session)
     (magent-runtime-queue-submit submission #'ignore)
     (cl-letf (((symbol-function 'magent-log) #'ignore)
-              ((symbol-function 'magent-capability-clear-local-overrides)
+              ((symbol-function 'magent-clear-capability-overrides)
                #'ignore))
       (magent-runtime-session-clear runtime))
     (should reentrant-error)

@@ -209,16 +209,16 @@ Built-in and user-level tool skills retain their normal loading behavior.
 
 ** User Skill Management
 
-Use ~M-x magent-skill-find~ to search skills.sh.  The finder shows the ten
+Use ~M-x magent-find-skill~ to search skills.sh.  The finder shows the ten
 most-installed matches; ~RET~ previews a candidate, ~i~ installs it directly,
-and ~g~ starts another search.  ~M-x magent-skill-install~ also accepts a local
+and ~g~ starts another search.  ~M-x magent-install-skill~ also accepts a local
 skill directory, ~owner/repo@skill~, or a public GitHub URL.
 
 Managed skills are copied into ~~/.emacs.d/magent/skills/<name>/~ by default.
 Magent previews the source, size, file count, and any scripts or code before a
 single ~y/n~ confirmation.  It installs instruction skills only, does not
 execute copied scripts, and records provenance in ~.magent-install.json~.
-~M-x magent-skill-delete~ permanently deletes a selected user-level skill after
+~M-x magent-delete-skill~ permanently deletes a selected user-level skill after
 one ~y/n~ confirmation.  These commands never manage project-local
 ~.magent/skills/~ or ~~/.agents/skills/~.
 

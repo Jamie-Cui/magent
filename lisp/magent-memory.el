@@ -1018,7 +1018,7 @@ with a plan and continuation for scan-based operations."
   (magent-command-run "memory-clear"))
 
 ;;;###autoload
-(defun magent-memory-open ()
+(defun magent-open-memory ()
   "Open the active Magent Emacs profile memory file."
   (interactive)
   (find-file (magent-memory-file)))
@@ -1136,8 +1136,8 @@ with a plan and continuation for scan-based operations."
      "\n")))
 
 ;;;###autoload
-(defun magent-memory-status ()
-  "Display Magent Emacs profile memory status."
+(defun magent-open-memory-status ()
+  "Open Magent Emacs profile memory status."
   (interactive)
   (magent--with-display-buffer "*Magent Memory Status*"
     (insert (magent-memory-status-text))))

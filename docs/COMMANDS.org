@@ -146,12 +146,12 @@ session controls listed above.
 
 * User Skill Management
 
-~M-x magent-skill-find~ searches skills.sh and displays the ten most-installed
+~M-x magent-find-skill~ searches skills.sh and displays the ten most-installed
 matches in a dedicated buffer. Press ~RET~ to preview the selected candidate,
 ~i~ to install it directly, or ~g~ to run another search. There is no need to
 copy a repository name from the finder.
 
-~M-x magent-skill-install~ also accepts one local skill directory,
+~M-x magent-install-skill~ also accepts one local skill directory,
 ~owner/repo@skill~, or a public GitHub URL. Before writing, Magent shows the
 source, commit when available, description, destination, file count, size, and
 whether the package contains scripts or code. Installation proceeds after one
@@ -160,7 +160,7 @@ skills only, and records ~.magent-install.json~ provenance. Same-source managed
 skills can be atomically reinstalled; unmanaged or different-source collisions
 must be deleted first.
 
-~M-x magent-skill-delete~ permanently removes one selected user-level skill
+~M-x magent-delete-skill~ permanently removes one selected user-level skill
 after one ~y/n~ confirmation. It can remove managed and unmanaged user skills;
 a symbolic-link entry removes only the link. The manager uses Magent's user
 skill directories (normally ~~/.emacs.d/magent/skills/~) and never manages
@@ -211,8 +211,8 @@ boundary.
 |-----------------------------------+---------|
 | ~magent-list-internal-sessions~   | Select a saved internal session and inspect its final result and activity |
 | ~magent-cancel-internal-command~  | Cancel an active internal workflow that exposes cancellation |
-| ~magent-memory-open~              | Open the managed Emacs profile memory file |
-| ~magent-memory-status~            | Show whether memory exists, is active, or appears stale |
+| ~magent-open-memory~              | Open the managed Emacs profile memory file |
+| ~magent-open-memory-status~       | Open memory existence, activity, and staleness status |
 
 Internal session viewers show the final result first and keep detailed activity
 collapsed by default. Cancellation is session-scoped and does not cancel work

@@ -53,17 +53,17 @@ The default value is read from prompt/system.org in the package."
   :group 'magent)
 
 (defcustom magent-skill-search-endpoint "https://skills.sh/api/search"
-  "HTTP endpoint used by `magent-skill-find'."
+  "HTTP endpoint used by `magent-find-skill'."
   :type 'string
   :group 'magent)
 
 (defcustom magent-skill-search-limit 10
-  "Maximum number of results displayed by `magent-skill-find'."
+  "Maximum number of results displayed by `magent-find-skill'."
   :type 'natnum
   :group 'magent)
 
 (defcustom magent-skill-search-timeout 15
-  "Seconds before a pending `magent-skill-find' request is cancelled."
+  "Seconds before a pending `magent-find-skill' request is cancelled."
   :type 'natnum
   :group 'magent)
 

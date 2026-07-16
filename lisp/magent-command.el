@@ -629,7 +629,7 @@ Return the command runner's cancellation result."
                     (eq (magent-thread-item-role item) 'assistant)))
              items))))
 
-(defun magent-command-show-session (file)
+(defun magent-command-open-session (file)
   "Open read-only viewer for internal command session FILE."
   (interactive
    (let ((files (magent-session-list-internal-files)))
@@ -699,7 +699,7 @@ Return the command runner's cancellation result."
 (defun magent-list-internal-sessions ()
   "List and inspect Magent internal command sessions."
   (interactive)
-  (call-interactively #'magent-command-show-session))
+  (call-interactively #'magent-command-open-session))
 
 ;;;###autoload
 (defun magent-cancel-internal-command (&optional session-id)

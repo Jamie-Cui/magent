@@ -451,12 +451,7 @@ capabilities."
   "Reload all file-backed capabilities.
 When a project overlay is currently active, restore that project's
 local capabilities after static definitions are reloaded."
-  (interactive)
-  (let ((project-scope
-         (or (when (called-interactively-p 'interactive)
-               (magent-runtime-prepare-command-context)
-               (magent-runtime-active-project-scope))
-             (magent-runtime-active-project-scope))))
+  (let ((project-scope (magent-runtime-active-project-scope)))
     (magent-file-loader-reload-file-backed-registry
      'magent-capability--registry
      #'magent-capability-file-path
@@ -486,7 +481,8 @@ local capabilities after static definitions are reloaded."
       nil)
      (t t))))
 
-(defun magent-capability-clear-local-overrides ()
+;;;###autoload
+(defun magent-clear-capability-overrides ()
   "Clear non-persistent capability overrides for the current Emacs session."
   (interactive)
   (setq magent-capability--local-disabled-capabilities nil
@@ -1058,8 +1054,8 @@ When INCLUDE-HIDDEN is non-nil, include hidden matches too."
       (magent-capability--insert-resolution resolution nil))))
 
 ;;;###autoload
-(defun magent-show-active-capabilities ()
-  "Show the most recent capability resolution."
+(defun magent-open-active-capabilities ()
+  "Open the most recent capability resolution."
   (interactive)
   (if (not magent-capability--last-resolution)
       (message "Magent: no capability resolution recorded yet")

@@ -33,6 +33,10 @@
 (declare-function gptel-tool-name "gptel-request")
 (declare-function gptel-openai-p "gptel-openai")
 (declare-function gptel-openai-responses-p "gptel-openai")
+(declare-function gptel-anthropic-p "gptel-anthropic")
+(declare-function gptel-bedrock-p "gptel-bedrock")
+(declare-function gptel-gemini-p "gptel-gemini")
+(declare-function gptel-ollama-p "gptel-ollama")
 (defvar gptel-backend)
 (defvar gptel-model)
 (defvar gptel-tools)
@@ -137,6 +141,44 @@ requests, so Magent normalizes this boundary before curl serializes it."
   (magent-llm-gptel--sanitize-assistant-tool-calls info)
   info)
 
+(defun magent-llm-gptel--put-nested-param
+    (data section key value)
+  "Set SECTION's KEY to VALUE in provider request DATA."
+  (let ((params (copy-sequence (plist-get data section))))
+    (plist-put data section (plist-put params key value))))
+
+(defun magent-llm-gptel--apply-top-p-to-info (info)
+  "Apply Magent top-p context to gptel request INFO in wire format."
+  (let* ((context (plist-get info :context))
+         (top-p (and (listp context)
+                     (plist-member context :top-p)
+                     (plist-get context :top-p)))
+         (backend (plist-get info :backend))
+         (data (plist-get info :data)))
+    (when (and top-p (listp data))
+      (cond
+       ((or (magent-llm-gptel--backend-openai-responses-p backend)
+            (magent-llm-gptel--backend-openai-chat-p backend)
+            (and (fboundp 'gptel-anthropic-p)
+                 (gptel-anthropic-p backend)))
+        (plist-put info :data (plist-put data :top_p top-p)))
+       ((and (fboundp 'gptel-ollama-p)
+             (gptel-ollama-p backend))
+        (plist-put info :data
+                   (magent-llm-gptel--put-nested-param
+                    data :options :top_p top-p)))
+       ((and (fboundp 'gptel-gemini-p)
+             (gptel-gemini-p backend))
+        (plist-put info :data
+                   (magent-llm-gptel--put-nested-param
+                    data :generationConfig :topP top-p)))
+       ((and (fboundp 'gptel-bedrock-p)
+             (gptel-bedrock-p backend))
+        (plist-put info :data
+                   (magent-llm-gptel--put-nested-param
+                    data :inferenceConfig :topP top-p))))))
+  info)
+
 (defun magent-llm-gptel--reset-reasoning-block-a (fsm)
   "Reset managed gptel FSM reasoning state before a request starts."
   (when-let* ((info (and (fboundp 'gptel-fsm-info)
@@ -148,6 +190,7 @@ requests, so Magent normalizes this boundary before curl serializes it."
 (defun magent-llm-gptel--sanitize-before-curl-a (orig-fn info &rest args)
   "Sanitize Magent-managed INFO before gptel serializes request data."
   (when (magent-llm-gptel--managed-info-p info)
+    (magent-llm-gptel--apply-top-p-to-info info)
     (magent-llm-gptel--sanitize-info info))
   (apply orig-fn info args))
 
@@ -671,11 +714,46 @@ executing tools or continuing the tool loop."
          "backend does not advertise a Magent effort mapping")
         nil)))))
 
+(defun magent-llm-gptel--top-p-request-params (backend top-p)
+  "Return provider request params for BACKEND and TOP-P, or nil."
+  (when top-p
+    (cond
+     ((or (magent-llm-gptel--backend-openai-responses-p backend)
+          (magent-llm-gptel--backend-openai-chat-p backend)
+          (and (fboundp 'gptel-anthropic-p)
+               (gptel-anthropic-p backend)))
+      `(:top_p ,top-p))
+     ((and (fboundp 'gptel-ollama-p)
+           (gptel-ollama-p backend))
+      `(:options (:top_p ,top-p)))
+     ((or (and (fboundp 'gptel-gemini-p)
+               (gptel-gemini-p backend))
+          (and (fboundp 'gptel-bedrock-p)
+               (gptel-bedrock-p backend)))
+      ;; These providers nest top-p beside values that gptel constructs
+      ;; later.  The managed curl boundary merges it into the final data.
+      nil)
+     (t
+      (magent-log
+       "WARN top-p=%s ignored: backend has no safe Magent mapping"
+       top-p)
+      nil))))
+
 (defun magent-llm-gptel--merge-request-params (base extra)
   "Return BASE request params with EXTRA taking precedence."
   (let ((merged (copy-sequence base)))
     (cl-loop for (key value) on extra by #'cddr
-             do (setq merged (plist-put merged key value)))
+             for existing = (plist-get merged key)
+             do (setq merged
+                      (plist-put
+                       merged key
+                       (if (and (consp existing)
+                                (consp value)
+                                (magent-json--plist-p existing)
+                                (magent-json--plist-p value))
+                           (magent-llm-gptel--merge-request-params
+                            existing value)
+                         value))))
     merged))
 
 (defun magent-llm-gptel-sample (request)
@@ -696,14 +774,21 @@ Return the request buffer as the abort handle.  REQUEST must be a
       (when (and (plist-member metadata :temperature)
                  (boundp 'gptel-temperature))
         (setq-local gptel-temperature (plist-get metadata :temperature)))
-      (when-let* ((effort-params
-                  (magent-llm-gptel--effort-request-params
-                   gptel-backend
-                   (plist-get metadata :effort))))
-        (setq-local gptel--request-params
-                    (magent-llm-gptel--merge-request-params
-                     gptel--request-params
-                     effort-params)))
+      (let ((sampling-params
+             (magent-llm-gptel--top-p-request-params
+              gptel-backend (plist-get metadata :top-p))))
+        (when-let* ((effort-params
+                    (magent-llm-gptel--effort-request-params
+                     gptel-backend
+                     (plist-get metadata :effort))))
+          (setq sampling-params
+                (magent-llm-gptel--merge-request-params
+                 sampling-params effort-params)))
+        (when sampling-params
+          (setq-local gptel--request-params
+                      (magent-llm-gptel--merge-request-params
+                       gptel--request-params
+                       sampling-params))))
       (setq-local gptel-tools (magent-llm-request-tools request))
       (setq-local gptel-use-tools
                   (and gptel-tools
@@ -717,7 +802,10 @@ Return the request buffer as the abort handle.  REQUEST must be a
       (gptel-request
           (magent-llm-request-prompt request)
         :buffer buffer
-        :context (list :magent-llm-gptel t)
+        :context (append
+                  (list :magent-llm-gptel t)
+                  (when (plist-member metadata :top-p)
+                    (list :top-p (plist-get metadata :top-p))))
         :system (magent-llm-request-system request)
         :stream (magent-llm-request-stream request)
         :fsm (magent-llm-gptel--make-sampling-fsm request state buffer)
