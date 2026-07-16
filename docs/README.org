@@ -17,7 +17,7 @@ Welcome to the Magent documentation. Magent is an Emacs Lisp AI coding agent wit
 - [[file:ARCHITECTURE.html][ARCHITECTURE.org]] — Product positioning, system boundaries, module layers, request flow, and capability model
 - [[file:AGENT_WORKFLOW.html][AGENT_WORKFLOW.org]] — Thread/turn/item state machine, loop flow, persistence (snapshot + journal), UI projection, and Codex alignment
 - [[file:AGENT_JOBS.html][AGENT_JOBS.org]] — Durable child-agent job lifecycle, tool surface, persistence, UI, and boundaries
-- [[file:UI_BACKENDS.html][UI_BACKENDS.org]] — UI backend boundary, recommended agent-shell + ACP flow, and runtime API
+- [[file:UI_BACKENDS.html][UI_BACKENDS.org]] — Supported agent-shell + ACP flow and the unsupported legacy UI boundary
 - [[file:DOCTOR.html][DOCTOR.org]] — Safe Doctor probe API, trust boundary, redaction, sessions, and cancellation
 
 ** Contribution
@@ -41,7 +41,7 @@ Welcome to the Magent documentation. Magent is an Emacs Lisp AI coding agent wit
 2. [[file:COMMANDS.html][COMMANDS.org]] — Built-in slash commands and Magent-owned LLM workflows
 3. [[file:TROUBLESHOOTING.html][TROUBLESHOOTING.org]] — Common issues and solutions
 4. Run ~M-x magent-run-doctor~ for self-diagnostics
-5. Use ~C-c m p~ to open the recommended agent-shell UI
+5. Use ~M-x magent-agent-shell-dwim~ to open the supported agent-shell UI
 
 ** For Developers
 1. [[file:CONTRIBUTING.html][CONTRIBUTING.org]] — Code style and PR process
@@ -49,7 +49,7 @@ Welcome to the Magent documentation. Magent is an Emacs Lisp AI coding agent wit
 3. [[file:ARCHITECTURE.html][ARCHITECTURE.org]] — Current architecture and system boundaries
 4. [[file:ONBOARDING.html][ONBOARDING.org]] — Guided code tour and complexity hotspots
 5. [[file:AGENT_JOBS.html][AGENT_JOBS.org]] — Current child-agent job architecture
-6. [[file:UI_BACKENDS.html][UI_BACKENDS.org]] — Current UI backend architecture
+6. [[file:UI_BACKENDS.html][UI_BACKENDS.org]] — Current frontend support boundary
 7. [[file:DOCTOR.html][DOCTOR.org]] — Doctor data boundary and extension contract
 
 ** CI And Packaging

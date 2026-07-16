@@ -1,42 +1,61 @@
-#+title: Magent UI Backends
+#+title: Magent 前端边界
 #+magent_lang: zh
 #+magent_alt_url: /UI_BACKENDS.html
 #+options: toc:nil num:nil
 
-Magent 现在把 UI 明确当作 backend boundary。默认 backend 是 ~agent-shell~ ，通过进程内 ACP adapter 连接。旧 workspace/compose UI 保留为一个 legacy backend 文件，方便未来移除时不破坏 agent-shell + ACP + runtime 主路径。
+Magent 只支持一个用户前端： ~agent-shell~ 。它通过进程内 ACP adapter 连接 Magent
+runtime。面向用户的文档和示例必须使用 ~magent-agent-shell.el~ 导出的命令，或者
+直接使用 agent-shell。
 
-* 模块
+* 支持状态
 
-- ~magent-ui.el~ 负责 UI customization/faces，同时也是公共命令 router、log/event sink、compatibility shim 和 ~magent-ui-backend~ 切换点。
-- ~magent-agent-shell.el~ 注册 Magent ~agent-shell~ 配置，并创建进程内 ACP client。
-- ~magent-acp.el~ 实现进程内 ACP request、notification、response、permission 和 session/update adapter。
-- ~magent-runtime-api.el~ 是 UI-neutral runtime/session API，供 UI backends 调用。
+~magent-ui.el~ 和 ~magent-ui-legacy.el~ 中的代码目前不支持用于用户交互。不要把
+这些文件中的命令、快捷键、customization options 或 extension points 当作公共接口。
+它们只作为内部兼容代码和未完成的 legacy code 暂时保留，后续可能变更或移除，不提供
+兼容性保证。
+
+当前源码树中的 legacy 实现名为 ~magent-ui-legacy.el~ 。如果其他 checkout 中存在
+~magent-legacy-ui.el~ 或匹配 ~magent-legacy-*.el~ 的 legacy UI 文件，或者清理期间
+引入了这些文件，它们同样属于不支持使用的范围。
+
+* 受支持的模块
+
+- ~magent-agent-shell.el~ 注册 Magent agent-shell 配置，并提供受支持的交互入口。
+- ~magent-acp.el~ 实现进程内 ACP request、notification、response、permission 和
+  ~session/update~ adapter。
+- ~magent-runtime-api.el~ 是 frontend-neutral runtime/session API。
 - ~magent-runtime-queue.el~ 负责全局单执行队列和 session-scoped cancellation。
-- ~magent-ui-legacy.el~ 包含旧 special-mode workspace、compose buffer、timeline rendering、transient menu、legacy prompt dispatch 及其私有 submission queue。
 
-* 默认流程
+* 受支持的流程
 
-1. ~magent-dwim~ 和普通 ~magent-ui-dispatch-prompt~ 等公共命令进入 ~magent-ui.el~ 。
-2. 当 ~magent-ui-backend~ 为 ~agent-shell~ ，并且没有 legacy-only per-request agent override 时，命令路由到 ~magent-agent-shell.el~ 。
-3. ~agent-shell~ 调用 ~magent-acp.el~ 中的 Magent 进程内 ACP client。
-4. ACP session/prompt 分别规范化 text 与 resource blocks，把完整结构化 blocks 存入 turn metadata，再提交到 ~magent-runtime-api.el~。本地 ~file://~ resource 还会提供 scoped request path；history 重建时 resource body 始终保持 user-role context。
-5. runtime queue 每次只启动一个 active turn，创建带 ~:ui-visibility 'none~ 的 ~magent-request-context~ ，并调用 ~magent-agent-run-turn~ 。
-6. agent loop 发出 Magent-native observer events； ~magent-acp.el~ 将其转换成 ACP ~session/update~ 消息给 agent-shell。
-7. ACP prompt request 会保持 pending，直到对应 Magent turn completed、failed 或 cancelled。
+1. 使用 ~M-x magent-agent-shell-dwim~ 启动或复用 Magent；也可以先调用
+   ~magent-agent-shell-ensure-config~ 注册配置，再从 ~M-x agent-shell~ 中选择 Magent。
+2. agent-shell 调用 ~magent-acp.el~ 中的进程内 ACP client。
+3. ACP 分别规范化 text 和 resource blocks，把结构化 blocks 存入 turn metadata，再
+   提交到 ~magent-runtime-api.el~ 。本地 ~file://~ resource 还会提供 scoped request
+   path；history 重建时 resource body 始终保持 user-role context。
+4. runtime queue 每次只启动一个 active turn，创建带 ~:ui-visibility 'none~ 的
+   ~magent-request-context~ ，并调用 ~magent-agent-run-turn~ 。
+5. agent loop 发出 Magent-native observer events； ~magent-acp.el~ 将其转换成发给
+   agent-shell 的 ACP ~session/update~ 消息。
+6. ACP prompt request 会保持 pending，直到对应 Magent turn completed、failed 或
+   cancelled。
 
-* Legacy 边界
+* 开发边界
 
-~magent-ui-legacy.el~ 按需懒加载。普通 agent-shell 使用不应该加载它。legacy-only 命令仍然按需加载它，包括旧 workspace/compose buffer、legacy transient menu variants，以及依赖 per-request agent override 的命令。
-
-不再保留独立的 legacy queue 模块。通用全局 arbiter 仍在 ~magent-runtime-queue.el~ ，legacy submission state 和 serialization 则全部留在 ~magent-ui-legacy.el~ 内。
-
-核心 runtime 路径不能依赖 ~magent-ui-legacy.el~ 。新的 backend-facing 行为应放在 ~magent-runtime-api.el~ 或 ~magent-acp.el~ ，agent-shell-specific 行为应放在 ~magent-agent-shell.el~ 。
+Core runtime behavior 不能依赖任何不受支持的 legacy UI workflow。Frontend-neutral
+行为放在 ~magent-runtime-api.el~ ，ACP conversion 放在 ~magent-acp.el~ ，受支持的
+frontend 行为放在 ~magent-agent-shell.el~ 。不要向 ~magent-ui.el~ 、
+~magent-ui-legacy.el~ 、 ~magent-legacy-ui.el~ 或 ~magent-legacy-*.el~ 增加新的
+用户入口。
 
 * 当前限制
 
-- 第一版对 ~agent-shell~ 和 ~acp~ 是硬依赖。
-- runtime execution 是全局单执行队列。
-- cancellation 是 session-scoped：一个 ACP session 的 cancellation 会取消该 session 的 active 和 queued submissions，但不会移除其他 session 的 queued work。
-- agent-shell backend 支持 per-request instruction skill overrides 和 skill commands。per-request agent overrides 仍然走 legacy dispatch path，直到 agent-shell 暴露等价控件。
-- ACP session config 暴露 ~Automatic capabilities~；关闭后，该 session 后续 turn 不再自动解析 contextual capabilities，但显式选择的 instruction skills 仍然生效。
-- ~magent-ui-backend~ 可以设为 ~legacy~ ，但默认值是 ~agent-shell~ 。
+- 受支持的 frontend 硬依赖 ~agent-shell~ 和 ~acp~ 。
+- runtime execution 使用全局单执行队列。
+- cancellation 是 session-scoped：取消一个 ACP session 会取消该 session 的 active
+  和 queued submissions，但不会移除其他 session 的 queued work。
+- 受支持的 frontend 已支持 per-request instruction skill overrides 和 skill
+  commands；目前不暴露 per-request agent overrides。
+- ACP session config 暴露 ~Automatic capabilities~ ；关闭后，该 session 后续 turn 不再
+  自动解析 contextual capabilities，但显式选择的 instruction skills 仍然生效。

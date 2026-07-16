@@ -9,7 +9,10 @@ Thank you for your interest in contributing to magent! This guide will help you 
 
 Magent's Codex-style agent workflow alignment is implemented as a durable child-agent/job lifecycle. Before changing agent lifecycle behavior, read and update ~docs/AGENT_JOBS.org~.
 
-The lifecycle surface is ~spawn_agent~, ~send_agent_message~, ~wait_agent~, ~list_agents~, ~close_agent~, plus ~magent-show-agent-transcript~ for inspection. Codex sandboxing, seatbelt, bubblewrap, and shell isolation parity are out of scope.
+The lifecycle surface is ~spawn_agent~, ~send_agent_message~, ~wait_agent~,
+~list_agents~, and ~close_agent~. Agent-shell renders compact lifecycle updates,
+while full state persists under the parent session's ~agent-jobs~ data. Codex
+sandboxing, seatbelt, bubblewrap, and shell isolation parity are out of scope.
 
 * Development Setup
 
@@ -92,8 +95,8 @@ emacs -Q --batch -L lisp -L ~/.emacs.d/elpa/gptel-* \
 # Reload changed file
 emacsclient --eval '(load "/path/to/file.el" nil t)'
 
-# Clear session
-emacsclient --eval '(magent-clear-session)'
+# Clear the current runtime session
+emacsclient --eval '(magent-runtime-session-clear (magent-runtime-session-current))'
 
 # Test prompts
 # - Non-tool: "你好"

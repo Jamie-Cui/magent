@@ -65,12 +65,13 @@ Child jobs 会在合理范围内继承 parent request context：
 
 * UI 与恢复
 
-Parent Magent UI 会渲染紧凑的 child-agent 生命周期更新。完整 child prompt、metadata、result/error 和 transcript 可以通过以下入口检查：
+受支持的 agent-shell frontend 会渲染紧凑的 child-agent 生命周期更新。完整 child
+prompt、metadata、result/error 和 transcript 会持久化在 parent session 的
+~agent-jobs~ 数据中。
 
-- ~M-x magent-show-agent-transcript~
-- ~C-c m ?~ 或 legacy ~*magent*~ 中的 ~?~ ，再按 transient 路径 ~S j~
-
-~magent-resume-session~ 会随 parent session 恢复持久化的 ~agent-jobs~ 。Emacs 重启后不会恢复 active request handle，但保存的 job metadata、result/error 和 transcripts 仍可检查。
+Agent-shell 恢复持久化 parent session 时，也会恢复其中的 ~agent-jobs~ 数据。Emacs
+重启后不会恢复 active request handle，但保存的 job metadata、result/error 和
+transcripts 仍会保留。
 
 * 边界
 
@@ -78,7 +79,7 @@ Parent Magent UI 会渲染紧凑的 child-agent 生命周期更新。完整 chil
 
 - live Emacs buffers
 - ~emacs_eval~
-- agent-shell UI 和隔离的 legacy workspace/compose backend
+- agent-shell UI
 - project-scoped sessions
 - gptel transport
 

@@ -9,7 +9,10 @@
 
 Magent 的 Codex-style agent workflow alignment 已实现为 durable child-agent/job lifecycle。修改 agent lifecycle 行为前，请先阅读并更新 ~docs/AGENT_JOBS.org~ 。
 
-当前 lifecycle surface 是 ~spawn_agent~ 、 ~send_agent_message~ 、 ~wait_agent~ 、 ~list_agents~ 、 ~close_agent~ ，以及用于检查 transcript 的 ~magent-show-agent-transcript~ 。Codex sandboxing、seatbelt、bubblewrap 和 shell isolation parity 不在范围内。
+当前 lifecycle surface 是 ~spawn_agent~ 、 ~send_agent_message~ 、 ~wait_agent~ 、
+~list_agents~ 和 ~close_agent~ 。Agent-shell 渲染紧凑 lifecycle updates，完整状态持久化
+在 parent session 的 ~agent-jobs~ 数据中。Codex sandboxing、seatbelt、bubblewrap 和
+shell isolation parity 不在范围内。
 
 * 开发环境
 
@@ -99,8 +102,8 @@ emacs -Q --batch -L lisp -L ~/.emacs.d/elpa/gptel-* \
 # Reload changed file
 emacsclient --eval '(load "/path/to/file.el" nil t)'
 
-# Clear session
-emacsclient --eval '(magent-clear-session)'
+# Clear the current runtime session
+emacsclient --eval '(magent-runtime-session-clear (magent-runtime-session-current))'
 
 # Test prompts:
 # - Non-tool: "你好"

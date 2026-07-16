@@ -19,7 +19,7 @@
 - [[file:../ARCHITECTURE.zh.html][ARCHITECTURE.zh.org]] ：产品定位、系统边界、模块层次、请求流和扩展模型。
 - [[file:../AGENT_WORKFLOW.zh.html][AGENT_WORKFLOW.zh.org]] ： ~thread -> turn -> item~ 状态机、循环流程、 ~snapshot + journal~ 持久化、UI 投影和 Codex 差异。
 - [[file:../AGENT_JOBS.zh.html][AGENT_JOBS.zh.org]] ：durable child-agent job 生命周期、工具面、持久化、UI 和边界。
-- [[file:../UI_BACKENDS.zh.html][UI_BACKENDS.zh.org]] ：UI backend 边界、推荐的 agent-shell + ACP 流程和 runtime API。
+- [[file:../UI_BACKENDS.zh.html][UI_BACKENDS.zh.org]] ：受支持的 agent-shell + ACP 流程，以及不受支持的 legacy UI 边界。
 - [[file:../DOCTOR.zh.html][DOCTOR.zh.org]] ：Doctor probe API、信任边界、脱敏、session 和取消。
 
 ** 贡献
@@ -47,7 +47,7 @@
 2. [[file:../COMMANDS.zh.html][COMMANDS.zh.org]]：内置 slash commands 和 Magent-owned LLM workflows。
 3. [[file:../TROUBLESHOOTING.zh.html][TROUBLESHOOTING.zh.org]]：常见问题。
 4. 运行 ~M-x magent-run-doctor~ 做自诊断。
-5. 使用 ~C-c m p~ 打开推荐的 agent-shell UI。
+5. 使用 ~M-x magent-agent-shell-dwim~ 打开受支持的 agent-shell UI。
 
 ** 开发者
 
@@ -56,7 +56,7 @@
 3. [[file:../ARCHITECTURE.zh.html][ARCHITECTURE.zh.org]]：当前系统边界。
 4. [[file:../ONBOARDING.zh.html][ONBOARDING.zh.org]]：代码导览和复杂点。
 5. [[file:../AGENT_JOBS.zh.html][AGENT_JOBS.zh.org]]：child-agent job 架构。
-6. [[file:../UI_BACKENDS.zh.html][UI_BACKENDS.zh.org]]：UI backend 架构。
+6. [[file:../UI_BACKENDS.zh.html][UI_BACKENDS.zh.org]]：当前 frontend 支持边界。
 7. [[file:../DOCTOR.zh.html][DOCTOR.zh.org]]：Doctor 数据边界和扩展契约。
 
 ** CI 与打包

@@ -13,10 +13,7 @@ homepage: https://jamie-cui.github.io/magent/
 
 Magent now uses a durable child-agent lifecycle for collaborative agent work: spawn, message, wait, list, resume/inspect, and close. The lifecycle is implemented on top of the Magent-owned agent loop while provider integration stays with ~gptel-request~.
 
-#+CAPTION: Magent architecture boundary and the recommended agent-shell frontend path
-[[file:docs/assets/img/diagrams/architecture-boundary.svg]]
-
-See [[file:docs/UI_BACKENDS.org][docs/UI_BACKENDS.org]] for the UI boundary and backend architecture.
+See [[file:docs/UI_BACKENDS.org][docs/UI_BACKENDS.org]] for the supported agent-shell frontend boundary.
 
 * Requirements
 
@@ -38,6 +35,7 @@ Add the project to your Emacs load path:
 #+begin_src elisp
 (add-to-list 'load-path "/path/to/magent/lisp")
 (require 'magent)
+(magent-agent-shell-ensure-config)
 #+end_src
 
 ** Using ~use-package~
@@ -46,7 +44,7 @@ Add the project to your Emacs load path:
 (use-package magent
   :load-path "/path/to/magent/lisp"
   :config
-  (global-magent-mode 1))
+  (magent-agent-shell-ensure-config))
 #+end_src
 
 ** Installing from Git with ~use-package~
@@ -61,19 +59,7 @@ Magent directly from Git:
   :after (agent-shell gptel)
   :demand t
   :config
-  (global-magent-mode 1))
-#+end_src
-
-** Optional Evil Integration
-
-Magent does not assume Evil by default.  Evil-specific state handling and
-bindings live in the optional ~magent-evil~ feature:
-
-#+begin_src elisp
-(use-package magent-evil
-  :after (magent evil)
-  :config
-  (magent-evil-mode 1))
+  (magent-agent-shell-ensure-config))
 #+end_src
 
 * Configuration
@@ -90,36 +76,24 @@ Magent delegates all LLM communication to [[https://github.com/karthink/gptel][g
 
 See [[https://github.com/karthink/gptel#configuration][gptel documentation]] for full provider setup (Anthropic, OpenAI, Ollama, etc.).
 
-Enable Magent in the current buffer, or enable it globally:
-
-#+begin_src elisp
-(magent-mode 1)
-
-;; Or enable Magent in every buffer.
-(global-magent-mode 1)
-#+end_src
-
-The default UI backend is agent-shell.  Magent supplies its own agent-shell
-configuration and in-process ACP client; ~magent-dwim~ registers that
-configuration automatically, so no external ACP command or manual
-~agent-shell-agent-configs~ entry is required.  To start using Magent:
+The only supported Magent frontend is agent-shell.  Magent supplies its own
+agent-shell configuration and in-process ACP client, so no external ACP
+command is required.  To start using Magent:
 
 1. Visit a file in the project you want Magent to work on.
-2. Run ~M-x magent-dwim~ (or press ~C-c m p~).  Magent opens or reuses the
-   project-local agent-shell buffer through its in-process ACP adapter.
+2. Run ~M-x magent-agent-shell-dwim~.  Magent opens or reuses the project-local
+   agent-shell buffer through its in-process ACP adapter.  You can also run
+   ~M-x agent-shell~ and select Magent after registering the configuration as
+   shown in the installation examples above.
 3. Type a prompt at the bottom of the agent-shell buffer and press ~RET~ to
    submit it.  Assistant responses, reasoning, tool calls, and permission
    requests are streamed into the same buffer.
 4. Enter another prompt and press ~RET~ to continue the project-scoped session.
    While a request is running, press ~C-c C-c~ to interrupt it.
 
-From a source buffer, ~C-c m r~ sends the active region and ~C-c m a~ asks
-about the symbol at point; both commands submit their context through the same
-agent-shell backend.
-
-To make Magent available from the generic ~M-x agent-shell~ selector as soon as
-Magent loads, call ~(magent-agent-shell-ensure-config)~ in Magent's
-~use-package~ ~:config~ block.  This is optional when using ~magent-dwim~.
+From a source buffer, ~M-x magent-agent-shell-prompt-region~ sends the active
+region and ~M-x magent-agent-shell-ask-at-point~ asks about the symbol at point;
+both commands submit their context through agent-shell.
 
 ** Magent-Specific Options
 
@@ -136,11 +110,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-default-agent~         | ~"build"~                     | Default agent for new sessions                                                        |
 | ~magent-default-effort~        | ~nil~                         | Default reasoning effort; nil/auto uses provider default                              |
 | ~magent-skill-directories~     | ~user-emacs-directory/magent/skills/~ | Ordered user skill roots; later entries override earlier entries                |
-| ~magent-ui-backend~            | ~agent-shell~                  | Recommended UI backend for Magent public commands                                     |
-| ~magent-agent-shell-session-strategy~ | ~new~                  | agent-shell session startup policy: ~new~, ~latest~, or ~prompt~                        |
 | ~magent-load-custom-agents~    | ~t~                           | Load custom agents from ~.magent/agent/*.md~                                            |
-| ~magent-enable-logging~        | ~t~                           | Enable logging to ~*magent-log*~ buffer                                                 |
-| ~magent-log-level~             | ~info~                        | Minimum displayed log level; ~PERM~ and unprefixed messages count as ~info~           |
 | ~magent-enable-audit-log~      | ~t~                           | Persist compact audit logs for permission and sensitive actions                       |
 | ~magent-agent-directory~       | ~".magent/agent"~             | Relative path to custom agent dir                                                     |
 | ~magent-session-directory~     | =~/.emacs.d/magent/sessions/= | Base directory for global sessions and per-project session subdirectories             |
@@ -155,7 +125,6 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-project-instructions-max-bytes~ | ~65536~               | Aggregate per-request byte limit for project instructions; nil disables discovery     |
 | ~magent-audit-preview-length~  | ~120~                         | Max width for persisted normalized audit path markers                                  |
 | ~magent-include-reasoning~     | ~t~                           | Display (~t~), hide but retain (~ignore~), or discard (~nil~) reasoning; never final-answer fallback |
-| ~magent-auto-context~          | ~t~                           | Auto-attach buffer context in ~magent-dwim~                                             |
 | ~magent-trusted-project-skill-companion-roots~ | ~nil~          | Project roots explicitly trusted to execute tool-skill companion Elisp                 |
 
 ** Prompt Files
@@ -171,20 +140,18 @@ exactly once in ~prompt/manifest.txt~.
 
 ** Interactive Commands
 
-| Command                          | Keybinding | Description                                                              |
-|----------------------------------+------------+--------------------------------------------------------------------------|
-| ~magent-dwim~                      | ~C-c m p~    | Open or reuse the Magent agent-shell backend by default                  |
-| ~magent-prompt-region~             | ~C-c m r~    | Send selected region to AI                                               |
-| ~magent-ask-at-point~              | ~C-c m a~    | Ask about symbol at point                                                |
-| ~magent-transient-menu~            | ~C-c m ?~    | Open the Magent command menu                                             |
-| ~magent-toggle-bypass-permission~ | ~M-x~        | Toggle permission bypass for tool filtering and approval prompts         |
+| Command                                          | Description                                                      |
+|--------------------------------------------------+------------------------------------------------------------------|
+| ~magent-agent-shell-dwim~                        | Open or reuse the project-local Magent agent-shell buffer        |
+| ~magent-agent-shell-start~                       | Start a fresh Magent agent-shell buffer                          |
+| ~magent-agent-shell-prompt-region~               | Send the selected region through agent-shell                     |
+| ~magent-agent-shell-ask-at-point~                | Ask about the symbol at point through agent-shell                |
+| ~magent-agent-shell-interrupt~                   | Interrupt the active Magent agent-shell request                  |
+| ~magent-toggle-bypass-permission~                | Toggle permission bypass for tool filtering and approval prompts |
 
-The recommended workflow is agent-shell.  ~magent-dwim~ opens or reuses a
-project-local Magent agent-shell buffer through Magent's in-process ACP adapter;
-prompt text is entered directly in that buffer, and Magent streams assistant
-responses, tool activity, permission prompts, and session updates back through
-agent-shell.  ~magent-prompt-region~ and ~magent-ask-at-point~ submit their
-context through the same backend.
+Prompt text is entered directly in the agent-shell buffer, and Magent streams
+assistant responses, tool activity, permission prompts, and session updates
+back through agent-shell.
 
 Use agent-shell session options for per-session request settings.  Reasoning
 effort is exposed as agent-shell's thought level session option; use
@@ -198,23 +165,18 @@ those blocks with the turn and reconstructs their bodies as user-role context;
 local file resources also select applicable project instructions from the
 project root toward the attached file.
 
-The Magent transient menu remains available for lower-frequency agent, skill,
-capability, session, log, health, and buffer commands.  For day-to-day prompt
-entry, prefer the agent-shell buffer opened by ~magent-dwim~.
-
 The same bypass state is also exposed as the customize option
 ~magent-bypass-permission~ under ~M-x customize-group RET magent RET~.
 
 ** Session Scope
 
-Magent runtime state is scoped by project, and the recommended agent-shell
-workflow reuses the session associated with the current project:
+Magent runtime state is scoped by project, and the supported agent-shell
+workflow associates sessions with the current project:
 
 - In a recognized project, prompts, agent selection, clear, and resume operate on that project's current session.
 - Saved project sessions live under ~magent-session-directory/projects/<sha1(project-root)>/~.
 - Outside any project, Magent falls back to the global session behavior and saves directly under ~magent-session-directory~.
 - Compact audit logs for permission decisions and sensitive tools are written as daily JSONL files under ~magent-session-directory/audit/~ unless ~magent-audit-directory~ is set.
-- ~magent-resume-session~ shows all sessions grouped by project, with date and time in each candidate, the current project's group first, and global sessions in their own group.
 
 ** Skill Commands
 
@@ -294,7 +256,10 @@ Magent uses a multi-agent architecture where different agents have different cap
 
 Primary agents can coordinate child agents through durable jobs. A root turn can call ~spawn_agent~ to start work under a subagent profile, use ~list_agents~ and ~wait_agent~ to monitor results, send follow-up input with ~send_agent_message~, and close work explicitly with ~close_agent~.
 
-Child jobs are stored in the parent session under ~agent-jobs~ with status, prompt, metadata, result/error, and transcript state. The UI shows compact lifecycle updates in agent-shell, while the full child transcript is available through ~M-x magent-show-agent-transcript~. See [[file:docs/AGENT_JOBS.org][docs/AGENT_JOBS.org]] for the implementation model and boundaries.
+Child jobs are stored in the parent session under ~agent-jobs~ with status,
+prompt, metadata, result/error, and transcript state. Agent-shell shows compact
+lifecycle updates. See [[file:docs/AGENT_JOBS.org][docs/AGENT_JOBS.org]] for the implementation model and
+boundaries.
 
 ** Permission System
 

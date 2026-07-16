@@ -124,9 +124,8 @@ org-roam capture 约定 ~YYYY-MM-DDtHHMM.org~。后续运行通过 file-level
 
 ** 其他调用方式与扩展
 
-~M-x magent-agent-shell-run-skill-command~ 可以通过推荐的 agent-shell backend
-选择并运行任意 command-like instruction skill。Legacy UI 提供等价的
-~M-x magent-ui-run-skill-command~。
+~M-x magent-agent-shell-run-skill-command~ 可以通过受支持的 agent-shell frontend
+选择并运行任意 command-like instruction skill。
 
 Slash command 清单中由 skill 支撑的部分是可扩展的。任何已加载且定义了
 ~default-prompt~ 的 instruction skill 都会作为 slash command 发布给
@@ -205,5 +204,5 @@ Internal session viewer 优先显示最终结果，并默认折叠详细 activit
   时，使用 slash command。
 - 当任务是 Magent 自身维护、profile-memory 管理或需要独立 durable session 的
   脱敏诊断时，使用 internal workflow command。
-- 对于不属于预定义工作流的自由请求，使用 ~magent-dwim~、
-  ~magent-prompt-region~ 和 ~magent-ask-at-point~ 等普通 Magent prompt commands。
+- 对于不属于预定义工作流的自由请求，使用 ~magent-agent-shell-dwim~ 、
+  ~magent-agent-shell-prompt-region~ 和 ~magent-agent-shell-ask-at-point~ 。

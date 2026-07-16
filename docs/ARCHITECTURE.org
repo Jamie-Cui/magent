@@ -9,7 +9,7 @@ Magent is an Emacs-native AI coding agent. Its core design choice is that a seri
 The boundary is intentionally narrow:
 
 - Provider transport, HTTP/SSE handling, model selection, and API keys stay in ~gptel~ through ~gptel-request~.
-- User interaction defaults to ~agent-shell~ through an in-process ACP adapter, while the old special-mode workspace remains an isolated legacy backend.
+- User interaction is supported only through ~agent-shell~ and its in-process ACP adapter.
 - Agent execution, tool orchestration, permission decisions, sessions, skills, capabilities, and child-agent jobs are owned by Magent.
 - Codex-style seatbelt, bubblewrap, sandbox, and shell isolation are out of scope. Magent permissions are workflow controls and audit records, not an OS security boundary.
 
@@ -18,7 +18,7 @@ The boundary is intentionally narrow:
 #+caption: Magent architecture boundary
 [[file:assets/img/diagrams/architecture-boundary.svg]]
 
-This shape keeps replacement points visible. A provider change should stay behind ~magent-llm-gptel.el~ and gptel configuration. A UI change should stay around ~magent-ui.el~, ~magent-acp.el~, and ~magent-runtime-api.el~. A persistence or resume change should go through the ledger and session modules. A tool policy change should go through the permission and orchestrator modules.
+This shape keeps replacement points visible. A provider change should stay behind ~magent-llm-gptel.el~ and gptel configuration. A frontend change should stay around ~magent-agent-shell.el~, ~magent-acp.el~, and ~magent-runtime-api.el~. A persistence or resume change should go through the ledger and session modules. A tool policy change should go through the permission and orchestrator modules.
 
 * Dependency Layers
 
@@ -64,9 +64,11 @@ new prompt layer must update the manifest as well as the package data recipe.
 
 ** UI And Runtime API
 
-The default UI backend is ~agent-shell~. ~magent-agent-shell.el~ registers the Magent agent-shell configuration, ~magent-acp.el~ implements the in-process ACP adapter, and ~magent-runtime-api.el~ receives prompt submissions from UI backends. ACP text and resource blocks are normalized separately: the full structured input is persisted in turn metadata and reconstructed as user-role model context, while local ~file://~ resources contribute scoped file paths for project-instruction and capability resolution. ~magent-runtime-queue.el~ currently runs one active turn globally, while preserving session-scoped cancellation and queue bookkeeping.
+The supported frontend is ~agent-shell~. ~magent-agent-shell.el~ registers the Magent agent-shell configuration, ~magent-acp.el~ implements the in-process ACP adapter, and ~magent-runtime-api.el~ receives prompt submissions. ACP text and resource blocks are normalized separately: the full structured input is persisted in turn metadata and reconstructed as user-role model context, while local ~file://~ resources contribute scoped file paths for project-instruction and capability resolution. ~magent-runtime-queue.el~ currently runs one active turn globally, while preserving session-scoped cancellation and queue bookkeeping.
 
-The old workspace/compose UI lives in ~magent-ui-legacy.el~. It is loaded lazily and should not become a dependency of the default agent-shell path.
+~magent-ui.el~, ~magent-ui-legacy.el~, and legacy UI files covered by the naming
+rules in ~docs/UI_BACKENDS.org~ are retained unsupported code, not alternative
+frontends. They must not become dependencies of the agent-shell runtime path.
 
 ** Ledger And Persistence
 
@@ -91,8 +93,8 @@ Legacy ~messages~, ~context-items~, and ~buffer-content~ are projections or migr
 #+caption: One Magent turn
 [[file:assets/img/diagrams/one-magent-turn.svg]]
 
-1. A user prompt enters through agent-shell or the legacy UI.
-2. The UI backend submits to ~magent-runtime-api.el~.
+1. A user prompt enters through agent-shell.
+2. The ACP adapter submits to ~magent-runtime-api.el~.
 3. ~magent-runtime-api.el~ records a queued turn and a completed user item.
 4. ~magent-runtime-queue.el~ starts the turn when the global execution slot is free.
 5. ~magent-agent.el~ chooses the session agent, active skills, capability instructions, and allowed tools.
@@ -102,7 +104,7 @@ Legacy ~messages~, ~context-items~, and ~buffer-content~ are projections or migr
 9. Tool results update the same ledger item that started with the tool call.
 10. If tool output should be shown to the model, ~magent-agent.el~ rebuilds the prompt from the ledger and starts the next sampling request.
 11. If that post-tool continuation completes with empty assistant text, ~magent-agent.el~ issues one no-tool final-response retry using the recorded tool results.
-12. Completion, failure, abort, or queue drop transitions the turn to its terminal state and notifies the UI backend.
+12. Completion, failure, abort, or queue drop transitions the turn to its terminal state and notifies the ACP observer.
 
 This continuation model is Codex-style in the sense that tool results feed a follow-up sampling request, but it remains Emacs-native and gptel-backed.
 
@@ -169,7 +171,8 @@ Magent is closest to gptel plus a stateful agent runtime, not a replacement for 
 The practical consequence is that new work should preserve these boundaries:
 
 - Keep provider work in gptel and ~magent-llm-gptel.el~.
-- Keep default UI work out of ~magent-ui-legacy.el~.
+- Keep supported frontend work in ~magent-agent-shell.el~ and out of the
+  unsupported UI files.
 - Keep durable workflow state in the ledger.
 - Keep child-agent behavior aligned with ~docs/AGENT_JOBS.org~.
 - Treat permissions as confirmation/audit workflow, not as sandbox security.

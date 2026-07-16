@@ -135,8 +135,7 @@ legacy, and manually renamed files still receive single-file updates.
 ** Alternate Invocation And Extension
 
 ~M-x magent-agent-shell-run-skill-command~ selects and runs any command-like
-instruction skill through the recommended agent-shell backend. The legacy UI
-offers the equivalent ~M-x magent-ui-run-skill-command~ command.
+instruction skill through the supported agent-shell frontend.
 
 The skill-backed portion of the slash command list is extensible. Any loaded
 instruction skill with a ~default-prompt~ field is advertised to agent-shell as
@@ -225,6 +224,6 @@ belonging to unrelated Magent conversations.
   and should reuse its agent, context, and transcript.
 - Use an internal workflow command for Magent-owned maintenance, profile-memory
   management, or sanitized diagnosis that needs its own durable session.
-- Use ordinary Magent prompt commands such as ~magent-dwim~,
-  ~magent-prompt-region~, and ~magent-ask-at-point~ for free-form requests rather
-  than a predefined workflow.
+- Use ~magent-agent-shell-dwim~, ~magent-agent-shell-prompt-region~, and
+  ~magent-agent-shell-ask-at-point~ for free-form requests rather than a
+  predefined workflow.

@@ -27,13 +27,16 @@ Read ~docs/AGENT_JOBS.org~ before changing child-agent behavior, session persist
 The foundation layer that initializes the system and manages settings.
 
 *Key Files:*
-- ~magent.el~ — Main entry point, defines ~magent-mode~ minor mode with ~C-c m~ prefix
+- ~magent.el~ — Package entry point and lazy runtime initialization
+- ~magent-agent-shell.el~ — Supported interactive entry points
 - ~magent-modeline.el~ — Mode-line formatting and status construct installation
 - ~magent-config.el~ — UI-neutral runtime and feature customization
-- ~magent-ui.el~ — UI customization/faces and backend routing
+- ~magent-ui.el~ — Retained unsupported compatibility code
 - ~magent-pkg.el~ — Package metadata
 
-*What it does:* Lazy initialization triggered on first command via ~magent--ensure-initialized~. Mode enable only adds modeline construct; full setup (agent registry, skills) happens on demand.
+*What it does:* Lazy initialization is triggered by the first supported
+agent-shell command via ~magent--ensure-initialized~; full setup (agent
+registry, skills) happens on demand.
 
 ** Layer 2: Session & Runtime State Management
 
@@ -51,7 +54,7 @@ Manages conversation history, scoped overlays, and runtime state.
 - ~magent-runtime-queue.el~ — Global single-execution runtime queue with session-scoped cancellation
 - ~magent-audit.el~ — Persistent JSONL audit logging for permissions and sensitive actions
 
-*What it does:* Maintains ledger-backed conversation history scoped by project, persists to ~~/.emacs.d/magent/sessions/~ by default, stores durable child-agent jobs under ~agent-jobs~, and activates or unloads project-local overlays as scope changes. Runtime UI backends submit work through ~magent-runtime-api.el~; ~magent-runtime-queue.el~ owns queued/active turn state and session-scoped cancellation. Internal maintenance workflows such as ~magent-run-doctor~ and ~magent-run-memory-init~ run in isolated sessions under ~magent-session-directory/internal~ instead of agent-shell slash commands. Doctor is a direct probe pipeline with no model tools; read [[file:DOCTOR.org][DOCTOR.org]] before changing its data boundary or extension API.
+*What it does:* Maintains ledger-backed conversation history scoped by project, persists to ~~/.emacs.d/magent/sessions/~ by default, stores durable child-agent jobs under ~agent-jobs~, and activates or unloads project-local overlays as scope changes. The ACP frontend submits work through ~magent-runtime-api.el~; ~magent-runtime-queue.el~ owns queued/active turn state and session-scoped cancellation. Internal maintenance workflows such as ~magent-run-doctor~ and ~magent-run-memory-init~ run in isolated sessions under ~magent-session-directory/internal~ instead of agent-shell slash commands. Doctor is a direct probe pipeline with no model tools; read [[file:DOCTOR.org][DOCTOR.org]] before changing its data boundary or extension API.
 
 ** Layer 3: Agent System
 
@@ -94,27 +97,21 @@ Orchestrates the tool-calling loop and LLM communication.
 
 *What it does:* ~magent-agent-loop.el~ consumes normalized LLM events, records assistant/tool state into the session, dispatches tools through ~magent-tool-orchestrator~, and returns continuation outcomes after model-visible tool output is recorded. ~magent-agent-process~ decides whether to continue sampling, force a no-tool final response at the sampling budget, or retry once when a post-tool assistant completion is empty. Reasoning is kept separate from assistant text. ~magent-llm-gptel.el~ still calls ~gptel-request~; Magent does not rewrite provider transport.
 
-** Layer 6: UI Backends
+** Layer 6: Supported Frontend
 
-Default agent-shell UI plus an isolated legacy workspace/compose backend.
+agent-shell is the only supported frontend.
 
 *Key Files:*
-- ~magent-ui.el~ — Thin public command router, logger, backend switch, and compatibility shims
 - ~magent-agent-shell.el~ — Magent agent-shell config and prompt routing
 - ~magent-acp.el~ — In-process ACP adapter for agent-shell
-- ~magent-ui-legacy.el~ — Legacy workspace/compose buffers, ledger projection, streaming summaries, transient menu
-- ~magent-evil.el~ — Optional Evil integration loaded explicitly by Evil users
-- ~magent-markdown-to-org.el~ — Legacy markdown → org converter, no longer used by the live workspace path
 - ~magent-file-loader.el~ — Shared frontmatter parser for agent/skill/capability files
+- ~magent-ui.el~ / ~magent-ui-legacy.el~ — Retained unsupported UI code; not a public interface
 
-*What it does:* Plain prompts route to agent-shell by default through
+*What it does:* Prompts route through
 ~magent-agent-shell.el~ and the in-process ACP adapter. ACP session/prompt
 requests submit to ~magent-runtime-api.el~ and remain pending until the
-corresponding Magent turn completes. The legacy UI remains available through
-~magent-ui-legacy.el~; it derives from ~special-mode~, renders an oldest-first
-ledger timeline, and keeps prompt text in a scope-specific
-~magent-compose-mode~ buffer. See ~docs/UI_BACKENDS.org~ before changing this
-boundary.
+corresponding Magent turn completes. See ~docs/UI_BACKENDS.org~ for the
+unsupported legacy-file boundary before changing this layer.
 
 ** Layer 7: Events
 
@@ -158,14 +155,12 @@ Two skill types:
 - *tool* — Invoked via ~skill_invoke~ tool
 
 Instruction skills can be selected as one-shot context for the next request.
-The agent-shell backend exposes native commands such as
+The agent-shell frontend exposes native commands such as
 ~magent-agent-shell-toggle-skill-for-next-request~ and
-~magent-agent-shell-run-skill-command~; the legacy transient Skills submenu
-continues to expose the same workflow for the legacy workspace. Skills that
-define ~default-prompt~ can also be run as command-like actions; built-in
+~magent-agent-shell-run-skill-command~. Skills that define ~default-prompt~ can
+also be run as command-like actions; built-in
 ~init~ initializes or refreshes the project root ~AGENTS.md~, similar to Codex
-~/init~, and accepts optional extra instructions. Compose buffers are plain
-prompt text and no longer parse ~@skill~ or ~@clear~ control syntax.
+~/init~, and accepts optional extra instructions.
 
 For each turn, Magent starts with the selected agent's base prompt, then adds
 project context, applicable ~AGENTS.md~ files from the project root toward
@@ -212,14 +207,15 @@ Start with ~docs/ARCHITECTURE.org~ for the product boundary: Magent keeps provid
 
 ** Step 1: Start with the Entry Point
 
-Begin at ~magent.el~ to understand how the mode is activated and what commands are available. The ~C-c m~ prefix map shows all interactive entry points.
+Begin at ~magent.el~ for package initialization, then read
+~magent-agent-shell.el~ for the supported interactive entry points.
 
 ** Step 2: Explore the UI Boundary
 
-Read ~docs/UI_BACKENDS.org~, then ~magent-ui.el~, ~magent-agent-shell.el~, and
-~magent-acp.el~. Key insight: ~magent-ui.el~ is a thin router; the default
-interactive experience is agent-shell. Legacy workspace rendering and compose
-submission live in ~magent-ui-legacy.el~.
+Read ~docs/UI_BACKENDS.org~, then ~magent-agent-shell.el~, ~magent-acp.el~, and
+~magent-runtime-api.el~. Key insight: agent-shell is the only supported
+interactive experience. Read ~magent-ui.el~ or ~magent-ui-legacy.el~ only when
+removing or isolating unsupported compatibility code.
 
 ** Step 3: Follow a Request Lifecycle
 
@@ -229,7 +225,6 @@ Trace a request through these files in order:
 3. ~magent-llm-gptel.el~ — Calls ~gptel-request~ for one sampling request
 4. ~magent-tool-orchestrator.el~ / ~magent-tools.el~ — Resolve permissions and execute tool implementations
 5. ~magent-runtime-api.el~ / ~magent-acp.el~ — Backend submissions and UI-neutral events for agent-shell
-6. ~magent-ui-legacy.el~ — Legacy buffer rendering when the legacy backend is active
 
 ** Step 4: Understand Permissions
 
@@ -289,13 +284,11 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 - *magent-llm-gptel.el* — ~gptel-request~ adapter
 
 ** User Interface
-- *magent-ui.el* — UI customization/faces, thin backend router, log/event sinks, and compatibility shims
-- *magent-agent-shell.el* — agent-shell backend config and prompt routing
+- *magent-agent-shell.el* — Supported agent-shell config and prompt routing
 - *magent-acp.el* — In-process ACP adapter
 - *magent-runtime-api.el* — UI/backend-facing runtime API
 - *magent-runtime-queue.el* — Runtime queue and session-scoped cancellation
-- *magent-ui-legacy.el* — Legacy workspace/compose buffers, private submission queue, streaming summaries, transcript/detail views, transient menu
-- *magent-markdown-to-org.el* — Legacy markdown to org-mode converter outside the live workspace path
+- *magent-ui.el* / *magent-ui-legacy.el* — Retained unsupported UI code
 - *magent-file-loader.el* — Shared frontmatter parser
 
 ** Events
@@ -330,10 +323,13 @@ These areas require careful attention when modifying:
 
 *Approach carefully:* Keep provider transport concerns here and loop behavior in ~magent-agent-loop.el~. Do not add new main-loop dependencies on gptel private FSM handlers.
 
-** 3. UI backend boundary (High Complexity)
-*Why it's complex:* The default UI now spans ~magent-ui.el~, ~magent-agent-shell.el~, ~magent-acp.el~, ~magent-runtime-api.el~, and ~magent-runtime-queue.el~. The legacy workspace/compose implementation remains in ~magent-ui-legacy.el~ and still has custom insertion logic, async fontification, chunk batching, and read-only region management.
+** 3. Frontend boundary (High Complexity)
+*Why it's complex:* The supported frontend spans ~magent-agent-shell.el~, ~magent-acp.el~, ~magent-runtime-api.el~, and ~magent-runtime-queue.el~. Unsupported compatibility code remains in ~magent-ui.el~ and ~magent-ui-legacy.el~.
 
-*Approach carefully:* Keep default agent-shell behavior out of ~magent-ui-legacy.el~. Keep backend-neutral behavior in ~magent-runtime-api.el~, ACP conversion in ~magent-acp.el~, and agent-shell-specific behavior in ~magent-agent-shell.el~. In legacy code, insertions must use ~inhibit-read-only~.
+*Approach carefully:* Keep frontend-neutral behavior in ~magent-runtime-api.el~,
+ACP conversion in ~magent-acp.el~, and agent-shell-specific behavior in
+~magent-agent-shell.el~. Do not add user-facing behavior to unsupported UI
+files.
 
 ** 4. magent-permission.el (Medium Complexity)
 *Why it's complex:* Order-dependent file-pattern matching with glob syntax. Resolution order matters: exact match → file patterns → wildcard → default allow.
@@ -383,8 +379,8 @@ Test changes in running Emacs:
 # Reload a changed file
 emacsclient --eval '(load "/path/to/magent-foo.el" nil t)'
 
-# Clear session state
-emacsclient --eval '(magent-clear-session)'
+# Clear the current runtime session
+emacsclient --eval '(magent-runtime-session-clear (magent-runtime-session-current))'
 
 # Check logs
 emacsclient --eval '(with-current-buffer "*magent-log*" (buffer-string))'
@@ -397,7 +393,8 @@ After changes, verify with:
 - *Tool-use:* ~"帮我看下 emacs 里面有多少 buffer"~ — Tests ~emacs_eval~ tool
 - *Multi-step:* ~"帮我在 emacs 里面打开 magent 的 magit buffer"~ — Tests chained execution
 
-Check ~*magent*~, ~*magent-log*~, and ~*Messages*~ buffers for errors.
+Check the active Magent agent-shell buffer, ~*magent-log*~, and ~*Messages*~ for
+errors.
 
 * Common Patterns
 
@@ -463,15 +460,15 @@ Skill instructions for the agent.
 - *Documentation:* ~README.org~, ~AGENTS.md~ in repo root
 - *Child-agent architecture:* ~docs/AGENT_JOBS.org~
 - *Interactive help:* ~M-x magent-run-doctor~ for self-diagnostics
-- *Command menu:* ~C-c m ?~ from any Magent-enabled buffer, or ~?~ in ~*magent*~
-- *Skills:* transient ~s s~ to toggle a one-shot instruction skill, ~s K~ to clear selected skills
-- *Logs:* transient ~l l~ to view request/response log
-- *Agent info:* transient ~A v~ to list agents, transient ~A m~ for current agent
+- *Frontend:* ~M-x magent-agent-shell-dwim~
+- *Skills:* ~M-x magent-agent-shell-toggle-skill-for-next-request~
+- *Logs:* open ~*magent-log*~ with ~C-x b~
+- *Agent selection:* ~M-x agent-shell-set-session-mode~ from the agent-shell buffer
 
 * Next Steps
 
 1. *Run the tests* — Start with ~make test-unit~; use an isolated Emacs server before running the full ~make test~
-2. *Try the examples* — Enable ~magent-mode~ and run ~C-c m p~
+2. *Try the examples* — Run ~M-x magent-agent-shell-dwim~
 3. *Read the code* — Follow the guided tour above
 4. *Experiment* — Create a custom agent or skill
 5. *Contribute* — Check open issues and submit PRs

@@ -203,7 +203,10 @@ make compile
 - 如果第一个 tool result 后 continuation hang，检查 ~/tmp/magent-live-trace.el~ 。出现 ~gptel-curl-get-args :event enter~ 但没有对应 ~:event leave~ ，通常意味着 gptel 在 curl 启动前遇到 serialization error。检查 tool-call names、tool args 和 assistant ~tool_calls~ history 中是否有 Lisp symbols 或非 JSON-safe values。
 - 如果第一个 provider request 发出 tool call，但第二个 request 没有开始，确认 Magent 是否把 tool result 记录进 session，并通过 ~magent-agent-loop-request-for-current-session~ 重建 continuation prompt。
 - 如果 continuation 已开始，但 tool output 后 UI 仍收到空 final answer，检查是否出现 ~retrying empty final response after tool output~ log。Magent 应该只尝试一次 no-tool final-response retry；reasoning-only completion 应保持为空 assistant text，而不是显示成最终回答。
-- 如果第二个 request 完成但 UI 漏掉 final assistant text，记住 tool-enabled requests 可能是 non-streaming。Non-streaming string callback 可能就是 final completion，而不是 text delta。
+- 如果第二个 request 完成但 agent-shell 漏掉 final assistant text，记住
+  tool-enabled requests 可能是 non-streaming。Non-streaming string callback 可能就是
+  final completion，而不是 text delta；确认 ACP observer 是否发出了对应的 agent-shell
+  update。
 - 如果 direct ~emacsclient~ 通过但 ~make test-live-smoke~ 失败，确认设置了 ~EMACSCLIENT="emacsclient -s magent-live-test"~ 。
 - 如果测试意外加载旧 Magent，检查 ~load-history~ 、 ~load-path~ order 和 ~.elc~ 文件。 ~test/magent-live-test.el~ 使用 source loading with ~nosuffix~ ；添加文件到 live reload list 时保持这个行为。
 
@@ -234,7 +237,7 @@ make EMACSCLIENT="emacsclient -s magent-live-test" test-live-smoke
 
 *诊断：*
 
-1. 检查 ~*magent-log*~ ：打开 transient menu ~C-c m ?~ 或 ~?~ ，再按 ~l l~ 。
+1. 使用 ~C-x b~ 直接打开 ~*magent-log*~ ，检查最新记录。
 2. 检查 gptel 配置：
 
    #+begin_src elisp
@@ -258,7 +261,7 @@ make EMACSCLIENT="emacsclient -s magent-live-test" test-live-smoke
 
 1. 检查 ~*magent-log*~ 的错误细节。
 2. 确认 tool 已启用： ~magent-enable-tools~ 。
-3. 检查权限： ~M-x magent-show-current-agent~ 。
+3. 运行 ~M-x magent-list-agents~ ，并确认当前 agent-shell session mode。
 
 *解决：*
 
@@ -274,7 +277,8 @@ make EMACSCLIENT="emacsclient -s magent-live-test" test-live-smoke
 
 1. 检查代码路径是否使用 ~spawn_agent~ 、 ~send_agent_message~ 、 ~wait_agent~ 、 ~list_agents~ 和 ~close_agent~ 。
 2. 复读 ~docs/AGENT_JOBS.org~ 中的 job lifecycle contract。
-3. 在 ~*magent*~ 中查看紧凑 ~Agent ...~ 行，或运行 ~M-x magent-show-agent-transcript~ / transient ~S j~ 查看持久化 child transcript。
+3. 在 agent-shell buffer 中查看紧凑 child-agent updates，并确认 parent session 中持久化的
+   ~agent-jobs~ 数据。
 4. 检查 ~*magent-log*~ 中的 nested request 或 tool-call errors。
 5. Resume 后确认 parent session 仍有预期 ~agent-jobs~ metadata。
 
@@ -289,13 +293,15 @@ make EMACSCLIENT="emacsclient -s magent-live-test" test-live-smoke
 
 *诊断：*
 
-运行 ~M-x magent-show-current-agent~ 检查当前 agent permissions。
+运行 ~M-x magent-list-agents~ 检查 agent profiles，并确认当前 agent-shell session
+mode。
 
 *解决：*
 
 - 临时 bypass： ~M-x magent-toggle-bypass-permission~ 。
 - 或 customize： ~(setq magent-bypass-permission t)~ 。
-- 或通过 transient menu ~A A~ 切换到合适权限的 agent。
+- 或在 agent-shell buffer 中运行 ~M-x agent-shell-set-session-mode~ ，选择权限合适的
+  agent。
 
 *** Session not saving
 
@@ -315,32 +321,22 @@ magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
 (make-directory magent-session-directory t)
 #+end_src
 
-** UI 问题
+** Agent-shell 问题
 
-*** Output buffer 不更新
+*** Agent-shell buffer 不更新
 
 *问题：* Streaming 看起来卡住。
 
 *诊断：*
 
-1. 看 modeline 是否有 ~[busy]~ 。
+1. 检查 agent-shell buffer 中的 request status。
 2. 检查 ~*Messages*~ 。
-3. 在 output buffer 中按 ~C-c C-c~ 并确认 interrupt。
+3. 在 agent-shell buffer 中按 ~C-c C-c~ 并确认 interrupt。
 
 *解决：*
 
-- 从 transient menu 按 ~c~ clear，再用 ~C-c m p~ 重试。
+- 提交 ~/clear~ ，再用 ~M-x magent-agent-shell-dwim~ 重试。
 - 如果仍然存在，重启 Emacs。
-
-*** Org-mode folding 问题
-
-*问题：* Sections 不能 fold/unfold。
-
-*解决：*
-
-- 在 section headers 上按 ~TAB~ 。
-- 用 ~S-TAB~ toggle all sections。
-- 确认当前在 output buffer，而不是 code buffer。
 
 ** 性能问题
 
@@ -350,10 +346,9 @@ magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
 
 *解决：*
 
-#+begin_src elisp
-(setq magent-ui-batch-insert-delay 0.1)
-(setq magent-ui-fontify-threshold 200)
-#+end_src
+- 确认 agent-shell 版本满足 README 要求。
+- 在新的 ~M-x magent-agent-shell-start~ buffer 中复现，并检查 ~*Messages*~ 和
+  ~*magent-log*~ 是否有 update/rendering error。
 
 *** 内存占用高
 
@@ -363,10 +358,10 @@ magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
 
 #+begin_src elisp
 (setq magent-max-history 50)
-
-;; Clear old sessions periodically
-(magent-clear-session)
 #+end_src
+
+当前 session 不再需要保留在 active buffer 时，使用
+~M-x magent-agent-shell-start~ 开始新 conversation。
 
 * Diagnostic Commands
 
@@ -381,7 +376,7 @@ M-x magent-run-doctor
 ** View Logs
 
 #+begin_src elisp
-M-x magent-show-log  ; or open transient with C-c m ? / ? and press l l
+C-x b *magent-log* RET
 #+end_src
 
 显示 request/response log。

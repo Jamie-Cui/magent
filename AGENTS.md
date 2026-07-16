@@ -4,7 +4,7 @@ Guidance for agentic coding tools working with Magent.
 
 ## Boundaries
 
-- **Do not** implement Codex sandbox/seatbelt/bubblewrap/shell isolation. Preserve Emacs-native workflow (live buffers, `emacs_eval`, agent-shell/legacy UI, project-scoped sessions, gptel transport).
+- **Do not** implement Codex sandbox/seatbelt/bubblewrap/shell isolation. Preserve Emacs-native workflow (live buffers, `emacs_eval`, agent-shell, project-scoped sessions, gptel transport).
 - **Keep** `gptel-request` for provider/HTTP/SSE plumbing. Do not rewrite gptel integration.
 - **Child-agent tools**: `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, `close_agent` replaced the old `delegate` tool. Do not reintroduce a compatibility wrapper unless explicitly requested.
 - **Interrupted work**: Update relevant docs or task notes before stopping so progress is recoverable from git.
@@ -62,12 +62,13 @@ Package metadata should stay centralized in `magent.el` and `magent-pkg.el`; non
 After elisp code changes, test in the running Emacs via `emacsclient --eval`:
 
 1. Reload: `(load "/path/to/changed-file.el" nil t)`
-2. Clear: `(magent-clear-session)`
+2. Clear: `(magent-runtime-session-clear (magent-runtime-session-current))`
 3. Test prompts:
    - Non-tool: `"你好"` — verifies streaming text and assistant section
    - Tool-use: `"帮我看下 emacs 里面有多少 buffer"` — verifies `emacs_eval` tool calling, UI rendering, Magent-owned loop
    - Multi-step: `"帮我在 emacs 里面打开 magent 的 magit buffer"` — verifies chained tool execution
-4. Check `*magent*`, `*magent-log*`, and `*Messages*` for errors
+4. Check the active Magent agent-shell buffer, `*magent-log*`, and `*Messages*`
+   for errors
 
 For real gptel/tool debugging, prefer an isolated server and the playbook in
 `docs/TROUBLESHOOTING.org#live-emacs-tests-fail-or-hang`. Key rules:
@@ -120,9 +121,9 @@ magent.el (entry point: magent-mode, global-magent-mode)
   ├─ magent-permission.el        (rule-based tool access control per agent)
   ├─ magent-acp.el               (in-process ACP adapter for agent-shell)
   ├─ magent-agent-shell.el       (agent-shell backend registration and routing)
-  ├─ magent-ui.el                (UI config/faces, backend router, sinks, compatibility shims)
+  ├─ magent-ui.el                (unsupported UI compatibility code)
   ├─ magent-modeline.el          (mode-line formatting and status construct installation)
-  ├─ magent-ui-legacy.el         (legacy workspace, compose buffer, queue, ledger projection)
+  ├─ magent-ui-legacy.el         (unsupported legacy UI implementation)
   ├─ magent-file-loader.el       (shared file-backed definition loader and frontmatter parser)
   ├─ magent-markdown-to-org.el   (legacy markdown → org-mode compatibility helpers)
   ├─ magent-evil.el              (optional Evil integration; not loaded by magent by default)
@@ -131,29 +132,21 @@ magent.el (entry point: magent-mode, global-magent-mode)
 
 ### Core Flow
 
-1. **Entry point** (`magent.el`): `magent-mode` minor mode with `C-c m` prefix. Mode enable only adds a modeline construct. Static initialization is **lazy** — triggered on first command via `magent--ensure-initialized`.
+1. **Entry point** (`magent.el`, `magent-agent-shell.el`): `magent.el` loads the package; supported interaction starts with `magent-agent-shell-dwim`, `magent-agent-shell-start`, or Magent selected from `agent-shell`. Static initialization is **lazy** — triggered on the first supported command via `magent--ensure-initialized`.
 
 2. **Runtime** (`magent-runtime.el`): Owns the ordered initialization pipeline for agents, skills, and capabilities. Static bundled definitions load once; project-local overlays under `.magent/` are activated and unloaded as session scope changes.
 
 3. **Internal commands** (`magent-command.el`, `magent-memory.el`, `magent-doctor.el`): Magent-owned maintenance workflows are invoked as explicit `M-x magent-run-*` commands and create isolated internal sessions under `magent-session-directory/internal`. They are not exposed as agent-shell slash commands. `magent-command-register` supports direct pipelines and, for trusted extensions that need it, normal agent-loop runners. Agent-loop runners retain session-scoped cancellation handles exposed through `M-x magent-cancel-internal-command`. Memory commands use the same session-backed command layer and respect `magent-bypass-permission` for scan/clear confirmation. Doctor is deliberately different at the execution layer: trusted read-only probes collect bounded data, `magent-redaction.el` sanitizes it, and one direct request runs with no tools outside the normal runtime queue. Custom probes are trusted Elisp, not sandboxed code. See `docs/DOCTOR.org`.
 
-4. **UI backend boundary** (`magent-ui.el`, `magent-agent-shell.el`, `magent-acp.el`, `magent-runtime-api.el`): `magent-ui.el` is now a thin backend router and compatibility layer. The default `magent-ui-backend` is `agent-shell`; plain prompts route to `magent-agent-shell`, which uses an in-process ACP client implemented by `magent-acp.el`. ACP submits prompts through `magent-runtime-api.el`, and runtime observer events are converted to ACP `session/update` messages. ACP prompt requests remain pending until the corresponding Magent turn completes, fails, or is cancelled.
+4. **Supported frontend boundary** (`magent-agent-shell.el`, `magent-acp.el`, `magent-runtime-api.el`): `magent-agent-shell.el` is the only supported frontend integration and uses an in-process ACP client implemented by `magent-acp.el`. ACP submits prompts through `magent-runtime-api.el`, and runtime observer events are converted to ACP `session/update` messages. ACP prompt requests remain pending until the corresponding Magent turn completes, fails, or is cancelled.
    - `magent-runtime-queue.el` owns the global single-execution queue and session-scoped cancellation
    - Runtime emits Magent-native observer events; ACP conversion is isolated in `magent-acp.el`
    - ACP text/resource blocks are stored as structured turn metadata and reconstructed as user-role prompt context; local `file://` resources also provide scoped request paths
    - ACP session config exposes a per-session `Automatic capabilities` switch
    - `magent-agent-run-turn` is the low-level backend entry point; `magent-agent-process` remains the compatibility wrapper
-   - `magent-ui-legacy.el` contains the old special-mode workspace, compose buffer, timeline rendering, transient menu, and legacy prompt dispatch
-   - Plain agent-shell usage must not load `magent-ui-legacy.el`; legacy-only commands load it lazily
-   - Per-request legacy skill/agent overrides still use the legacy dispatch path until agent-shell has equivalent UI controls
    - See `docs/UI_BACKENDS.org` for the boundary contract
 
-5. **Legacy UI** (`magent-ui-legacy.el`): The retained workspace derives from `special-mode` (`magent-output-mode`) and renders a read-only **Magit-style chronological timeline** from the ledger. Prompt composition lives in a scope-specific `magent-compose-mode` buffer.
-   - Workspace restore is ledger-driven; `buffer-content` is legacy fallback data and is no longer the UI source of truth
-   - The workspace `header-line` is the single status surface for scope, agent, thread status, request state, queue length, session id, and selected one-shot skills
-   - Compose buffers are plain prompt text and do not parse `@clear`, `@init`, `@skill`, `$command`, or slash-style control syntax
-   - Streaming uses chunk batching (`magent-ui-batch-insert-delay`) and does not convert markdown to org in the live path
-   - Request serialization is private to `magent-ui-legacy.el`; `magent-ui--processing` remains a compatibility flag
+5. **Unsupported UI code** (`magent-ui.el`, `magent-ui-legacy.el`): These files are retained compatibility and unfinished legacy code, not supported frontends or public APIs. Do not add user-facing behavior, documentation, or new dependencies on their commands, keybindings, customization options, workspace, compose buffer, transient menu, or rendering path. The same rule applies to files named `magent-legacy-ui.el` or matching `magent-legacy-*.el` if present.
 
 6. **Agent processing** (`magent-agent.el`): `magent-agent-run-turn` is the UI-neutral low-level entry point for runtime backends. `magent-agent-process` builds a gptel prompt list from the session, discovers applicable `AGENTS.md` files from project root toward request-local resources within a bounded project scope, applies per-agent overrides (model, temperature via `default-value` — intentionally avoids buffer-local gptel settings), exposes filtered tools to the provider, then starts `magent-agent-loop`.
 
@@ -171,18 +164,13 @@ magent.el (entry point: magent-mode, global-magent-mode)
 
 ### Gotchas
 
-- **Default UI is agent-shell**: plain interactive use should go through `magent-agent-shell.el` and `magent-acp.el`. Do not add new default UI behavior to `magent-ui-legacy.el`.
+- **Only supported frontend is agent-shell**: interactive use goes through `magent-agent-shell.el` and `magent-acp.el`.
 - **Internal commands are not slash commands**: keep Magent maintenance workflows behind explicit `M-x magent-run-*` commands and `magent-command-register`; do not add `/magent-*` local command handling back to `magent-acp.el`.
 - **Doctor never receives general tools**: keep `magent-run-doctor` on the trusted probe plus one tool-free request path. Do not expose `emacs_eval`, shell, file tools, backend objects, credentials, environment variables, or raw provider logs through Doctor probes.
-- **Legacy UI is isolated**: `magent-ui-legacy.el` owns `magent-output-mode`, compose buffers, legacy rendering, and the old transient menu. Keep new UI-independent behavior in `magent-runtime-api.el`.
-- **`magent-output-mode` derives from `special-mode`**: In the legacy UI, the workspace is read-only and ledger-rendered. Use `inhibit-read-only` for insertions; do not reintroduce org folding or markdown-to-org conversion in the live path.
-- **`magent-ui--with-insert` suppresses buffer-boundary signals**: In the legacy UI, catches `beginning-of-buffer`, `end-of-buffer`, etc. to suppress cursor-adjustment errors from process filters and active minor modes.
-- **Evil integration is optional**: Keep Evil-specific behavior in `magent-evil.el`. Do not add `evil-*` calls, variables, or `with-eval-after-load 'evil` forms to core UI files.
-- **Core logging is UI-neutral**: `magent-log.el` dispatches formatted messages to sinks and falls back to `message` for warnings/errors when headless. `magent-ui.el` registers the optional `*magent-log*` buffer sink.
+- **Unsupported UI files stay isolated**: do not expose or extend `magent-ui.el`, `magent-ui-legacy.el`, `magent-legacy-ui.el`, or `magent-legacy-*.el` as user interfaces. Keep UI-independent behavior in `magent-runtime-api.el`, ACP conversion in `magent-acp.el`, and supported frontend behavior in `magent-agent-shell.el`.
+- **Core logging is UI-neutral**: `magent-log.el` dispatches formatted messages to sinks and falls back to `message` for warnings/errors when headless.
 - **Tool execution helpers live in `magent-agent-loop.el`**: serial queueing, abort cleanup, lifecycle event emission, and tool-result recording are all loop-owned; UI sinks own visible rendering. As with Codex, repeated tool use is steered by prompt/context rather than a hard `emacs_eval` call-count guard. Keep final-response retry policy in `magent-agent.el`, not in tool dispatch.
 - **Provider transport stays in gptel**: `magent-llm-gptel.el` may use gptel private FSM details internally for one sampling request, but the Magent loop consumes only normalized events.
-- **Legacy request generation counter**: `magent-ui--request-generation` increments on legacy dispatch and interrupt. Stale callbacks compare their captured generation and discard themselves if mismatched.
-- **`revert-buffer` in legacy output buffer**: Bound to `magent-ui--revert-buffer` → `magent-ui-render-history`.
 
 ### Agent Definitions
 
@@ -208,43 +196,25 @@ Tool-type skills can have companion `.el` files defining `magent-skill-<name>-in
 
 ### Configuration
 
-UI-neutral `defcustom` variables live in `magent-config.el` under `customize-group magent`. UI options and faces live in `magent-ui.el` under `customize-group magent-ui`, so a future UI package can move without pulling presentation state out of core. LLM provider/model/key settings are managed entirely by gptel.
+UI-neutral `defcustom` variables live in `magent-config.el` under `customize-group magent`. Options and faces in unsupported UI files are not a supported configuration surface. LLM provider/model/key settings are managed entirely by gptel.
 
 Key settings: `magent-default-agent` (`"build"`), `magent-enable-tools` (list of enabled tool symbols), `magent-org-roam-directory` (repository summary destination; nil falls back to `org-roam-directory`), `magent-include-reasoning` (`t`/`ignore`/`nil`), `magent-request-timeout` (120s), `magent-bash-timeout` (30s), `magent-emacs-eval-timeout` (10s), `magent-max-history` (100).
 
-### Keybindings
+### Supported Frontend Commands
 
-`C-c m` prefix in `magent-mode`. Plain prompt entry opens or reuses the
-agent-shell backend by default; the transient menu remains available as a
-legacy/compatibility command surface:
+| Command | Action |
+|---------|--------|
+| `magent-agent-shell-dwim` | Open or reuse the project-local Magent agent-shell buffer |
+| `magent-agent-shell-start` | Start a fresh Magent agent-shell buffer |
+| `magent-agent-shell-prompt-region` | Send the active region through agent-shell |
+| `magent-agent-shell-ask-at-point` | Ask about the symbol at point through agent-shell |
+| `magent-agent-shell-interrupt` | Interrupt the active request |
+| `magent-agent-shell-toggle-skill-for-next-request` | Toggle a one-shot instruction skill |
+| `magent-agent-shell-run-skill-command` | Run a command-like skill |
 
-| Key | Command |
-|-----|---------|
-| `C-c m p` | `magent-dwim` |
-| `C-c m r` | `magent-prompt-region` |
-| `C-c m a` | `magent-ask-at-point` |
-| `C-c m ?` | `magent-transient-menu` |
-
-Lower-frequency legacy commands are still reachable from `magent-transient-menu`.
-
-Transient top-level keys:
-
-| Key | Action |
-|-----|--------|
-| `o` | Open compose |
-| `i` | Run the built-in `init` skill command |
-| `!` | Run a command-like skill |
-| `A` | Agent submenu |
-| `s` | Skills submenu |
-| `c` | Clear current session |
-| `S` | Session/transcript submenu |
-| `l` | Logs submenu |
-| `h` | Health/diagnostics submenu |
-| `b` | Buffer submenu |
-
-Common nested paths: `? s s` toggles a one-shot instruction skill, `? s K` clears selected skills, `? A A` selects an agent, `? A v` lists agents, `? S j` opens a child-agent transcript, and `? l l` shows the log.
-
-In legacy `magent-output-mode`: `TAB` fold/unfold turn sections, `?` transient menu, `C-c C-c` opens compose when idle or confirms interrupt while a request is running, `C-c C-o` opens compose. In legacy `magent-compose-mode`: `C-c C-c` submits and `C-c C-k` clears compose.
+Use agent-shell's own bindings, session options, mode selector, and slash
+commands for interaction. Do not document the `C-c m` compatibility bindings or
+legacy transient surface as supported entry points.
 
 ## Conventions
 

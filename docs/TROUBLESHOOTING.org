@@ -188,7 +188,10 @@ variables explicitly, such as ~GPTEL_DIR~, ~TRANSIENT_DIR~, ~COMPAT_DIR~, or
 - If a tool continuation hangs after the first tool result, inspect ~/tmp/magent-live-trace.el~. A ~gptel-curl-get-args :event enter~ with no matching ~:event leave~ usually means gptel hit a serialization error before curl started. Check tool-call names, tool args, and assistant ~tool_calls~ history for Lisp symbols or non-JSON-safe values.
 - If the first provider request emits a tool call but the second request never starts, check whether Magent recorded the tool result in the session and rebuilt the continuation prompt via ~magent-agent-loop-request-for-current-session~.
 - If the continuation starts but the UI still gets an empty final answer after tool output, check for the ~retrying empty final response after tool output~ log line. Magent should attempt exactly one no-tool final-response retry; reasoning-only completions should remain empty assistant text rather than being displayed as the answer.
-- If the second request completes but the UI omits the final assistant text, remember that tool-enabled requests may be non-streaming. A non-streaming string callback can be the final completion, not a text delta; the UI must render the completion text that was not already streamed before calling ~magent-ui-finish-streaming-fontify~.
+- If the second request completes but agent-shell omits the final assistant
+  text, remember that tool-enabled requests may be non-streaming. A
+  non-streaming string callback can be the final completion, not a text delta;
+  verify the ACP observer emitted the corresponding agent-shell update.
 - If a live smoke test passes in direct ~emacsclient~ but ~make test-live-smoke~ fails, confirm ~EMACSCLIENT="emacsclient -s magent-live-test"~ is set. The Makefile default may target the main Emacs server.
 - If a test unexpectedly loads an older Magent, check ~load-history~, ~load-path~ ordering, and ~.elc~ files. ~test/magent-live-test.el~ uses source loading with ~nosuffix~; keep that behavior when adding files to the live reload list.
 
@@ -217,7 +220,7 @@ Expected final status files include ~:status passed~, ~:repo-source~ paths under
 *Problem:* Request hangs or times out.
 
 *Diagnosis:*
-1. Check ~*magent-log*~ buffer: open the transient menu with ~C-c m ?~ or ~?~, then press ~l l~
+1. Open ~*magent-log*~ directly with ~C-x b~ and inspect the latest entries.
 2. Verify gptel configuration:
    #+begin_src elisp
    gptel-model      ; Should show your model
@@ -236,7 +239,7 @@ Expected final status files include ~:status passed~, ~:repo-source~ paths under
 *Diagnosis:*
 1. Check ~*magent-log*~ for error details
 2. Verify tool is enabled: ~magent-enable-tools~
-3. Check permissions: ~M-x magent-show-current-agent~
+3. Run ~M-x magent-list-agents~ and verify the current agent-shell session mode.
 
 *Solution:*
 - For bash: Ensure command is valid in your shell
@@ -249,7 +252,8 @@ Expected final status files include ~:status passed~, ~:repo-source~ paths under
 *Diagnosis:*
 1. Check whether the code path uses the lifecycle tools: ~spawn_agent~, ~send_agent_message~, ~wait_agent~, ~list_agents~, and ~close_agent~.
 2. Review ~docs/AGENT_JOBS.org~ for the child-agent/job lifecycle contract.
-3. Inspect compact ~Agent ...~ rows in ~*magent*~, or run ~M-x magent-show-agent-transcript~ / transient ~S j~ to view the persisted child transcript.
+3. Inspect compact child-agent updates in the agent-shell buffer and verify the
+   persisted ~agent-jobs~ data in the parent session.
 4. Check ~*magent-log*~ for nested request or tool-call errors.
 5. After resume, confirm the parent session still has the expected job metadata in ~agent-jobs~.
 
@@ -261,12 +265,14 @@ Expected final status files include ~:status passed~, ~:repo-source~ paths under
 *Problem:* Tool execution blocked by permissions.
 
 *Diagnosis:*
-Check agent permissions: ~M-x magent-show-current-agent~
+Run ~M-x magent-list-agents~ to inspect agent profiles and verify the current
+agent-shell session mode.
 
 *Solution:*
 - Temporarily bypass: ~M-x magent-toggle-bypass-permission~
 - Or customize: ~(setq magent-bypass-permission t)~
-- Or switch agent from the transient menu with ~A A~ and select one with appropriate permissions
+- Or switch agent with ~M-x agent-shell-set-session-mode~ in the agent-shell
+  buffer and select one with appropriate permissions.
 
 *** Session not saving
 *Problem:* Session state lost between Emacs restarts.
@@ -283,27 +289,19 @@ magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
 (make-directory magent-session-directory t)
 #+end_src
 
-** UI Issues
+** Agent-shell Issues
 
-*** Output buffer not updating
+*** Agent-shell buffer not updating
 *Problem:* Streaming appears stuck.
 
 *Diagnosis:*
-1. Check if request is active: Look for ~[busy]~ in the modeline
+1. Check the request status in the agent-shell buffer.
 2. Check ~*Messages*~ buffer for errors
-3. Press ~C-c C-c~ in the output buffer and confirm the interrupt
+3. Press ~C-c C-c~ in the agent-shell buffer and confirm the interrupt
 
 *Solution:*
-- Clear from the transient menu with ~c~, then retry with ~C-c m p~
+- Submit ~/clear~, then retry with ~M-x magent-agent-shell-dwim~.
 - Restart Emacs if issue persists
-
-*** Org-mode folding issues
-*Problem:* Sections won't fold/unfold.
-
-*Solution:*
-- Use ~TAB~ on section headers
-- Use ~S-TAB~ to toggle all sections
-- Ensure you're in the output buffer, not a code buffer
 
 ** Performance Issues
 
@@ -311,13 +309,9 @@ magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
 *Problem:* Response appears character-by-character.
 
 *Solution:*
-#+begin_src elisp
-;; Increase batch delay
-(setq magent-ui-batch-insert-delay 0.1)
-
-;; Lower async fontification threshold
-(setq magent-ui-fontify-threshold 200)
-#+end_src
+- Confirm that the installed agent-shell version satisfies README requirements.
+- Reproduce in a fresh ~M-x magent-agent-shell-start~ buffer and inspect
+  ~*Messages*~ and ~*magent-log*~ for update or rendering errors.
 
 *** High memory usage
 *Problem:* Emacs memory grows over time.
@@ -327,9 +321,10 @@ magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
 ;; Reduce history size
 (setq magent-max-history 50)
 
-;; Clear old sessions periodically
-(magent-clear-session)
 #+end_src
+
+Start a fresh conversation with ~M-x magent-agent-shell-start~ when the current
+session no longer needs to be retained in the active buffer.
 
 * Diagnostic Commands
 
@@ -341,7 +336,7 @@ Runs comprehensive self-check and reports issues.
 
 ** View Logs
 #+begin_src elisp
-M-x magent-show-log  ; or open transient with C-c m ? / ? and press l l
+C-x b *magent-log* RET
 #+end_src
 Shows API request/response log.
 

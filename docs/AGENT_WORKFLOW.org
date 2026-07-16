@@ -188,9 +188,8 @@ queued user submissions from leaking into the active model request.
 
 * UI Projection
 
-The default UI backend is agent-shell.  ~magent-ui.el~ is a thin public
-command router; plain prompts route to ~magent-agent-shell.el~, which creates
-an in-process ACP client implemented by ~magent-acp.el~.  ACP session/prompt
+The supported frontend is agent-shell.  ~magent-agent-shell.el~ creates an
+in-process ACP client implemented by ~magent-acp.el~.  ACP session/prompt
 requests submit to ~magent-runtime-api.el~ and stay pending until the
 corresponding runtime turn completes, fails, or is cancelled.  The runtime
 emits Magent-native observer events; ~magent-acp.el~ converts those events to
@@ -202,22 +201,17 @@ tagged by runtime session id so cancellation is session-scoped: cancelling one
 ACP session removes that session's queued work and aborts its active turn
 without dropping other sessions' queued turns.
 
-The legacy workspace/compose UI is isolated in ~magent-ui-legacy.el~.  It
-derives from ~special-mode~, shows an oldest-first timeline of retained
-non-dropped ledger turns, and uses an independent ~magent-compose-mode~ buffer
-keyed by session scope.  Reasoning is stored as ledger items; the legacy
-workspace shows status and character count, while transcript/detail commands
-can inspect full content.  See ~docs/UI_BACKENDS.org~ for the current backend
-boundary.
+~magent-ui.el~, ~magent-ui-legacy.el~, and the other legacy UI names covered by
+~docs/UI_BACKENDS.org~ are retained unsupported code. They are not part of the
+supported UI projection or public command surface.
 
 * Codex Differences Still Preserved
 
 Magent intentionally still differs from Codex in these loop-adjacent
 areas:
 
-- UI is Emacs-native but now backendized: default interaction is agent-shell
-  through an in-process ACP client, while the old workspace/compose UI is a
-  legacy backend.
+- UI is Emacs-native: supported interaction is agent-shell through an
+  in-process ACP client.
 - Provider streaming is normalized behind ~magent-llm-gptel.el~, but
   transport remains gptel.
 - Codex core runs a turn as a multi-sampling loop where pending user

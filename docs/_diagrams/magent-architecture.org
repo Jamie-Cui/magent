@@ -19,7 +19,6 @@ package "Emacs runtime" {
 }
 
 package "Magent" {
-  [magent-ui.el\nbackend router]
   [magent-acp.el\nin-process ACP]
   [runtime API / queue]
   [thread ledger\nsnapshot + journal]
@@ -52,7 +51,6 @@ User --> [agent-shell]
 [tool orchestrator\npermission + approval] --> [buffers / modes / project]
 [agents / skills / capabilities] --> [agent loop]
 [.magent overlays] --> [agents / skills / capabilities]
-[thread ledger\nsnapshot + journal] --> [magent-ui.el\nbackend router]
 @enduml
 #+end_src
 
@@ -68,7 +66,7 @@ skinparam monochrome true
 skinparam shadowing false
 
 actor User
-participant "agent-shell / legacy UI" as UI
+participant "agent-shell" as UI
 participant "magent-runtime-api.el" as Runtime
 participant "magent-runtime-queue.el" as Queue
 participant "magent-ledger.el" as Ledger
