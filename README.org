@@ -26,7 +26,7 @@ See [[file:docs/UI_BACKENDS.org][docs/UI_BACKENDS.org]] for the UI boundary and 
 - [[https://elpa.gnu.org/packages/compat.html][compat]] 30.1+
 - [[https://elpa.gnu.org/packages/yaml.html][yaml]] 1.0+
 - acp 0.12.2+
-- agent-shell 0.57.1+
+- agent-shell 20260714.1645+
 - [[https://github.com/BurntSushi/ripgrep][ripgrep]] (for the ~grep~ tool)
 
 * Installation
@@ -45,6 +45,21 @@ Add the project to your Emacs load path:
 #+begin_src elisp
 (use-package magent
   :load-path "/path/to/magent/lisp"
+  :config
+  (global-magent-mode 1))
+#+end_src
+
+** Installing from Git with ~use-package~
+
+When your ~use-package~ supports the ~:vc~ keyword, it can install and load
+Magent directly from Git:
+
+#+begin_src elisp
+(use-package magent
+  :vc (:url "https://github.com/Jamie-Cui/magent" :rev "master")
+  :ensure t
+  :after (agent-shell gptel)
+  :demand t
   :config
   (global-magent-mode 1))
 #+end_src
@@ -75,6 +90,37 @@ Magent delegates all LLM communication to [[https://github.com/karthink/gptel][g
 
 See [[https://github.com/karthink/gptel#configuration][gptel documentation]] for full provider setup (Anthropic, OpenAI, Ollama, etc.).
 
+Enable Magent in the current buffer, or enable it globally:
+
+#+begin_src elisp
+(magent-mode 1)
+
+;; Or enable Magent in every buffer.
+(global-magent-mode 1)
+#+end_src
+
+The default UI backend is agent-shell.  Magent supplies its own agent-shell
+configuration and in-process ACP client; ~magent-dwim~ registers that
+configuration automatically, so no external ACP command or manual
+~agent-shell-agent-configs~ entry is required.  To start using Magent:
+
+1. Visit a file in the project you want Magent to work on.
+2. Run ~M-x magent-dwim~ (or press ~C-c m p~).  Magent opens or reuses the
+   project-local agent-shell buffer through its in-process ACP adapter.
+3. Type a prompt at the bottom of the agent-shell buffer and press ~RET~ to
+   submit it.  Assistant responses, reasoning, tool calls, and permission
+   requests are streamed into the same buffer.
+4. Enter another prompt and press ~RET~ to continue the project-scoped session.
+   While a request is running, press ~C-c C-c~ to interrupt it.
+
+From a source buffer, ~C-c m r~ sends the active region and ~C-c m a~ asks
+about the symbol at point; both commands submit their context through the same
+agent-shell backend.
+
+To make Magent available from the generic ~M-x agent-shell~ selector as soon as
+Magent loads, call ~(magent-agent-shell-ensure-config)~ in Magent's
+~use-package~ ~:config~ block.  This is optional when using ~magent-dwim~.
+
 ** Magent-Specific Options
 
 Customize with ~M-x customize-group RET magent RET~. Key settings:
@@ -89,6 +135,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-max-sampling-requests~ | ~0~                           | Continuation budget before one forced no-tool final request; 0 disables the guard       |
 | ~magent-default-agent~         | ~"build"~                     | Default agent for new sessions                                                        |
 | ~magent-default-effort~        | ~nil~                         | Default reasoning effort; nil/auto uses provider default                              |
+| ~magent-skill-directories~     | ~user-emacs-directory/magent/skills/~ | Ordered user skill roots; later entries override earlier entries                |
 | ~magent-ui-backend~            | ~agent-shell~                  | Recommended UI backend for Magent public commands                                     |
 | ~magent-agent-shell-session-strategy~ | ~new~                  | agent-shell session startup policy: ~new~, ~latest~, or ~prompt~                        |
 | ~magent-load-custom-agents~    | ~t~                           | Load custom agents from ~.magent/agent/*.md~                                            |
@@ -169,22 +216,6 @@ workflow reuses the session associated with the current project:
 - Compact audit logs for permission decisions and sensitive tools are written as daily JSONL files under ~magent-session-directory/audit/~ unless ~magent-audit-directory~ is set.
 - ~magent-resume-session~ shows all sessions grouped by project, with date and time in each candidate, the current project's group first, and global sessions in their own group.
 
-** Quick Example
-
-#+begin_src elisp
-;; Enable the mode
-(magent-mode 1)
-
-;; Or globally
-(global-magent-mode 1)
-
-;; Send a prompt
-M-x magent-dwim
-
-;; Or use keybinding
-C-c m p
-#+end_src
-
 ** Skill Commands
 
 Instruction skills can be selected as one-shot context for the next request.
@@ -226,6 +257,16 @@ execute copied scripts, and records provenance in ~.magent-install.json~.
 ~M-x magent-skill-delete~ permanently deletes a selected user-level skill after
 one ~y/n~ confirmation.  These commands never manage project-local
 ~.magent/skills/~ or ~~/.agents/skills/~.
+
+~magent-skill-directories~ is ordered: later directories take precedence when
+skill names collide, and its final entry is the installation target used by the
+skill manager.  Append a custom directory to retain the default roots while
+making the custom directory the highest-priority source and installation
+target:
+
+#+begin_src elisp
+(add-to-list 'magent-skill-directories "/path/to/skills" t)
+#+end_src
 
 * Agent System
 
