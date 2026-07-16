@@ -144,7 +144,6 @@
                      magent-install-skill
                      magent-delete-skill
                      magent-open-memory
-                     magent-open-memory-status
                      magent-open-audit
                      magent-command-open-session
                      magent-clear-capability-overrides
@@ -160,6 +159,7 @@
                      magent-skill-delete
                      magent-memory-open
                      magent-memory-status
+                     magent-open-memory-status
                      magent-show-audit
                      magent-command-show-session
                      magent-capability-clear-local-overrides

@@ -212,7 +212,6 @@ boundary.
 | ~magent-list-internal-sessions~   | Select a saved internal session and inspect its final result and activity |
 | ~magent-cancel-internal-command~  | Cancel an active internal workflow that exposes cancellation |
 | ~magent-open-memory~              | Open the managed Emacs profile memory file |
-| ~magent-open-memory-status~       | Open memory existence, activity, and staleness status |
 
 Internal session viewers show the final result first and keep detailed activity
 collapsed by default. Cancellation is session-scoped and does not cancel work

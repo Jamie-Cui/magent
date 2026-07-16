@@ -193,7 +193,6 @@ excerpts。把 ~magent-memory-use-llm~ 自定义为 nil，可以在不向 provid
 | ~magent-list-internal-sessions~   | 选择已保存的 internal session，查看最终结果和执行活动 |
 | ~magent-cancel-internal-command~  | 取消提供 cancellation 的活动 internal workflow |
 | ~magent-open-memory~              | 打开 managed Emacs profile memory 文件 |
-| ~magent-open-memory-status~       | 打开 memory 的存在、活动及过期状态 |
 
 Internal session viewer 优先显示最终结果，并默认折叠详细 activity。Cancellation
 按 session 隔离，不会取消其他 Magent 对话所属的工作。

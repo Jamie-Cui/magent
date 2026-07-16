@@ -1096,52 +1096,6 @@ with a plan and continuation for scan-based operations."
           :generated-at (magent-memory--metadata-get metadata "generated-at")
           :roots recorded-roots)))
 
-(defun magent-memory-status-text ()
-  "Return status text for Magent Emacs profile memory."
-  (let* ((file (magent-memory-file))
-         (metadata (magent-memory--metadata))
-         (stale (magent-memory-stale-status))
-         (selection magent-memory--last-selection))
-    (string-join
-     (delq
-      nil
-      (list
-       "Magent Emacs Profile Memory Status"
-       ""
-       (format "File: %s" file)
-       (format "Exists: %s" (if (plist-get stale :exists) "yes" "no"))
-       (format "Active: %s" (if (plist-get stale :active) "yes" "no"))
-       (format "Generated at: %s"
-               (or (magent-memory--metadata-get metadata "generated-at")
-                   "unknown"))
-       (format "Auto injection: %s"
-               (if magent-memory-enable-auto-injection "enabled" "disabled"))
-       (format "Stale: %s"
-               (if (plist-get stale :stale) "yes" "no"))
-       (when (plist-get stale :reasons)
-         (concat "Stale reasons:\n"
-                 (mapconcat (lambda (reason) (format "- %s" reason))
-                            (plist-get stale :reasons)
-                            "\n")))
-       (when selection
-         (format "Last injected headings: %s"
-                 (mapconcat #'identity
-                            (or (plist-get selection :headings) nil)
-                            ", ")))
-       (when selection
-         (format "Last omitted headings: %s"
-                 (mapconcat #'identity
-                            (or (plist-get selection :omitted-headings) nil)
-                            ", ")))))
-     "\n")))
-
-;;;###autoload
-(defun magent-open-memory-status ()
-  "Open Magent Emacs profile memory status."
-  (interactive)
-  (magent--with-display-buffer "*Magent Memory Status*"
-    (insert (magent-memory-status-text))))
-
 (defun magent-memory--command-confirm-provider (context operation)
   "Return confirmation function for memory OPERATION in command CONTEXT."
   (lambda (plan continue)
