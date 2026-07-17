@@ -13,9 +13,10 @@
   (magent-command-register
    "test"
    :description "Run and interpret the relevant project tests."
-   :handler (magent-command-prompt-handler
+   :handler (magent-command-turn-handler
              (lambda (_invocation)
-               (magent-prompt-read "commands/test.org")))
+               (magent-command-turn-spec-create
+                :prompt (magent-prompt-read "commands/test.org"))))
    :owner 'magent-command-test
    :source-layer 'builtin
    :tools '(read_file grep bash emacs_eval)))

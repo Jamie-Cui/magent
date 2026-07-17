@@ -13,9 +13,10 @@
   (magent-command-register
    "review"
    :description "Review the current changes for defects, risks, and missing tests."
-   :handler (magent-command-prompt-handler
+   :handler (magent-command-turn-handler
              (lambda (_invocation)
-               (magent-prompt-read "commands/review.org")))
+               (magent-command-turn-spec-create
+                :prompt (magent-prompt-read "commands/review.org"))))
    :owner 'magent-command-review
    :source-layer 'builtin
    :tools '(read_file grep bash)))

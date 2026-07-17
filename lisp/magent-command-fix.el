@@ -13,9 +13,10 @@
   (magent-command-register
    "fix"
    :description "Diagnose and fix the current bug, failure, or regression."
-   :handler (magent-command-prompt-handler
+   :handler (magent-command-turn-handler
              (lambda (_invocation)
-               (magent-prompt-read "commands/fix.org")))
+               (magent-command-turn-spec-create
+                :prompt (magent-prompt-read "commands/fix.org"))))
    :owner 'magent-command-fix
    :source-layer 'builtin
    :tools '(read_file write_file edit_file grep bash emacs_eval)))
