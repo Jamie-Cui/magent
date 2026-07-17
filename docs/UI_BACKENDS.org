@@ -26,7 +26,7 @@ the ACP adapter; shared behavior belongs in the runtime API.
 
 * Supported Flow
 
-1. Start or reuse Magent with ~M-x magent-agent-shell-dwim~, or register Magent
+1. Start or reuse Magent with ~M-x magent-start~, or register Magent
    with ~magent-agent-shell-ensure-config~ and select it from ~M-x agent-shell~.
 2. agent-shell calls the in-process ACP client from ~magent-acp.el~.
 3. ACP normalizes text and resource blocks separately, persists structured
@@ -44,7 +44,8 @@ the ACP adapter; shared behavior belongs in the runtime API.
 * Configuration
 
 - ~magent-agent-shell-session-strategy~ selects the supported frontend's new,
-  latest, or prompt-based session flow.
+  latest, or prompt-based session flow for both Magent entry commands and
+  Magent selected from the generic agent-shell picker.
 
 * Development Boundary
 

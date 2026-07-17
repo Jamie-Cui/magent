@@ -248,5 +248,5 @@ Internal session viewer 优先显示最终结果，并默认折叠详细 activit
   时，使用 slash command。
 - 当任务是 Magent 自身维护、profile-memory 管理或需要独立 durable session 的
   脱敏诊断时，使用 internal workflow command。
-- 对于不属于预定义工作流的自由请求，使用 ~magent-agent-shell-dwim~ 、
+- 对于不属于预定义工作流的自由请求，使用 ~magent-start~ 、
   ~magent-agent-shell-prompt-region~ 和 ~magent-agent-shell-ask-at-point~ 。

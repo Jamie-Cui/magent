@@ -457,7 +457,7 @@ Skill instructions for the agent.
 - *Documentation:* ~README.org~, ~AGENTS.md~ in repo root
 - *Child-agent architecture:* ~docs/AGENT_JOBS.org~
 - *Interactive help:* ~M-x magent-run-doctor~ for self-diagnostics
-- *Frontend:* ~M-x magent-agent-shell-dwim~
+- *Frontend:* ~M-x magent-start~
 - *Skills:* ~M-x magent-agent-shell-toggle-skill-for-next-request~
 - *Logs:* open ~*magent-log*~ with ~C-x b~
 - *Agent selection:* ~M-x agent-shell-set-session-mode~ from the agent-shell buffer
@@ -465,7 +465,7 @@ Skill instructions for the agent.
 * Next Steps
 
 1. *Run the tests* — Start with ~make test-unit~; use an isolated Emacs server before running the full ~make test~
-2. *Try the examples* — Run ~M-x magent-agent-shell-dwim~
+2. *Try the examples* — Run ~M-x magent-start~
 3. *Read the code* — Follow the guided tour above
 4. *Experiment* — Create a custom agent or skill
 5. *Contribute* — Check open issues and submit PRs

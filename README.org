@@ -83,7 +83,7 @@ agent-shell configuration and in-process ACP client, so no external ACP
 command is required.  To start using Magent:
 
 1. Visit a file in the project you want Magent to work on.
-2. Run ~M-x magent-agent-shell-dwim~.  Magent opens or reuses the project-local
+2. Run ~M-x magent-start~.  Magent opens or reuses the project-local
    agent-shell buffer through its in-process ACP adapter.  You can also run
    ~M-x agent-shell~ and select Magent after registering the configuration as
    shown in the installation examples above.
@@ -144,7 +144,7 @@ must appear exactly once in ~prompt/manifest.txt~.
 
 | Command                                          | Description                                                      |
 |--------------------------------------------------+------------------------------------------------------------------|
-| ~magent-agent-shell-dwim~                        | Open or reuse the project-local Magent agent-shell buffer        |
+| ~magent-start~                                   | Open or reuse the project-local Magent agent-shell buffer        |
 | ~magent-agent-shell-start~                       | Start a fresh Magent agent-shell buffer                          |
 | ~magent-agent-shell-prompt-region~               | Send the selected region through agent-shell                     |
 | ~magent-agent-shell-ask-at-point~                | Ask about the symbol at point through agent-shell                |

@@ -275,6 +275,6 @@ belonging to unrelated Magent conversations.
   and should reuse its agent, context, and transcript.
 - Use an internal workflow command for Magent-owned maintenance, profile-memory
   management, or sanitized diagnosis that needs its own durable session.
-- Use ~magent-agent-shell-dwim~, ~magent-agent-shell-prompt-region~, and
+- Use ~magent-start~, ~magent-agent-shell-prompt-region~, and
   ~magent-agent-shell-ask-at-point~ for free-form requests rather than a
   predefined workflow.

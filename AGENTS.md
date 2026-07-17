@@ -141,7 +141,7 @@ magent.el (package entry point and lazy runtime bootstrap)
 
 ### Core Flow
 
-1. **Entry point** (`magent.el`, `magent-agent-shell.el`): `magent.el` loads the package; supported interaction starts with `magent-agent-shell-dwim`, `magent-agent-shell-start`, or Magent selected from `agent-shell`. Static initialization is **lazy** — triggered on the first supported command via `magent--ensure-initialized`.
+1. **Entry point** (`magent.el`, `magent-agent-shell.el`): `magent.el` loads the package; supported interaction starts with `magent-start`, `magent-agent-shell-start`, or Magent selected from `agent-shell`. Static initialization is **lazy** — triggered on the first supported command via `magent--ensure-initialized`.
 
 2. **Runtime** (`magent-runtime.el`): Owns the ordered initialization pipeline for agents, skills, slash commands, and capabilities. Static bundled definitions load once; project-local overlays under `.magent/` are activated and unloaded as session scope changes.
 
@@ -214,7 +214,7 @@ Key settings: `magent-default-agent` (`"build"`), `magent-enable-tools` (list of
 
 | Command | Action |
 |---------|--------|
-| `magent-agent-shell-dwim` | Open or reuse the project-local Magent agent-shell buffer |
+| `magent-start` | Open or reuse the project-local Magent agent-shell buffer |
 | `magent-agent-shell-start` | Start a fresh Magent agent-shell buffer |
 | `magent-agent-shell-prompt-region` | Send the active region through agent-shell |
 | `magent-agent-shell-ask-at-point` | Ask about the symbol at point through agent-shell |
