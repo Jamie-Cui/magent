@@ -46,7 +46,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         LOCAL_REPO: ${{ github.workspace }}
         # RECIPE is your recipe as written for MELPA:
-        RECIPE: (magent :fetcher github :repo "Jamie-Cui/magent" :files (:defaults "prompt" "skills" "capabilities"))
+        RECIPE: (magent :fetcher github :repo "Jamie-Cui/magent" :files ("lisp/*.el" "prompt" "skills" "capabilities"))
         # set this to true if warnings should be treated as errors:
         WARN_IS_ERROR: false
         # set this to false (or remove it) if the package isn't on MELPA:

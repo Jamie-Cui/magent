@@ -53,7 +53,7 @@ emacs -Q --batch -L lisp -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'gptel-*' -
 CI is defined under `.github/workflows/`:
 - `test.yml`: installs Emacs 29.4 via Nix, installs package dependencies, runs `make compile`, `make test-unit`, and `make test-live-smoke` in a temporary daemon.
 - `coverage.yml`: runs `make coverage` and uploads `coverage/testcover-summary.tsv`.
-- `melpazoid.yml`: runs MELPA-style package checks. Its recipe uses `:defaults` for production libraries and must explicitly include `prompt/`, `skills/`, and `capabilities/`, because Magent depends on those bundled data at runtime. Keep files matching `*-test.el` or `*-tests.el` under `test/`; MELPA excludes them from production packages. The production `/test` command lives in `magent-command-test-runner.el`.
+- `melpazoid.yml`: runs MELPA-style package checks. Its recipe explicitly includes `lisp/*.el`, `prompt/`, `skills/`, and `capabilities/`, because Magent depends on those production libraries and bundled data at runtime. Do not replace the explicit library glob with `:defaults`: MELPA excludes `*-test.el`, including the production `/test` module `magent-command-test.el`.
 
 Package metadata should stay centralized in `magent.el` and `magent-pkg.el`; non-main modules should not carry `Package-Requires` headers. Keep SPDX license identifiers in every Elisp source file so melpazoid can detect licensing consistently.
 
@@ -61,13 +61,13 @@ Package metadata should stay centralized in `magent.el` and `magent-pkg.el`; non
 
 When reproducing the melpazoid job locally:
 
-1. Use the exact recipe from `.github/workflows/melpazoid.yml` and set `LOCAL_REPO` to this checkout. Verify the staged `pkg/` contains `magent-command-test-runner.el`, excludes `test/magent-command-test.el`, contains the complete flattened production Elisp set, and includes the bundled runtime-data directories before trusting later checks.
+1. Use the exact recipe from `.github/workflows/melpazoid.yml` and set `LOCAL_REPO` to this checkout. Verify the staged `pkg/` contains `magent-command-test.el`, excludes `test/magent-command-builtin-test.el`, contains the complete flattened production Elisp set, and includes the bundled runtime-data directories before trusting later checks.
 2. Check for an existing `melpazoid:latest` image before rebuilding. It may be reused only when its installed dependency set matches the newly generated `_requirements.el`; never treat the package sources embedded in an old image as current.
 3. To reuse a compatible image, bind-mount the newly staged `pkg/` over `/workspace/pkg` and separately mount the current `melpazoid.el`, because the package mount hides the checker bundled in the image. The staged package root must be writable by the container user because byte compilation creates `.elc` files.
 4. Start each rerun from a fresh staged package, or remove checker-generated `.elc` and autoload files first. Otherwise a second run can lint artifacts that were not part of the MELPA recipe and produce misleading extra warnings.
 5. Run the container with `--network=none`, matching melpazoid's normal test target. Success for a packaging regression requires a zero exit status and a clean packaged `#'load` check; source-tree compilation alone does not prove that the recipe copied every runtime file.
 
-Keep `magent-test-melpazoid-recipe-packages-production-libraries` aligned with the workflow recipe so unit tests catch missing runtime-data entries. When adding a production module, also keep `magent-test-source-manifest-covers-production-elisp` green and check that its filename is not excluded by MELPA defaults.
+Keep `magent-test-melpazoid-recipe-packages-production-libraries` aligned with the workflow recipe so unit tests catch missing production libraries or runtime-data entries. When adding a production module, also keep `magent-test-source-manifest-covers-production-elisp` green.
 
 ### End-to-End Testing
 

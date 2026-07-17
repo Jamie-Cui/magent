@@ -129,7 +129,7 @@ GitHub Actions 运行：
 - ~coverage.yml~ ：运行 ~make coverage~ 并上传 ~coverage/testcover-summary.tsv~ 。
 - ~melpazoid.yml~ ：运行 MELPA-style package checks。
 
-melpazoid recipe 通过 ~:defaults~ 包含 production libraries，并显式添加 ~prompt/~、~skills/~ 和 ~capabilities/~。这些 bundled runtime data 必须保留，因为 Magent 会在运行时解析这些路径。匹配 ~*-test.el~ 或 ~*-tests.el~ 的文件应放在 ~test/~ 下；MELPA 会从 production package 中排除这些模式。
+melpazoid recipe 显式包含 ~lisp/*.el~、~prompt/~、~skills/~ 和 ~capabilities/~。这些 production libraries 和 bundled runtime data 必须保留，因为 Magent 会在运行时解析它们。这里不能使用 ~:defaults~：production 模块 ~magent-command-test.el~ 会因匹配 ~*-test.el~ 而被 MELPA 排除。
 
 Package metadata 保持集中在 ~magent.el~ 和 ~magent-pkg.el~ 。不要在 secondary modules 中添加 ~Package-Requires~ headers；package-lint 会把 main file 之外的这些 headers 视为 ineffective。每个 Elisp 文件都应包含 SPDX license identifier。
 

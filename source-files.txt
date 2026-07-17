@@ -36,7 +36,7 @@ lisp/magent-command-fix.el
 lisp/magent-command-init.el
 lisp/magent-command-review.el
 lisp/magent-command-summarize.el
-lisp/magent-command-test-runner.el
+lisp/magent-command-test.el
 lisp/magent-command-builtins.el
 lisp/magent-acp.el
 lisp/magent-agent-shell.el

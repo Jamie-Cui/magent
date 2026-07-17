@@ -62,7 +62,7 @@
                         magent-test--root-directory)
       nil t)
 
-(load (expand-file-name "test/magent-command-test.el"
+(load (expand-file-name "test/magent-command-builtin-test.el"
                         magent-test--root-directory)
       nil t)
 
@@ -94,18 +94,12 @@
       (should (re-search-forward "^[[:space:]]*RECIPE:[[:space:]]*\\(.*\\)$"
                                  nil t))
       (setq recipe (read (match-string 1))))
-    (let ((files (plist-get (cdr recipe) :files)))
-      (should (memq :defaults files))
-      (dolist (entry '("prompt" "skills" "capabilities"))
-        (should (member entry files))))
-    ;; Keep production modules clear of package-build's default test-file
-    ;; exclusions.  A later include cannot override an exclusion from
-    ;; `:defaults'.
-    (dolist (file (magent-test-source-files magent-test--root-directory))
-      (should-not
-       (string-match-p
-        "\\(?:\\`\\|/\\)\\(?:tests?\\|.*-tests?\\)\\.el\\'"
-        file)))))
+    (should
+     (equal (plist-get (cdr recipe) :files)
+            '("lisp/*.el" "prompt" "skills" "capabilities")))
+    (should
+     (member "lisp/magent-command-test.el"
+             (magent-test-source-files magent-test--root-directory)))))
 
 (defconst magent-test--builtin-slash-command-names
   '("explain" "fix" "init" "review" "summarize" "test")
