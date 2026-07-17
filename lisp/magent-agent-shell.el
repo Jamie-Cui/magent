@@ -16,6 +16,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'magent-acp)
+(require 'magent-command)
 (require 'magent-config)
 (require 'magent-runtime)
 (require 'magent-runtime-api)
@@ -458,37 +459,53 @@ after clearing the stale state."
     (message "Magent: selected skills cleared")))
 
 ;;;###autoload
-(defun magent-agent-shell-run-skill-command
-    (&optional skill-name extra-instruction)
-  "Run an instruction skill command through Magent agent-shell.
-When EXTRA-INSTRUCTION is non-nil, append it to the skill's default prompt."
+(defun magent-agent-shell-run-command (&optional command-name argument)
+  "Run a registered slash COMMAND-NAME through Magent agent-shell.
+When ARGUMENT is nil, prompt for optional trailing command text."
   (interactive)
   (magent--ensure-initialized)
   (magent-agent-shell--with-config
     (magent-agent-shell--prepare-skill-context)
-    (let* ((shell-buffer (magent-agent-shell--buffer))
-           (name (or skill-name
-                     (let ((names (magent-skills-command-names)))
-                       (unless names
-                         (user-error
-                          "Magent: no command-like skills are registered"))
-                       (completing-read "Run skill command: " names nil t))))
-           (extra (if extra-instruction
-                      extra-instruction
+    (let* ((name
+            (or command-name
+                (let ((names (mapcar #'magent-command-spec-name
+                                     (magent-command-list))))
+                  (unless names
+                    (user-error "Magent: no slash commands are registered"))
+                  (completing-read "Run Magent command: " names nil t))))
+           (_spec (or (magent-command-get name)
+                      (user-error "Magent: unknown command /%s" name)))
+           (extra (if argument
+                      argument
                     (read-string
-                     (format "Extra instruction for %s (optional): " name))))
-           (text (magent-skills-command-text name extra))
-           (skills (magent-skills-dedupe-names
-                    (append (magent-agent-shell--pending-skills shell-buffer)
-                            (list name)))))
-      (magent-agent-shell--clear-pending-skills shell-buffer)
-      (magent-agent-shell-send-prompt text :skills skills))))
+                     (format "Argument for /%s (optional): " name))))
+           (prompt (concat "/" name
+                           (unless (string-blank-p extra)
+                             (concat " " extra)))))
+      (magent-agent-shell-send-prompt prompt))))
+
+;;;###autoload
+(defun magent-agent-shell-run-skill-command
+    (&optional skill-name extra-instruction)
+  "Run a compatibility skill command through Magent agent-shell.
+When EXTRA-INSTRUCTION is non-nil, pass it as slash command argument."
+  (interactive)
+  (magent--ensure-initialized)
+  (let ((name (or skill-name
+                  (let ((names (magent-skills-command-names)))
+                    (unless names
+                      (user-error
+                       "Magent: no command-like skills are registered"))
+                    (completing-read "Run skill command: " names nil t)))))
+    (unless (magent-skills-default-prompt name)
+      (user-error "Magent: skill '%s' has no command adapter" name))
+    (magent-agent-shell-run-command name extra-instruction)))
 
 ;;;###autoload
 (defun magent-agent-shell-run-init-command (&optional extra-instruction)
-  "Run the built-in init skill command through Magent agent-shell."
+  "Run the built-in /init command through Magent agent-shell."
   (interactive)
-  (magent-agent-shell-run-skill-command "init" extra-instruction))
+  (magent-agent-shell-run-command "init" extra-instruction))
 
 ;;;###autoload
 (defun magent-agent-shell-prompt-region (begin end)

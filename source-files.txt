@@ -13,7 +13,7 @@ lisp/magent-ledger.el
 lisp/magent-agent-job.el
 lisp/magent-llm.el
 lisp/magent-llm-gptel.el
-lisp/magent-command.el
+lisp/magent-internal-command.el
 lisp/magent-doctor.el
 lisp/magent-memory.el
 lisp/magent-agent-loop.el
@@ -29,6 +29,15 @@ lisp/magent-agent-info.el
 lisp/magent-agent-builtins.el
 lisp/magent-agent.el
 lisp/magent-runtime-api.el
+lisp/magent-command.el
+lisp/magent-command-controls.el
+lisp/magent-command-explain.el
+lisp/magent-command-fix.el
+lisp/magent-command-init.el
+lisp/magent-command-review.el
+lisp/magent-command-summarize.el
+lisp/magent-command-test.el
+lisp/magent-command-builtins.el
 lisp/magent-acp.el
 lisp/magent-agent-shell.el
 lisp/magent-agent-registry.el

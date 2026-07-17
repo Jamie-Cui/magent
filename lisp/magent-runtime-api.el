@@ -26,6 +26,9 @@
 
 (declare-function magent-skills-get "magent-skills")
 (declare-function magent-skill-requires-project "magent-skills")
+(declare-function magent-agent-info-permission "magent-agent-info")
+(declare-function magent-tool-runtime-for-permission "magent-tool-runtime")
+(declare-function magent-tool-runtime-name "magent-tool-runtime")
 
 (cl-defstruct (magent-runtime-session
                (:constructor magent-runtime-session-create)
@@ -166,6 +169,32 @@
          (agent (or (magent-session-agent session)
                     (magent-agent-registry-get-default))))
     (and agent (magent-agent-info-name agent))))
+
+(defun magent-runtime-session-available-tool-names
+    (runtime-session &optional agent-or-name)
+  "Return tool symbols available to RUNTIME-SESSION's effective agent.
+When AGENT-OR-NAME is non-nil, inspect that agent instead of the session's
+current selection.  This is a read-only public preflight API for extensions."
+  (require 'magent-agent-registry)
+  (require 'magent-tool-runtime)
+  (let* ((session (magent-runtime-session-magent-session runtime-session))
+         (agent
+          (cond
+           ((null agent-or-name)
+            (or (magent-session-agent session)
+                (magent-agent-registry-get-default)))
+           ((magent-agent-info-p agent-or-name) agent-or-name)
+           ((symbolp agent-or-name)
+            (magent-agent-registry-get (symbol-name agent-or-name)))
+           ((stringp agent-or-name)
+            (magent-agent-registry-get agent-or-name))))
+         (permission (and agent (magent-agent-info-permission agent))))
+    (unless agent
+      (error "Unknown Magent agent: %S" agent-or-name))
+    (mapcar (lambda (runtime)
+              (let ((name (magent-tool-runtime-name runtime)))
+                (if (symbolp name) name (intern (format "%s" name)))))
+            (magent-tool-runtime-for-permission permission))))
 
 (defun magent-runtime-session-effort-option (runtime-session)
   "Return RUNTIME-SESSION's current effort option."
@@ -512,12 +541,14 @@ OBSERVER receives request-local Magent-native events."
        submission #'magent-runtime-api--start-submission))))
 
 (cl-defun magent-runtime-session-compact
-    (runtime-session &key instruction observer approval-provider on-complete)
+    (runtime-session &key instruction observer approval-provider turn-metadata
+                     on-complete)
   "Compact RUNTIME-SESSION with its hidden compaction agent.
-INSTRUCTION optionally refines the summary.  OBSERVER, APPROVAL-PROVIDER, and
-ON-COMPLETE have the same roles as in `magent-runtime-submit'.  The compaction
-turn is marked as a future prompt-history boundary while the session's selected
-user-facing agent is restored after the request finishes."
+INSTRUCTION optionally refines the summary.  OBSERVER, APPROVAL-PROVIDER,
+TURN-METADATA, and ON-COMPLETE have the same roles as in
+`magent-runtime-submit'.  The compaction turn is marked as a future
+prompt-history boundary while the session's selected user-facing agent is
+restored after the request finishes."
   (unless (magent-runtime-session-p runtime-session)
     (error "Expected runtime session, got: %S" runtime-session))
   (magent-runtime-api--assert-session-available runtime-session)
@@ -544,7 +575,7 @@ user-facing agent is restored after the request finishes."
          :agent compaction-agent
          :observer observer
          :approval-provider approval-provider
-         :turn-metadata (list :compaction t)
+         :turn-metadata (append (list :compaction t) turn-metadata)
          :on-complete
          (lambda (status result)
            (magent-session-set-agent session selected-agent)

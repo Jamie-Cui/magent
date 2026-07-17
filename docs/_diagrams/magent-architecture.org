@@ -126,7 +126,7 @@ rectangle "Entry points" as Entry {
   usecase "plain prompt" as Plain
   usecase "region prompt" as Region
   usecase "ask at point" as Point
-  usecase "skill command" as SkillCommand
+  usecase "slash command" as SkillCommand
 }
 
 rectangle "User-facing workflows" as Workflows {

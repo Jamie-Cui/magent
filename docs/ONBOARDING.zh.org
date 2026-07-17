@@ -34,7 +34,8 @@ Magent 拥有 Magent-owned agent loop 和 durable child-agent lifecycle。Root a
 - ~magent-pkg.el~ ：package metadata。
 
 *职责：* 第一次调用受支持的 agent-shell 命令时， ~magent--ensure-initialized~ 触发
-lazy initialization；agent registry、skills 等完整初始化按需执行。
+lazy initialization；agent registry、skills、slash commands 和 capabilities 等完整
+初始化按需执行。
 
 ** 第 2 层：Session 与 Runtime State
 
@@ -44,11 +45,12 @@ lazy initialization；agent registry、skills 等完整初始化按需执行。
 
 - ~magent-ledger.el~ ：thread/turn/item ledger、状态转移和 snapshot shape。
 - ~magent-session.el~ ：conversation projections、JSON persistence、per-project sessions。
-- ~magent-command.el~ ：由 ~magent-run-*~ 命令调用的 session-backed internal workflows。
+- ~magent-internal-command.el~ ：由 ~magent-run-*~ 命令调用的 session-backed internal workflows。
 - ~magent-doctor.el~ ：受信任只读 probes 和一次脱敏后的无工具分析请求。
 - ~magent-redaction.el~ ：Magent-owned outbound diagnostics 与 memory 的 fail-closed 脱敏。
 - ~magent-agent-job.el~ ：durable child-agent job records 和 JSON shape。
-- ~magent-runtime.el~ ：静态初始化，以及 agents、skills、capabilities 的 project-local overlay activation。
+- ~magent-command.el~ ：公开的分层 slash-command registry 和 invocation lifecycle。
+- ~magent-runtime.el~ ：静态初始化，以及 agents、skills、commands、capabilities 的 project-local overlay activation。
 - ~magent-runtime-api.el~ ：UI/backend-facing runtime session 和 prompt API。
 - ~magent-runtime-queue.el~ ：全局单执行 runtime queue 和 session-scoped cancellation。
 - ~magent-audit.el~ ：permission 和 sensitive action 的持久 JSONL audit logging。
@@ -164,8 +166,9 @@ Skill 有两类：
 Instruction skills 可以作为下一次请求的一次性上下文。Agent-shell frontend 提供
 ~magent-agent-shell-toggle-skill-for-next-request~ 和
 ~magent-agent-shell-run-skill-command~ 等命令。带 ~default-prompt~ 的 skills 也可作为
-command-like actions 运行，例如 built-in ~init~ 用于初始化或刷新项目根目录
-~AGENTS.md~ 。
+兼容 command-like action 运行。Elisp-native slash command 通过
+~magent-command-register~ 单独注册，并可用 ~magent-agent-shell-run-command~ 选择。
+内置 ~/init~ 命令用于初始化或刷新项目根目录 ~AGENTS.md~。
 
 每个 turn 都从 selected agent 的 base prompt 开始，随后加入 project context、从项目
 根到请求相关本地文件逐层适用的 ~AGENTS.md~、相关的 profile memory，以及显式选择或
@@ -178,11 +181,15 @@ policy。注入的 memory 可能不完整或过时，因此当前用户说明与
 
 Skills 加载来源：内置 ~skills/~、存在时兼容的 legacy 用户目录 ~~/.emacs.d/magent-skills/~、canonical 用户目录 ~~/.emacs.d/magent/skills~，以及项目 ~.magent/skills/~；较后的用户目录优先。~magent-find-skill~、~magent-install-skill~ 和 ~magent-delete-skill~ 只管理用户级 skill，绝不使用 ~~/.agents/skills/~。Skill 也可以通过 ~capability: true~ 声明 resolver metadata，例如 ~modes~、~features~、~files~、~keywords~ 和 ~disclosure~；Magent 会把这些 metadata 注册成激活同一个 skill 的 capability。自动激活必须命中带词边界的 keyword 来证明用户 intent；只有 context 的匹配保持 suggested。Skill 声明的 ~tools~ 会与 selected agent 实际暴露的工具核对：不兼容的自动 skill 被降级，显式选择的不兼容 skill 则给出清晰错误。Agent-shell session 的 ~Automatic capabilities~ config option 可关闭自动解析。
 
-新增或 review 默认能力时保持这两个概念分开：
+新增或 review 默认能力时保持这些概念分开：
 
-- 需要可复用 instruction、command-style prompt 或 tool-type operation 时，用 ~skill~。
+- 显式 slash action 需要 Elisp 入口时，用 ~command~。
+- 需要可复用 instruction 或 tool-type operation，并且可以被显式或自动选择时，
+  用 ~skill~；~default-prompt~ 只承担兼容作用。
 - 需要根据 live context 或 prompt text 自动选择某个 skill 时，用 ~capability~。
-- 如果 capability 只是为了激活同一个 skill，就把 metadata 和说明共址在 ~SKILL.md~。只有当触发 metadata 不属于单个 skill，或属于 project overlay 时，才使用独立 ~CAPABILITY.md~。
+- 如果 capability 只是为了激活同一个 skill，就把 metadata 和说明共址在
+  ~SKILL.md~。只有当触发 metadata 不属于单个 skill，或属于 project overlay 时，
+  才使用独立 ~CAPABILITY.md~。
 
 ** Session Scoping
 

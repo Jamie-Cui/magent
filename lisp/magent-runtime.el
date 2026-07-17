@@ -8,7 +8,8 @@
 
 ;; Central runtime orchestration for Magent.  This module owns:
 ;; - request-scoped execution context
-;; - project-local overlay activation for agents, skills, and capabilities
+;; - project-local overlay activation for agents, skills, commands, and
+;;   capabilities
 
 ;;; Code:
 
@@ -27,6 +28,9 @@
 (declare-function magent-capability-initialize-static "magent-capability")
 (declare-function magent-capability-load-project-scope "magent-capability")
 (declare-function magent-capability-remove-project-scope "magent-capability")
+(declare-function magent-command-initialize-static "magent-command")
+(declare-function magent-command-load-project-scope "magent-command")
+(declare-function magent-command-remove-project-scope "magent-command")
 (declare-function magent-audit-enable "magent-audit")
 (declare-function magent-runtime-queue-active-scope "magent-runtime-queue")
 (declare-function magent-runtime-queue-execution-active-p "magent-runtime-queue")
@@ -65,6 +69,14 @@ wins; when all functions return nil, scope is derived from
      :load-project magent-skills-load-project-scope
      :unload-project-feature magent-skills
      :unload-project magent-skills-remove-project-scope)
+    (:name commands
+     :state-variable magent-command--registry
+     :static-feature magent-command
+     :static magent-command-initialize-static
+     :load-project-feature magent-command
+     :load-project magent-command-load-project-scope
+     :unload-project-feature magent-command
+     :unload-project magent-command-remove-project-scope)
     (:name capabilities
      :state-variable magent-capability--registry
      :static-feature magent-capability
@@ -290,7 +302,7 @@ Nil means only static definitions are loaded.")
 (defun magent-runtime-ensure-initialized ()
   "Ensure Magent static runtime definitions are initialized."
   (unless magent--initialized
-    (magent-log "INFO Initializing magent agents and skills...")
+    (magent-log "INFO Initializing Magent runtime definitions...")
     (magent-audit-enable)
     (magent-runtime-initialize-static)
     (setq magent--initialized t)

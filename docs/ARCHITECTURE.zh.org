@@ -114,12 +114,23 @@ Magent 有三层 file-backed 扩展：
 - bundled ~skills/~、存在时兼容的 legacy 用户目录 ~~/.emacs.d/magent-skills/~、canonical 用户目录 ~~/.emacs.d/magent/skills~，以及项目 ~.magent/skills/~ 下的 skills。
 - 带 ~capability: true~ 的 skill frontmatter 中的 capability metadata，以及用户 capability 目录和项目 ~.magent/capabilities/~ 下的独立 ~CAPABILITY.md~。独立文件只用于触发 metadata 不应该归属于单个 skill 的场景。
 
+Slash command 是另一层 Elisp-native 扩展。~magent-command.el~ 中的定义表示显式
+用户动作，提供分层注册、参数处理、project/tool preflight、progress、取消和完成
+生命周期。标准 prompt handler 把一次 turn 交给 ~magent-runtime-submit~；高级受信任
+package 可以拥有更长的异步 invocation，但不会接触 ACP 或 queue internals。内置
+~/explain~、~/fix~、~/init~、~/review~、~/summarize~ 和 ~/test~ 都只使用该公开
+API，并拥有各自的 Org prompt resource，而不是同名 skill。
+
+为保持兼容，带 ~default-prompt~ 的 instruction ~SKILL.md~ 会被投影进 command
+registry，调用时仍激活原 skill。Project/user adapter 按 layer 覆盖 package/bundled
+定义；core controls 的名称保留。
+
 Magent 还有一层 Elisp-level internal command registry，实现在
-~magent-command.el~。通过 ~magent-command-register~ 注册的命令由显式
+~magent-internal-command.el~。通过 ~magent-internal-command-register~ 注册的命令由显式
 ~magent-run-*~ 用户命令调用，会在 ~magent-session-directory/internal~
 下创建独立 internal session，并且既可以走直接 pipeline runner，也可以
 复用普通 Magent agent loop。它们刻意不作为 agent-shell slash command
-暴露；agent-shell 的 command surface 仍然只由 skill 支撑。
+暴露。
 
 ~magent-run-doctor~ 是安全敏感的 direct-pipeline 场景。~magent-doctor.el~
 中的受信任只读 probes 采集有界 JSON-safe 数据；数据在持久化或发送一次
@@ -128,18 +139,23 @@ Magent 还有一层 Elisp-level internal command registry，实现在
 文件工具。自定义 probe 属于受信任 Elisp，不是 sandboxed code；详见
 [[file:DOCTOR.zh.org][DOCTOR.zh.org]]。
 
-Instruction skill 会注入 system prompt。Tool skill 通过 ~skill_invoke~ 调用。Capability 会根据当前上下文打分，激活少量 instruction skills。自动激活除了 context score 之外，还必须命中当前 prompt 中显式的 keyword intent；只有 mode、feature 或 file 命中时仍保持 suggested。Keyword 使用词边界匹配；如果 linked skill 声明的工具对 selected agent 不可用，也不会被注入。Agent-shell 的 session config 提供 ~Automatic capabilities~ 开关，可关闭自动层而不影响显式选择的 skills。内置同名 workflow capability 和对应 skill 放在同一个 ~SKILL.md~ 里，触发 metadata 和注入说明不再分散成两份文件。这种 progressive disclosure 能保持基础 prompt 更小，同时在需要时注入 Emacs-specific workflow 知识。
+Instruction skill 会注入 system prompt。Tool skill 通过 ~skill_invoke~ 调用。Capability 会根据当前上下文打分，激活少量 instruction skills。自动激活除了 context score 之外，还必须命中当前 prompt 中显式的 keyword intent；只有 mode、feature 或 file 命中时仍保持 suggested。Keyword 使用词边界匹配；如果 linked skill 声明的工具对 selected agent 不可用，也不会被注入。Agent-shell 的 session config 提供 ~Automatic capabilities~ 开关，可关闭自动层而不影响显式选择的 skills。Contextual capability 可以和对应 skill 放在同一个 ~SKILL.md~ 里，使触发 metadata 和注入说明保持一致。这种 progressive disclosure 能保持基础 prompt 更小，同时在需要时注入 Emacs-specific workflow 知识。
 
 ~magent-skill-manager.el~ 是独立且按需加载的用户维护层：它搜索 skills.sh，
 解析本地或公开 GitHub source，预检后把 instruction skill 复制到 canonical 用户
 目录，记录 provenance，并永久删除精确选中的用户级安装。它不是 model tool，
 不会管理 project overlay，也绝不读写 ~~/.agents/skills/~。
 
-两者的区别是：
+这些概念的区别是：
 
-- ~skill~ 是实际给 agent 的内容或命令入口：注入 prompt 的 instruction text、command-like ~default-prompt~，或者 tool-type operation。
+- ~command~ 是由受信任 Elisp 实现的显式 slash invocation。Prompt command 通常拥有
+  一个 agent turn；高级 handler 可以拥有多个异步步骤。
+- ~skill~ 是可复用的模型说明或 tool-type operation。Legacy ~default-prompt~ 会投影
+  一个兼容 command，但 Markdown 不再是 Magent 原生命令入口。
 - ~capability~ 是自动激活规则：由 ~modes~ 、~features~ 、~files~ 、~keywords~ 、~disclosure~ 和 ~risk~ 等 resolver metadata 描述什么时候为当前 turn 选择一个或多个 skills。只有 context 的匹配会作为可检查的 suggestion；active disclosure 还要求当前 user prompt 命中有词边界的 keyword。
-- skill-backed capability 是内置默认能力的常见形态：某个 ~SKILL.md~ 声明 ~capability: true~ 后，resolver 会在当前 context 与 prompt intent 同时匹配且所需工具可用时自动激活同名 skill。~init~ 、~review~ 、~fix~ 、~test~ 、~summarize~ 和 ~explain~ 这类 command-style built-in skills 仍然只是 skills，除非它们显式声明 ~capability: true~。
+- skill-backed capability 是 contextual capability 的常见形态：某个 ~SKILL.md~ 声明
+  ~capability: true~ 后，resolver 会在当前 context 与 prompt intent 同时匹配且所需
+  工具可用时自动激活同名 skill。
 
 * 产品取舍
 

@@ -121,12 +121,26 @@ Magent has three file-backed extension layers:
 - Skills under bundled ~skills/~, legacy user ~~/.emacs.d/magent-skills/~ when present, canonical user ~~/.emacs.d/magent/skills~, and project ~.magent/skills/~.
 - Capability metadata embedded in skills with ~capability: true~, plus standalone ~CAPABILITY.md~ files under user capability directories and project ~.magent/capabilities/~ when trigger metadata should live outside one skill.
 
-Magent also has an Elisp-level internal command registry in ~magent-command.el~.
-Commands registered with ~magent-command-register~ are invoked by explicit
+Slash commands are a separate Elisp-native extension layer. Definitions in
+~magent-command.el~ are explicit user actions with layered registration,
+argument handling, project/tool preflight, progress, cancellation, and
+completion. The standard prompt handler delegates one turn to
+~magent-runtime-submit~; advanced trusted packages may own a longer async
+invocation without receiving ACP or queue internals. The bundled
+~/explain~, ~/fix~, ~/init~, ~/review~, ~/summarize~, and ~/test~ commands use
+this API and own their Org prompt resources rather than same-name skills.
+
+For compatibility, an instruction ~SKILL.md~ with ~default-prompt~ is projected
+into the command registry. Its handler still activates the original skill.
+Project and user adapters override package/bundled definitions by layer, while
+core controls are reserved.
+
+Magent also has an Elisp-level internal command registry in ~magent-internal-command.el~.
+Commands registered with ~magent-internal-command-register~ are invoked by explicit
 ~magent-run-*~ user commands, create isolated internal sessions under
 ~magent-session-directory/internal~, and may use either direct pipeline runners
 or the normal Magent agent loop. They are intentionally separate from
-agent-shell slash commands, whose command surface remains skill-backed.
+agent-shell slash commands.
 
 ~magent-run-doctor~ is the security-sensitive direct-pipeline case.  Trusted,
 read-only probes in ~magent-doctor.el~ collect bounded JSON-safe data, which is
@@ -135,7 +149,7 @@ tool-free provider request.  Doctor never enters the general agent loop and
 never exposes ~emacs_eval~, shell, or file tools.  Custom probes are trusted
 Elisp rather than sandboxed code; see [[file:DOCTOR.org][DOCTOR.org]].
 
-Instruction skills are injected into the system prompt. Tool skills are invoked through ~skill_invoke~. Capabilities score the current context and activate a small number of instruction skills. Automatic activation requires an explicit prompt-keyword intent match in addition to contextual score; mode, feature, or file matches alone remain suggestions. Keyword matching uses word boundaries, and a capability cannot inject a linked skill whose declared tools are unavailable to the selected agent. The agent-shell session config exposes an ~Automatic capabilities~ switch for disabling this automatic layer without affecting explicitly selected skills. Built-in same-name workflow capabilities are co-located with their skills, so the trigger metadata and injected instruction stay in one file. This progressive disclosure model keeps the base prompt smaller while still giving the agent Emacs-specific workflow knowledge when the current request needs it.
+Instruction skills are injected into the system prompt. Tool skills are invoked through ~skill_invoke~. Capabilities score the current context and activate a small number of instruction skills. Automatic activation requires an explicit prompt-keyword intent match in addition to contextual score; mode, feature, or file matches alone remain suggestions. Keyword matching uses word boundaries, and a capability cannot inject a linked skill whose declared tools are unavailable to the selected agent. The agent-shell session config exposes an ~Automatic capabilities~ switch for disabling this automatic layer without affecting explicitly selected skills. Contextual capabilities may be co-located with their skills, so trigger metadata and injected instruction stay in one file. This progressive disclosure model keeps the base prompt smaller while still giving the agent Emacs-specific workflow knowledge when the current request needs it.
 
 ~magent-skill-manager.el~ is a separate, lazily loaded user-maintenance layer.
 It searches skills.sh, resolves local or public GitHub sources, preflights and
@@ -146,19 +160,20 @@ a model tool, never manages project overlays, and never reads or writes
 
 The distinction is:
 
-- A ~skill~ is the content or command surface: instruction text injected into
-  the prompt, a command-like ~default-prompt~, or a tool-type operation.
+- A ~command~ is an explicit slash invocation implemented by trusted Elisp. A
+  prompt command normally owns one agent turn; an advanced handler may own
+  multiple async steps.
+- A ~skill~ is reusable model instruction or a tool-type operation. The legacy
+  ~default-prompt~ field projects a compatibility command but does not make
+  Markdown the native command entry point.
 - A ~capability~ is an automatic activation rule: resolver metadata such as
   ~modes~, ~features~, ~files~, ~keywords~, ~disclosure~, and ~risk~ that says
   when one or more skills should be selected for this turn. Context-only
   matches are inspectable suggestions; active disclosure also requires a
   bounded keyword match in the current user prompt.
-- A skill-backed capability is the common built-in case: a ~SKILL.md~ declares
+- A skill-backed capability is the common contextual case: a ~SKILL.md~ declares
   ~capability: true~, and the resolver auto-activates that same skill when the
   current context and prompt intent match and its declared tools are available.
-  Command-style built-in skills such as
-  ~init~, ~review~, ~fix~, ~test~, ~summarize~, and ~explain~ remain skills only unless they
-  opt into ~capability: true~.
 
 * Product Tradeoffs
 

@@ -131,12 +131,12 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 
 ** Prompt Files
 
-Core, built-in agent, and internal runtime prompts live as editable Org files
-under ~prompt/~.  Files containing placeholders such as ~{{project-root}}~ or
-~{{instruction}}~ should keep those placeholders where the dynamic value is
-needed; ordinary percent signs need no escaping.  Skill prompts remain
-self-contained in ~skills/*/SKILL.md~. Every bundled Org prompt must appear
-exactly once in ~prompt/manifest.txt~.
+Core, built-in agent, slash-command, and internal runtime prompts live as
+editable Org files under ~prompt/~. Files containing placeholders such as
+~{{project-root}}~ or ~{{instruction}}~ should keep those placeholders where
+the dynamic value is needed; ordinary percent signs need no escaping. Skill
+prompts remain self-contained in ~skills/*/SKILL.md~. Every bundled Org prompt
+must appear exactly once in ~prompt/manifest.txt~.
 
 * Usage
 
@@ -149,6 +149,8 @@ exactly once in ~prompt/manifest.txt~.
 | ~magent-agent-shell-prompt-region~               | Send the selected region through agent-shell                     |
 | ~magent-agent-shell-ask-at-point~                | Ask about the symbol at point through agent-shell                |
 | ~magent-agent-shell-interrupt~                   | Interrupt the active Magent agent-shell request                  |
+| ~magent-agent-shell-run-command~                 | Select and run a registered slash command                        |
+| ~magent-agent-shell-toggle-skill-for-next-request~ | Toggle a one-shot instruction skill                            |
 | ~magent-toggle-bypass-permission~                | Toggle permission bypass for tool filtering and approval prompts |
 
 Prompt text is entered directly in the agent-shell buffer, and Magent streams
@@ -180,7 +182,7 @@ workflow associates sessions with the current project:
 - Outside any project, Magent falls back to the global session behavior and saves directly under ~magent-session-directory~.
 - Compact audit logs for permission decisions and sensitive tools are written as daily JSONL files under ~magent-session-directory/audit/~ unless ~magent-audit-directory~ is set.
 
-** Skill Commands
+** Slash Commands And Skills
 
 Instruction skills can be selected as one-shot context for the next request.
 In agent-shell, use ~M-x magent-agent-shell-toggle-skill-for-next-request~ to
@@ -188,18 +190,19 @@ toggle a skill and ~M-x magent-agent-shell-clear-skills-for-next-request~ to
 clear selected skills.  Selected skills are scoped to the active Magent session
 and are consumed by the next prompt.
 
-Skills with a ~default-prompt~ can also be run as command-like actions.  In
-agent-shell, use ~M-x magent-agent-shell-run-skill-command~ or
-~M-x magent-agent-shell-run-init-command~.  The ~init~ skill initializes or
-refreshes the project's root ~AGENTS.md~ and prompts for optional extra
-instructions such as focusing on tests.  Agent-shell also advertises eight
-bundled slash commands: the ~/explain~, ~/fix~, ~/init~, ~/review~,
-~/summarize~, and ~/test~ skill commands plus the ~/compact~ and ~/clear~
-session controls. ~/summarize~ writes one canonical Org note for the current
-Git project and accepts an optional path or semantic scope. New notes use the
-normal org-roam timestamp filename format, ~YYYY-MM-DDtHHMM.org~.
-See [[file:docs/COMMANDS.org][docs/COMMANDS.org]] for command behavior, examples, and
-the extension rule for project-local command skills.
+Elisp-native slash commands are registered through the public
+~magent-command-register~ API and can be selected with
+~M-x magent-agent-shell-run-command~. Agent-shell advertises eight bundled
+commands: ~/explain~, ~/fix~, ~/init~, ~/review~, ~/summarize~, ~/test~,
+~/compact~, and ~/clear~. The six prompt commands own package Org resources and
+do not activate same-name skills. ~/summarize~ writes one canonical Org note
+for the current Git project and accepts an optional path or semantic scope.
+
+Skills with ~default-prompt~ remain compatible and are projected into the same
+registry; use ~M-x magent-agent-shell-run-skill-command~ to select one directly.
+Project and user skill adapters may override package commands, while the two
+core session controls are reserved. See [[file:docs/COMMANDS.org][docs/COMMANDS.org]]
+for command behavior, the third-party Elisp API, and compatibility details.
 
 Project-local instruction skills are data-only and load normally.  A
 tool-type project skill may also contain executable companion Elisp; Magent

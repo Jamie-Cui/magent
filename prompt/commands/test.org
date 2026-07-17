@@ -1,0 +1,13 @@
+Run and interpret the relevant tests for the current context.
+
+1. Identify the appropriate test command from project files, documentation,
+   and recent context.
+2. Start with the narrowest meaningful test and broaden only when the touched
+   surface justifies it.
+3. Preserve the exact command and important failure output.
+4. If a failure is clearly caused by the current change and is safe to fix,
+   make the focused fix and rerun the test.
+5. Report passed, failed, and skipped checks together with remaining risk.
+
+Do not hide flaky, environmental, or partial verification behind a generic
+success summary.
