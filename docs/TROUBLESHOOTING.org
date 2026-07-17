@@ -14,7 +14,7 @@ If you are debugging agent lifecycle or subagent behavior, first check ~docs/AGE
 :CUSTOM_ID: github-actions-failures
 :END:
 
-*** melpazoid cannot find ~prompt/system.org~
+*** melpazoid omits a production file or runtime data
 *Problem:* The melpazoid job fails with errors like:
 
 #+begin_src text
@@ -22,16 +22,22 @@ Opening input file: No such file or directory, /workspace/pkg/prompt/system.org
 #+end_src
 
 *Cause:* MELPA-style packaging copies only files matched by the recipe.
-Magent needs bundled runtime data (~prompt/~ and ~skills/~) after
-packaging.
+Magent needs production libraries plus bundled runtime data after packaging.
+MELPA's ~:defaults~ spec deliberately excludes test-file patterns, including
+the production ~magent-command-test.el~ module.
 
 *Solution:* Keep ~.github/workflows/melpazoid.yml~ aligned with this recipe
 shape:
 
 #+begin_src elisp
 (magent :fetcher github :repo "Jamie-Cui/magent"
-        :files (:defaults "prompt" "skills"))
+        :files ("lisp/*.el" "prompt" "skills" "capabilities"))
 #+end_src
+
+The explicit glob supplies every production Elisp file, including
+~magent-command-test.el~. The explicit directories supply runtime data that the
+package loads by relative path. Keep ERT sources under ~test/~ so they remain
+outside the production package.
 
 *** package-lint reports ineffective ~Package-Requires~
 *Problem:* melpazoid reports:

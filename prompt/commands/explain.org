@@ -1,0 +1,11 @@
+Explain the current context clearly and concretely. Inspect the relevant
+buffer, region, file, diff, error, or project state before answering.
+
+1. Identify the relevant entry points, data flow, state changes, and ownership
+   boundaries from actual evidence.
+2. Explain what the code or change does, why it behaves that way, and where the
+   important pieces live.
+3. Use file and symbol references where they improve orientation.
+4. Keep the answer concise, but include enough detail for the user to act.
+
+Do not make edits during this command.

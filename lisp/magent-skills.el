@@ -29,6 +29,8 @@
 (require 'magent-log)
 (require 'magent-runtime)
 
+(declare-function magent-command-refresh-skill-adapters "magent-command")
+
 ;;; Built-in skill metadata
 
 (defconst magent-skill-creator--description
@@ -53,7 +55,7 @@ name: skill-name
 description: When to trigger and what this skill does
 type: instruction        # 'instruction' or 'tool'
 tools: bash, read        # optional: tools this skill needs
-default-prompt: Optional prompt used when user submits only @skill-name
+default-prompt: Optional portable compatibility slash-command prompt
 requires-project: true   # optional: reject the skill in global sessions
 capability: true         # optional: auto-activate this instruction skill by context
 ---
@@ -66,8 +68,10 @@ Markdown body: instructions for the AI...
 **instruction**: Markdown body is injected into the system prompt every request.
 Use for workflow guidance, coding standards, domain knowledge.
 Keep under 200 lines to avoid bloating the system prompt.
-Add `default-prompt` when the skill should behave like a command if the user
-submits only `@skill-name`.
+Add `default-prompt` only when this Markdown skill should expose a portable
+compatibility slash command.  A trusted installed Magent extension that needs
+Elisp execution or a multi-step workflow should instead register through
+`magent-command-register`; project-local Markdown remains data-only.
 
 **tool**: Invoked explicitly via `skill_invoke` with named operations.
 Requires a companion `.el` file defining `magent-skill-<name>-invoke`.
@@ -601,8 +605,13 @@ local skills after static definitions are reloaded."
      'magent-skills--registry
      #'magent-skill-file-path
      #'magent-skills-initialize-static)
+    (when (fboundp 'magent-command-refresh-skill-adapters)
+      (magent-command-refresh-skill-adapters 'global))
     (when project-scope
-      (magent-skills-load-project-scope project-scope))))
+      (magent-skills-load-project-scope project-scope))
+    (when (and project-scope
+               (fboundp 'magent-command-refresh-skill-adapters))
+      (magent-command-refresh-skill-adapters project-scope))))
 
 (defun magent-skills-remove-project-scope (scope)
   "Remove project-local skills registered for SCOPE."

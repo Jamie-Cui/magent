@@ -1,0 +1,13 @@
+Initialize or refresh this project's root =AGENTS.md= for future Magent
+sessions.
+
+1. Identify the project root and inspect the existing repository structure.
+2. Read existing onboarding and contributor documentation, build manifests,
+   test configuration, and any existing =AGENTS.md=.
+3. Recover the documented build, test, lint, format, and live-verification
+   commands rather than guessing them.
+4. Write or update =AGENTS.md= with concise, durable architecture, workflow,
+   convention, and gotcha guidance.
+5. Preserve useful project-specific instructions and avoid unrelated churn or
+   large copied excerpts.
+6. Verify the resulting file before reporting completion.

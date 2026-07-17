@@ -166,7 +166,7 @@ When VALUE is nil, remove KEY.  Return SESSION metadata."
 
 (defun magent-session-internal-directory (&optional command)
   "Return internal command session directory, optionally for COMMAND."
-  (let ((root (or magent-command-session-directory
+  (let ((root (or magent-internal-command-session-directory
                   (expand-file-name "internal" magent-session-directory))))
     (if command
         (expand-file-name

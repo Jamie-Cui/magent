@@ -59,7 +59,8 @@ Do not introduce a second interactive frontend inside the core runtime.
 - Cancellation is session-scoped: cancelling one ACP session cancels that
   session's active and queued submissions without removing other sessions'
   queued work.
-- Per-request instruction skill overrides and skill commands are supported.
+- Per-request instruction skill overrides, Elisp-native slash commands, and
+  compatibility skill commands are supported.
   Per-request agent overrides are not currently exposed by the supported
   frontend.
 - ACP session config exposes ~Automatic capabilities~. Disabling it suppresses

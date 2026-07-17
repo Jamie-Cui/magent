@@ -34,7 +34,7 @@ The foundation layer that initializes the system and manages settings.
 
 *What it does:* Lazy initialization is triggered by the first supported
 agent-shell command via ~magent--ensure-initialized~; full setup (agent
-registry, skills) happens on demand.
+registry, skills, slash commands, and capabilities) happens on demand.
 
 ** Layer 2: Session & Runtime State Management
 
@@ -43,11 +43,12 @@ Manages conversation history, scoped overlays, and runtime state.
 *Key Files:*
 - ~magent-ledger.el~ — Thread/turn/item ledger, status transitions, snapshot shape
 - ~magent-session.el~ — Conversation projections, JSON persistence, per-project sessions
-- ~magent-command.el~ — Session-backed internal workflows invoked by ~magent-run-*~ commands
+- ~magent-internal-command.el~ — Session-backed internal workflows invoked by ~magent-run-*~ commands
 - ~magent-doctor.el~ — Trusted read-only probes and one sanitized tool-free analysis request
 - ~magent-redaction.el~ — Fail-closed redaction for Magent-owned outbound diagnostics and memory
 - ~magent-agent-job.el~ — Durable child-agent job records and JSON shape
-- ~magent-runtime.el~ — Static initialization plus project-local overlay activation for agents, skills, and capabilities
+- ~magent-command.el~ — Public layered slash-command registry and invocation lifecycle
+- ~magent-runtime.el~ — Static initialization plus project-local overlay activation for agents, skills, commands, and capabilities
 - ~magent-runtime-api.el~ — UI/backend-facing runtime session and prompt API
 - ~magent-runtime-queue.el~ — Global single-execution runtime queue with session-scoped cancellation
 - ~magent-audit.el~ — Persistent JSONL audit logging for permissions and sensitive actions
@@ -155,9 +156,10 @@ Instruction skills can be selected as one-shot context for the next request.
 The agent-shell frontend exposes native commands such as
 ~magent-agent-shell-toggle-skill-for-next-request~ and
 ~magent-agent-shell-run-skill-command~. Skills that define ~default-prompt~ can
-also be run as command-like actions; built-in
-~init~ initializes or refreshes the project root ~AGENTS.md~, similar to Codex
-~/init~, and accepts optional extra instructions.
+also be run as compatibility command-like actions. Elisp-native slash commands
+are registered separately through ~magent-command-register~ and can be selected
+with ~magent-agent-shell-run-command~. The bundled ~/init~ command initializes
+or refreshes the project root ~AGENTS.md~ and accepts optional extra text.
 
 For each turn, Magent starts with the selected agent's base prompt, then adds
 project context, applicable ~AGENTS.md~ files from the project root toward
@@ -175,8 +177,9 @@ Skills load from: (1) built-in ~skills/~, (2) legacy user ~~/.emacs.d/magent-ski
 
 Keep the terms separate when adding or reviewing defaults:
 
-- Use a ~skill~ for reusable instructions, command-style prompts, or tool-type
-  operations that can be selected explicitly.
+- Use a ~command~ for an explicit slash action with an Elisp entry point.
+- Use a ~skill~ for reusable instructions or tool-type operations that can be
+  selected explicitly or automatically. ~default-prompt~ is compatibility.
 - Use a ~capability~ when the skill should be selected automatically from live
   context or prompt text.
 - Co-locate the capability metadata in ~SKILL.md~ when the capability only

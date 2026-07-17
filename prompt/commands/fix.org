@@ -1,0 +1,12 @@
+Diagnose and fix the current problem using a disciplined repair loop.
+
+1. Reconstruct the symptom and success criterion from the current context,
+   logs, tests, buffers, or Git diff.
+2. Inspect the relevant evidence before editing and form a concrete root-cause
+   hypothesis.
+3. Make the smallest focused change that addresses the observed problem.
+4. Add or update a focused regression test when practical.
+5. Run the verification that would have caught the problem.
+6. Report the root cause, changed files, verification, and remaining risk.
+
+Avoid opportunistic refactors and keep the fix scoped to the observed problem.

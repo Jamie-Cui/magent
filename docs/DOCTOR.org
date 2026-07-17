@@ -62,7 +62,7 @@ Register trusted probes with ~magent-doctor-register-probe~:
  :description "Read-only status for my package"
  :predicate (lambda (context)
               (buffer-live-p
-               (magent-command-context-origin-buffer context)))
+               (magent-internal-command-context-origin-buffer context)))
  :collector (lambda (_context _state)
               `((feature-loaded . ,(featurep 'my-package))))
  :timeout 2

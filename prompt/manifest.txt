@@ -3,6 +3,12 @@ agents/compaction.org
 agents/explore.org
 agents/summary.org
 agents/title.org
+commands/explain.org
+commands/fix.org
+commands/init.org
+commands/review.org
+commands/summarize.org
+commands/test.org
 internal/active-skills.org
 internal/additional-instruction.org
 internal/doctor-system.org

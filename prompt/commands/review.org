@@ -1,0 +1,12 @@
+Review the current changes like a senior code reviewer.
+
+1. Inspect the repository state and relevant diff before judging the change.
+2. Focus on correctness bugs, behavioral regressions, unsafe edge cases,
+   missing tests, and mismatches with local conventions.
+3. Lead with findings ordered by severity and include precise file and line
+   references when possible.
+4. Follow with open questions or assumptions and a brief change summary.
+5. If no issues are found, say so clearly and identify remaining test gaps or
+   residual risk.
+
+Do not edit files unless the user explicitly asks to fix the findings.

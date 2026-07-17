@@ -6,13 +6,13 @@
 
 Magent has two distinct command surfaces for LLM-assisted workflows:
 
-- *Slash commands* run reusable instruction skills or session controls in the
-  current agent-shell conversation.
+- *Slash commands* invoke Elisp-native command handlers in the current
+  agent-shell conversation. Most bundled handlers use one ordinary agent turn.
 - *Internal workflow commands* are explicit Emacs commands that run Magent
   maintenance or diagnostic work in isolated durable sessions.
 
-The bundled package currently provides eight slash commands (six skill
-commands and two session controls) and four internal workflow commands. Four
+The bundled package currently provides eight Elisp-native slash commands and
+four internal workflow commands. Three
 additional Emacs commands inspect or manage the internal workflows.
 
 * Slash Commands
@@ -27,10 +27,10 @@ Type a slash command as the prompt in the Magent agent-shell buffer:
 /clear
 #+end_example
 
-Text following a skill command or ~/compact~ is appended as an additional
-instruction. Skill commands use the current session and agent and attach the
-corresponding instruction skill to that request. An unknown slash command is
-submitted as ordinary prompt text rather than executed locally.
+Text following a prompt command or ~/compact~ is passed as its argument. The
+six bundled prompt commands reuse the current session and agent without
+activating a same-name skill. An unknown slash command is submitted as ordinary
+prompt text rather than executed locally.
 
 | Command    | Purpose                                | Expected effect |
 |------------+----------------------------------------+-----------------|
@@ -134,15 +134,57 @@ legacy, and manually renamed files still receive single-file updates.
 
 ** Alternate Invocation And Extension
 
-~M-x magent-agent-shell-run-skill-command~ selects and runs any command-like
-instruction skill through the supported agent-shell frontend.
+~M-x magent-agent-shell-run-command~ selects and runs any registered slash
+command. The bundled prompt commands are Elisp modules that register through
+the same public API available to third-party packages:
 
-The skill-backed portion of the slash command list is extensible. Any loaded
-instruction skill with a ~default-prompt~ field is advertised to agent-shell as
-a slash command. Skills can come from bundled ~skills/~, the user skill
-directories, or project-local ~.magent/skills/~ overlays. Therefore a local
-installation can expose more skill commands in addition to the two fixed
-session controls listed above.
+#+begin_src emacs-lisp
+(require 'magent-command)
+
+(magent-command-register
+ "my-review"
+ :description "Run my package-specific review workflow."
+ :handler
+ (magent-command-prompt-handler
+  (lambda (_invocation)
+    "Review the current changes using my package policy."))
+ :owner 'magent-command-my-review
+ :source-layer 'package
+ :tools '(read_file grep bash))
+#+end_src
+
+An advanced handler may call ~magent-command-progress~ and
+~magent-command-submit-step~, then use ~magent-command-defer~ before returning and
+finish later with ~magent-command-complete~, ~magent-command-fail~, or
+~magent-command-finish~. Cancellation cleanup is registered with
+~magent-command-set-cancel-function~. Handlers are trusted installed Elisp;
+project-local Markdown never receives this execution authority.
+
+If a handler or step callback signals after submitting runtime work, Magent
+first claims the invocation's final ~failed~ result, then runs its registered
+cleanup and cancels every owned runtime submission before publishing
+completion. A synchronous cancellation callback therefore cannot replace the
+original failure or leave background streaming and ledger writes alive.
+
+A step callback still owns the completed runtime turn's FIFO lease. It can
+submit the next step immediately; no unrelated backend turn can advance in
+between. Each submitted turn records both the expanded model prompt and the
+original slash input, command name, argument, and invocation id in ledger
+metadata.
+
+~M-x magent-agent-shell-run-skill-command~ selects and runs any command-like
+instruction skill through the compatibility adapter.
+
+Existing instruction skills with a ~default-prompt~ remain compatible: Magent
+projects them into the same command registry and activates the original skill
+when invoked. Project and user adapters can override installed or bundled
+commands by name; the ~/clear~ and ~/compact~ core names remain reserved.
+
+Project command adapters are retained under their canonical project scope.
+~magent-command-get~, ~magent-command-list~, and ~magent-command-parse~ accept an
+optional scope, and ACP always supplies the runtime session's scope for both
+advertisement and dispatch. Concurrent sessions for different projects can
+therefore expose same-name overrides without leaking commands between menus.
 
 * User Skill Management
 
@@ -212,7 +254,6 @@ boundary.
 | ~magent-list-internal-sessions~   | Select a saved internal session and inspect its final result and activity |
 | ~magent-cancel-internal-command~  | Cancel an active internal workflow that exposes cancellation |
 | ~magent-open-memory~              | Open the managed Emacs profile memory file |
-| ~magent-open-memory-status~       | Open memory existence, activity, and staleness status |
 
 Internal session viewers show the final result first and keep detailed activity
 collapsed by default. Cancellation is session-scoped and does not cancel work

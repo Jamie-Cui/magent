@@ -14,7 +14,7 @@
 :CUSTOM_ID: github-actions-失败
 :END:
 
-*** melpazoid 找不到 ~prompt/system.org~
+*** melpazoid 遗漏 production file 或 runtime data
 
 *问题：* melpazoid job 失败，错误类似：
 
@@ -22,14 +22,16 @@
 Opening input file: No such file or directory, /workspace/pkg/prompt/system.org
 #+end_src
 
-*原因：* MELPA-style packaging 只复制 recipe 匹配的文件。Magent 打包后仍然需要 bundled runtime data： ~prompt/~ 和 ~skills/~ 。
+*原因：* MELPA-style packaging 只复制 recipe 匹配的文件。Magent 打包后仍然需要 production libraries 和 bundled runtime data。MELPA 的 ~:defaults~ 会排除 test-file patterns，包括 production 模块 ~magent-command-test.el~。
 
 *解决：* 保持 ~.github/workflows/melpazoid.yml~ 的 recipe 形状类似：
 
 #+begin_src elisp
 (magent :fetcher github :repo "Jamie-Cui/magent"
-        :files (:defaults "prompt" "skills"))
+        :files ("lisp/*.el" "prompt" "skills" "capabilities"))
 #+end_src
+
+显式 glob 提供全部 production Elisp files，包括 ~magent-command-test.el~；显式目录提供 package 通过相对路径加载的 runtime data。ERT 源码应放在 ~test/~ 下，使其不进入 production package。
 
 *** package-lint 报告 ineffective ~Package-Requires~
 
