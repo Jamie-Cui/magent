@@ -10353,7 +10353,8 @@
                         (mapcar
                          (lambda (command) (map-elt command 'name))
                          (append (map-elt update 'availableCommands) nil)))
-                  notifications))))
+                  notifications)
+                 nil)))
       (magent-acp--refresh-available-commands))
     (should (equal (sort (cdr (assoc "session-a" notifications)) #'string<)
                    '("global-command" "project-a-command")))
