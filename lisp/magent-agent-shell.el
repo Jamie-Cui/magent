@@ -80,6 +80,17 @@
   "Load project-local skill definitions for the current command context."
   (magent-runtime-prepare-command-context))
 
+(defun magent-agent-shell--make-client (buffer)
+  "Create Magent's in-process ACP client for BUFFER.
+Install Magent's session strategy before agent-shell snapshots its buffer-local
+startup settings.  Preserve an existing buffer-local value so explicit or
+directory-local frontend configuration keeps precedence."
+  (with-current-buffer buffer
+    (unless (local-variable-p 'agent-shell-session-strategy)
+      (setq-local agent-shell-session-strategy
+                  magent-agent-shell-session-strategy)))
+  (magent-acp-make-client buffer))
+
 ;;;###autoload
 (defun magent-agent-shell-make-config ()
   "Return the agent-shell configuration for Magent."
@@ -91,8 +102,7 @@
    :shell-prompt "Magent> "
    :shell-prompt-regexp "Magent> "
    :welcome-function #'magent-agent-shell--welcome-message
-   :client-maker (lambda (buffer)
-                   (magent-acp-make-client buffer))
+   :client-maker #'magent-agent-shell--make-client
    :default-model-id #'magent-agent-shell--model-id
    :default-session-mode-id (lambda () magent-default-agent)
    :install-instructions "Magent uses an in-process ACP client; no external command is required."))
@@ -396,7 +406,7 @@ after clearing the stale state."
     (agent-shell-start :config (magent-agent-shell-make-config))))
 
 ;;;###autoload
-(defun magent-agent-shell-dwim ()
+(defun magent-start ()
   "Open or reuse the Magent agent-shell UI."
   (interactive)
   (magent-agent-shell--with-config

@@ -230,9 +230,10 @@ Should match one of the registered agent names."
   :group 'magent)
 
 (defcustom magent-agent-shell-session-strategy 'new
-  "Agent Shell session strategy used by Magent entry points.
-The default starts a fresh session immediately, avoiding agent-shell's global
-session picker on every Magent entry command.  Set this to `prompt' or `latest'
+  "Agent Shell session strategy used by Magent buffers.
+The setting applies both to Magent entry commands and to Magent selected from
+the generic agent-shell picker.  The default starts a fresh session immediately,
+avoiding agent-shell's global session picker.  Set this to `prompt' or `latest'
 when Magent should use agent-shell's session selection flow."
   :type '(choice (const :tag "Always start new session" new)
                  (const :tag "Load latest session" latest)

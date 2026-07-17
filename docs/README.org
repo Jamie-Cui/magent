@@ -41,7 +41,7 @@ Welcome to the Magent documentation. Magent is an Emacs Lisp AI coding agent wit
 2. [[file:COMMANDS.html][COMMANDS.org]] — Built-in slash commands and Magent-owned LLM workflows
 3. [[file:TROUBLESHOOTING.html][TROUBLESHOOTING.org]] — Common issues and solutions
 4. Run ~M-x magent-run-doctor~ for self-diagnostics
-5. Use ~M-x magent-agent-shell-dwim~ to open the supported agent-shell UI
+5. Use ~M-x magent-start~ to open the supported agent-shell UI
 
 ** For Developers
 1. [[file:CONTRIBUTING.html][CONTRIBUTING.org]] — Code style and PR process

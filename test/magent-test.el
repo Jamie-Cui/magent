@@ -168,7 +168,8 @@
 
 (ert-deftest magent-test-aa-interactive-command-names-are-canonical ()
   "Test public commands use canonical verb-first names."
-  (dolist (command '(magent-find-skill
+  (dolist (command '(magent-start
+                     magent-find-skill
                      magent-install-skill
                      magent-delete-skill
                      magent-open-memory
@@ -191,7 +192,8 @@
                      magent-show-audit
                      magent-internal-command-show-session
                      magent-capability-clear-local-overrides
-                     magent-show-active-capabilities))
+                     magent-show-active-capabilities
+                     magent-agent-shell-dwim))
     (should-not (fboundp retired))))
 
 (ert-deftest magent-test-simple-prompt ()
@@ -11314,8 +11316,9 @@
          (agent-shell-agent-configs (list other-maker))
          (identifier (magent-agent-shell-ensure-config))
          (config (funcall (car agent-shell-agent-configs)))
-         (client (funcall (map-elt config :client-maker)
-                          (current-buffer))))
+         (client (with-temp-buffer
+                   (funcall (map-elt config :client-maker)
+                            (current-buffer)))))
     (should (eq identifier 'magent))
     (should (eq (map-elt config :identifier) 'magent))
     (should (eq (car agent-shell-agent-configs)
@@ -11328,6 +11331,35 @@
                 #'magent-acp--notification-sender))
     (should (eq (map-elt client :response-sender)
                 #'magent-acp--response-sender))))
+
+(ert-deftest magent-test-agent-shell-config-installs-magent-session-strategy ()
+  "Test generic agent-shell selection uses Magent's session strategy."
+  (require 'magent-agent-shell)
+  (let ((magent-agent-shell-session-strategy 'new))
+    (let* ((config (magent-agent-shell-make-config))
+           (client-maker (map-elt config :client-maker))
+           (previous-strategy
+            (default-value 'agent-shell-session-strategy)))
+      (unwind-protect
+          (progn
+            (set-default 'agent-shell-session-strategy 'prompt)
+            (with-temp-buffer
+              (should-not (local-variable-p 'agent-shell-session-strategy))
+              (funcall client-maker (current-buffer))
+              (should (local-variable-p 'agent-shell-session-strategy))
+              (should
+               (eq (buffer-local-value 'agent-shell-session-strategy
+                                       (current-buffer))
+                   'new)))
+            (with-temp-buffer
+              (set (make-local-variable 'agent-shell-session-strategy)
+                   'latest)
+              (funcall client-maker (current-buffer))
+              (should
+               (eq (buffer-local-value 'agent-shell-session-strategy
+                                       (current-buffer))
+                   'latest))))
+        (set-default 'agent-shell-session-strategy previous-strategy)))))
 
 (ert-deftest magent-test-agent-shell-start-uses-magent-session-strategy ()
   "Test Magent agent-shell entry points do not inherit global prompt strategy."
@@ -11342,6 +11374,24 @@
                  'shell-buffer)))
       (should (eq (magent-agent-shell-start) 'shell-buffer))
       (should (eq captured 'new)))))
+
+(ert-deftest magent-test-start-is-canonical-agent-shell-entry-point ()
+  "Test `magent-start' opens Magent through the supported frontend."
+  (require 'magent-agent-shell)
+  (let (captured-config)
+    (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
+               #'ignore)
+              ((symbol-function 'magent-agent-shell-ensure-config)
+               (lambda () 'magent))
+              ((symbol-function 'magent-agent-shell--buffer)
+               (lambda (&optional _no-create) nil))
+              ((symbol-function 'agent-shell--dwim)
+               (lambda (&rest args)
+                 (setq captured-config (plist-get args :config))
+                 'shell-buffer)))
+      (should (commandp 'magent-start))
+      (should (eq (magent-start) 'shell-buffer))
+      (should (eq (map-elt captured-config :identifier) 'magent)))))
 
 (ert-deftest magent-test-agent-shell-suppresses-blank-line-context ()
   "Test blank current-line context does not produce inverted line ranges."

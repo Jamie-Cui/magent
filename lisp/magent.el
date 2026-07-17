@@ -56,7 +56,7 @@
 ;;   M-x customize-group RET magent RET
 ;;
 ;; Usage:
-;;   M-x magent-agent-shell-dwim         - Open or reuse the project session
+;;   M-x magent-start                    - Open or reuse the project session
 ;;   M-x magent-agent-shell-start        - Start a fresh Magent session
 ;;   M-x magent-agent-shell-prompt-region - Send the selected region
 ;;   M-x magent-agent-shell-ask-at-point - Ask about the symbol at point

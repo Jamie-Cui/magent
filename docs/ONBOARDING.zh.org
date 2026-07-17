@@ -397,7 +397,7 @@ Skill instructions for the agent.
 - *Documentation:* ~README.org~ 和仓库根目录 ~AGENTS.md~
 - *Child-agent architecture:* ~docs/AGENT_JOBS.org~
 - *Interactive help:* ~M-x magent-run-doctor~
-- *Frontend:* ~M-x magent-agent-shell-dwim~ 。
+- *Frontend:* ~M-x magent-start~ 。
 - *Skills:* ~M-x magent-agent-shell-toggle-skill-for-next-request~ 。
 - *Logs:* 使用 ~C-x b~ 打开 ~*magent-log*~ 。
 - *Agent selection:* 在 agent-shell buffer 运行 ~M-x agent-shell-set-session-mode~ 。
@@ -405,7 +405,7 @@ Skill instructions for the agent.
 * 下一步
 
 1. 先运行 ~make test-unit~ ；跑完整 ~make test~ 前准备 isolated Emacs server。
-2. 运行 ~M-x magent-agent-shell-dwim~ 。
+2. 运行 ~M-x magent-start~ 。
 3. 按上面的 guided tour 读代码。
 4. 试着创建一个 custom agent 或 skill。
 5. 查看 open issues 并提交 PR。
