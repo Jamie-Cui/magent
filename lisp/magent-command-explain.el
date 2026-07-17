@@ -13,9 +13,10 @@
   (magent-command-register
    "explain"
    :description "Explain the current code, diff, buffer, error, or project context."
-   :handler (magent-command-prompt-handler
+   :handler (magent-command-turn-handler
              (lambda (_invocation)
-               (magent-prompt-read "commands/explain.org")))
+               (magent-command-turn-spec-create
+                :prompt (magent-prompt-read "commands/explain.org"))))
    :owner 'magent-command-explain
    :source-layer 'builtin
    :tools '(read_file grep bash emacs_eval)))

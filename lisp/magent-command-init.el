@@ -13,9 +13,10 @@
   (magent-command-register
    "init"
    :description "Initialize or refresh project instructions for Magent."
-   :handler (magent-command-prompt-handler
+   :handler (magent-command-turn-handler
              (lambda (_invocation)
-               (magent-prompt-read "commands/init.org")))
+               (magent-command-turn-spec-create
+                :prompt (magent-prompt-read "commands/init.org"))))
    :owner 'magent-command-init
    :source-layer 'builtin
    :tools '(read_file write_file edit_file grep glob bash)))

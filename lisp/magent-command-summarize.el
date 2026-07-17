@@ -13,9 +13,10 @@
   (magent-command-register
    "summarize"
    :description "Summarize the current Git project into one canonical Org note."
-   :handler (magent-command-prompt-handler
+   :handler (magent-command-turn-handler
              (lambda (_invocation)
-               (magent-prompt-read "commands/summarize.org")))
+               (magent-command-turn-spec-create
+                :prompt (magent-prompt-read "commands/summarize.org"))))
    :owner 'magent-command-summarize
    :source-layer 'builtin
    :requires-project t

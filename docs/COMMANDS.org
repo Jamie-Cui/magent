@@ -145,13 +145,23 @@ the same public API available to third-party packages:
  "my-review"
  :description "Run my package-specific review workflow."
  :handler
- (magent-command-prompt-handler
+ (magent-command-turn-handler
   (lambda (_invocation)
-    "Review the current changes using my package policy."))
+    (magent-command-turn-spec-create
+     :prompt "Review the current changes using my package policy."
+     :context '(:features (code-review))
+     :turn-metadata '(:workflow review))))
  :owner 'magent-command-my-review
  :source-layer 'package
  :tools '(read_file grep bash))
 #+end_src
+
+The turn spec keeps model-visible user prompt text separate from structured
+request context, explicit skills or agent selection, and durable ledger
+metadata. Its builder may inspect the invocation when those values depend on
+the slash argument or runtime session. ~append-argument-p~ defaults to non-nil,
+which appends trailing slash text as an Additional instruction block; set it to
+nil when the builder has already consumed the argument.
 
 An advanced handler may call ~magent-command-progress~ and
 ~magent-command-submit-step~, then use ~magent-command-defer~ before returning and

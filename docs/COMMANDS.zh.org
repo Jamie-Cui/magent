@@ -134,13 +134,22 @@ org-roam capture 约定 ~YYYY-MM-DDtHHMM.org~。后续运行通过 file-level
  "my-review"
  :description "运行包自定义的 review workflow。"
  :handler
- (magent-command-prompt-handler
+ (magent-command-turn-handler
   (lambda (_invocation)
-    "Review the current changes using my package policy."))
+    (magent-command-turn-spec-create
+     :prompt "Review the current changes using my package policy."
+     :context '(:features (code-review))
+     :turn-metadata '(:workflow review))))
  :owner 'magent-command-my-review
  :source-layer 'package
  :tools '(read_file grep bash))
 #+end_src
+
+Turn spec 把模型可见的 user prompt、结构化 request context、显式 skill/agent 选择和
+持久化 ledger metadata 分开。Builder 可以读取 invocation，在这些字段依赖 slash
+argument 或 runtime session 时动态构造它们。~append-argument-p~ 默认非 nil，会把
+slash command 后的文本追加为 Additional instruction block；builder 已经消费 argument
+时应设为 nil。
 
 高级 handler 可以调用 ~magent-command-progress~ 和 ~magent-command-submit-step~，
 返回前用 ~magent-command-defer~ 声明异步所有权，之后通过

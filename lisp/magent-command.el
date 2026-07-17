@@ -7,7 +7,7 @@
 ;;; Commentary:
 
 ;; Public registration and invocation API for Magent slash commands.  A
-;; command is an explicit user action.  It may use the standard prompt handler
+;; command is an explicit user action.  It may use the structured turn handler
 ;; for one ordinary agent turn or own a longer asynchronous workflow.
 
 ;;; Code:
@@ -15,6 +15,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'magent-log)
+(require 'magent-prompt)
 (require 'magent-protocol)
 (require 'magent-runtime-api)
 (require 'magent-session)
@@ -46,6 +47,17 @@
   tools
   registration-id
   sequence)
+
+(cl-defstruct (magent-command-turn-spec
+               (:constructor magent-command-turn-spec-create)
+               (:copier nil))
+  "Declarative input for one standard slash command turn."
+  prompt
+  context
+  skills
+  agent
+  turn-metadata
+  (append-argument-p t))
 
 (cl-defstruct (magent-command-invocation
                (:constructor magent-command-invocation-create)
@@ -327,15 +339,16 @@ live sessions can resolve commands without switching the active overlay."
                skill-name
                :description (magent-skill-description skill)
                :handler
-               (magent-command-prompt-handler
-                prompt
-                :skills
+               (magent-command-turn-handler
                 (lambda (invocation)
-                  (magent-skills-dedupe-names
-                   (append
-                    (magent-runtime-session-pending-skills
-                     (magent-command-invocation-runtime-session invocation))
-                    (list skill-name)))))
+                  (magent-command-turn-spec-create
+                   :prompt prompt
+                   :skills
+                   (magent-skills-dedupe-names
+                    (append
+                     (magent-runtime-session-pending-skills
+                      (magent-command-invocation-runtime-session invocation))
+                     (list skill-name))))))
                :owner (list 'skill-adapter
                             (or (magent-skill-file-path skill) skill-name))
                :source-layer (magent-command--skill-source-layer skill)
@@ -605,29 +618,76 @@ queue the next step without another backend advancing between the two steps."
         (magent-command--fail-with-cleanup
          invocation (error-message-string err)))))))
 
-(cl-defun magent-command-prompt-handler (prompt &key skills agent)
-  "Return a standard one-turn command handler for PROMPT.
-PROMPT may be a string or a function receiving the invocation.  SKILLS may be
-a list or a function receiving the invocation.  Slash command arguments are
-appended as an Additional instruction block."
-  (unless (or (stringp prompt) (functionp prompt))
-    (error "Expected command prompt string or function, got: %S" prompt))
+(defun magent-command--plist-p (value)
+  "Return non-nil when VALUE is a proper keyword plist or nil."
+  (and (proper-list-p value)
+       (zerop (% (length value) 2))
+       (cl-loop for (key _item) on value by #'cddr
+                always (keywordp key))))
+
+(defun magent-command--resolve-turn-spec (turn-or-builder invocation)
+  "Resolve TURN-OR-BUILDER for INVOCATION to a validated turn spec."
+  (let ((turn (if (functionp turn-or-builder)
+                  (funcall turn-or-builder invocation)
+                turn-or-builder)))
+    (unless (magent-command-turn-spec-p turn)
+      (error "Expected Magent command turn spec, got: %S" turn))
+    (unless (and (stringp (magent-command-turn-spec-prompt turn))
+                 (not (string-blank-p
+                       (magent-command-turn-spec-prompt turn))))
+      (error "Magent command turn prompt is empty"))
+    (unless (magent-command--plist-p
+             (magent-command-turn-spec-context turn))
+      (error "Expected Magent command context plist, got: %S"
+             (magent-command-turn-spec-context turn)))
+    (unless (magent-command--plist-p
+             (magent-command-turn-spec-turn-metadata turn))
+      (error "Expected Magent command turn metadata plist, got: %S"
+             (magent-command-turn-spec-turn-metadata turn)))
+    (unless (or (null (magent-command-turn-spec-skills turn))
+                (proper-list-p (magent-command-turn-spec-skills turn)))
+      (error "Expected Magent command skill list, got: %S"
+             (magent-command-turn-spec-skills turn)))
+    (unless (memq (magent-command-turn-spec-append-argument-p turn) '(nil t))
+      (error "Expected Magent command append-argument-p boolean, got: %S"
+             (magent-command-turn-spec-append-argument-p turn)))
+    turn))
+
+(defun magent-command--turn-prompt (turn invocation)
+  "Return TURN's prompt expanded for INVOCATION."
+  (let ((base (magent-command-turn-spec-prompt turn))
+        (argument (magent-command-invocation-argument invocation)))
+    (if (or (not (magent-command-turn-spec-append-argument-p turn))
+            (string-empty-p argument))
+        base
+      (concat
+       base "\n\n"
+       (magent-prompt-render
+        "internal/additional-instruction.org"
+        `((instruction . ,argument)))))))
+
+(defun magent-command-turn-handler (turn-or-builder)
+  "Return a standard one-turn handler for TURN-OR-BUILDER.
+TURN-OR-BUILDER is a `magent-command-turn-spec' or a function receiving the
+command invocation and returning one.  Turn prompts are user-role text;
+structured request context and ledger metadata use their dedicated fields.
+When `append-argument-p' is non-nil, append the slash command argument as an
+Additional instruction block."
+  (unless (or (magent-command-turn-spec-p turn-or-builder)
+              (functionp turn-or-builder))
+    (error "Expected Magent command turn spec or builder, got: %S"
+           turn-or-builder))
   (lambda (invocation)
-    (let* ((base (if (functionp prompt)
-                     (funcall prompt invocation)
-                   prompt))
-           (argument (magent-command-invocation-argument invocation))
-           (expanded
-            (if (string-empty-p argument)
-                base
-              (concat base "\n\nAdditional instruction:\n" argument))))
-      (unless (and (stringp base) (not (string-blank-p base)))
-        (error "Magent command prompt is empty"))
+    (let* ((turn (magent-command--resolve-turn-spec
+                  turn-or-builder invocation))
+           (prompt (magent-command--turn-prompt turn invocation)))
       (magent-command-defer invocation)
       (magent-command-submit
-       invocation expanded
-       :skills (if (functionp skills) (funcall skills invocation) skills)
-       :agent agent
+       invocation prompt
+       :context (magent-command-turn-spec-context turn)
+       :skills (magent-command-turn-spec-skills turn)
+       :agent (magent-command-turn-spec-agent turn)
+       :turn-metadata (magent-command-turn-spec-turn-metadata turn)
        :on-complete
        (lambda (status result)
          (if (eq status 'completed)

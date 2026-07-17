@@ -124,9 +124,10 @@ Magent has three file-backed extension layers:
 Slash commands are a separate Elisp-native extension layer. Definitions in
 ~magent-command.el~ are explicit user actions with layered registration,
 argument handling, project/tool preflight, progress, cancellation, and
-completion. The standard prompt handler delegates one turn to
-~magent-runtime-submit~; advanced trusted packages may own a longer async
-invocation without receiving ACP or queue internals. The bundled
+completion. The standard structured turn handler delegates one turn to
+~magent-runtime-submit~; its turn spec separates prompt text, request context,
+agent/skill selection, and ledger metadata. Advanced trusted packages may own
+a longer async invocation without receiving ACP or queue internals. The bundled
 ~/explain~, ~/fix~, ~/init~, ~/review~, ~/summarize~, and ~/test~ commands use
 this API and own their Org prompt resources rather than same-name skills.
 An invocation claims its terminal result before cleanup, so a handler failure

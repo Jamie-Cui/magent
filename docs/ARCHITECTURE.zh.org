@@ -116,9 +116,10 @@ Magent 有三层 file-backed 扩展：
 
 Slash command 是另一层 Elisp-native 扩展。~magent-command.el~ 中的定义表示显式
 用户动作，提供分层注册、参数处理、project/tool preflight、progress、取消和完成
-生命周期。标准 prompt handler 把一次 turn 交给 ~magent-runtime-submit~；高级受信任
-package 可以拥有更长的异步 invocation，但不会接触 ACP 或 queue internals。内置
-~/explain~、~/fix~、~/init~、~/review~、~/summarize~ 和 ~/test~ 都只使用该公开
+生命周期。标准 structured turn handler 把一次 turn 交给 ~magent-runtime-submit~；
+turn spec 分离 prompt 文本、request context、agent/skill 选择和 ledger metadata。
+高级受信任 package 可以拥有更长的异步 invocation，但不会接触 ACP 或 queue
+internals。内置 ~/explain~、~/fix~、~/init~、~/review~、~/summarize~ 和 ~/test~ 都只使用该公开
 API，并拥有各自的 Org prompt resource，而不是同名 skill。
 Invocation 会先锁定 terminal result 再执行 cleanup，因此 handler 失败时会取消其
 拥有的 submission，同时避免同步取消 callback 覆盖原始失败，或在 ACP 完成后继续工作。
