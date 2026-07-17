@@ -126,10 +126,11 @@ GitHub Actions runs:
 - ~coverage.yml~: ~make coverage~, uploading ~coverage/testcover-summary.tsv~.
 - ~melpazoid.yml~: MELPA-style package checks.
 
-The melpazoid recipe includes ~prompt/~ and ~skills/~. Those are bundled
-runtime data and must stay in the package recipe because ~magent-config.el~,
-~magent-skills.el~, and built-in skill-backed capabilities resolve those paths
-at runtime.
+The melpazoid recipe includes production libraries through ~:defaults~ and
+explicitly adds ~prompt/~, ~skills/~, and ~capabilities/~. Those are bundled
+runtime data and must stay in the package recipe because Magent resolves those
+paths at runtime. Keep files matching ~*-test.el~ under ~test/~; MELPA excludes
+that pattern from production packages.
 
 Keep package metadata centralized in ~magent.el~ and ~magent-pkg.el~. Do not
 add ~Package-Requires~ headers to secondary modules; package-lint treats those

@@ -62,6 +62,10 @@
                         magent-test--root-directory)
       nil t)
 
+(load (expand-file-name "test/magent-command-test.el"
+                        magent-test--root-directory)
+      nil t)
+
 (ert-deftest magent-test-source-manifest-covers-production-elisp ()
   "Test every production Elisp module appears once in the source manifest."
   (let* ((manifest (magent-test-source-files magent-test--root-directory))
@@ -79,6 +83,21 @@
     (should (= (length manifest)
                (length (delete-dups (copy-sequence manifest)))))
     (should (equal sorted-manifest (sort actual #'string<)))))
+
+(ert-deftest magent-test-melpazoid-recipe-packages-production-libraries ()
+  "Test the MELPA recipe includes all production libraries and runtime data."
+  (let ((workflow (expand-file-name ".github/workflows/melpazoid.yml"
+                                    magent-test--root-directory))
+        recipe)
+    (with-temp-buffer
+      (insert-file-contents workflow)
+      (should (re-search-forward "^[[:space:]]*RECIPE:[[:space:]]*\\(.*\\)$"
+                                 nil t))
+      (setq recipe (read (match-string 1))))
+    (let ((files (plist-get (cdr recipe) :files)))
+      (should (memq :defaults files))
+      (dolist (entry '("prompt" "skills" "capabilities"))
+        (should (member entry files))))))
 
 (defconst magent-test--builtin-slash-command-names
   '("explain" "fix" "init" "review" "summarize" "test")

@@ -1,4 +1,4 @@
-;;; magent-command-test.el --- Test slash command  -*- lexical-binding: t; -*-
+;;; magent-command-run-tests.el --- Run project tests slash command  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -8,7 +8,7 @@
 (require 'magent-command)
 (require 'magent-prompt)
 
-(defun magent-command-test-register ()
+(defun magent-command-run-tests-register ()
   "Register the bundled /test command."
   (magent-command-register
    "test"
@@ -16,9 +16,9 @@
    :handler (magent-command-prompt-handler
              (lambda (_invocation)
                (magent-prompt-read "commands/test.org")))
-   :owner 'magent-command-test
+   :owner 'magent-command-run-tests
    :source-layer 'builtin
    :tools '(read_file grep bash emacs_eval)))
 
-(provide 'magent-command-test)
-;;; magent-command-test.el ends here
+(provide 'magent-command-run-tests)
+;;; magent-command-run-tests.el ends here
