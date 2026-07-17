@@ -7,17 +7,17 @@
 
 (require 'ert)
 (require 'magent-command)
-(require 'magent-command-run-tests)
+(require 'magent-command-test-runner)
 
 (ert-deftest magent-command-test-registers-production-test-command ()
   "The production test runner registers the /test slash command."
   (let ((magent-command--registry nil)
         (magent-command--sequence 0))
-    (magent-command-run-tests-register)
+    (magent-command-test-runner-register)
     (let ((command (magent-command-get "test")))
       (should command)
       (should (eq (magent-command-spec-owner command)
-                  'magent-command-run-tests))
+                  'magent-command-test-runner))
       (should (eq (magent-command-spec-source-layer command) 'builtin))
       (should (equal (magent-command-spec-tools command)
                      '(read_file grep bash emacs_eval))))))

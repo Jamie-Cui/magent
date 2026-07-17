@@ -24,7 +24,7 @@ Opening input file: No such file or directory, /workspace/pkg/prompt/system.org
 *Cause:* MELPA-style packaging copies only files matched by the recipe.
 Magent needs production libraries plus bundled runtime data after packaging.
 MELPA's ~:defaults~ spec deliberately excludes test-file patterns, so production
-libraries must not use ~*-test.el~ names.
+libraries must not use ~*-test.el~ or ~*-tests.el~ names.
 
 *Solution:* Keep ~.github/workflows/melpazoid.yml~ aligned with this recipe
 shape:

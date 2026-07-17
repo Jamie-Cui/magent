@@ -22,7 +22,7 @@
 Opening input file: No such file or directory, /workspace/pkg/prompt/system.org
 #+end_src
 
-*原因：* MELPA-style packaging 只复制 recipe 匹配的文件。Magent 打包后仍然需要 production libraries 和 bundled runtime data。MELPA 的 ~:defaults~ 会排除 test-file patterns，因此 production library 不应使用 ~*-test.el~ 文件名。
+*原因：* MELPA-style packaging 只复制 recipe 匹配的文件。Magent 打包后仍然需要 production libraries 和 bundled runtime data。MELPA 的 ~:defaults~ 会排除 test-file patterns，因此 production library 不应使用 ~*-test.el~ 或 ~*-tests.el~ 文件名。
 
 *解决：* 保持 ~.github/workflows/melpazoid.yml~ 的 recipe 形状类似：
 

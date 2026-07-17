@@ -11,7 +11,7 @@
 (require 'magent-command-init)
 (require 'magent-command-review)
 (require 'magent-command-summarize)
-(require 'magent-command-run-tests)
+(require 'magent-command-test-runner)
 
 (defun magent-command-builtins-register ()
   "Register every bundled Magent slash command."
@@ -21,7 +21,7 @@
   (magent-command-init-register)
   (magent-command-review-register)
   (magent-command-summarize-register)
-  (magent-command-run-tests-register))
+  (magent-command-test-runner-register))
 
 (provide 'magent-command-builtins)
 ;;; magent-command-builtins.el ends here

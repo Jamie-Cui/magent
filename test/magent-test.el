@@ -97,7 +97,15 @@
     (let ((files (plist-get (cdr recipe) :files)))
       (should (memq :defaults files))
       (dolist (entry '("prompt" "skills" "capabilities"))
-        (should (member entry files))))))
+        (should (member entry files))))
+    ;; Keep production modules clear of package-build's default test-file
+    ;; exclusions.  A later include cannot override an exclusion from
+    ;; `:defaults'.
+    (dolist (file (magent-test-source-files magent-test--root-directory))
+      (should-not
+       (string-match-p
+        "\\(?:\\`\\|/\\)\\(?:tests?\\|.*-tests?\\)\\.el\\'"
+        file)))))
 
 (defconst magent-test--builtin-slash-command-names
   '("explain" "fix" "init" "review" "summarize" "test")
