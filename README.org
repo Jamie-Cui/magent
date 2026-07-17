@@ -203,6 +203,8 @@ registry; use ~M-x magent-agent-shell-run-skill-command~ to select one directly.
 Project and user skill adapters may override package commands, while the two
 core session controls are reserved. See [[file:docs/COMMANDS.org][docs/COMMANDS.org]]
 for command behavior, the third-party Elisp API, and compatibility details.
+Project adapters are retained by canonical project scope, and agent-shell uses
+the exact session scope for both command menus and dispatch.
 
 Project-local instruction skills are data-only and load normally.  A
 tool-type project skill may also contain executable companion Elisp; Magent

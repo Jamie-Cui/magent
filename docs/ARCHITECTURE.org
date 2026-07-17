@@ -129,11 +129,16 @@ completion. The standard prompt handler delegates one turn to
 invocation without receiving ACP or queue internals. The bundled
 ~/explain~, ~/fix~, ~/init~, ~/review~, ~/summarize~, and ~/test~ commands use
 this API and own their Org prompt resources rather than same-name skills.
+An invocation claims its terminal result before cleanup, so a handler failure
+cancels owned submissions without allowing synchronous cancellation callbacks
+to overwrite the failure or continue work after ACP completes.
 
 For compatibility, an instruction ~SKILL.md~ with ~default-prompt~ is projected
 into the command registry. Its handler still activates the original skill.
 Project and user adapters override package/bundled definitions by layer, while
-core controls are reserved.
+core controls are reserved. Project adapters remain keyed by canonical project
+scope; ACP resolves both command discovery and dispatch against each runtime
+session's exact scope, allowing multiple project sessions to coexist safely.
 
 Magent also has an Elisp-level internal command registry in ~magent-internal-command.el~.
 Commands registered with ~magent-internal-command-register~ are invoked by explicit

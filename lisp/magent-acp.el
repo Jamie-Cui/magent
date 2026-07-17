@@ -134,9 +134,14 @@
     (description . ,(magent-acp--metadata-string
                      (magent-command-spec-description command)))))
 
-(defun magent-acp--available-commands ()
-  "Return ACP entries for effective Elisp-native slash commands."
-  (vconcat (mapcar #'magent-acp--command-entry (magent-command-list))))
+(defun magent-acp--available-commands (&optional runtime-session-or-scope)
+  "Return ACP slash commands for RUNTIME-SESSION-OR-SCOPE."
+  (let ((scope
+         (if (magent-runtime-session-p runtime-session-or-scope)
+             (magent-runtime-session-scope runtime-session-or-scope)
+           runtime-session-or-scope)))
+    (vconcat
+     (mapcar #'magent-acp--command-entry (magent-command-list scope)))))
 
 (defun magent-acp--session-response (runtime-session)
   "Return common ACP session response for RUNTIME-SESSION."
@@ -381,13 +386,17 @@ keywords."
           result (plist-put result :content-blocks blocks))
     result))
 
-(defun magent-acp--slash-command (prompt)
-  "Return recognized slash command plist parsed from PROMPT, or nil."
-  (when-let* ((parsed (magent-command-parse prompt)))
-    (list :kind 'command
-          :spec (car parsed)
-          :name (magent-command-spec-name (car parsed))
-          :argument (cdr parsed))))
+(defun magent-acp--slash-command (prompt &optional runtime-session-or-scope)
+  "Return slash command parsed from PROMPT for RUNTIME-SESSION-OR-SCOPE."
+  (let ((scope
+         (if (magent-runtime-session-p runtime-session-or-scope)
+             (magent-runtime-session-scope runtime-session-or-scope)
+           runtime-session-or-scope)))
+    (when-let* ((parsed (magent-command-parse prompt scope)))
+      (list :kind 'command
+            :spec (car parsed)
+            :name (magent-command-spec-name (car parsed))
+            :argument (cdr parsed)))))
 
 (defun magent-acp--command-submission-adapter (input)
   "Return a command submission adapter preserving structured ACP INPUT."
@@ -456,7 +465,8 @@ Each handler runs inside the CLIENT's context buffer (via
    client
    (magent-runtime-session-id runtime-session)
    `((sessionUpdate . "available_commands_update")
-     (availableCommands . ,(magent-acp--available-commands)))))
+     (availableCommands
+      . ,(magent-acp--available-commands runtime-session)))))
 
 (defun magent-acp--refresh-available-commands ()
   "Publish the current command registry to every bound live ACP session."
@@ -990,7 +1000,10 @@ switching semantics."
                     (magent-acp--request-session-scope client session-id)))
                   (input (magent-acp--prompt-input (map-elt params 'prompt)))
                   (instruction-text (plist-get input :text))
-                  (command (magent-acp--slash-command instruction-text))
+                  (command
+                   (and runtime-session
+                        (magent-acp--slash-command
+                         instruction-text runtime-session)))
                   (resources (plist-get input :resource-blocks)))
              (unless runtime-session
                (error "Unknown session: %s" session-id))

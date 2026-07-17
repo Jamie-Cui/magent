@@ -160,6 +160,12 @@ finish later with ~magent-command-complete~, ~magent-command-fail~, or
 ~magent-command-set-cancel-function~. Handlers are trusted installed Elisp;
 project-local Markdown never receives this execution authority.
 
+If a handler or step callback signals after submitting runtime work, Magent
+first claims the invocation's final ~failed~ result, then runs its registered
+cleanup and cancels every owned runtime submission before publishing
+completion. A synchronous cancellation callback therefore cannot replace the
+original failure or leave background streaming and ledger writes alive.
+
 A step callback still owns the completed runtime turn's FIFO lease. It can
 submit the next step immediately; no unrelated backend turn can advance in
 between. Each submitted turn records both the expanded model prompt and the
@@ -173,6 +179,12 @@ Existing instruction skills with a ~default-prompt~ remain compatible: Magent
 projects them into the same command registry and activates the original skill
 when invoked. Project and user adapters can override installed or bundled
 commands by name; the ~/clear~ and ~/compact~ core names remain reserved.
+
+Project command adapters are retained under their canonical project scope.
+~magent-command-get~, ~magent-command-list~, and ~magent-command-parse~ accept an
+optional scope, and ACP always supplies the runtime session's scope for both
+advertisement and dispatch. Concurrent sessions for different projects can
+therefore expose same-name overrides without leaking commands between menus.
 
 * User Skill Management
 

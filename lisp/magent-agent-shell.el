@@ -466,14 +466,21 @@ When ARGUMENT is nil, prompt for optional trailing command text."
   (magent--ensure-initialized)
   (magent-agent-shell--with-config
     (magent-agent-shell--prepare-skill-context)
-    (let* ((name
+    (let* ((shell-buffer (magent-agent-shell--buffer))
+           (runtime-session
+            (magent-agent-shell--runtime-session shell-buffer))
+           (scope
+            (if runtime-session
+                (magent-runtime-session-scope runtime-session)
+              (or (magent-runtime-active-project-scope) 'global)))
+           (name
             (or command-name
                 (let ((names (mapcar #'magent-command-spec-name
-                                     (magent-command-list))))
+                                     (magent-command-list scope))))
                   (unless names
                     (user-error "Magent: no slash commands are registered"))
                   (completing-read "Run Magent command: " names nil t))))
-           (_spec (or (magent-command-get name)
+           (_spec (or (magent-command-get name scope)
                       (user-error "Magent: unknown command /%s" name)))
            (extra (if argument
                       argument

@@ -20,6 +20,7 @@
 (require 'magent-session)
 
 (declare-function magent-command-builtins-register "magent-command-builtins")
+(declare-function magent-runtime-active-project-scope "magent-runtime")
 (declare-function magent-skill-description "magent-skills")
 (declare-function magent-skill-file-path "magent-skills")
 (declare-function magent-skill-requires-project "magent-skills")
@@ -111,6 +112,34 @@
   (or (alist-get layer magent-command--layer-ranks)
       (error "Invalid Magent command source layer: %S" layer)))
 
+(defun magent-command--canonical-scope (scope)
+  "Return canonical project origin for SCOPE, or nil for global scope."
+  (let ((origin (magent-session-scope-origin scope)))
+    (cond
+     ((or (null origin) (eq origin 'global)) nil)
+     ((stringp origin)
+      (condition-case nil
+          (file-truename (directory-file-name origin))
+        (error (directory-file-name (expand-file-name origin)))))
+     (t origin))))
+
+(defun magent-command--resolution-scope (&optional scope)
+  "Return canonical command resolution scope for optional SCOPE.
+When SCOPE is nil, use the currently active project overlay."
+  (magent-command--canonical-scope
+   (or scope
+       (and (fboundp 'magent-runtime-active-project-scope)
+            (magent-runtime-active-project-scope))
+       'global)))
+
+(defun magent-command--visible-in-scope-p (spec scope)
+  "Return non-nil when command SPEC is visible in canonical SCOPE."
+  (let ((source-scope
+         (magent-command--canonical-scope
+          (magent-command-spec-source-scope spec))))
+    (or (null source-scope)
+        (equal source-scope scope))))
+
 (defun magent-command--same-owner-p (left right)
   "Return non-nil when command specs LEFT and RIGHT share an owner slot."
   (and (equal (magent-command-spec-name left)
@@ -142,13 +171,15 @@ definitions.  REQUIRES-PROJECT and TOOLS are checked before HANDLER runs."
          (layer (or source-layer 'package))
          (_rank (magent-command--layer-rank layer))
          (registration-owner (or owner (magent-command--default-owner)))
+         (registration-scope
+          (magent-command--canonical-scope source-scope))
          (spec (magent-command-spec-create
                 :name key
                 :description description
                 :handler handler
                 :owner registration-owner
                 :source-layer layer
-                :source-scope source-scope
+                :source-scope registration-scope
                 :requires-project requires-project
                 :tools (mapcar (lambda (tool)
                                  (if (symbolp tool) tool (intern tool)))
@@ -164,6 +195,8 @@ definitions.  REQUIRES-PROJECT and TOOLS are checked before HANDLER runs."
                     (and (equal key (magent-command-spec-name candidate))
                          (eq layer
                              (magent-command-spec-source-layer candidate))
+                         (equal registration-scope
+                                (magent-command-spec-source-scope candidate))
                          (not (magent-command--same-owner-p candidate spec))))
                   magent-command--registry)))
       (magent-log
@@ -226,22 +259,30 @@ Nil SOURCE-SCOPE or OWNER acts as a wildcard.  Return the removal count."
       (> (magent-command-spec-sequence left)
          (magent-command-spec-sequence right)))))
 
-(defun magent-command-get (name)
-  "Return the effective slash command NAME, or nil."
+(defun magent-command-get (name &optional scope)
+  "Return effective slash command NAME for SCOPE, or nil.
+When SCOPE is nil, resolve against the currently active project overlay."
   (let ((key (magent-command--normalize-name name))
+        (resolution-scope (magent-command--resolution-scope scope))
         winner)
     (dolist (spec magent-command--registry winner)
       (when (and (equal key (magent-command-spec-name spec))
+                 (magent-command--visible-in-scope-p spec resolution-scope)
                  (or (null winner)
                      (magent-command--better-spec-p spec winner)))
         (setq winner spec)))))
 
-(defun magent-command-list ()
-  "Return effective slash command specs sorted by name."
-  (let (names)
+(defun magent-command-list (&optional scope)
+  "Return effective slash command specs for SCOPE sorted by name.
+When SCOPE is nil, resolve against the currently active project overlay."
+  (let ((resolution-scope (magent-command--resolution-scope scope))
+        names)
     (dolist (spec magent-command--registry)
-      (cl-pushnew (magent-command-spec-name spec) names :test #'equal))
-    (mapcar #'magent-command-get (sort names #'string<))))
+      (when (magent-command--visible-in-scope-p spec resolution-scope)
+        (cl-pushnew (magent-command-spec-name spec) names :test #'equal)))
+    (mapcar (lambda (name)
+              (magent-command-get name (or resolution-scope 'global)))
+            (sort names #'string<))))
 
 (defun magent-command--skill-source-layer (skill)
   "Return command source layer corresponding to SKILL."
@@ -255,21 +296,32 @@ Nil SOURCE-SCOPE or OWNER acts as a wildcard.  Return the removal count."
   "Return non-nil when OWNER identifies a generated skill adapter."
   (and (consp owner) (eq (car owner) 'skill-adapter)))
 
-(defun magent-command-refresh-skill-adapters (&optional _scope)
-  "Rebuild compatibility commands for effective SKILL.md default prompts."
+(defun magent-command-refresh-skill-adapters (&optional scope)
+  "Rebuild compatibility commands for effective skills in SCOPE.
+Global adapters and each visited project scope are cached independently so
+live sessions can resolve commands without switching the active overlay."
   (require 'magent-skills)
-  (let ((magent-command--suppress-registry-hooks t))
+  (let ((target-scope (magent-command--canonical-scope scope))
+        (magent-command--suppress-registry-hooks t))
     (setq magent-command--registry
           (cl-remove-if
            (lambda (spec)
-             (magent-command--skill-adapter-owner-p
-              (magent-command-spec-owner spec)))
+             (and
+              (magent-command--skill-adapter-owner-p
+               (magent-command-spec-owner spec))
+              (equal target-scope
+                     (magent-command--canonical-scope
+                      (magent-command-spec-source-scope spec)))))
            magent-command--registry))
     (dolist (name (magent-skills-command-names))
       ;; Give every generated handler its own lexical skill-name binding.
       (let ((skill-name name))
         (when-let* ((skill (magent-skills-get skill-name))
-                    (prompt (magent-skills-default-prompt skill-name)))
+                    (prompt (magent-skills-default-prompt skill-name))
+                    (scope-matches
+                     (equal target-scope
+                            (magent-command--canonical-scope
+                             (magent-skill-source-scope skill)))))
           (condition-case err
               (magent-command-register
                skill-name
@@ -294,15 +346,16 @@ Nil SOURCE-SCOPE or OWNER acts as a wildcard.  Return the removal count."
              (magent-log "WARN skipped skill command adapter %S: %s"
                          skill-name (error-message-string err))))))))
   (magent-command--registry-changed)
-  (magent-command-list))
+  (magent-command-list (or scope 'global)))
 
 (defun magent-command-load-project-scope (scope)
   "Refresh command adapters after loading project SCOPE skills."
   (magent-command-refresh-skill-adapters scope))
 
 (defun magent-command-remove-project-scope (scope)
-  "Refresh command adapters after unloading project SCOPE skills."
-  (magent-command-refresh-skill-adapters scope))
+  "Retain cached command adapters while deactivating project SCOPE.
+The next load of SCOPE replaces its cached adapters from current skill data."
+  (ignore scope))
 
 (defun magent-command-initialize-static ()
   "Register bundled commands and compatibility skill commands."
@@ -310,12 +363,12 @@ Nil SOURCE-SCOPE or OWNER acts as a wildcard.  Return the removal count."
   (magent-command-builtins-register)
   (magent-command-refresh-skill-adapters))
 
-(defun magent-command-parse (input)
-  "Parse slash command INPUT and return (SPEC . ARGUMENT), or nil."
+(defun magent-command-parse (input &optional scope)
+  "Parse slash command INPUT for SCOPE and return (SPEC . ARGUMENT), or nil."
   (let ((trimmed (string-trim (or input ""))))
     (when (string-match "\\`/\\([[:alnum:]_-]+\\)\\(?:[[:space:]]+\\(.*\\)\\)?\\'"
                         trimmed)
-      (when-let* ((spec (magent-command-get (match-string 1 trimmed))))
+      (when-let* ((spec (magent-command-get (match-string 1 trimmed) scope)))
         (cons spec (string-trim (or (match-string 2 trimmed) "")))))))
 
 (defun magent-command--notify (invocation type &rest props)
@@ -355,22 +408,24 @@ Nil SOURCE-SCOPE or OWNER acts as a wildcard.  Return the removal count."
   (setf (magent-command-invocation-deferred-p invocation) t)
   invocation)
 
-(defun magent-command-finish (invocation status result)
-  "Finish INVOCATION once with STATUS and RESULT.
-STATUS must be `completed', `failed', or `cancelled'."
-  (unless (memq status '(completed failed cancelled))
-    (error "Invalid Magent command completion status: %S" status))
+(defun magent-command--claim-finish (invocation status result)
+  "Claim terminal STATUS and RESULT for active INVOCATION."
   (when (eq (magent-command-invocation-status invocation) 'active)
     (setf (magent-command-invocation-status invocation) status
           (magent-command-invocation-result invocation) result)
-    (let ((runtime-session
-           (magent-command-invocation-runtime-session invocation)))
-      ;; A stale callback must not clear a newer invocation installed for the
-      ;; same runtime session after live reload or extension-managed recovery.
-      (when (eq (gethash runtime-session
-                         magent-command--active-invocations)
-                invocation)
-        (remhash runtime-session magent-command--active-invocations)))
+    t))
+
+(defun magent-command--publish-finish (invocation)
+  "Publish the terminal state already claimed by INVOCATION."
+  (let ((status (magent-command-invocation-status invocation))
+        (result (magent-command-invocation-result invocation))
+        (runtime-session
+         (magent-command-invocation-runtime-session invocation)))
+    ;; A stale callback must not clear a newer invocation installed for the
+    ;; same runtime session after live reload or extension-managed recovery.
+    (when (eq (gethash runtime-session magent-command--active-invocations)
+              invocation)
+      (remhash runtime-session magent-command--active-invocations))
     (magent-command--notify invocation 'command-completed
                             :status status :result result)
     (when-let* ((completion
@@ -382,38 +437,75 @@ STATUS must be `completed', `failed', or `cancelled'."
                      (error-message-string err)))))
     t))
 
+(defun magent-command-finish (invocation status result)
+  "Finish INVOCATION once with STATUS and RESULT.
+STATUS must be `completed', `failed', or `cancelled'."
+  (unless (memq status '(completed failed cancelled))
+    (error "Invalid Magent command completion status: %S" status))
+  (when (magent-command--claim-finish invocation status result)
+    (magent-command--publish-finish invocation)))
+
 (defun magent-command-complete (invocation &optional result)
   "Complete INVOCATION successfully with RESULT."
   (magent-command-finish invocation 'completed (or result "")))
 
+(defun magent-command--failure-result (error)
+  "Return normalized command failure result for ERROR."
+  (if (magent-agent-result-p error)
+      error
+    (magent-agent-result-failed error (list :status 'command-error))))
+
 (defun magent-command-fail (invocation error)
   "Fail INVOCATION with ERROR."
   (magent-command-finish
-   invocation 'failed
-   (if (magent-agent-result-p error)
-       error
-     (magent-agent-result-failed error (list :status 'command-error)))))
+   invocation 'failed (magent-command--failure-result error)))
+
+(defun magent-command--cleanup-owned-work (invocation &optional force-runtime)
+  "Cancel work owned by INVOCATION without publishing terminal state.
+Run runtime cancellation when FORCE-RUNTIME is non-nil or the invocation has
+recorded submissions.  Cleanup errors are logged and never hide the original
+terminal result."
+  (let ((cancel (magent-command-invocation-cancel-function invocation))
+        (submission-ids
+         (magent-command-invocation-submission-ids invocation)))
+    ;; Clear ownership first so synchronous cancellation callbacks cannot run
+    ;; either cleanup path more than once.
+    (setf (magent-command-invocation-cancel-function invocation) nil
+          (magent-command-invocation-submission-ids invocation) nil)
+    (when cancel
+      (condition-case err
+          (funcall cancel)
+        ((error quit)
+         (magent-log "ERROR command cancellation cleanup failed: %s"
+                     (error-message-string err)))))
+    (when (or force-runtime submission-ids)
+      (condition-case err
+          (magent-runtime-cancel
+           (magent-command-invocation-runtime-session invocation))
+        ((error quit)
+         (magent-log "ERROR command runtime cancellation failed: %s"
+                     (error-message-string err))))))
+  invocation)
+
+(defun magent-command--finish-with-cleanup
+    (invocation status result &optional force-runtime)
+  "Claim INVOCATION STATUS, clean up owned work, then publish RESULT."
+  (when (magent-command--claim-finish invocation status result)
+    (magent-command--cleanup-owned-work invocation force-runtime)
+    (magent-command--publish-finish invocation)))
+
+(defun magent-command--fail-with-cleanup (invocation error)
+  "Fail INVOCATION with ERROR after cancelling work it already submitted."
+  (magent-command--finish-with-cleanup
+   invocation 'failed (magent-command--failure-result error)))
 
 (defun magent-command-cancel (invocation)
   "Cancel active command INVOCATION and return non-nil when cancelled."
-  (when (eq (magent-command-invocation-status invocation) 'active)
-    (when-let* ((cancel (magent-command-invocation-cancel-function invocation)))
-      (condition-case err
-          (funcall cancel)
-        (error
-         (magent-log "ERROR command cancellation cleanup failed: %s"
-                     (error-message-string err)))))
-    (ignore-errors
-      (magent-runtime-cancel
-       (magent-command-invocation-runtime-session invocation)))
-    ;; Runtime cancellation may synchronously finish the invocation through a
-    ;; submission callback.  Only supply our fallback result when it did not.
-    (when (eq (magent-command-invocation-status invocation) 'active)
-      (magent-command-finish
-       invocation 'cancelled
-       (magent-agent-result-failed
-        "Command cancelled" (list :status 'cancelled))))
-    t))
+  (magent-command--finish-with-cleanup
+   invocation 'cancelled
+   (magent-agent-result-failed
+    "Command cancelled" (list :status 'cancelled))
+   t))
 
 (defun magent-command-cancel-session (runtime-session)
   "Cancel the active command for RUNTIME-SESSION, if any."
@@ -510,7 +602,8 @@ queue the next step without another backend advancing between the two steps."
      (condition-case err
          (funcall callback status result)
        (error
-        (magent-command-fail invocation (error-message-string err)))))))
+        (magent-command--fail-with-cleanup
+         invocation (error-message-string err)))))))
 
 (cl-defun magent-command-prompt-handler (prompt &key skills agent)
   "Return a standard one-turn command handler for PROMPT.
@@ -548,10 +641,18 @@ appended as an Additional instruction block."
   "Invoke COMMAND for RUNTIME-SESSION and return its invocation.
 COMMAND may be a command name or spec.  The remaining keyword arguments are
 request-local data and UI-neutral callbacks supplied by a frontend adapter."
-  (let* ((spec (if (magent-command-spec-p command)
-                   command
-                 (or (magent-command-get command)
-                     (error "Unknown Magent command: %s" command))))
+  (let* ((scope (magent-runtime-session-scope runtime-session))
+         (spec
+          (if (magent-command-spec-p command)
+              (let ((effective
+                     (magent-command-get
+                      (magent-command-spec-name command) scope)))
+                (unless (eq command effective)
+                  (error "Magent command /%s is unavailable in session scope"
+                         (magent-command-spec-name command)))
+                command)
+            (or (magent-command-get command scope)
+                (error "Unknown Magent command: %s" command))))
          (invocation
           (magent-command-invocation-create
            :id (magent-protocol-generate-id "invocation")
@@ -581,7 +682,8 @@ request-local data and UI-neutral callbacks supplied by a frontend adapter."
       (quit
        (magent-command-cancel invocation))
       (error
-       (magent-command-fail invocation (error-message-string err))))
+       (magent-command--fail-with-cleanup
+        invocation (error-message-string err))))
     invocation))
 
 (provide 'magent-command)

@@ -4075,13 +4075,53 @@
         :name "fix" :type 'instruction :default-prompt "Custom fix"
         :source-layer 'project :source-scope "/tmp/project"
         :file-path "/tmp/project/.magent/skills/fix/SKILL.md"))
-      (magent-command-refresh-skill-adapters)
+      (magent-command-refresh-skill-adapters "/tmp/project")
       (should (eq (magent-command-spec-source-layer
-                   (magent-command-get "fix"))
+                   (magent-command-get "fix" "/tmp/project"))
                   'project))
       (setq magent-skills--registry nil)
-      (magent-command-refresh-skill-adapters)
-      (should (eq (magent-command-get "fix") builtin)))))
+      (magent-command-refresh-skill-adapters "/tmp/project")
+      (should (eq (magent-command-get "fix" "/tmp/project") builtin)))))
+
+(ert-deftest magent-test-command-skill-adapters-retain-project-scopes ()
+  "Test project command adapters remain independently resolvable by scope."
+  (require 'magent-command)
+  (require 'magent-skills)
+  (let ((magent-skills--registry nil)
+        (magent-command--registry nil)
+        (magent-command--sequence 0)
+        (magent-command-registry-changed-hook nil))
+    (magent-skills-register
+     (magent-skill-create
+      :name "project-command"
+      :description "Project A command."
+      :type 'instruction
+      :default-prompt "Run project A workflow."
+      :source-layer 'project
+      :source-scope "/tmp/project-a"))
+    (magent-command-refresh-skill-adapters "/tmp/project-a")
+    ;; Simulate runtime overlay activation replacing the effective skill
+    ;; registry with project B while project A still has a live ACP session.
+    (setq magent-skills--registry nil)
+    (magent-skills-register
+     (magent-skill-create
+      :name "project-command"
+      :description "Project B command."
+      :type 'instruction
+      :default-prompt "Run project B workflow."
+      :source-layer 'project
+      :source-scope "/tmp/project-b"))
+    (magent-command-refresh-skill-adapters "/tmp/project-b")
+    (let ((project-a
+           (magent-command-get "project-command" "/tmp/project-a"))
+          (project-b
+           (magent-command-get "project-command" "/tmp/project-b")))
+      (should project-a)
+      (should project-b)
+      (should (equal (magent-command-spec-source-scope project-a)
+                     "/tmp/project-a"))
+      (should (equal (magent-command-spec-source-scope project-b)
+                     "/tmp/project-b")))))
 
 (ert-deftest magent-test-command-invalid-skill-adapter-does-not-break-refresh ()
   "Test one non-slash-compatible skill name cannot block valid adapters."
@@ -4282,6 +4322,67 @@
     (should (string-match-p
              "without completing or deferring"
              (magent-agent-result-content-string (cadr completion))))))
+
+(ert-deftest magent-test-command-handler-error-cancels-owned-submission ()
+  "Test a handler error cleans up submitted work before reporting failure."
+  (require 'magent-command)
+  (let ((magent-command--registry nil)
+        (magent-command--active-invocations (make-hash-table :test #'eq))
+        (runtime-session (magent-runtime-session-create :id "session-1"))
+        invocation
+        submission-callback
+        runtime-cancelled
+        completion
+        (completion-count 0)
+        (cleanup-count 0)
+        order)
+    (magent-command-register
+     "broken-submit"
+     :handler
+     (lambda (value)
+       (setq invocation value)
+       (magent-command-set-cancel-function
+        value
+        (lambda ()
+          (cl-incf cleanup-count)
+          (push 'custom-cleanup order)))
+       (magent-command-defer value)
+       (magent-command-submit
+        value "queued work"
+        :on-complete
+        (lambda (status result)
+          (magent-command-finish value status result)))
+       (error "handler exploded"))
+     :owner 'test)
+    (cl-letf (((symbol-function 'magent-runtime-submit)
+               (lambda (_session _prompt &rest args)
+                 (setq submission-callback (plist-get args :on-complete))
+                 "submission-1"))
+              ((symbol-function 'magent-runtime-cancel)
+               (lambda (session)
+                 (setq runtime-cancelled session)
+                 (push 'runtime-cancel order)
+                 (funcall submission-callback 'cancelled "runtime cancelled"))))
+      (magent-command-invoke
+       "broken-submit" runtime-session
+       :on-complete
+       (lambda (status result)
+         (cl-incf completion-count)
+         (setq completion (list status result))
+         (push 'completion order))))
+    (should (= cleanup-count 1))
+    (should (eq runtime-cancelled runtime-session))
+    (should (= completion-count 1))
+    (should (eq (car completion) 'failed))
+    (should (string-match-p
+             "handler exploded"
+             (magent-agent-result-content-string (cadr completion))))
+    (should (eq (magent-command-invocation-status invocation) 'failed))
+    (should-not (magent-command-invocation-submission-ids invocation))
+    (should-not (gethash runtime-session
+                         magent-command--active-invocations))
+    (should (equal (nreverse order)
+                   '(custom-cleanup runtime-cancel completion)))))
 
 (ert-deftest magent-test-command-validates-project-and-tool-requirements ()
   "Test command constraints fail before trusted handler execution."
@@ -10125,6 +10226,32 @@
         (should (eq (plist-get parsed :spec) (magent-command-get name)))
         (should (equal (plist-get parsed :argument) "focus on tests"))))))
 
+(ert-deftest magent-test-acp-slash-command-resolves-by-session-scope ()
+  "Test ACP dispatch resolves same-name commands in the session project."
+  (require 'magent-acp)
+  (let ((magent-command--registry nil)
+        (magent-command--sequence 0)
+        (project-a (magent-runtime-session-create
+                    :id "session-a" :scope "/tmp/project-a"))
+        (project-b (magent-runtime-session-create
+                    :id "session-b" :scope "/tmp/project-b")))
+    (let ((command-a
+           (magent-command-register
+            "project-command" :handler #'ignore :owner 'project-a
+            :source-layer 'project :source-scope "/tmp/project-a"))
+          (command-b
+           (magent-command-register
+            "project-command" :handler #'ignore :owner 'project-b
+            :source-layer 'project :source-scope "/tmp/project-b")))
+      (should (eq (plist-get (magent-acp--slash-command
+                              "/project-command" project-a)
+                             :spec)
+                  command-a))
+      (should (eq (plist-get (magent-acp--slash-command
+                              "/project-command" project-b)
+                             :spec)
+                  command-b)))))
+
 (ert-deftest magent-test-acp-slash-command-parses-session-controls ()
   "Test ACP recognizes registered clear and compact controls."
   (require 'magent-acp)
@@ -10158,7 +10285,7 @@
                         :name "build"
                         :description "Build"))))
               ((symbol-function 'magent-acp--available-commands)
-               (lambda ()
+               (lambda (&optional _runtime-session)
                  [((name . "init")
                    (description . "Initialize project instructions."))])))
       (magent-acp--handle-request
@@ -10179,8 +10306,59 @@
                     (aref (map-nested-elt notification
                                           '(params update availableCommands))
                           0)
-                    'name)
+                   'name)
                    "init"))))
+
+(ert-deftest magent-test-acp-refresh-commands-isolated-by-session-scope ()
+  "Test command refresh publishes each ACP session's scoped command view."
+  (require 'magent-acp)
+  (let* ((magent-command--registry nil)
+         (magent-command--sequence 0)
+         (magent-command-registry-changed-hook nil)
+         (magent-acp--client-session-scopes
+          (make-hash-table :test #'eq))
+         (client (list :client "test"))
+         (bindings (make-hash-table :test #'equal))
+         (project-a
+          (magent-runtime-session-create
+           :id "session-a" :scope "/tmp/project-a"))
+         (project-b
+          (magent-runtime-session-create
+           :id "session-b" :scope "/tmp/project-b"))
+         notifications)
+    (magent-command-register
+     "global-command" :handler #'ignore :owner 'global)
+    (magent-command-register
+     "project-a-command" :handler #'ignore :owner 'project-a
+     :source-layer 'project :source-scope "/tmp/project-a")
+    (magent-command-register
+     "project-b-command" :handler #'ignore :owner 'project-b
+     :source-layer 'project :source-scope "/tmp/project-b")
+    (puthash "session-a" "/tmp/project-a" bindings)
+    (puthash "session-b" "/tmp/project-b" bindings)
+    (puthash client bindings magent-acp--client-session-scopes)
+    (cl-letf (((symbol-function 'magent-runtime-session-from-id)
+               (lambda (session-id scope)
+                 (cond
+                  ((and (equal session-id "session-a")
+                        (equal scope "/tmp/project-a"))
+                   project-a)
+                  ((and (equal session-id "session-b")
+                        (equal scope "/tmp/project-b"))
+                   project-b))))
+              ((symbol-function 'magent-acp--session-update)
+               (lambda (_client session-id update)
+                 (push
+                  (cons session-id
+                        (mapcar
+                         (lambda (command) (map-elt command 'name))
+                         (append (map-elt update 'availableCommands) nil)))
+                  notifications))))
+      (magent-acp--refresh-available-commands))
+    (should (equal (sort (cdr (assoc "session-a" notifications)) #'string<)
+                   '("global-command" "project-a-command")))
+    (should (equal (sort (cdr (assoc "session-b" notifications)) #'string<)
+                   '("global-command" "project-b-command")))))
 
 (ert-deftest magent-test-acp-models-use-model-id ()
   "Test ACP available model entries expose modelId for agent-shell."
@@ -11134,10 +11312,48 @@
     (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
               ((symbol-function 'magent-agent-shell--prepare-skill-context)
                #'ignore)
+              ((symbol-function 'magent-agent-shell--buffer)
+               (lambda (&optional _no-create) 'shell-buffer))
+              ((symbol-function 'magent-agent-shell--runtime-session)
+               (lambda (&optional _buffer) nil))
               ((symbol-function 'magent-agent-shell-send-prompt)
                (lambda (prompt &rest _args) (setq sent prompt))))
       (magent-agent-shell-run-command "demo" "focus on tests"))
     (should (equal sent "/demo focus on tests"))))
+
+(ert-deftest magent-test-agent-shell-run-command-lists-session-scope ()
+  "Test interactive command selection uses the shell session's scope."
+  (require 'magent-agent-shell)
+  (let ((magent-command--registry nil)
+        (magent-command--sequence 0)
+        (runtime-session
+         (magent-runtime-session-create
+          :id "session-a" :scope "/tmp/project-a"))
+        offered sent)
+    (magent-command-register
+     "project-a-command" :handler #'ignore :owner 'project-a
+     :source-layer 'project :source-scope "/tmp/project-a")
+    (magent-command-register
+     "project-b-command" :handler #'ignore :owner 'project-b
+     :source-layer 'project :source-scope "/tmp/project-b")
+    (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
+              ((symbol-function 'magent-runtime-ensure-initialized) #'ignore)
+              ((symbol-function 'magent-agent-shell--prepare-skill-context)
+               #'ignore)
+              ((symbol-function 'magent-agent-shell--buffer)
+               (lambda (&optional _no-create) 'shell-buffer))
+              ((symbol-function 'magent-agent-shell--runtime-session)
+               (lambda (&optional _buffer) runtime-session))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _args)
+                 (setq offered collection)
+                 "project-a-command"))
+              ((symbol-function 'read-string) (lambda (&rest _) ""))
+              ((symbol-function 'magent-agent-shell-send-prompt)
+               (lambda (prompt &rest _args) (setq sent prompt))))
+      (magent-agent-shell-run-command))
+    (should (equal offered '("project-a-command")))
+    (should (equal sent "/project-a-command"))))
 
 (ert-deftest magent-test-runtime-cancel-is-session-scoped ()
   "Test runtime cancellation removes only the requested session's work."

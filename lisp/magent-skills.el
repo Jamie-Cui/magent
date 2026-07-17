@@ -604,10 +604,13 @@ local skills after static definitions are reloaded."
     (magent-file-loader-reload-file-backed-registry
      'magent-skills--registry
      #'magent-skill-file-path
-    #'magent-skills-initialize-static)
+     #'magent-skills-initialize-static)
+    (when (fboundp 'magent-command-refresh-skill-adapters)
+      (magent-command-refresh-skill-adapters 'global))
     (when project-scope
       (magent-skills-load-project-scope project-scope))
-    (when (fboundp 'magent-command-refresh-skill-adapters)
+    (when (and project-scope
+               (fboundp 'magent-command-refresh-skill-adapters))
       (magent-command-refresh-skill-adapters project-scope))))
 
 (defun magent-skills-remove-project-scope (scope)
