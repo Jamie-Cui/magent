@@ -19,7 +19,7 @@
       (should (eq (magent-command-spec-owner command)
                   'magent-command-test))
       (should (eq (magent-command-spec-source-layer command) 'builtin))
-      (should (equal (magent-command-spec-tools command)
+      (should (equal (magent-command-spec-required-tools command)
                      '(read_file grep bash emacs_eval))))))
 
 (provide 'magent-command-builtin-test)

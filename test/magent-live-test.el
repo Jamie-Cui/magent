@@ -762,6 +762,60 @@ return that path."
           (should (string-match-p "\\`[0-9]+\\'"
                                   (plist-get tool-content :result))))))))
 
+(ert-deftest magent-live-test-command-turn-snapshots-live-buffer ()
+  "Run a native command turn with one immutable live-buffer resource."
+  :tags '(:magent-live-smoke)
+  (require 'magent)
+  (magent-live-test--with-isolated-runtime
+    (let* ((magent-command--registry nil)
+           (magent-command--active-invocations
+            (make-hash-table :test #'eq))
+           (runtime-session
+            (magent-runtime-session-create
+             :id "magent-live-command"
+             :scope 'global
+             :magent-session (magent-session-create)))
+           submitted
+           completion)
+      (with-current-buffer
+          (get-buffer-create "*magent-live-test-command-context*")
+        (erase-buffer)
+        (insert "snapshot before submission")
+        (let ((context-buffer (current-buffer)))
+          (magent-command-register
+           "live-buffer-context"
+           :description "Exercise native command buffer context."
+           :turn
+           (magent-command-turn-spec-create
+            :prompt "Inspect the attached live buffer."
+            :buffers (list context-buffer))
+           :owner 'magent-live-test)
+          (cl-letf (((symbol-function 'magent-runtime-submit)
+                     (lambda (session prompt &rest args)
+                       (setq submitted (list session prompt args))
+                       (funcall (plist-get args :on-complete)
+                                'completed "done")
+                       "magent-live-submission")))
+            (magent-command-invoke
+             "live-buffer-context" runtime-session
+             :on-complete
+             (lambda (status result)
+               (setq completion (list status result)))))
+          (insert " changed after submission")
+          (let* ((metadata (plist-get (nth 2 submitted) :turn-metadata))
+                 (blocks (plist-get metadata :content-blocks))
+                 (resource (alist-get 'resource (aref blocks 1)))
+                 (snapshot (alist-get 'text resource)))
+            (should (eq (car submitted) runtime-session))
+            (should (equal (cadr submitted)
+                           "Inspect the attached live buffer."))
+            (should (= (length blocks) 2))
+            (should (equal (alist-get 'text (aref blocks 0))
+                           "Inspect the attached live buffer."))
+            (should (string-match-p "snapshot before submission" snapshot))
+            (should-not (string-match-p "changed after submission" snapshot))
+            (should (equal completion '(completed "done")))))))))
+
 (ert-deftest magent-live-test-real-simple-prompt ()
   "Send a real non-tool request through the configured gptel provider."
   :tags '(:magent-live)

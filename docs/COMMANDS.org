@@ -6,12 +6,12 @@
 
 Magent has two distinct command surfaces for LLM-assisted workflows:
 
-- *Slash commands* invoke Elisp-native command handlers in the current
-  agent-shell conversation. Most bundled handlers use one ordinary agent turn.
+- *Slash commands* invoke Elisp-native commands in the current agent-shell
+  conversation. Most bundled commands declare one ordinary agent turn.
 - *Internal workflow commands* are explicit Emacs commands that run Magent
   maintenance or diagnostic work in isolated durable sessions.
 
-The bundled package currently provides eight Elisp-native slash commands and
+The bundled package currently provides seven Elisp-native slash commands and
 four internal workflow commands. Three
 additional Emacs commands inspect or manage the internal workflows.
 
@@ -24,7 +24,6 @@ Type a slash command as the prompt in the Magent agent-shell buffer:
 /summarize src/session persistence and replay
 /fix focus on the failing session persistence test
 /compact preserve exact filenames and remaining failures
-/clear
 #+end_example
 
 Text following a prompt command or ~/compact~ is passed as its argument. The
@@ -41,7 +40,6 @@ prompt text rather than executed locally.
 | ~/summarize~ | Summarize the project into org-roam   | Creates or updates one canonical Org note |
 | ~/test~    | Run and interpret relevant tests        | Runs focused tests; may fix an in-scope failure when appropriate |
 | ~/compact~ | Summarize the current conversation      | Replaces older model context with a continuation summary |
-| ~/clear~   | Clear the current conversation           | Cancels pending work and removes live and persisted session context |
 
 ** ~/compact~
 
@@ -49,13 +47,6 @@ Uses the hidden, tool-free compaction agent to produce a continuation summary.
 After it succeeds, future turns reuse that summary instead of the older model
 context. The visible transcript remains available in the current agent-shell
 buffer. A failed compaction leaves the previous context unchanged.
-
-** ~/clear~
-
-Cancels active or queued work for the current runtime session, clears its
-messages, tools, child jobs, approvals, selected one-shot skills, and persisted
-transcript, while keeping the agent-shell session handle valid. It does not
-accept an argument.
 
 ** ~/explain~
 
@@ -141,27 +132,95 @@ the same public API available to third-party packages:
 #+begin_src emacs-lisp
 (require 'magent-command)
 
+(defun my-magent-review-buffer-p (buffer)
+  "Return non-nil when BUFFER contains a reviewable diff."
+  (with-current-buffer buffer
+    (derived-mode-p 'diff-mode)))
+
 (magent-command-register
  "my-review"
  :description "Run my package-specific review workflow."
- :handler
- (magent-command-turn-handler
-  (lambda (_invocation)
-    (magent-command-turn-spec-create
-     :prompt "Review the current changes using my package policy."
-     :context '(:features (code-review))
-     :turn-metadata '(:workflow review))))
+ :turn
+ (lambda (_invocation)
+   (magent-command-turn-spec-create
+    :prompt "Review the attached Emacs buffers using my package policy."
+    :buffers
+    '(agent-shell-mode
+      (magit-status-mode :required-p nil)
+      ("^\\*Warnings\\*" :regexp t
+       :required-p nil :project-only-p nil)
+      (my-magent-review-buffer-p :predicate t :required-p nil))
+    :skills '("code-review")
+    :agent 'build
+    :append-argument-p t))
  :owner 'magent-command-my-review
- :source-layer 'package
- :tools '(read_file grep bash))
+ :source-layer 'project
+ :source-scope "/path/to/project"
+ :requires-project t
+ :required-tools '(read_file grep bash))
 #+end_src
 
-The turn spec keeps model-visible user prompt text separate from structured
-request context, explicit skills or agent selection, and durable ledger
-metadata. Its builder may inspect the invocation when those values depend on
-the slash argument or runtime session. ~append-argument-p~ defaults to non-nil,
-which appends trailing slash text as an Additional instruction block; set it to
-nil when the builder has already consumed the argument.
+Every registration must provide exactly one of ~:turn~ and ~:handler~. A
+~:turn~ value is either one static ~magent-command-turn-spec~ or a builder
+function that receives the invocation and returns one. The example uses every
+registration field that can accompany ~:turn~: ~:description~, ~:owner~,
+~:source-layer~, ~:source-scope~, ~:requires-project~, and
+~:required-tools~. The turn spec uses all of its fields: ~:prompt~,
+~:buffers~, ~:skills~, ~:agent~, and ~:append-argument-p~. Use ~:handler~
+instead only when trusted Elisp must own a custom lifecycle; it cannot be
+combined with ~:turn~.
+
+~:buffers~ follows a popwin-style ordered pattern list:
+
+- A buffer object selects that exact live buffer.
+- A string selects the buffer with that exact name.
+- A symbol selects every buffer whose exact ~major-mode~ is that symbol.
+- ~(REGEXP :regexp t ...)~ selects every buffer whose name matches REGEXP.
+- A lambda or closure is called as ~(PREDICATE BUFFER)~.
+- ~(FUNCTION-SYMBOL :predicate t ...)~ names a buffer predicate explicitly.
+
+A bare pattern is required, so ~'(magent-buffer magit-buffer)~ means two
+required major-mode selectors. Expanded entries accept ~:required-p~,
+~:regexp~, ~:predicate~, and ~:project-only-p~. A required pattern that
+matches nothing stops the command before submission; an optional one is logged
+and skipped. Selector patterns (mode, regexp, and predicate) match all live
+buffers in ~buffer-list~ order and default to project-only when the session has
+a project. Exact buffer and exact-name patterns default to no project filter.
+Set ~:project-only-p~ explicitly to override either default. Results preserve
+configuration order and are deduplicated by buffer identity.
+
+Magent snapshots matched buffers immediately before runtime submission. An
+active region wins; otherwise the current accessible range is captured, so
+narrowing is respected. Text properties are removed. Each snapshot is a
+structured user resource containing the buffer name, mode, file, modified
+state, point, selected bounds, retained bounds, narrowing state, and content.
+The immutable snapshot is persisted with the user turn and reused during later
+ledger replay; subsequent edits to the live buffer do not rewrite history.
+
+~magent-command-buffer-context-max-chars~ limits the combined buffer content
+to 24000 characters by default. Earlier ~:buffers~ entries have priority. A
+snapshot that exceeds the remaining budget keeps a point-centered window and
+includes a model-visible truncation marker. This budget counts captured buffer
+content, not the resource metadata header.
+
+The model-visible user content order is the expanded command prompt, command
+buffer snapshots, then frontend attachments. ~append-argument-p~ defaults to
+non-nil and appends trailing slash text as an Additional instruction block;
+set it to nil when the builder has already consumed the argument. Project
+scope, frontend facts, and attached resource paths still belong to the command
+invocation and are inherited automatically.
+
+Request context is runtime metadata, not extra model input. Recognized fields
+may affect project instruction discovery, capability resolution, or runtime
+routing, but the plist is not serialized verbatim for the model. An advanced
+handler that genuinely needs step-local runtime hints may pass
+~:request-context~ to ~magent-command-submit~ or
+~magent-command-submit-step~. It may also pass model-visible
+~:resource-blocks~ and private ~:turn-metadata~ for its own ledger data.
+Standard declarative turns deliberately expose neither a generic ~:context~
+nor public ~:turn-metadata~; Magent owns their canonical command metadata. Put
+model-visible instructions and data in the prompt, ~:buffers~, or an attached
+resource instead.
 
 An advanced handler may call ~magent-command-progress~ and
 ~magent-command-submit-step~, then use ~magent-command-defer~ before returning and
@@ -188,7 +247,7 @@ instruction skill through the compatibility adapter.
 Existing instruction skills with a ~default-prompt~ remain compatible: Magent
 projects them into the same command registry and activates the original skill
 when invoked. Project and user adapters can override installed or bundled
-commands by name; the ~/clear~ and ~/compact~ core names remain reserved.
+commands by name; the ~/compact~ core name remains reserved.
 
 Project command adapters are retained under their canonical project scope.
 ~magent-command-get~, ~magent-command-list~, and ~magent-command-parse~ accept an

@@ -355,6 +355,16 @@ original result length."
   :type 'integer
   :group 'magent)
 
+(defcustom magent-command-buffer-context-max-chars 24000
+  "Maximum total buffer-content characters attached by one command turn.
+The budget is shared by the buffers matched by a standard command turn in
+declaration and `buffer-list' order.  Longer content is retained around each
+buffer's point and receives a model-visible truncation notice.  Nil disables
+Magent-owned truncation for command buffer context."
+  :type '(choice (const :tag "Do not truncate command buffer context" nil)
+                 natnum)
+  :group 'magent)
+
 (defcustom magent-session-save-idle-delay 0.25
   "Idle delay in seconds before UI-triggered session saves run.
 Explicit calls to `magent-session-save' remain synchronous."

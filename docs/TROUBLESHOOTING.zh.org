@@ -337,7 +337,7 @@ magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
 
 *解决：*
 
-- 提交 ~/clear~ ，再用 ~M-x magent-start~ 重试。
+- 使用 ~M-x magent-agent-shell-start~ 启动一个新 session。
 - 如果仍然存在，重启 Emacs。
 
 ** 性能问题

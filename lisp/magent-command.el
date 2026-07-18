@@ -7,13 +7,15 @@
 ;;; Commentary:
 
 ;; Public registration and invocation API for Magent slash commands.  A
-;; command is an explicit user action.  It may use the structured turn handler
-;; for one ordinary agent turn or own a longer asynchronous workflow.
+;; command is an explicit user action.  It may declare one ordinary agent turn
+;; or use an advanced handler to own a longer asynchronous workflow.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'url-util)
+(require 'magent-config)
 (require 'magent-log)
 (require 'magent-prompt)
 (require 'magent-protocol)
@@ -39,24 +41,29 @@
   "One registered slash command definition."
   name
   description
+  turn
   handler
   owner
   source-layer
   source-scope
   requires-project
-  tools
+  required-tools
   registration-id
   sequence)
 
 (cl-defstruct (magent-command-turn-spec
                (:constructor magent-command-turn-spec-create)
                (:copier nil))
-  "Declarative input for one standard slash command turn."
+  "Declarative model input and options for one standard slash command turn.
+PROMPT is user-role model input.  BUFFERS is a popwin-style list of buffer
+patterns whose invocation-time snapshots are attached as model-visible user
+resources.  The invocation owns frontend request context, including project
+scope and attached resource paths.  SKILLS and AGENT select runtime behavior,
+and APPEND-ARGUMENT-P controls slash argument expansion."
   prompt
-  context
+  buffers
   skills
   agent
-  turn-metadata
   (append-argument-p t))
 
 (cl-defstruct (magent-command-invocation
@@ -168,17 +175,28 @@ When SCOPE is nil, use the currently active project overlay."
   (or load-file-name buffer-file-name 'anonymous))
 
 (cl-defun magent-command-register
-    (name &key description handler owner (source-layer 'package) source-scope
-          requires-project tools)
+    (name &key description turn handler owner (source-layer 'package)
+          source-scope requires-project required-tools)
   "Register slash command NAME and return its registration token.
 
-HANDLER receives one `magent-command-invocation'.  It must complete the
-invocation synchronously or call `magent-command-defer' before returning.
-SOURCE-LAYER controls precedence and is one of `builtin', `package', `user',
-`project', or reserved `core'.  OWNER and SOURCE-SCOPE identify reloadable
-definitions.  REQUIRES-PROJECT and TOOLS are checked before HANDLER runs."
-  (unless (functionp handler)
-    (error "Magent command %S requires a handler" name))
+Exactly one of TURN and HANDLER must be provided.  TURN is a
+`magent-command-turn-spec' or a function receiving one
+`magent-command-invocation' and returning a turn spec.  HANDLER receives the
+invocation directly and must complete it synchronously or call
+`magent-command-defer' before returning.  SOURCE-LAYER is one of `builtin',
+`package', `user', `project', or reserved `core'.  OWNER and SOURCE-SCOPE
+identify reloadable definitions.  REQUIRES-PROJECT and REQUIRED-TOOLS are
+checked before model work or HANDLER execution."
+  (unless (xor (not (null turn)) (not (null handler)))
+    (error "Magent command %S requires exactly one of :turn or :handler" name))
+  (when (and turn
+             (not (or (magent-command-turn-spec-p turn)
+                      (functionp turn))))
+    (error "Expected Magent command turn spec or builder, got: %S" turn))
+  (when (magent-command-turn-spec-p turn)
+    (magent-command--validate-turn-spec turn))
+  (when (and handler (not (functionp handler)))
+    (error "Expected Magent command handler function, got: %S" handler))
   (let* ((key (magent-command--normalize-name name))
          (layer (or source-layer 'package))
          (_rank (magent-command--layer-rank layer))
@@ -188,14 +206,16 @@ definitions.  REQUIRES-PROJECT and TOOLS are checked before HANDLER runs."
          (spec (magent-command-spec-create
                 :name key
                 :description description
+                :turn turn
                 :handler handler
                 :owner registration-owner
                 :source-layer layer
                 :source-scope registration-scope
                 :requires-project requires-project
-                :tools (mapcar (lambda (tool)
-                                 (if (symbolp tool) tool (intern tool)))
-                               tools)
+                :required-tools
+                (mapcar (lambda (tool)
+                          (if (symbolp tool) tool (intern tool)))
+                        required-tools)
                 :registration-id (magent-protocol-generate-id "command")
                 :sequence (cl-incf magent-command--sequence))))
     (when (and (eq layer 'core)
@@ -326,7 +346,7 @@ live sessions can resolve commands without switching the active overlay."
                       (magent-command-spec-source-scope spec)))))
            magent-command--registry))
     (dolist (name (magent-skills-command-names))
-      ;; Give every generated handler its own lexical skill-name binding.
+      ;; Give every generated turn builder its own lexical skill-name binding.
       (let ((skill-name name))
         (when-let* ((skill (magent-skills-get skill-name))
                     (prompt (magent-skills-default-prompt skill-name))
@@ -338,23 +358,22 @@ live sessions can resolve commands without switching the active overlay."
               (magent-command-register
                skill-name
                :description (magent-skill-description skill)
-               :handler
-               (magent-command-turn-handler
-                (lambda (invocation)
-                  (magent-command-turn-spec-create
-                   :prompt prompt
-                   :skills
-                   (magent-skills-dedupe-names
-                    (append
-                     (magent-runtime-session-pending-skills
-                      (magent-command-invocation-runtime-session invocation))
-                     (list skill-name))))))
+               :turn
+               (lambda (invocation)
+                 (magent-command-turn-spec-create
+                  :prompt prompt
+                  :skills
+                  (magent-skills-dedupe-names
+                   (append
+                    (magent-runtime-session-pending-skills
+                     (magent-command-invocation-runtime-session invocation))
+                    (list skill-name)))))
                :owner (list 'skill-adapter
                             (or (magent-skill-file-path skill) skill-name))
                :source-layer (magent-command--skill-source-layer skill)
                :source-scope (magent-skill-source-scope skill)
                :requires-project (magent-skill-requires-project skill)
-               :tools (magent-skill-tools skill))
+               :required-tools (magent-skill-tools skill))
             (error
              (magent-log "WARN skipped skill command adapter %S: %s"
                          skill-name (error-message-string err))))))))
@@ -526,26 +545,46 @@ terminal result."
               (gethash runtime-session magent-command--active-invocations)))
     (magent-command-cancel invocation)))
 
+(defun magent-command--plist-p (value)
+  "Return non-nil when VALUE is a proper keyword plist or nil."
+  (and (proper-list-p value)
+       (zerop (% (length value) 2))
+       (cl-loop for (key _item) on value by #'cddr
+                always (keywordp key))))
+
 (defun magent-command--validate-invocation (invocation)
-  "Validate project and tool requirements for INVOCATION."
+  "Validate request context and project requirements for INVOCATION."
   (let* ((spec (magent-command-invocation-spec invocation))
          (runtime-session
           (magent-command-invocation-runtime-session invocation))
          (origin
           (magent-session-scope-origin
            (magent-runtime-session-scope runtime-session))))
+    (unless (magent-command--plist-p
+             (magent-command-invocation-request-context invocation))
+      (error "Expected Magent command invocation request context plist, got: %S"
+             (magent-command-invocation-request-context invocation)))
     (when (and (magent-command-spec-requires-project spec)
                (not (stringp origin)))
       (user-error "Command /%s requires a project workspace"
-                  (magent-command-spec-name spec)))
-    (when-let* ((required (magent-command-spec-tools spec)))
-      (let* ((available
-              (magent-runtime-session-available-tool-names runtime-session))
-             (missing (cl-set-difference required available)))
-        (when missing
-          (user-error "Command /%s requires unavailable tools: %s"
-                      (magent-command-spec-name spec)
-                      (mapconcat #'symbol-name missing ", ")))))))
+                  (magent-command-spec-name spec)))))
+
+(defun magent-command--validate-required-tools (invocation &optional agent)
+  "Validate INVOCATION's required tools for optional turn AGENT."
+  (let* ((spec (magent-command-invocation-spec invocation))
+         (required (magent-command-spec-required-tools spec))
+         (runtime-session
+          (magent-command-invocation-runtime-session invocation))
+         (available
+          (when (or agent required)
+            (magent-runtime-session-available-tool-names
+             runtime-session agent)))
+         (missing (and required
+                       (cl-set-difference required available))))
+    (when missing
+      (user-error "Command /%s requires unavailable tools: %s"
+                  (magent-command-spec-name spec)
+                  (mapconcat #'symbol-name missing ", ")))))
 
 (defun magent-command-turn-metadata (invocation)
   "Return canonical ledger metadata for command INVOCATION."
@@ -561,32 +600,51 @@ terminal result."
         (magent-command-invocation-raw-input invocation)))
 
 (cl-defun magent-command-submit
-    (invocation prompt &key skills agent context turn-metadata on-complete)
+    (invocation prompt &key skills agent request-context turn-metadata
+                resource-blocks on-complete)
   "Submit one agent PROMPT owned by command INVOCATION.
+REQUEST-CONTEXT supplies optional request-only runtime hints for an advanced
+handler.  It is not serialized as model input and takes precedence over the
+frontend context captured by INVOCATION.  Standard declarative turns inherit
+the invocation context without adding command-local hints.  RESOURCE-BLOCKS
+are additional model-visible user resources inserted before frontend
+attachments.  TURN-METADATA remains available to advanced handlers only.
 ON-COMPLETE receives the normal runtime STATUS and RESULT."
   (unless (eq (magent-command-invocation-status invocation) 'active)
     (error "Cannot submit from a completed Magent command invocation"))
+  (unless (magent-command--plist-p request-context)
+    (error "Expected Magent command request context plist, got: %S"
+           request-context))
   (let* ((adapter (magent-command-invocation-submission-adapter invocation))
-         (adapted (if adapter
-                      (funcall adapter prompt)
-                    (list :prompt prompt)))
+         (additional-resources (append resource-blocks nil))
+         (frontend-resources
+          (append (magent-command-invocation-resource-blocks invocation) nil))
+         (default-blocks
+          (and (or additional-resources frontend-resources)
+               (vconcat
+                (cons `((type . "text") (text . ,prompt))
+                      (append additional-resources frontend-resources)))))
+         (adapted
+          (if adapter
+              (funcall adapter prompt additional-resources)
+            (list :prompt prompt :content-blocks default-blocks)))
          (effective-prompt (or (plist-get adapted :prompt) prompt))
-         (effective-context
-          (append context
-                  (plist-get adapted :context)
+         (content-blocks (plist-get adapted :content-blocks))
+         (effective-request-context
+          (append request-context
                   (magent-command-invocation-request-context invocation)))
          (metadata
           (append
            (magent-command-turn-metadata invocation)
            turn-metadata
-           (plist-get adapted :turn-metadata)))
+           (and content-blocks (list :content-blocks content-blocks))))
          (submission-id
           (magent-runtime-submit
            (magent-command-invocation-runtime-session invocation)
            effective-prompt
            :skills skills
            :agent agent
-           :context effective-context
+           :context effective-request-context
            :turn-metadata metadata
            :observer (magent-command-invocation-observer invocation)
            :approval-provider
@@ -597,19 +655,24 @@ ON-COMPLETE receives the normal runtime STATUS and RESULT."
     submission-id))
 
 (cl-defun magent-command-submit-step
-    (invocation prompt callback &key skills agent context turn-metadata)
+    (invocation prompt callback &key skills agent request-context turn-metadata
+                resource-blocks)
   "Submit one workflow PROMPT step for INVOCATION, then call CALLBACK.
 CALLBACK receives runtime STATUS and RESULT while the completed step still
 owns the global FIFO lease.  It may therefore call this function again to
-queue the next step without another backend advancing between the two steps."
+queue the next step without another backend advancing between the two steps.
+REQUEST-CONTEXT has the same request-only semantics as in
+`magent-command-submit'.  RESOURCE-BLOCKS has the same model-visible
+semantics."
   (unless (functionp callback)
     (error "Expected a Magent command step callback, got: %S" callback))
   (magent-command-submit
    invocation prompt
    :skills skills
    :agent agent
-   :context context
+   :request-context request-context
    :turn-metadata turn-metadata
+   :resource-blocks resource-blocks
    :on-complete
    (lambda (status result)
      (condition-case err
@@ -618,40 +681,279 @@ queue the next step without another backend advancing between the two steps."
         (magent-command--fail-with-cleanup
          invocation (error-message-string err)))))))
 
-(defun magent-command--plist-p (value)
-  "Return non-nil when VALUE is a proper keyword plist or nil."
-  (and (proper-list-p value)
-       (zerop (% (length value) 2))
-       (cl-loop for (key _item) on value by #'cddr
-                always (keywordp key))))
+(defun magent-command--normalize-buffer-config (entry)
+  "Return normalized popwin-style command buffer configuration ENTRY."
+  (let* ((bare-p (or (bufferp entry)
+                     (stringp entry)
+                     (symbolp entry)
+                     (functionp entry)))
+         (pattern (if bare-p entry (car-safe entry)))
+         (keywords (if bare-p nil (cdr-safe entry))))
+    (unless (or bare-p
+                (and (consp entry)
+                     (magent-command--plist-p keywords)))
+      (error "Invalid Magent command buffer configuration: %S" entry))
+    (unless (or (bufferp pattern)
+                (stringp pattern)
+                (symbolp pattern)
+                (functionp pattern))
+      (error "Invalid Magent command buffer pattern: %S" pattern))
+    (cl-loop for (key _value) on keywords by #'cddr
+             unless (memq key '(:required-p :regexp :predicate
+                                 :project-only-p))
+             do (error "Unknown Magent command buffer keyword: %S" key))
+    (dolist (key '(:required-p :regexp :predicate :project-only-p))
+      (when (and (plist-member keywords key)
+                 (not (memq (plist-get keywords key) '(nil t))))
+        (error "Expected Magent command buffer %S boolean, got: %S"
+               key (plist-get keywords key))))
+    (when (and (plist-get keywords :regexp)
+               (not (stringp pattern)))
+      (error "Magent command :regexp requires a string pattern: %S" pattern))
+    (when (and (plist-get keywords :predicate)
+               (not (and (symbolp pattern) (fboundp pattern))))
+      (error "Magent command :predicate requires a function symbol: %S"
+             pattern))
+    (when (and (plist-get keywords :regexp)
+               (plist-get keywords :predicate))
+      (error "Magent command buffer pattern cannot be regexp and predicate"))
+    (when (plist-get keywords :regexp)
+      (condition-case err
+          (string-match-p pattern "")
+        (invalid-regexp
+         (error "Invalid Magent command buffer regexp %S: %s"
+                pattern (error-message-string err)))))
+    (let* ((kind
+            (cond
+             ((bufferp pattern) 'buffer)
+             ((plist-get keywords :regexp) 'regexp)
+             ((plist-get keywords :predicate) 'predicate)
+             ((stringp pattern) 'name)
+             ((symbolp pattern) 'mode)
+             ((functionp pattern) 'predicate)))
+           (selector-p (memq kind '(mode regexp predicate)))
+           (required-p
+            (if (plist-member keywords :required-p)
+                (plist-get keywords :required-p)
+              t))
+           (project-only-p
+            (if (plist-member keywords :project-only-p)
+                (plist-get keywords :project-only-p)
+              selector-p)))
+      (list :pattern pattern
+            :kind kind
+            :required-p required-p
+            :project-only-p project-only-p))))
+
+(defun magent-command--validate-turn-spec (turn)
+  "Validate declarative command TURN and return it."
+  (unless (magent-command-turn-spec-p turn)
+    (error "Expected Magent command turn spec, got: %S" turn))
+  (unless (and (stringp (magent-command-turn-spec-prompt turn))
+               (not (string-blank-p
+                     (magent-command-turn-spec-prompt turn))))
+    (error "Magent command turn prompt is empty"))
+  (unless (proper-list-p (magent-command-turn-spec-buffers turn))
+    (error "Expected Magent command buffer configuration list, got: %S"
+           (magent-command-turn-spec-buffers turn)))
+  (mapc #'magent-command--normalize-buffer-config
+        (magent-command-turn-spec-buffers turn))
+  (unless (or (null (magent-command-turn-spec-skills turn))
+              (proper-list-p (magent-command-turn-spec-skills turn)))
+    (error "Expected Magent command skill list, got: %S"
+           (magent-command-turn-spec-skills turn)))
+  (unless (or (null (magent-command-turn-spec-agent turn))
+              (stringp (magent-command-turn-spec-agent turn))
+              (symbolp (magent-command-turn-spec-agent turn)))
+    (error "Expected Magent command agent name, got: %S"
+           (magent-command-turn-spec-agent turn)))
+  (unless (memq (magent-command-turn-spec-append-argument-p turn) '(nil t))
+    (error "Expected Magent command append-argument-p boolean, got: %S"
+           (magent-command-turn-spec-append-argument-p turn)))
+  turn)
 
 (defun magent-command--resolve-turn-spec (turn-or-builder invocation)
   "Resolve TURN-OR-BUILDER for INVOCATION to a validated turn spec."
-  (let ((turn (if (functionp turn-or-builder)
-                  (funcall turn-or-builder invocation)
-                turn-or-builder)))
-    (unless (magent-command-turn-spec-p turn)
-      (error "Expected Magent command turn spec, got: %S" turn))
-    (unless (and (stringp (magent-command-turn-spec-prompt turn))
-                 (not (string-blank-p
-                       (magent-command-turn-spec-prompt turn))))
-      (error "Magent command turn prompt is empty"))
-    (unless (magent-command--plist-p
-             (magent-command-turn-spec-context turn))
-      (error "Expected Magent command context plist, got: %S"
-             (magent-command-turn-spec-context turn)))
-    (unless (magent-command--plist-p
-             (magent-command-turn-spec-turn-metadata turn))
-      (error "Expected Magent command turn metadata plist, got: %S"
-             (magent-command-turn-spec-turn-metadata turn)))
-    (unless (or (null (magent-command-turn-spec-skills turn))
-                (proper-list-p (magent-command-turn-spec-skills turn)))
-      (error "Expected Magent command skill list, got: %S"
-             (magent-command-turn-spec-skills turn)))
-    (unless (memq (magent-command-turn-spec-append-argument-p turn) '(nil t))
-      (error "Expected Magent command append-argument-p boolean, got: %S"
-             (magent-command-turn-spec-append-argument-p turn)))
-    turn))
+  (magent-command--validate-turn-spec
+   (if (functionp turn-or-builder)
+       (funcall turn-or-builder invocation)
+     turn-or-builder)))
+
+(defun magent-command--path-in-project-p (path root base-directory)
+  "Return non-nil when PATH under BASE-DIRECTORY belongs to ROOT."
+  (when (and (stringp path) (stringp root))
+    (condition-case nil
+        (let ((expanded (expand-file-name path base-directory))
+              (project-root (file-name-as-directory root)))
+          (or (equal (directory-file-name expanded)
+                     (directory-file-name project-root))
+              (file-in-directory-p expanded project-root)))
+      (error nil))))
+
+(defun magent-command--buffer-in-project-p (buffer root)
+  "Return non-nil when BUFFER belongs to project ROOT."
+  (and
+   (buffer-live-p buffer)
+   (with-current-buffer buffer
+     (let ((base default-directory))
+       (or (magent-command--path-in-project-p buffer-file-name root base)
+           (magent-command--path-in-project-p default-directory root base))))))
+
+(defun magent-command--buffer-pattern-match-p (buffer config)
+  "Return non-nil when live BUFFER matches normalized CONFIG."
+  (let ((pattern (plist-get config :pattern)))
+    (pcase (plist-get config :kind)
+      ('mode (eq (buffer-local-value 'major-mode buffer) pattern))
+      ('regexp (string-match-p pattern (buffer-name buffer)))
+      ('predicate (funcall pattern buffer))
+      (_ nil))))
+
+(defun magent-command--matching-buffers (config invocation)
+  "Return live buffers matching normalized CONFIG for INVOCATION."
+  (let* ((runtime-session
+          (magent-command-invocation-runtime-session invocation))
+         (origin
+          (magent-session-scope-origin
+           (magent-runtime-session-scope runtime-session)))
+         (project-only-p (plist-get config :project-only-p))
+         (project-root (and (stringp origin)
+                            (magent-command--canonical-scope origin)))
+         (kind (plist-get config :kind))
+         (pattern (plist-get config :pattern))
+         (candidates
+          (pcase kind
+            ('buffer (and (buffer-live-p pattern) (list pattern)))
+            ('name (when-let* ((buffer (get-buffer pattern))) (list buffer)))
+            (_ (cl-remove-if-not
+                (lambda (buffer)
+                  (and (or (not project-only-p)
+                           (not project-root)
+                           (magent-command--buffer-in-project-p
+                            buffer project-root))
+                       (magent-command--buffer-pattern-match-p buffer config)))
+                (buffer-list))))))
+    (if (and project-only-p project-root (memq kind '(buffer name)))
+        (cl-remove-if-not
+         (lambda (buffer)
+           (magent-command--buffer-in-project-p buffer project-root))
+         candidates)
+      candidates)))
+
+(defun magent-command--resolve-turn-buffers (turn invocation)
+  "Resolve and deduplicate TURN buffer patterns for INVOCATION."
+  (let ((seen (make-hash-table :test #'eq))
+        buffers)
+    (dolist (entry (magent-command-turn-spec-buffers turn))
+      (let* ((config (magent-command--normalize-buffer-config entry))
+             (matches (magent-command--matching-buffers config invocation)))
+        (when (null matches)
+          (if (plist-get config :required-p)
+              (user-error "Command /%s required buffer pattern matched nothing: %S"
+                          (magent-command-spec-name
+                           (magent-command-invocation-spec invocation))
+                          (plist-get config :pattern))
+            (magent-log
+             "INFO command /%s optional buffer pattern matched nothing: %S"
+             (magent-command-spec-name
+              (magent-command-invocation-spec invocation))
+             (plist-get config :pattern))))
+        (dolist (buffer matches)
+          (unless (gethash buffer seen)
+            (puthash buffer t seen)
+            (push buffer buffers)))))
+    (nreverse buffers)))
+
+(defun magent-command--truncate-buffer-content
+    (text source-start source-point budget)
+  "Return truncation data for TEXT around SOURCE-POINT within BUDGET.
+SOURCE-START is the absolute position corresponding to the start of TEXT."
+  (let* ((length (length text))
+         (keep (if budget (min length budget) length))
+         (anchor (max 0 (min length (- source-point source-start))))
+         (window-start
+          (if (= keep length)
+              0
+            (max 0 (min (- anchor (/ keep 2)) (- length keep)))))
+         (window-end (+ window-start keep)))
+    (list :text (substring text window-start window-end)
+          :original-length length
+          :retained-length keep
+          :retained-start (+ source-start window-start)
+          :retained-end (+ source-start window-end)
+          :omitted-before window-start
+          :omitted-after (- length window-end)
+          :truncated-p (< keep length))))
+
+(defun magent-command--buffer-resource-block (buffer budget)
+  "Return (RESOURCE-BLOCK . RETAINED-CHARS) for BUFFER within BUDGET."
+  (with-current-buffer buffer
+    (let* ((region-p (use-region-p))
+           (accessible-start (point-min))
+           (accessible-end (point-max))
+           (source-start
+            (if region-p
+                (max accessible-start (region-beginning))
+              accessible-start))
+           (source-end
+            (if region-p
+                (min accessible-end (region-end))
+              accessible-end))
+           (source-point (point))
+           (raw (buffer-substring-no-properties source-start source-end))
+           (truncation
+            (magent-command--truncate-buffer-content
+             raw source-start source-point budget))
+           (name (buffer-name buffer))
+           (retained-start (plist-get truncation :retained-start))
+           (retained-end (plist-get truncation :retained-end))
+           (notice
+            (and (plist-get truncation :truncated-p)
+                 (format
+                  (concat "\n[Buffer content truncated: original %d characters; "
+                          "retained bounds %d..%d; omitted %d before and %d "
+                          "after.]\n")
+                  (plist-get truncation :original-length)
+                  retained-start retained-end
+                  (plist-get truncation :omitted-before)
+                  (plist-get truncation :omitted-after))))
+           (resource-text
+            (format
+             (concat "Buffer name: %s\nMajor mode: %s\nFile: %s\n"
+                     "Modified: %s\nPoint: %d\nSelection: %s\n"
+                     "Selected bounds: %d..%d\nRetained bounds: %d..%d\n"
+                     "Narrowed: %s\n%s\nContent:\n%s")
+             name major-mode (or buffer-file-name "<none>")
+             (if (buffer-modified-p) "true" "false") source-point
+             (if region-p "active-region" "accessible-buffer")
+             source-start source-end retained-start retained-end
+             (if (buffer-narrowed-p) "true" "false")
+             (or notice "")
+             (plist-get truncation :text)))
+           (block
+            `((type . "resource")
+              (resource
+               . ((uri . ,(concat "emacs-buffer:///"
+                                  (url-hexify-string name)))
+                  (name . ,name)
+                  (mimeType . "text/plain")
+                  (text . ,resource-text))))))
+      (cons block (plist-get truncation :retained-length)))))
+
+(defun magent-command--buffer-resource-blocks (buffers)
+  "Return model-visible snapshot resource blocks for BUFFERS."
+  (unless (or (null magent-command-buffer-context-max-chars)
+              (natnump magent-command-buffer-context-max-chars))
+    (error "Expected non-negative command buffer context budget, got: %S"
+           magent-command-buffer-context-max-chars))
+  (let ((remaining magent-command-buffer-context-max-chars)
+        blocks)
+    (dolist (buffer buffers)
+      (let* ((snapshot (magent-command--buffer-resource-block buffer remaining))
+             (used (cdr snapshot)))
+        (push (car snapshot) blocks)
+        (when remaining
+          (setq remaining (max 0 (- remaining used))))))
+    (nreverse blocks)))
 
 (defun magent-command--turn-prompt (turn invocation)
   "Return TURN's prompt expanded for INVOCATION."
@@ -666,33 +968,28 @@ queue the next step without another backend advancing between the two steps."
         "internal/additional-instruction.org"
         `((instruction . ,argument)))))))
 
-(defun magent-command-turn-handler (turn-or-builder)
-  "Return a standard one-turn handler for TURN-OR-BUILDER.
-TURN-OR-BUILDER is a `magent-command-turn-spec' or a function receiving the
-command invocation and returning one.  Turn prompts are user-role text;
-structured request context and ledger metadata use their dedicated fields.
-When `append-argument-p' is non-nil, append the slash command argument as an
-Additional instruction block."
-  (unless (or (magent-command-turn-spec-p turn-or-builder)
-              (functionp turn-or-builder))
-    (error "Expected Magent command turn spec or builder, got: %S"
-           turn-or-builder))
-  (lambda (invocation)
-    (let* ((turn (magent-command--resolve-turn-spec
-                  turn-or-builder invocation))
-           (prompt (magent-command--turn-prompt turn invocation)))
+(defun magent-command--run-turn (invocation)
+  "Run the standard declarative turn owned by INVOCATION."
+  (let* ((spec (magent-command-invocation-spec invocation))
+         (turn (magent-command--resolve-turn-spec
+                (magent-command-spec-turn spec) invocation))
+         (agent (magent-command-turn-spec-agent turn))
+         (prompt (magent-command--turn-prompt turn invocation)))
+    (magent-command--validate-required-tools invocation agent)
+    (let* ((buffers (magent-command--resolve-turn-buffers turn invocation))
+           (resource-blocks
+            (magent-command--buffer-resource-blocks buffers)))
       (magent-command-defer invocation)
       (magent-command-submit
        invocation prompt
-       :context (magent-command-turn-spec-context turn)
        :skills (magent-command-turn-spec-skills turn)
-       :agent (magent-command-turn-spec-agent turn)
-       :turn-metadata (magent-command-turn-spec-turn-metadata turn)
+       :agent agent
+       :resource-blocks resource-blocks
        :on-complete
        (lambda (status result)
          (if (eq status 'completed)
              (magent-command-complete invocation result)
-             (magent-command-finish invocation status result)))))))
+           (magent-command-finish invocation status result)))))))
 
 (cl-defun magent-command-invoke
     (command runtime-session &key raw-input argument request-context
@@ -733,7 +1030,11 @@ request-local data and UI-neutral callbacks supplied by a frontend adapter."
     (condition-case err
         (progn
           (magent-command--validate-invocation invocation)
-          (funcall (magent-command-spec-handler spec) invocation)
+          (if-let* ((handler (magent-command-spec-handler spec)))
+              (progn
+                (magent-command--validate-required-tools invocation)
+                (funcall handler invocation))
+            (magent-command--run-turn invocation))
           (when (and (eq (magent-command-invocation-status invocation) 'active)
                      (not (magent-command-invocation-deferred-p invocation)))
             (magent-command-fail

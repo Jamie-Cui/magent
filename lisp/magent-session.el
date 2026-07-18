@@ -196,6 +196,15 @@ When VALUE is nil, remove KEY.  Return SESSION metadata."
             (throw 'title title)))))
     nil))
 
+(defun magent-session-summary-title (session)
+  "Return SESSION's canonical display title, or nil when it has none."
+  (unless (magent-session-p session)
+    (error "Expected a Magent session, got: %S" session))
+  (or (magent-session--clean-summary-title
+       (magent-session--metadata-string session 'title))
+      (magent-session--summary-title-from-messages
+       (magent-session-messages session))))
+
 ;;; Thread ledger projection
 
 (defun magent-session--scope-for-thread (session)
@@ -636,9 +645,11 @@ Fall back to the file modification time for legacy filenames."
   (condition-case nil
       (with-temp-buffer
         (insert-file-contents filepath)
-        (let* ((json-object-type 'alist)
-               (json-array-type 'list)
-               (data (json-read))
+        (let* ((data (json-parse-buffer
+                      :object-type 'alist
+                      :array-type 'list
+                      :null-object nil
+                      :false-object :json-false))
                (schema-version
                 (magent-session--validate-schema-version
                  (cdr (assq 'schema-version data))))
@@ -845,9 +856,7 @@ temporarily rebinds the ambient current session or scope."
                (title (magent-session--metadata-string session 'title))
                (parent-session-id
                 (magent-session--metadata-string session 'parent-session-id))
-               (summary-title (or (magent-session--clean-summary-title title)
-                                  (magent-session--summary-title-from-messages
-                                   messages)))
+               (summary-title (magent-session-summary-title session))
                (approval-overrides
                 (mapcar (lambda (entry)
                           `((tool . ,(symbol-name (car entry)))
@@ -1089,6 +1098,18 @@ current scope, clear it so Magent falls back to the default agent."
         (or (not (plist-member metadata :valid))
             (plist-get metadata :valid))))
     (delq nil (magent-session--all-files)))))
+
+(defun magent-session-list-files-for-scope (scope)
+  "Return valid saved session files stored for exact SCOPE, newest first."
+  (unless scope
+    (error "An explicit session scope is required"))
+  (cl-remove-if-not
+   (lambda (file)
+     (let ((metadata (magent-session--read-file-metadata-cached file)))
+       (or (not (plist-member metadata :valid))
+           (plist-get metadata :valid))))
+   (magent-session--list-files-in-directory
+    (magent-session--scope-storage-directory scope))))
 
 (defun magent-session-get-id (session)
   "Get or generate a unique ID for SESSION."
