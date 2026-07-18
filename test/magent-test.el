@@ -11350,7 +11350,13 @@
               (should
                (eq (buffer-local-value 'agent-shell-session-strategy
                                        (current-buffer))
-                   'new)))
+                   'new))
+              ;; agent-shell snapshots its explicit generic-picker strategy
+              ;; after the first client construction, then constructs the
+              ;; real client once more during bootstrap.
+              (setq-local agent-shell-session-strategy 'prompt)
+              (funcall client-maker (current-buffer))
+              (should (eq agent-shell-session-strategy 'new)))
             (with-temp-buffer
               (set (make-local-variable 'agent-shell-session-strategy)
                    'latest)
@@ -11360,6 +11366,29 @@
                                        (current-buffer))
                    'latest))))
         (set-default 'agent-shell-session-strategy previous-strategy)))))
+
+(ert-deftest magent-test-generic-agent-shell-start-uses-magent-session-strategy ()
+  "Test generic agent-shell startup cannot overwrite Magent's strategy."
+  (require 'magent-agent-shell)
+  (let ((agent-shell-session-strategy 'prompt)
+        (magent-agent-shell-session-strategy 'new)
+        shell-buffer)
+    (cl-letf (((symbol-function 'magent-acp--request-sender)
+               (lambda (&rest _args) nil)))
+      (unwind-protect
+          (progn
+            (setq shell-buffer
+                  (agent-shell--start
+                   :config (magent-agent-shell-make-config)
+                   :no-focus t
+                   :new-session t
+                   :session-strategy agent-shell-session-strategy))
+            (should
+             (eq (buffer-local-value 'agent-shell-session-strategy
+                                     shell-buffer)
+                 'new)))
+        (when (buffer-live-p shell-buffer)
+          (kill-buffer shell-buffer))))))
 
 (ert-deftest magent-test-agent-shell-start-uses-magent-session-strategy ()
   "Test Magent agent-shell entry points do not inherit global prompt strategy."
