@@ -140,7 +140,7 @@ to overwrite the failure or continue work after ACP completes.
 For compatibility, an instruction ~SKILL.md~ with ~default-prompt~ is projected
 into the command registry. Its native turn still activates the original skill.
 Project and user adapters override package/bundled definitions by layer, while
-core controls are reserved. Project adapters remain keyed by canonical project
+the core control is reserved. Project adapters remain keyed by canonical project
 scope; ACP resolves both command discovery and dispatch against each runtime
 session's exact scope, allowing multiple project sessions to coexist safely.
 

@@ -127,7 +127,7 @@ The ~:required-tools~ list declares tools that must be available before the
 command can run; replace it with the command's actual requirements, or omit it
 for a tool-free command. Exactly one of ~:turn~ and ~:handler~ is required. A
 ~user~ command can override an installed ~package~ or ~builtin~ command with
-the same name. The core ~/clear~ and ~/compact~ names remain reserved.
+the same name. The core ~/compact~ name remains reserved.
 
 * Configuration
 
@@ -257,16 +257,16 @@ and are consumed by the next prompt.
 
 Elisp-native slash commands are registered through the public
 ~magent-command-register~ API and can be selected with
-~M-x magent-agent-shell-run-command~. Agent-shell advertises eight bundled
+~M-x magent-agent-shell-run-command~. Agent-shell advertises seven bundled
 commands: ~/explain~, ~/fix~, ~/init~, ~/review~, ~/summarize~, ~/test~,
-~/compact~, and ~/clear~. The six prompt commands own package Org resources and
+and ~/compact~. The six prompt commands own package Org resources and
 do not activate same-name skills. ~/summarize~ writes one canonical Org note
 for the current Git project and accepts an optional path or semantic scope.
 
 Skills with ~default-prompt~ remain compatible and are projected into the same
 registry; use ~M-x magent-agent-shell-run-skill-command~ to select one directly.
-Project and user skill adapters may override package commands, while the two
-core session controls are reserved. See [[file:docs/COMMANDS.org][docs/COMMANDS.org]]
+Project and user skill adapters may override package commands, while the core
+~/compact~ session control is reserved. See [[file:docs/COMMANDS.org][docs/COMMANDS.org]]
 for command behavior, the third-party Elisp API, and compatibility details.
 Project adapters are retained by canonical project scope, and agent-shell uses
 the exact session scope for both command menus and dispatch.

@@ -106,8 +106,8 @@
   "Bundled Elisp-native prompt commands.")
 
 (defconst magent-test--builtin-control-command-names
-  '("clear" "compact")
-  "Magent-owned session controls exposed as slash commands.")
+  '("compact")
+  "Magent-owned session control exposed as a slash command.")
 
 (defun magent-test--load-builtin-skills-only ()
   "Load bundled skill files into the caller's test skill registry."
@@ -4063,16 +4063,16 @@
       (should (= changes 2)))))
 
 (ert-deftest magent-test-command-core-layer-is-reserved-by-precedence ()
-  "Test project definitions cannot shadow core session controls."
+  "Test project definitions cannot shadow the core session control."
   (require 'magent-command)
   (let ((magent-command--registry nil))
     (let ((core (let ((magent-command--allow-core-registration t))
                   (magent-command-register
-                   "clear" :handler #'ignore :owner 'core
+                   "compact" :handler #'ignore :owner 'core
                    :source-layer 'core))))
       (magent-command-register
-       "clear" :handler #'ignore :owner 'project :source-layer 'project)
-      (should (eq (magent-command-get "clear") core))
+       "compact" :handler #'ignore :owner 'project :source-layer 'project)
+      (should (eq (magent-command-get "compact") core))
       (should-error
        (magent-command-register
         "reserved" :handler #'ignore :owner 'package :source-layer 'core)
@@ -10073,6 +10073,59 @@
       (delete-directory magent-session-directory t)
       (delete-directory project-root t))))
 
+(ert-deftest magent-test-session-list-files-for-scope-does-not-scan-other-scopes ()
+  "Test exact-scope listing reads only the requested storage directory."
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-session--metadata-cache (make-hash-table :test #'equal))
+         (project-a (file-truename
+                     (directory-file-name
+                      (make-temp-file "magent-project-a-" t))))
+         (project-b (file-truename
+                     (directory-file-name
+                      (make-temp-file "magent-project-b-" t))))
+         (directory-a (magent-session--scope-storage-directory project-a))
+         (directory-b (magent-session--scope-storage-directory project-b))
+         (file-a (expand-file-name "session-20260718-120000.json" directory-a))
+         (file-b (expand-file-name "session-20260718-130000.json" directory-b))
+         (read-files nil)
+         (original-read
+          (symbol-function 'magent-session--read-file-metadata)))
+    (unwind-protect
+        (progn
+          (make-directory directory-a t)
+          (make-directory directory-b t)
+          (with-temp-file file-a
+            (insert (format
+                     "{\"scope\":\"project\",\"project-root\":%S}"
+                     project-a)))
+          (with-temp-file file-b
+            (insert (format
+                     "{\"scope\":\"project\",\"project-root\":%S}"
+                     project-b)))
+          (cl-letf (((symbol-function 'magent-session--read-file-metadata)
+                     (lambda (file)
+                       (push file read-files)
+                       (funcall original-read file))))
+            (should (equal (magent-session-list-files-for-scope project-a)
+                           (list file-a)))
+            (should (equal read-files (list file-a)))))
+      (delete-directory magent-session-directory t)
+      (delete-directory project-a t)
+      (delete-directory project-b t))))
+
+(ert-deftest magent-test-session-summary-title-has-one-canonical-projection ()
+  "Test live and saved titles share explicit-title and message fallback rules."
+  (let ((explicit
+         (magent-session-create
+          :metadata '((title . "  Explicit\n title  "))
+          :messages '(((role . user) (content . "First prompt")))))
+        (derived
+         (magent-session-create
+          :messages '(((role . system) (content . "Ignore"))
+                      ((role . user) (content . "  First\n prompt  "))))))
+    (should (equal (magent-session-summary-title explicit) "Explicit title"))
+    (should (equal (magent-session-summary-title derived) "First prompt"))))
+
 (ert-deftest magent-test-runtime-activate-scope-switches-project-overlays ()
   "Test runtime activation unloads the old overlay before loading the new one."
   (require 'magent-runtime)
@@ -10476,7 +10529,7 @@
                                 (append commands nil))))
       (should (equal names
                      (sort (copy-sequence
-                            '("clear" "compact" "init"))
+                            '("compact" "init"))
                            #'string<)))
       (should command)
       (should (equal (map-elt command 'description)
@@ -10542,16 +10595,19 @@
                              :spec)
                   command-b)))))
 
-(ert-deftest magent-test-acp-slash-command-parses-session-controls ()
-  "Test ACP recognizes registered clear and compact controls."
+(ert-deftest magent-test-acp-slash-command-parses-session-control ()
+  "Test ACP recognizes /compact and removes a stale /clear registration."
   (require 'magent-acp)
   (let ((magent-command--registry nil))
+    (let ((magent-command--allow-core-registration t))
+      (magent-command-register
+       "clear" :handler #'ignore :owner 'magent-command-controls
+       :source-layer 'core))
     (magent-command-controls-register)
-    (let ((clear (magent-acp--slash-command "/clear"))
-          (compact (magent-acp--slash-command
+    (let ((compact (magent-acp--slash-command
                     "/compact preserve the failing test")))
-      (should (eq (plist-get clear :spec) (magent-command-get "clear")))
-      (should (equal (plist-get clear :argument) ""))
+      (should-not (magent-command-get "clear"))
+      (should-not (magent-acp--slash-command "/clear"))
       (should (eq (plist-get compact :spec)
                   (magent-command-get "compact")))
       (should (equal (plist-get compact :argument)
@@ -11054,39 +11110,6 @@
                    '("existing-skill")))
     (should (equal (map-elt response 'stopReason) "end_turn"))))
 
-(ert-deftest magent-test-acp-session-prompt-clears-without-model-submission ()
-  "Test /clear resets its runtime session and completes locally."
-  (require 'magent-acp)
-  (let ((magent-command--registry nil)
-        (magent-command--active-invocations (make-hash-table :test #'eq))
-        (runtime-session (magent-runtime-session-create :id "session-1"))
-        cleared submitted response failure notifications)
-    (magent-command-controls-register)
-    (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
-               (lambda (_session-id) runtime-session))
-              ((symbol-function 'magent-runtime-session-clear)
-               (lambda (session) (setq cleared session)))
-              ((symbol-function 'magent-runtime-submit)
-               (lambda (&rest _args) (setq submitted t))))
-      (magent-acp--handle-request
-       `((:notification-handlers
-          . (,(lambda (value) (push value notifications))))
-         (:request-handlers . nil))
-       '((:method . "session/prompt")
-         (:params . ((sessionId . "session-1")
-                     (prompt . [((type . "text")
-                                 (text . "/clear"))]))))
-       (lambda (value) (setq response value))
-       (lambda (err &optional _raw) (setq failure err))))
-    (should-not failure)
-    (should (eq cleared runtime-session))
-    (should-not submitted)
-    (should (equal (map-elt response 'stopReason) "end_turn"))
-    (should (equal
-             (map-nested-elt (car notifications)
-                             '(params update sessionUpdate))
-             "agent_message_chunk"))))
-
 (ert-deftest magent-test-acp-session-prompt-compacts-through-runtime ()
   "Test /compact invokes runtime compaction and forwards its completion."
   (require 'magent-acp)
@@ -11367,6 +11390,38 @@
       (should (equal
                (map-nested-elt complete '(content 0 content text))
                "lisp/magent.el:118")))))
+
+(ert-deftest magent-test-acp-observer-pushes-session-title-on-completion ()
+  "Test turn completion publishes the canonical title through ACP."
+  (require 'magent-acp)
+  (let* ((magent-acp--client-session-scopes
+          (make-hash-table :test #'eq :weakness 'key))
+         notifications
+         (client `((:notification-handlers
+                    . (,(lambda (notification)
+                          (push notification notifications))))
+                   (:request-handlers . nil)))
+         (session
+          (magent-session-create
+           :id "session-1"
+           :messages '(((role . user) (content . "  Startup\n delay  ")))))
+         (runtime-session
+          (magent-runtime-session-create
+           :id "session-1"
+           :scope "/project-a"
+           :magent-session session))
+         (observer (magent-acp--observer client "session-1")))
+    (magent-acp--bind-client-session client runtime-session)
+    (cl-letf (((symbol-function 'magent-runtime-session-from-id)
+               (lambda (session-id scope)
+                 (should (equal session-id "session-1"))
+                 (should (equal scope "/project-a"))
+                 runtime-session)))
+      (funcall observer '(:type turn-complete)))
+    (let ((update (map-nested-elt (car notifications) '(params update))))
+      (should (equal (map-elt update 'sessionUpdate)
+                     "session_info_update"))
+      (should (equal (map-elt update 'title) "Startup delay")))))
 
 (ert-deftest magent-test-acp-observer-drops-leading-stream-whitespace ()
   "Test ACP observer does not emit blank blocks at stream start."
@@ -12300,6 +12355,34 @@
                      :scope global
                      :project-root nil
                      :title "Hello"
+                     :updated-at 0.0)))))))
+
+(ert-deftest magent-test-runtime-list-sessions-for-scope-uses-scope-api ()
+  "Test scoped runtime listing does not enumerate the all-session catalog."
+  (require 'magent-runtime-api)
+  (let ((file "/tmp/session-20260718-120000.json"))
+    (cl-letf (((symbol-function 'magent-session-list-files-for-scope)
+               (lambda (scope)
+                 (should (equal scope "/project-a"))
+                 (list file)))
+              ((symbol-function 'magent-session-list-files)
+               (lambda () (error "scoped listing should not enumerate all files")))
+              ((symbol-function 'magent-session--read-file-metadata-cached)
+               (lambda (_file)
+                 '(:valid t
+                   :id "session-20260718-120000"
+                   :scope project
+                   :project-root "/project-a"
+                   :summary-title "Scoped chat")))
+              ((symbol-function 'magent-session--file-display-time)
+               (lambda (_file) (seconds-to-time 0))))
+      (should
+       (equal (magent-runtime-list-sessions-for-scope "/project-a")
+              `((:id "session-20260718-120000"
+                     :file ,file
+                     :scope "/project-a"
+                     :project-root "/project-a"
+                     :title "Scoped chat"
                      :updated-at 0.0)))))))
 
 (ert-deftest magent-test-agent-shell-buffer-selects-only-magent-shells ()
@@ -14137,13 +14220,15 @@
   (require 'magent-acp)
   (cl-letf (((symbol-function 'magent-session-scope-from-directory)
              (lambda (cwd) (if (equal cwd "/project-a") "/project-a" 'global)))
-            ((symbol-function 'magent-runtime-list-sessions)
-             (lambda ()
-               '((:id "a" :scope "/project-a" :project-root "/project-a"
-                      :updated-at 0.0)
-                 (:id "b" :scope "/project-b" :project-root "/project-b"
-                      :updated-at 0.0)
-                 (:id "g" :scope global :project-root nil :updated-at 0.0)))))
+            ((symbol-function 'magent-runtime-list-sessions-for-scope)
+             (lambda (scope)
+               (if (equal scope "/project-a")
+                   '((:id "a" :scope "/project-a" :project-root "/project-a"
+                          :updated-at 0.0)
+                     (:id "b" :scope "/project-b" :project-root "/project-b"
+                          :updated-at 0.0))
+                 '((:id "g" :scope global :project-root nil
+                        :updated-at 0.0))))))
     (let ((project (map-elt (magent-acp--session-list-response "/project-a")
                             'sessions))
           (global (map-elt (magent-acp--session-list-response "/tmp")

@@ -306,7 +306,7 @@ magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
 3. Press ~C-c C-c~ in the agent-shell buffer and confirm the interrupt
 
 *Solution:*
-- Submit ~/clear~, then retry with ~M-x magent-start~.
+- Start a fresh session with ~M-x magent-agent-shell-start~.
 - Restart Emacs if issue persists
 
 ** Performance Issues

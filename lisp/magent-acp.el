@@ -471,6 +471,15 @@ Each handler runs inside the CLIENT's context buffer (via
      (availableCommands
       . ,(magent-acp--available-commands runtime-session)))))
 
+(defun magent-acp--notify-session-info (client runtime-session)
+  "Notify CLIENT of RUNTIME-SESSION's current display information."
+  (when-let* ((title (magent-runtime-session-title runtime-session)))
+    (magent-acp--session-update
+     client
+     (magent-runtime-session-id runtime-session)
+     `((sessionUpdate . "session_info_update")
+       (title . ,title)))))
+
 (defun magent-acp--refresh-available-commands ()
   "Publish the current command registry to every bound live ACP session."
   (when (boundp 'magent-acp--client-session-scopes)
@@ -492,7 +501,8 @@ Each handler runs inside the CLIENT's context buffer (via
   "Call ON-SUCCESS with RUNTIME-SESSION response and command metadata."
   (magent-acp--bind-client-session client runtime-session)
   (funcall on-success (magent-acp--session-response runtime-session))
-  (magent-acp--notify-available-commands client runtime-session))
+  (magent-acp--notify-available-commands client runtime-session)
+  (magent-acp--notify-session-info client runtime-session))
 
 (defun magent-acp--tool-kind (kind)
   "Return ACP tool kind string for Magent KIND."
@@ -591,7 +601,14 @@ Each handler runs inside the CLIENT's context buffer (via
             `((sessionUpdate . "agent_message_chunk")
               (content . ,(magent-acp--content-block
                            (format "Error: %s"
-                                   (or (plist-get event :message) ""))))))))))))
+                                   (or (plist-get event :message) "")))))))
+          ('turn-complete
+           (reset-stream)
+           (when-let* ((scope (magent-acp--client-session-scope
+                               client session-id))
+                       (runtime-session
+                        (magent-runtime-session-from-id session-id scope)))
+             (magent-acp--notify-session-info client runtime-session))))))))
 
 (defun magent-acp--permission-options ()
   "Return ACP permission options supported by agent-shell."
@@ -808,7 +825,7 @@ does not activate overlays or install a session into the runtime registry."
                       (lambda (entry)
                         (magent-acp--scope-equal-p
                          (plist-get entry :scope) scope))
-                      (magent-runtime-list-sessions))))))))
+                      (magent-runtime-list-sessions-for-scope scope))))))))
 
 (defun magent-acp--emit-item-replay (client session-id item)
   "Replay ledger ITEM to CLIENT for SESSION-ID."

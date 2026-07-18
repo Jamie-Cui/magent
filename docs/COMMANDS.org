@@ -11,7 +11,7 @@ Magent has two distinct command surfaces for LLM-assisted workflows:
 - *Internal workflow commands* are explicit Emacs commands that run Magent
   maintenance or diagnostic work in isolated durable sessions.
 
-The bundled package currently provides eight Elisp-native slash commands and
+The bundled package currently provides seven Elisp-native slash commands and
 four internal workflow commands. Three
 additional Emacs commands inspect or manage the internal workflows.
 
@@ -24,7 +24,6 @@ Type a slash command as the prompt in the Magent agent-shell buffer:
 /summarize src/session persistence and replay
 /fix focus on the failing session persistence test
 /compact preserve exact filenames and remaining failures
-/clear
 #+end_example
 
 Text following a prompt command or ~/compact~ is passed as its argument. The
@@ -41,7 +40,6 @@ prompt text rather than executed locally.
 | ~/summarize~ | Summarize the project into org-roam   | Creates or updates one canonical Org note |
 | ~/test~    | Run and interpret relevant tests        | Runs focused tests; may fix an in-scope failure when appropriate |
 | ~/compact~ | Summarize the current conversation      | Replaces older model context with a continuation summary |
-| ~/clear~   | Clear the current conversation           | Cancels pending work and removes live and persisted session context |
 
 ** ~/compact~
 
@@ -49,13 +47,6 @@ Uses the hidden, tool-free compaction agent to produce a continuation summary.
 After it succeeds, future turns reuse that summary instead of the older model
 context. The visible transcript remains available in the current agent-shell
 buffer. A failed compaction leaves the previous context unchanged.
-
-** ~/clear~
-
-Cancels active or queued work for the current runtime session, clears its
-messages, tools, child jobs, approvals, selected one-shot skills, and persisted
-transcript, while keeping the agent-shell session handle valid. It does not
-accept an argument.
 
 ** ~/explain~
 
@@ -256,7 +247,7 @@ instruction skill through the compatibility adapter.
 Existing instruction skills with a ~default-prompt~ remain compatible: Magent
 projects them into the same command registry and activates the original skill
 when invoked. Project and user adapters can override installed or bundled
-commands by name; the ~/clear~ and ~/compact~ core names remain reserved.
+commands by name; the ~/compact~ core name remains reserved.
 
 Project command adapters are retained under their canonical project scope.
 ~magent-command-get~, ~magent-command-list~, and ~magent-command-parse~ accept an

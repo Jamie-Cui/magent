@@ -170,6 +170,13 @@
                     (magent-agent-registry-get-default))))
     (and agent (magent-agent-info-name agent))))
 
+(defun magent-runtime-session-title (runtime-session)
+  "Return RUNTIME-SESSION's canonical display title, or nil."
+  (unless (magent-runtime-session-p runtime-session)
+    (error "Expected a runtime session, got: %S" runtime-session))
+  (magent-session-summary-title
+   (magent-runtime-session-magent-session runtime-session)))
+
 (defun magent-runtime-session-available-tool-names
     (runtime-session &optional agent-or-name)
   "Return tool symbols available to RUNTIME-SESSION's effective agent.
@@ -625,8 +632,8 @@ restored after the request finishes."
   "Return persisted session id for FILE."
   (file-name-sans-extension (file-name-nondirectory file)))
 
-(defun magent-runtime-list-sessions ()
-  "Return saved sessions as plists for UI/ACP display."
+(defun magent-runtime-api--list-session-files (files)
+  "Return saved session display plists represented by FILES."
   (delq
    nil
    (mapcar
@@ -648,7 +655,17 @@ restored after the request finishes."
                 :title (plist-get metadata :summary-title)
                 :updated-at
                 (float-time (magent-session--file-display-time file))))))
-    (magent-session-list-files))))
+    files)))
+
+(defun magent-runtime-list-sessions ()
+  "Return all saved sessions as plists for UI display."
+  (magent-runtime-api--list-session-files
+   (magent-session-list-files)))
+
+(defun magent-runtime-list-sessions-for-scope (scope)
+  "Return saved sessions for exact SCOPE as UI/ACP display plists."
+  (magent-runtime-api--list-session-files
+   (magent-session-list-files-for-scope scope)))
 
 (defun magent-runtime-load-session-file (file)
   "Load session FILE and return a runtime session."
