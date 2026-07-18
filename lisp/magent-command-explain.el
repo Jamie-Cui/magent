@@ -16,7 +16,6 @@
    :turn (lambda (_invocation)
            (magent-command-turn-spec-create
             :prompt (magent-prompt-read "commands/explain.org")))
-   :owner 'magent-command-explain
    :source-layer 'builtin
    :required-tools '(read_file grep bash emacs_eval)))
 

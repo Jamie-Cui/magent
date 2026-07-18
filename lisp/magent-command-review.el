@@ -16,7 +16,6 @@
    :turn (lambda (_invocation)
            (magent-command-turn-spec-create
             :prompt (magent-prompt-read "commands/review.org")))
-   :owner 'magent-command-review
    :source-layer 'builtin
    :required-tools '(read_file grep bash)))
 

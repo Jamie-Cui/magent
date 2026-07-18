@@ -16,7 +16,6 @@
    :turn (lambda (_invocation)
            (magent-command-turn-spec-create
             :prompt (magent-prompt-read "commands/init.org")))
-   :owner 'magent-command-init
    :source-layer 'builtin
    :required-tools '(read_file write_file edit_file grep glob bash)))
 

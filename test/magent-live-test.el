@@ -788,8 +788,7 @@ return that path."
            :turn
            (magent-command-turn-spec-create
             :prompt "Inspect the attached live buffer."
-            :buffers (list context-buffer))
-           :owner 'magent-live-test)
+            :buffers (list context-buffer)))
           (cl-letf (((symbol-function 'magent-runtime-submit)
                      (lambda (session prompt &rest args)
                        (setq submitted (list session prompt args))

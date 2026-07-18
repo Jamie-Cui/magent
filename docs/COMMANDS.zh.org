@@ -143,7 +143,6 @@ org-roam capture 约定 ~YYYY-MM-DDtHHMM.org~。后续运行通过 file-level
     :skills '("code-review")
     :agent 'build
     :append-argument-p t))
- :owner 'magent-command-my-review
  :source-layer 'project
  :source-scope "/path/to/project"
  :requires-project t
@@ -152,11 +151,16 @@ org-roam capture 约定 ~YYYY-MM-DDtHHMM.org~。后续运行通过 file-level
 
 每个 registration 必须且只能提供 ~:turn~ 和 ~:handler~ 之一。~:turn~ 可以是静态
 ~magent-command-turn-spec~，也可以是接收 invocation 并返回 turn spec 的 builder。
-上例使用了所有可与 ~:turn~ 搭配的 registration 字段：~:description~、~:owner~、
+上例使用了所有可与 ~:turn~ 搭配的 registration 字段：~:description~、
 ~:source-layer~、~:source-scope~、~:requires-project~ 和
 ~:required-tools~；也使用了 turn spec 的全部字段：~:prompt~、~:buffers~、
 ~:skills~、~:agent~ 和 ~:append-argument-p~。只有受信任 Elisp 需要自主管理
 生命周期时才改用 ~:handler~，它不能和 ~:turn~ 同时出现。
+
+~(NAME, SOURCE-LAYER, canonical SOURCE-SCOPE)~ 这个三元组对应唯一的 registry
+slot。再次注册同一 slot 会替换旧定义，并使旧 registration token 失效；撤销新
+registration 不会恢复同一 slot 的旧定义。不同 layer 和不同 project scope 仍然
+彼此独立，并继续参与正常的优先级解析。
 
 ~:buffers~ 使用类似 popwin 的有序 pattern list：
 
