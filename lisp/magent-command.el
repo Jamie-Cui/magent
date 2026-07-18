@@ -25,7 +25,6 @@
 (declare-function magent-command-builtins-register "magent-command-builtins")
 (declare-function magent-runtime-active-project-scope "magent-runtime")
 (declare-function magent-skill-description "magent-skills")
-(declare-function magent-skill-file-path "magent-skills")
 (declare-function magent-skill-requires-project "magent-skills")
 (declare-function magent-skill-source-layer "magent-skills")
 (declare-function magent-skill-source-scope "magent-skills")
@@ -43,7 +42,6 @@
   description
   turn
   handler
-  owner
   source-layer
   source-scope
   requires-project
@@ -89,6 +87,10 @@ and APPEND-ARGUMENT-P controls slash argument expansion."
 
 (defvar magent-command--registry nil
   "Layered list of registered `magent-command-spec' objects.")
+
+(defvar magent-command--skill-adapter-registrations
+  (make-hash-table :test #'equal)
+  "Generated skill command registrations keyed by canonical scope.")
 
 (defvar magent-command--sequence 0
   "Monotonic sequence used to resolve same-layer registrations.")
@@ -159,23 +161,17 @@ When SCOPE is nil, use the currently active project overlay."
     (or (null source-scope)
         (equal source-scope scope))))
 
-(defun magent-command--same-owner-p (left right)
-  "Return non-nil when command specs LEFT and RIGHT share an owner slot."
+(defun magent-command--same-slot-p (left right)
+  "Return non-nil when command specs LEFT and RIGHT share a registry slot."
   (and (equal (magent-command-spec-name left)
               (magent-command-spec-name right))
        (eq (magent-command-spec-source-layer left)
            (magent-command-spec-source-layer right))
        (equal (magent-command-spec-source-scope left)
-              (magent-command-spec-source-scope right))
-       (equal (magent-command-spec-owner left)
-              (magent-command-spec-owner right))))
-
-(defun magent-command--default-owner ()
-  "Return a stable default owner for the current registration site."
-  (or load-file-name buffer-file-name 'anonymous))
+              (magent-command-spec-source-scope right))))
 
 (cl-defun magent-command-register
-    (name &key description turn handler owner (source-layer 'package)
+    (name &key description turn handler (source-layer 'package)
           source-scope requires-project required-tools)
   "Register slash command NAME and return its registration token.
 
@@ -184,9 +180,9 @@ Exactly one of TURN and HANDLER must be provided.  TURN is a
 `magent-command-invocation' and returning a turn spec.  HANDLER receives the
 invocation directly and must complete it synchronously or call
 `magent-command-defer' before returning.  SOURCE-LAYER is one of `builtin',
-`package', `user', `project', or reserved `core'.  OWNER and SOURCE-SCOPE
-identify reloadable definitions.  REQUIRES-PROJECT and REQUIRED-TOOLS are
-checked before model work or HANDLER execution."
+`package', `user', `project', or reserved `core'.  NAME, SOURCE-LAYER, and
+SOURCE-SCOPE identify one replaceable registration slot.  REQUIRES-PROJECT and
+REQUIRED-TOOLS are checked before model work or HANDLER execution."
   (unless (xor (not (null turn)) (not (null handler)))
     (error "Magent command %S requires exactly one of :turn or :handler" name))
   (when (and turn
@@ -200,7 +196,6 @@ checked before model work or HANDLER execution."
   (let* ((key (magent-command--normalize-name name))
          (layer (or source-layer 'package))
          (_rank (magent-command--layer-rank layer))
-         (registration-owner (or owner (magent-command--default-owner)))
          (registration-scope
           (magent-command--canonical-scope source-scope))
          (spec (magent-command-spec-create
@@ -208,7 +203,6 @@ checked before model work or HANDLER execution."
                 :description description
                 :turn turn
                 :handler handler
-                :owner registration-owner
                 :source-layer layer
                 :source-scope registration-scope
                 :requires-project requires-project
@@ -221,22 +215,9 @@ checked before model work or HANDLER execution."
     (when (and (eq layer 'core)
                (not magent-command--allow-core-registration))
       (error "The Magent command core layer is reserved"))
-    (when-let* ((collision
-                 (cl-find-if
-                  (lambda (candidate)
-                    (and (equal key (magent-command-spec-name candidate))
-                         (eq layer
-                             (magent-command-spec-source-layer candidate))
-                         (equal registration-scope
-                                (magent-command-spec-source-scope candidate))
-                         (not (magent-command--same-owner-p candidate spec))))
-                  magent-command--registry)))
-      (magent-log
-       "WARN slash command /%s layer %s from %S shadows same-layer owner %S"
-       key layer registration-owner (magent-command-spec-owner collision)))
     (setq magent-command--registry
           (cl-remove-if (lambda (candidate)
-                          (magent-command--same-owner-p candidate spec))
+                          (magent-command--same-slot-p candidate spec))
                         magent-command--registry))
     (push spec magent-command--registry)
     (magent-command--registry-changed)
@@ -256,22 +237,23 @@ checked before model work or HANDLER execution."
       (magent-command--registry-changed)
       t)))
 
-(defun magent-command-remove-source (source-layer &optional source-scope owner)
-  "Remove registrations matching SOURCE-LAYER, SOURCE-SCOPE, and OWNER.
-Nil SOURCE-SCOPE or OWNER acts as a wildcard.  Return the removal count."
+(defun magent-command-remove-source (source-layer &optional source-scope)
+  "Remove registrations matching SOURCE-LAYER and SOURCE-SCOPE.
+Nil SOURCE-SCOPE acts as a wildcard.  Return the removal count."
   (when (and (eq source-layer 'core)
              (not magent-command--allow-core-registration))
     (error "The Magent command core layer is reserved"))
-  (let ((before (length magent-command--registry)))
+  (let ((removal-scope
+         (and source-scope
+              (magent-command--canonical-scope source-scope)))
+        (before (length magent-command--registry)))
     (setq magent-command--registry
           (cl-remove-if
            (lambda (spec)
              (and (eq source-layer (magent-command-spec-source-layer spec))
                   (or (null source-scope)
-                      (equal source-scope
-                             (magent-command-spec-source-scope spec)))
-                  (or (null owner)
-                      (equal owner (magent-command-spec-owner spec)))))
+                      (equal removal-scope
+                             (magent-command-spec-source-scope spec)))))
            magent-command--registry))
     (let ((removed (- before (length magent-command--registry))))
       (when (> removed 0)
@@ -324,27 +306,19 @@ When SCOPE is nil, resolve against the currently active project overlay."
     ('user 'user)
     (_ 'package)))
 
-(defun magent-command--skill-adapter-owner-p (owner)
-  "Return non-nil when OWNER identifies a generated skill adapter."
-  (and (consp owner) (eq (car owner) 'skill-adapter)))
-
 (defun magent-command-refresh-skill-adapters (&optional scope)
   "Rebuild compatibility commands for effective skills in SCOPE.
 Global adapters and each visited project scope are cached independently so
 live sessions can resolve commands without switching the active overlay."
   (require 'magent-skills)
   (let ((target-scope (magent-command--canonical-scope scope))
-        (magent-command--suppress-registry-hooks t))
-    (setq magent-command--registry
-          (cl-remove-if
-           (lambda (spec)
-             (and
-              (magent-command--skill-adapter-owner-p
-               (magent-command-spec-owner spec))
-              (equal target-scope
-                     (magent-command--canonical-scope
-                      (magent-command-spec-source-scope spec)))))
-           magent-command--registry))
+        (magent-command--suppress-registry-hooks t)
+        registrations)
+    (dolist (registration
+             (gethash target-scope
+                      magent-command--skill-adapter-registrations))
+      (magent-command-unregister registration))
+    (remhash target-scope magent-command--skill-adapter-registrations)
     (dolist (name (magent-skills-command-names))
       ;; Give every generated turn builder its own lexical skill-name binding.
       (let ((skill-name name))
@@ -355,28 +329,30 @@ live sessions can resolve commands without switching the active overlay."
                             (magent-command--canonical-scope
                              (magent-skill-source-scope skill)))))
           (condition-case err
-              (magent-command-register
-               skill-name
-               :description (magent-skill-description skill)
-               :turn
-               (lambda (invocation)
-                 (magent-command-turn-spec-create
-                  :prompt prompt
-                  :skills
-                  (magent-skills-dedupe-names
-                   (append
-                    (magent-runtime-session-pending-skills
-                     (magent-command-invocation-runtime-session invocation))
-                    (list skill-name)))))
-               :owner (list 'skill-adapter
-                            (or (magent-skill-file-path skill) skill-name))
-               :source-layer (magent-command--skill-source-layer skill)
-               :source-scope (magent-skill-source-scope skill)
-               :requires-project (magent-skill-requires-project skill)
-               :required-tools (magent-skill-tools skill))
+              (push
+               (magent-command-register
+                skill-name
+                :description (magent-skill-description skill)
+                :turn
+                (lambda (invocation)
+                  (magent-command-turn-spec-create
+                   :prompt prompt
+                   :skills
+                   (magent-skills-dedupe-names
+                    (append
+                     (magent-runtime-session-pending-skills
+                      (magent-command-invocation-runtime-session invocation))
+                     (list skill-name)))))
+                :source-layer (magent-command--skill-source-layer skill)
+                :source-scope (magent-skill-source-scope skill)
+                :requires-project (magent-skill-requires-project skill)
+                :required-tools (magent-skill-tools skill))
+               registrations)
             (error
              (magent-log "WARN skipped skill command adapter %S: %s"
-                         skill-name (error-message-string err))))))))
+                         skill-name (error-message-string err)))))))
+    (puthash target-scope (nreverse registrations)
+             magent-command--skill-adapter-registrations))
   (magent-command--registry-changed)
   (magent-command-list (or scope 'global)))
 

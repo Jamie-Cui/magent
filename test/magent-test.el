@@ -4015,13 +4015,16 @@
   (require 'magent-command)
   (let ((magent-command--registry nil)
         (turn (magent-command-turn-spec-create :prompt "Demo")))
-    (should-error (magent-command-register "missing" :owner 'test))
+    (should-error (magent-command-register "missing"))
     (should-error
      (magent-command-register
-      "ambiguous" :turn turn :handler #'ignore :owner 'test))
-    (should (magent-command-register "turn" :turn turn :owner 'test))
+      "ambiguous" :turn turn :handler #'ignore))
+    (should (magent-command-register "turn" :turn turn))
     (should
-     (magent-command-register "handler" :handler #'ignore :owner 'test))))
+     (magent-command-register "handler" :handler #'ignore))
+    (should-error
+     (magent-command-register
+      "retired-owner" :handler #'ignore :owner 'retired))))
 
 (ert-deftest magent-test-command-registry-resolves-layered-overrides ()
   "Test command precedence and exact registration removal."
@@ -4030,16 +4033,16 @@
         (magent-command--sequence 0))
     (let ((builtin (magent-command-register
                     "demo" :description "builtin" :handler #'ignore
-                    :owner 'builtin :source-layer 'builtin))
+                    :source-layer 'builtin))
           (package (magent-command-register
                     "demo" :description "package" :handler #'ignore
-                    :owner 'package :source-layer 'package))
+                    :source-layer 'package))
           (user (magent-command-register
                  "demo" :description "user" :handler #'ignore
-                 :owner 'user :source-layer 'user))
+                 :source-layer 'user))
           (project (magent-command-register
                     "demo" :description "project" :handler #'ignore
-                    :owner 'project :source-layer 'project)))
+                    :source-layer 'project)))
       (should (eq (magent-command-get "demo") project))
       (should (magent-command-unregister project))
       (should (eq (magent-command-get "demo") user))
@@ -4047,6 +4050,55 @@
       (should (eq (magent-command-get "demo") package))
       (should (magent-command-unregister package))
       (should (eq (magent-command-get "demo") builtin)))))
+
+(ert-deftest magent-test-command-register-replaces-one-layer-scope-slot ()
+  "Test one name/layer/scope slot retains only its newest registration."
+  (require 'magent-command)
+  (let ((magent-command--registry nil)
+        (magent-command--sequence 0))
+    (let ((old (magent-command-register
+                "demo" :description "old" :handler #'ignore
+                :source-layer 'project :source-scope "/tmp/project-a"))
+          new other-scope)
+      (setq new
+            (magent-command-register
+             "demo" :description "new" :handler #'ignore
+             :source-layer 'project :source-scope "/tmp/project-a"))
+      (setq other-scope
+            (magent-command-register
+             "demo" :description "other" :handler #'ignore
+             :source-layer 'project :source-scope "/tmp/project-b"))
+      (should (= (length magent-command--registry) 2))
+      (should (eq (magent-command-get "demo" "/tmp/project-a") new))
+      (should (eq (magent-command-get "demo" "/tmp/project-b") other-scope))
+      (should-not (magent-command-unregister old))
+      (should (magent-command-unregister new))
+      (should-not (magent-command-get "demo" "/tmp/project-a")))))
+
+(ert-deftest magent-test-command-remove-source-is-layer-and-scope-bounded ()
+  "Test source removal preserves registrations outside its layer and scope."
+  (require 'magent-command)
+  (let ((magent-command--registry nil))
+    (let ((global (magent-command-register
+                   "global" :handler #'ignore :source-layer 'user))
+          (project-b
+           (magent-command-register
+            "project-b" :handler #'ignore :source-layer 'project
+            :source-scope "/tmp/project-b")))
+      (magent-command-register
+       "project-a" :handler #'ignore :source-layer 'project
+       :source-scope "/tmp/project-a")
+      (should (= (magent-command-remove-source
+                  'project "/tmp/project-a")
+                 1))
+      (should (eq (magent-command-get "global") global))
+      (should (eq (magent-command-get "project-b" "/tmp/project-b")
+                  project-b))
+      (should-not (magent-command-get "project-a" "/tmp/project-a"))
+      (should (= (magent-command-remove-source 'project) 1))
+      (should (eq (magent-command-get "global") global))
+      (should (= (magent-command-remove-source 'user 'global) 1))
+      (should-not (magent-command-get "global")))))
 
 (ert-deftest magent-test-command-registry-change-hook-tracks-mutations ()
   "Test frontend discovery hooks run for register and unregister."
@@ -4057,7 +4109,7 @@
     (add-hook 'magent-command-registry-changed-hook
               (lambda () (cl-incf changes)))
     (let ((registration
-           (magent-command-register "demo" :handler #'ignore :owner 'test)))
+           (magent-command-register "demo" :handler #'ignore)))
       (should (= changes 1))
       (should (magent-command-unregister registration))
       (should (= changes 2)))))
@@ -4068,14 +4120,14 @@
   (let ((magent-command--registry nil))
     (let ((core (let ((magent-command--allow-core-registration t))
                   (magent-command-register
-                   "compact" :handler #'ignore :owner 'core
+                   "compact" :handler #'ignore
                    :source-layer 'core))))
       (magent-command-register
-       "compact" :handler #'ignore :owner 'project :source-layer 'project)
+       "compact" :handler #'ignore :source-layer 'project)
       (should (eq (magent-command-get "compact") core))
       (should-error
        (magent-command-register
-        "reserved" :handler #'ignore :owner 'package :source-layer 'core)
+        "reserved" :handler #'ignore :source-layer 'core)
        :type 'error)
       (should-error (magent-command-unregister core) :type 'error)
       (should-error (magent-command-remove-source 'core) :type 'error))))
@@ -4085,9 +4137,11 @@
   (require 'magent-command)
   (require 'magent-skills)
   (let ((magent-command--registry nil)
+        (magent-command--skill-adapter-registrations
+         (make-hash-table :test #'equal))
         (magent-skills--registry nil))
     (let ((builtin (magent-command-register
-                    "fix" :handler #'ignore :owner 'builtin
+                    "fix" :handler #'ignore
                     :source-layer 'builtin)))
       (magent-skills-register
        (magent-skill-create
@@ -4108,6 +4162,8 @@
   (require 'magent-skills)
   (let ((magent-skills--registry nil)
         (magent-command--registry nil)
+        (magent-command--skill-adapter-registrations
+         (make-hash-table :test #'equal))
         (magent-command--sequence 0)
         (magent-command-registry-changed-hook nil))
     (magent-skills-register
@@ -4147,6 +4203,8 @@
   (require 'magent-command)
   (require 'magent-skills)
   (let ((magent-command--registry nil)
+        (magent-command--skill-adapter-registrations
+         (make-hash-table :test #'equal))
         (magent-skills--registry nil))
     (dolist (name '("valid-skill" "not/a/slash-name"))
       (magent-skills-register
@@ -4160,11 +4218,40 @@
      (cl-find "not/a/slash-name" magent-command--registry
               :key #'magent-command-spec-name :test #'equal))))
 
+(ert-deftest magent-test-command-skill-refresh-unregisters-only-its-tokens ()
+  "Test skill refresh preserves unrelated registrations in the same source."
+  (require 'magent-command)
+  (require 'magent-skills)
+  (let ((magent-command--registry nil)
+        (magent-command--skill-adapter-registrations
+         (make-hash-table :test #'equal))
+        (magent-skills--registry nil))
+    (let ((native
+           (magent-command-register
+            "native" :handler #'ignore :source-layer 'user)))
+      (magent-skills-register
+       (magent-skill-create
+        :name "adapter" :type 'instruction :default-prompt "Run it"
+        :source-layer 'user))
+      (magent-command-refresh-skill-adapters)
+      (should (eq (magent-command-get "native") native))
+      (should (magent-command-get "adapter"))
+      (should (= (length
+                  (gethash nil
+                           magent-command--skill-adapter-registrations))
+                 1))
+      (setq magent-skills--registry nil)
+      (magent-command-refresh-skill-adapters)
+      (should (eq (magent-command-get "native") native))
+      (should-not (magent-command-get "adapter")))))
+
 (ert-deftest magent-test-command-skill-adapters-capture-distinct-skill-names ()
   "Test generated adapter closures activate their own original skills."
   (require 'magent-command)
   (require 'magent-skills)
   (let ((magent-command--registry nil)
+        (magent-command--skill-adapter-registrations
+         (make-hash-table :test #'equal))
         (magent-skills--registry nil)
         (runtime-session (magent-runtime-session-create :id "session-1")))
     (dolist (name '("alpha" "beta"))
@@ -4206,7 +4293,7 @@
         :prompt "Base prompt"
         :skills '("review")
         :agent 'review-agent))
-     :owner 'test :source-layer 'package)
+     :source-layer 'package)
     (cl-letf (((symbol-function 'magent-runtime-session-available-tool-names)
                (lambda (_session &optional agent)
                  (setq preflight-agent agent)
@@ -4260,7 +4347,7 @@
         :prompt (format "Review target: %s"
                         (magent-command-invocation-argument invocation))
         :append-argument-p nil))
-     :owner 'test :source-layer 'package)
+     :source-layer 'package)
     (cl-letf (((symbol-function 'magent-runtime-submit)
                (lambda (_session prompt &rest args)
                  (setq submitted-prompt prompt)
@@ -4282,7 +4369,7 @@
     (magent-command-register
      "demo" :description "Demo"
      :turn (lambda (_invocation) "invalid")
-     :owner 'test :source-layer 'package)
+     :source-layer 'package)
     (cl-letf (((symbol-function 'magent-runtime-submit)
                (lambda (&rest _args) (setq submitted t))))
       (magent-command-invoke
@@ -4478,8 +4565,7 @@
      :handler (lambda (value)
                 (setq invocation value)
                 (magent-command-progress value "phase one")
-                (magent-command-defer value))
-     :owner 'test)
+                (magent-command-defer value)))
     (magent-command-invoke
      "async" runtime-session
      :observer (lambda (event) (push event events))
@@ -4503,8 +4589,7 @@
      "workflow"
      :handler (lambda (value)
                 (setq invocation value)
-                (magent-command-defer value))
-     :owner 'test)
+                (magent-command-defer value)))
     (magent-command-invoke "workflow" runtime-session)
     (cl-letf (((symbol-function 'magent-runtime-submit)
                (lambda (_session prompt &rest args)
@@ -4563,8 +4648,7 @@
      "workflow"
      :handler (lambda (value)
                 (setq invocation value)
-                (magent-command-defer value))
-     :owner 'test)
+                (magent-command-defer value)))
     (magent-command-invoke
      "workflow" runtime-session
      :on-complete (lambda (status result)
@@ -4603,7 +4687,7 @@
         (magent-command--active-invocations (make-hash-table :test #'eq))
         (runtime-session (magent-runtime-session-create :id "session-1"))
         completion)
-    (magent-command-register "broken" :handler #'ignore :owner 'test)
+    (magent-command-register "broken" :handler #'ignore)
     (magent-command-invoke
      "broken" runtime-session
      :on-complete (lambda (status result)
@@ -4638,12 +4722,11 @@
           (push 'custom-cleanup order)))
        (magent-command-defer value)
        (magent-command-submit
-        value "queued work"
-        :on-complete
+       value "queued work"
+       :on-complete
         (lambda (status result)
           (magent-command-finish value status result)))
-       (error "handler exploded"))
-     :owner 'test)
+       (error "handler exploded")))
     (cl-letf (((symbol-function 'magent-runtime-submit)
                (lambda (_session _prompt &rest args)
                  (setq submission-callback (plist-get args :on-complete))
@@ -4689,7 +4772,6 @@
     (magent-command-register
      "project-only"
      :handler (lambda (_invocation) (setq handler-ran t))
-     :owner 'test
      :requires-project t)
     (magent-command-invoke
      "project-only" global-session
@@ -4703,7 +4785,6 @@
     (magent-command-register
      "needs-tools"
      :handler (lambda (_invocation) (setq handler-ran t))
-     :owner 'test
      :required-tools '(read_file bash))
     (cl-letf (((symbol-function
                 'magent-runtime-session-available-tool-names)
@@ -4732,8 +4813,7 @@
        (setq invocation value)
        (magent-command-set-cancel-function
         value (lambda () (cl-incf cleanup)))
-       (magent-command-defer value))
-     :owner 'test)
+       (magent-command-defer value)))
     (cl-letf (((symbol-function 'magent-runtime-cancel)
                (lambda (session) (setq runtime-cancel session))))
       (magent-command-invoke
@@ -4758,8 +4838,7 @@
      "wait"
      :handler (lambda (value)
                 (setq invocation value)
-                (magent-command-defer value))
-     :owner 'test)
+                (magent-command-defer value)))
     (magent-command-invoke "wait" runtime-session)
     (cl-letf (((symbol-function 'magent-runtime-cancel)
                (lambda (_session)
@@ -10505,7 +10584,9 @@
   (require 'magent-acp)
   (require 'magent-command-controls)
   (let ((magent-skills--registry nil)
-        (magent-command--registry nil))
+        (magent-command--registry nil)
+        (magent-command--skill-adapter-registrations
+         (make-hash-table :test #'equal)))
     (magent-command-controls-register)
     (magent-skills-register
      (magent-skill-create
@@ -10580,11 +10661,11 @@
                     :id "session-b" :scope "/tmp/project-b")))
     (let ((command-a
            (magent-command-register
-            "project-command" :handler #'ignore :owner 'project-a
+            "project-command" :handler #'ignore
             :source-layer 'project :source-scope "/tmp/project-a"))
           (command-b
            (magent-command-register
-            "project-command" :handler #'ignore :owner 'project-b
+            "project-command" :handler #'ignore
             :source-layer 'project :source-scope "/tmp/project-b")))
       (should (eq (plist-get (magent-acp--slash-command
                               "/project-command" project-a)
@@ -10601,7 +10682,7 @@
   (let ((magent-command--registry nil))
     (let ((magent-command--allow-core-registration t))
       (magent-command-register
-       "clear" :handler #'ignore :owner 'magent-command-controls
+       "clear" :handler #'ignore
        :source-layer 'core))
     (magent-command-controls-register)
     (let ((compact (magent-acp--slash-command
@@ -10673,12 +10754,12 @@
            :id "session-b" :scope "/tmp/project-b"))
          notifications)
     (magent-command-register
-     "global-command" :handler #'ignore :owner 'global)
+     "global-command" :handler #'ignore)
     (magent-command-register
-     "project-a-command" :handler #'ignore :owner 'project-a
+     "project-a-command" :handler #'ignore
      :source-layer 'project :source-scope "/tmp/project-a")
     (magent-command-register
-     "project-b-command" :handler #'ignore :owner 'project-b
+     "project-b-command" :handler #'ignore
      :source-layer 'project :source-scope "/tmp/project-b")
     (puthash "session-a" "/tmp/project-a" bindings)
     (puthash "session-b" "/tmp/project-b" bindings)
@@ -10863,6 +10944,8 @@
   (require 'magent-acp)
   (let ((magent-command--registry nil)
         (magent-command--active-invocations (make-hash-table :test #'eq))
+        (magent-command--skill-adapter-registrations
+         (make-hash-table :test #'equal))
         (magent-skills--registry nil)
         (runtime-session (magent-runtime-session-create
                           :id "session-1"
@@ -10921,7 +11004,7 @@
      :turn
      (magent-command-turn-spec-create
       :prompt "Review the attached context.")
-     :owner 'test :source-layer 'package)
+     :source-layer 'package)
     (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
                (lambda (session-id)
                  (and (equal session-id "session-1") runtime-session)))
@@ -10985,8 +11068,7 @@
          :turn
          (magent-command-turn-spec-create
           :prompt "Inspect resources."
-          :buffers (list context-buffer))
-         :owner 'test)
+          :buffers (list context-buffer)))
         (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
                    (lambda (_session-id) runtime-session))
                   ((symbol-function 'magent-runtime-submit)
@@ -11855,7 +11937,7 @@
   (require 'magent-agent-shell)
   (let ((magent-command--registry nil)
         sent)
-    (magent-command-register "demo" :handler #'ignore :owner 'test)
+    (magent-command-register "demo" :handler #'ignore)
     (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
               ((symbol-function 'magent-agent-shell--prepare-skill-context)
                #'ignore)
@@ -11878,10 +11960,10 @@
           :id "session-a" :scope "/tmp/project-a"))
         offered sent)
     (magent-command-register
-     "project-a-command" :handler #'ignore :owner 'project-a
+     "project-a-command" :handler #'ignore
      :source-layer 'project :source-scope "/tmp/project-a")
     (magent-command-register
-     "project-b-command" :handler #'ignore :owner 'project-b
+     "project-b-command" :handler #'ignore
      :source-layer 'project :source-scope "/tmp/project-b")
     (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
               ((symbol-function 'magent-runtime-ensure-initialized) #'ignore)

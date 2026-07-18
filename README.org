@@ -118,7 +118,6 @@ Magent directly from Git:
    :turn
    (magent-command-turn-spec-create
     :prompt "What is your name?")
-   :owner 'my-magent-commands
    :source-layer 'user
    :required-tools '(read_file grep bash emacs_eval)))
 #+end_src
@@ -127,7 +126,9 @@ The ~:required-tools~ list declares tools that must be available before the
 command can run; replace it with the command's actual requirements, or omit it
 for a tool-free command. Exactly one of ~:turn~ and ~:handler~ is required. A
 ~user~ command can override an installed ~package~ or ~builtin~ command with
-the same name. The core ~/compact~ name remains reserved.
+the same name. Registering the same name, layer, and canonical scope again
+replaces that slot's previous definition. The core ~/compact~ name remains
+reserved.
 
 * Configuration
 

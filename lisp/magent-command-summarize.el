@@ -16,7 +16,6 @@
    :turn (lambda (_invocation)
            (magent-command-turn-spec-create
             :prompt (magent-prompt-read "commands/summarize.org")))
-   :owner 'magent-command-summarize
    :source-layer 'builtin
    :requires-project t
    :required-tools '(read_file grep glob bash write_repo_summary)))

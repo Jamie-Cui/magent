@@ -153,7 +153,6 @@ the same public API available to third-party packages:
     :skills '("code-review")
     :agent 'build
     :append-argument-p t))
- :owner 'magent-command-my-review
  :source-layer 'project
  :source-scope "/path/to/project"
  :requires-project t
@@ -163,12 +162,18 @@ the same public API available to third-party packages:
 Every registration must provide exactly one of ~:turn~ and ~:handler~. A
 ~:turn~ value is either one static ~magent-command-turn-spec~ or a builder
 function that receives the invocation and returns one. The example uses every
-registration field that can accompany ~:turn~: ~:description~, ~:owner~,
+registration field that can accompany ~:turn~: ~:description~,
 ~:source-layer~, ~:source-scope~, ~:requires-project~, and
 ~:required-tools~. The turn spec uses all of its fields: ~:prompt~,
 ~:buffers~, ~:skills~, ~:agent~, and ~:append-argument-p~. Use ~:handler~
 instead only when trusted Elisp must own a custom lifecycle; it cannot be
 combined with ~:turn~.
+
+The tuple ~(NAME, SOURCE-LAYER, canonical SOURCE-SCOPE)~ is one registry
+slot. Registering that slot again replaces its previous definition and makes
+the old registration token stale; unregistering the replacement does not
+restore the older same-slot definition. Different layers and project scopes
+remain independent and still participate in normal precedence resolution.
 
 ~:buffers~ follows a popwin-style ordered pattern list:
 

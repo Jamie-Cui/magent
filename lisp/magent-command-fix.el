@@ -16,7 +16,6 @@
    :turn (lambda (_invocation)
            (magent-command-turn-spec-create
             :prompt (magent-prompt-read "commands/fix.org")))
-   :owner 'magent-command-fix
    :source-layer 'builtin
    :required-tools '(read_file write_file edit_file grep bash emacs_eval)))
 
