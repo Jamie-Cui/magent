@@ -124,10 +124,13 @@ Magent has three file-backed extension layers:
 Slash commands are a separate Elisp-native extension layer. Definitions in
 ~magent-command.el~ are explicit user actions with layered registration,
 argument handling, project/tool preflight, progress, cancellation, and
-completion. The standard structured turn handler delegates one turn to
-~magent-runtime-submit~; its turn spec separates prompt text, request context,
-agent/skill selection, and ledger metadata. Advanced trusted packages may own
-a longer async invocation without receiving ACP or queue internals. The bundled
+completion. A registration owns exactly one native declarative turn or one
+advanced handler. The native path delegates one turn to
+~magent-runtime-submit~; its turn spec separates prompt text, model-visible
+popwin-style buffer snapshots, and agent/skill selection while inheriting
+frontend request context from the invocation. Content blocks and canonical
+command metadata are persisted internally. Advanced trusted packages may own a
+longer async invocation without receiving ACP or queue internals. The bundled
 ~/explain~, ~/fix~, ~/init~, ~/review~, ~/summarize~, and ~/test~ commands use
 this API and own their Org prompt resources rather than same-name skills.
 An invocation claims its terminal result before cleanup, so a handler failure
@@ -135,7 +138,7 @@ cancels owned submissions without allowing synchronous cancellation callbacks
 to overwrite the failure or continue work after ACP completes.
 
 For compatibility, an instruction ~SKILL.md~ with ~default-prompt~ is projected
-into the command registry. Its handler still activates the original skill.
+into the command registry. Its native turn still activates the original skill.
 Project and user adapters override package/bundled definitions by layer, while
 core controls are reserved. Project adapters remain keyed by canonical project
 scope; ACP resolves both command discovery and dispatch against each runtime

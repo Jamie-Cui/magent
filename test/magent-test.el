@@ -4006,8 +4006,22 @@
       (let ((command (magent-command-get name)))
         (should command)
         (should (eq (magent-command-spec-source-layer command) 'builtin))
-        (should (functionp (magent-command-spec-handler command)))
+        (should (functionp (magent-command-spec-turn command)))
+        (should-not (magent-command-spec-handler command))
         (should-not (magent-skills-get name))))))
+
+(ert-deftest magent-test-command-register-requires-turn-handler-xor ()
+  "Test command registration requires exactly one execution strategy."
+  (require 'magent-command)
+  (let ((magent-command--registry nil)
+        (turn (magent-command-turn-spec-create :prompt "Demo")))
+    (should-error (magent-command-register "missing" :owner 'test))
+    (should-error
+     (magent-command-register
+      "ambiguous" :turn turn :handler #'ignore :owner 'test))
+    (should (magent-command-register "turn" :turn turn :owner 'test))
+    (should
+     (magent-command-register "handler" :handler #'ignore :owner 'test))))
 
 (ert-deftest magent-test-command-registry-resolves-layered-overrides ()
   "Test command precedence and exact registration removal."
@@ -4171,11 +4185,11 @@
                      (funcall (plist-get args :on-complete)
                               'completed "done")
                      "submission-1")))
-          (funcall (magent-command-spec-handler spec) invocation))
+          (magent-command--run-turn invocation))
         (should (equal submitted-skills (list name)))))))
 
-(ert-deftest magent-test-command-turn-handler-submits-structured-turn ()
-  "Test the standard turn handler owns one structured runtime submission."
+(ert-deftest magent-test-command-native-turn-submits-structured-turn ()
+  "Test native declarative turns own one structured runtime submission."
   (require 'magent-command)
   (let* ((magent-command--registry nil)
          (magent-command--active-invocations (make-hash-table :test #'eq))
@@ -4183,20 +4197,21 @@
           (magent-runtime-session-create
            :id "session-1" :scope 'global
            :magent-session (magent-session-create)))
-         submitted completion)
+         submitted completion preflight-agent)
     (magent-command-register
      "demo" :description "Demo"
-     :handler
-     (magent-command-turn-handler
-      (lambda (_invocation)
-        (magent-command-turn-spec-create
-         :prompt "Base prompt"
-         :context '(:file-path "/tmp/command.el")
-         :skills '("review")
-         :agent 'review-agent
-         :turn-metadata '(:workflow review))))
+     :turn
+     (lambda (_invocation)
+       (magent-command-turn-spec-create
+        :prompt "Base prompt"
+        :skills '("review")
+        :agent 'review-agent))
      :owner 'test :source-layer 'package)
-    (cl-letf (((symbol-function 'magent-runtime-submit)
+    (cl-letf (((symbol-function 'magent-runtime-session-available-tool-names)
+               (lambda (_session &optional agent)
+                 (setq preflight-agent agent)
+                 nil))
+              ((symbol-function 'magent-runtime-submit)
                (lambda (session prompt &rest args)
                  (setq submitted (list session prompt args))
                  (funcall (plist-get args :on-complete) 'completed "done")
@@ -4210,6 +4225,7 @@
        :on-complete
        (lambda (status result) (setq completion (list status result)))))
     (should (eq (car submitted) runtime-session))
+    (should (eq preflight-agent 'review-agent))
     (should (equal (cadr submitted)
                    "Base prompt\n\nAdditional instruction:\nfocus"))
     (let* ((args (nth 2 submitted))
@@ -4217,16 +4233,16 @@
            (metadata (plist-get args :turn-metadata)))
       (should (equal (plist-get args :skills) '("review")))
       (should (eq (plist-get args :agent) 'review-agent))
-      (should (equal (plist-get context :file-path) "/tmp/command.el"))
+      (should (equal (plist-get context :file-path) "/tmp/frontend.el"))
       (should (equal (plist-get context :resource-paths)
                      '("/tmp/frontend.el")))
       (should (eq (plist-get metadata :source) 'magent-command))
       (should (equal (plist-get metadata :command) "demo"))
       (should (equal (plist-get metadata :command-input) "/demo focus"))
-      (should (eq (plist-get metadata :workflow) 'review)))
+      (should-not (plist-member metadata :workflow)))
     (should (equal completion '(completed "done")))))
 
-(ert-deftest magent-test-command-turn-handler-builder-may-consume-argument ()
+(ert-deftest magent-test-command-turn-builder-may-consume-argument ()
   "Test a turn builder can own argument expansion without duplicate text."
   (require 'magent-command)
   (let* ((magent-command--registry nil)
@@ -4238,13 +4254,12 @@
          submitted-prompt)
     (magent-command-register
      "demo" :description "Demo"
-     :handler
-     (magent-command-turn-handler
-      (lambda (invocation)
-        (magent-command-turn-spec-create
-         :prompt (format "Review target: %s"
-                         (magent-command-invocation-argument invocation))
-         :append-argument-p nil)))
+     :turn
+     (lambda (invocation)
+       (magent-command-turn-spec-create
+        :prompt (format "Review target: %s"
+                        (magent-command-invocation-argument invocation))
+        :append-argument-p nil))
      :owner 'test :source-layer 'package)
     (cl-letf (((symbol-function 'magent-runtime-submit)
                (lambda (_session prompt &rest args)
@@ -4254,7 +4269,7 @@
       (magent-command-invoke "demo" runtime-session :argument "lisp/"))
     (should (equal submitted-prompt "Review target: lisp/"))))
 
-(ert-deftest magent-test-command-turn-handler-rejects-invalid-builder-result ()
+(ert-deftest magent-test-command-turn-rejects-invalid-builder-result ()
   "Test an invalid turn builder fails before runtime submission."
   (require 'magent-command)
   (let* ((magent-command--registry nil)
@@ -4266,7 +4281,7 @@
          submitted completion)
     (magent-command-register
      "demo" :description "Demo"
-     :handler (magent-command-turn-handler (lambda (_invocation) "invalid"))
+     :turn (lambda (_invocation) "invalid")
      :owner 'test :source-layer 'package)
     (cl-letf (((symbol-function 'magent-runtime-submit)
                (lambda (&rest _args) (setq submitted t))))
@@ -4280,27 +4295,176 @@
              "Expected Magent command turn spec"
              (magent-agent-result-content-string (cadr completion))))))
 
-(ert-deftest magent-test-command-turn-handler-validates-structured-fields ()
+(ert-deftest magent-test-command-turn-validates-structured-fields ()
   "Test malformed structured turn fields fail before submission ownership."
   (require 'magent-command)
-  (let ((invocation
-         (magent-command-invocation-create
-          :id "invocation-1"
-          :spec (magent-command-spec-create :name "demo")
-          :runtime-session (magent-runtime-session-create :id "session-1"))))
-    (dolist (turn
-             (list
-              (magent-command-turn-spec-create
-               :prompt "Demo" :context '(:file-path))
-              (magent-command-turn-spec-create
-               :prompt "Demo" :turn-metadata '(source test))
-              (magent-command-turn-spec-create
-               :prompt "Demo" :skills "review")
-              (magent-command-turn-spec-create
-               :prompt "Demo" :append-argument-p 'yes)))
-      (should-error
-       (funcall (magent-command-turn-handler turn) invocation))
-      (should-not (magent-command-invocation-deferred-p invocation)))))
+  (let ((valid-buffer (generate-new-buffer " *magent-turn-validation*")))
+    (unwind-protect
+        (progn
+          (should-error
+           (apply #'magent-command-turn-spec-create
+                  '(:prompt "Demo" :context
+                    (:file-path "/tmp/example.el"))))
+          (should-error
+           (apply #'magent-command-turn-spec-create
+                  '(:prompt "Demo" :turn-metadata (:workflow review))))
+          (dolist (turn
+                   (list
+                    (magent-command-turn-spec-create
+                     :prompt "Demo" :skills "review")
+                    (magent-command-turn-spec-create
+                     :prompt "Demo" :append-argument-p 'yes)
+                    (magent-command-turn-spec-create
+                     :prompt "Demo" :buffers '(("[" :regexp t)))
+                    (magent-command-turn-spec-create
+                     :prompt "Demo"
+                     :buffers (list (list valid-buffer :unknown t)))))
+            (should-error (magent-command--validate-turn-spec turn))))
+      (kill-buffer valid-buffer))))
+
+(ert-deftest magent-test-command-buffer-patterns-use-popwin-semantics ()
+  "Test mode, regexp, predicate, exact matching, scope, and deduplication."
+  (require 'magent-command)
+  (let* ((project-a (make-temp-file "magent-buffer-project-a-" t))
+         (project-b (make-temp-file "magent-buffer-project-b-" t))
+         (buffer-a (generate-new-buffer " *magent-pattern-one*"))
+         (buffer-b (generate-new-buffer " *magent-pattern-two*"))
+         (buffer-other (generate-new-buffer " *magent-pattern-other*"))
+         (runtime-session
+          (magent-runtime-session-create :id "session-1" :scope project-a))
+         (spec (magent-command-spec-create :name "buffers"))
+         (invocation
+          (magent-command-invocation-create
+           :id "invocation-1" :spec spec :runtime-session runtime-session)))
+    (unwind-protect
+        (progn
+          (dolist (buffer (list buffer-a buffer-b))
+            (with-current-buffer buffer
+              (setq default-directory (file-name-as-directory project-a)
+                    major-mode 'magent-test-context-mode)))
+          (with-current-buffer buffer-other
+            (setq default-directory (file-name-as-directory project-b)
+                  major-mode 'magent-test-context-mode))
+          (cl-letf (((symbol-function 'magent-test-context-buffer-p)
+                     (lambda (buffer)
+                       (string-match-p "two" (buffer-name buffer)))))
+            (let* ((turn
+                    (magent-command-turn-spec-create
+                     :prompt "Inspect"
+                     :buffers
+                     '(magent-test-context-mode
+                       ("^ \\*magent-pattern-" :regexp t)
+                       (magent-test-context-buffer-p :predicate t))))
+                   (matches
+                    (magent-command--resolve-turn-buffers turn invocation)))
+              (should (= (length matches) 2))
+              (should (memq buffer-a matches))
+              (should (memq buffer-b matches))
+              (should-not (memq buffer-other matches))))
+          ;; Exact selections are intentional and therefore global by default.
+          (let ((matches
+                 (magent-command--matching-buffers
+                  (magent-command--normalize-buffer-config buffer-other)
+                  invocation)))
+            (should (equal matches (list buffer-other))))
+          ;; Exact selections can opt back into project isolation.
+          (should-not
+           (magent-command--matching-buffers
+            (magent-command--normalize-buffer-config
+             (list buffer-other :project-only-p t))
+            invocation)))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer) (kill-buffer buffer)))
+            (list buffer-a buffer-b buffer-other))
+      (delete-directory project-a t)
+      (delete-directory project-b t))))
+
+(ert-deftest magent-test-command-buffer-patterns-distinguish-required-optional ()
+  "Test required patterns fail while optional patterns log and continue."
+  (require 'magent-command)
+  (let* ((runtime-session
+          (magent-runtime-session-create :id "session-1" :scope 'global))
+         (spec (magent-command-spec-create :name "buffers"))
+         (invocation
+          (magent-command-invocation-create
+           :id "invocation-1" :spec spec :runtime-session runtime-session))
+         logged)
+    (should-error
+     (magent-command--resolve-turn-buffers
+      (magent-command-turn-spec-create
+       :prompt "Inspect" :buffers '("*magent-missing-required*"))
+      invocation)
+     :type 'user-error)
+    (cl-letf (((symbol-function 'magent-log)
+               (lambda (format-string &rest args)
+                 (setq logged (apply #'format format-string args)))))
+      (should-not
+       (magent-command--resolve-turn-buffers
+        (magent-command-turn-spec-create
+         :prompt "Inspect"
+         :buffers '(("*magent-missing-optional*" :required-p nil)))
+        invocation)))
+    (should (string-match-p "optional buffer pattern" logged))))
+
+(ert-deftest magent-test-command-buffer-snapshot-honors-region-and-budget ()
+  "Test snapshots use active regions, drop properties, and truncate at point."
+  (require 'magent-command)
+  (let ((buffer (generate-new-buffer " *magent-snapshot*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (insert "0123456789abcdefghij")
+          (add-text-properties 1 21 '(face bold secret-property t))
+          (setq transient-mark-mode t)
+          (goto-char 6)
+          (set-mark 12)
+          (activate-mark)
+          (let* ((snapshot (magent-command--buffer-resource-block buffer 4))
+                 (block (car snapshot))
+                 (resource (alist-get 'resource block))
+                 (text (alist-get 'text resource)))
+            (should (= (cdr snapshot) 4))
+            (should (string-match-p "Selection: active-region" text))
+            (should (string-match-p "original 6 characters" text))
+            (should (string-match-p "Content:\n5678" text))
+            (should-not (text-property-any 0 (length text)
+                                           'secret-property t text)))
+          (deactivate-mark)
+          (widen)
+          (narrow-to-region 3 19)
+          (goto-char 10)
+          (let* ((snapshot (magent-command--buffer-resource-block buffer 6))
+                 (resource (alist-get 'resource (car snapshot)))
+                 (text (alist-get 'text resource)))
+            (should (= (cdr snapshot) 6))
+            (should (string-match-p "Selection: accessible-buffer" text))
+            (should (string-match-p "Narrowed: true" text))
+            (should (string-match-p "omitted [0-9]+ before" text))
+            (should (string-match-p "omitted [0-9]+ before and [0-9]+ after"
+                                    text))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest magent-test-command-buffer-context-shares-declaration-budget ()
+  "Test command buffer resources share the configured total budget in order."
+  (require 'magent-command)
+  (let ((first (generate-new-buffer " *magent-budget-first*"))
+        (second (generate-new-buffer " *magent-budget-second*"))
+        (magent-command-buffer-context-max-chars 5))
+    (unwind-protect
+        (progn
+          (with-current-buffer first (insert "abcdefghij"))
+          (with-current-buffer second (insert "klmnopqrst"))
+          (let* ((blocks
+                  (magent-command--buffer-resource-blocks
+                   (list first second)))
+                 (first-text
+                  (alist-get 'text (alist-get 'resource (nth 0 blocks))))
+                 (second-text
+                  (alist-get 'text (alist-get 'resource (nth 1 blocks)))))
+            (should (string-match-p "retained bounds 6..11" first-text))
+            (should (string-match-p "retained bounds 11..11" second-text))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer) (kill-buffer buffer)))
+            (list first second)))))
 
 (ert-deftest magent-test-command-advanced-handler-defers-progresses-and-completes ()
   "Test an asynchronous third-party handler owns invocation completion."
@@ -4359,6 +4523,33 @@
             (magent-command-complete invocation "done"))))))
     (should (equal (nreverse submitted) '("first" "second")))
     (should (eq (magent-command-invocation-status invocation) 'active))))
+
+(ert-deftest magent-test-command-submit-merges-explicit-request-context ()
+  "Test advanced submissions name and merge request-only runtime hints."
+  (require 'magent-command)
+  (let* ((runtime-session (magent-runtime-session-create :id "session-1"))
+         (invocation
+          (magent-command-invocation-create
+           :id "invocation-1"
+           :spec (magent-command-spec-create :name "workflow")
+           :runtime-session runtime-session
+           :request-context '(:file-path "/tmp/frontend.el"
+                              :features (frontend))))
+         submitted-context)
+    (cl-letf (((symbol-function 'magent-runtime-submit)
+               (lambda (_session _prompt &rest args)
+                 (setq submitted-context (plist-get args :context))
+                 "submission-1")))
+      (magent-command-submit
+       invocation "step"
+       :request-context '(:features (workflow) :workflow-step review)))
+    (should (equal (plist-get submitted-context :features) '(workflow)))
+    (should (eq (plist-get submitted-context :workflow-step) 'review))
+    (should (equal (plist-get submitted-context :file-path)
+                   "/tmp/frontend.el"))
+    (should-error
+     (magent-command-submit
+      invocation "step" :context '(:features (ambiguous))))))
 
 (ert-deftest magent-test-command-submit-step-fails-closed-on-callback-error ()
   "Test a broken advanced step callback cannot strand its invocation."
@@ -4513,7 +4704,7 @@
      "needs-tools"
      :handler (lambda (_invocation) (setq handler-ran t))
      :owner 'test
-     :tools '(read_file bash))
+     :required-tools '(read_file bash))
     (cl-letf (((symbol-function
                 'magent-runtime-session-available-tool-names)
                (lambda (_session &optional _agent) '(read_file))))
@@ -5173,7 +5364,7 @@
       (should command)
       (should (magent-command-spec-requires-project command))
       (should (memq 'write_repo_summary
-                    (magent-command-spec-tools command))))))
+                    (magent-command-spec-required-tools command))))))
 
 (ert-deftest magent-test-skills-load-all-includes-emacs-runtime-inspection ()
   "Test builtin skill loading includes the Emacs runtime inspection workflow."
@@ -10671,12 +10862,9 @@
         submitted response failure)
     (magent-command-register
      "review" :description "Review"
-     :handler
-     (magent-command-turn-handler
-      (magent-command-turn-spec-create
-       :prompt "Review the attached context."
-       :context '(:features (command-review))
-       :turn-metadata '(:workflow review)))
+     :turn
+     (magent-command-turn-spec-create
+      :prompt "Review the attached context.")
      :owner 'test :source-layer 'package)
     (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
                (lambda (session-id)
@@ -10712,16 +10900,78 @@
            (metadata (plist-get args :turn-metadata))
            (blocks (plist-get metadata :content-blocks))
            (resource (map-elt (aref blocks 1) 'resource)))
-      (should (equal (plist-get context :features) '(command-review)))
       (should (equal (plist-get context :file-path) "/tmp/example.txt"))
       (should (equal (plist-get context :resource-paths)
                      '("/tmp/example.txt")))
-      (should (eq (plist-get metadata :workflow) 'review))
+      (should-not (plist-member metadata :workflow))
       (should (equal (map-elt (aref blocks 0) 'text)
                      (concat "Review the attached context."
                              "\n\nAdditional instruction:\nfocus on tests")))
       (should (equal (map-elt resource 'text) "resource body")))
     (should (equal (map-elt response 'stopReason) "end_turn"))))
+
+(ert-deftest magent-test-acp-command-turn-prepends-buffer-snapshots ()
+  "Test turn buffers precede frontend resources and remain immutable snapshots."
+  (require 'magent-acp)
+  (let ((magent-command--registry nil)
+        (magent-command--active-invocations (make-hash-table :test #'eq))
+        (runtime-session
+         (magent-runtime-session-create
+          :id "session-1" :scope 'global
+          :magent-session (magent-session-create)))
+        submitted response failure)
+    (with-temp-buffer
+      (rename-buffer " *magent-acp-context*")
+      (insert "buffer snapshot body")
+      (let ((context-buffer (current-buffer)))
+        (magent-command-register
+         "inspect" :description "Inspect"
+         :turn
+         (magent-command-turn-spec-create
+          :prompt "Inspect resources."
+          :buffers (list context-buffer))
+         :owner 'test)
+        (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
+                   (lambda (_session-id) runtime-session))
+                  ((symbol-function 'magent-runtime-submit)
+                   (lambda (session prompt &rest args)
+                     (setq submitted (list session prompt args))
+                     (funcall (plist-get args :on-complete) 'completed "ok")
+                     "submission-1")))
+          (magent-acp--handle-request
+           '((:notification-handlers . nil) (:request-handlers . nil))
+           '((:method . "session/prompt")
+             (:params . ((sessionId . "session-1")
+                         (prompt
+                          . [((type . "text") (text . "/inspect"))
+                             ((type . "resource")
+                              (resource
+                               . ((uri . "file:///tmp/frontend.txt")
+                                  (text . "frontend body"))))]))))
+           (lambda (value) (setq response value))
+           (lambda (err &optional _raw) (setq failure err))))
+        (insert " changed after submission")
+        (should-not failure)
+        (should (eq (car submitted) runtime-session))
+        (should
+         (equal
+          (cadr submitted)
+          (concat
+           "Inspect resources.\n"
+           "[Attached: emacs-buffer:///%20%2Amagent-acp-context%2A, "
+           "file:///tmp/frontend.txt]")))
+        (let* ((metadata (plist-get (nth 2 submitted) :turn-metadata))
+               (blocks (plist-get metadata :content-blocks))
+               (buffer-resource (map-elt (aref blocks 1) 'resource))
+               (frontend-resource (map-elt (aref blocks 2) 'resource))
+               (snapshot (map-elt buffer-resource 'text)))
+          (should (= (length blocks) 3))
+          (should (equal (map-elt (aref blocks 0) 'text)
+                         "Inspect resources."))
+          (should (string-match-p "buffer snapshot body" snapshot))
+          (should-not (string-match-p "changed after submission" snapshot))
+          (should (equal (map-elt frontend-resource 'text) "frontend body"))))
+    (should (equal (map-elt response 'stopReason) "end_turn")))))
 
 (ert-deftest magent-test-acp-session-prompt-expands-all-bundled-slash-commands ()
   "Test ACP session prompts dispatch every bundled Elisp prompt command."

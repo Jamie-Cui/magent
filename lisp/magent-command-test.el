@@ -13,13 +13,12 @@
   (magent-command-register
    "test"
    :description "Run and interpret the relevant project tests."
-   :handler (magent-command-turn-handler
-             (lambda (_invocation)
-               (magent-command-turn-spec-create
-                :prompt (magent-prompt-read "commands/test.org"))))
+   :turn (lambda (_invocation)
+           (magent-command-turn-spec-create
+            :prompt (magent-prompt-read "commands/test.org")))
    :owner 'magent-command-test
    :source-layer 'builtin
-   :tools '(read_file grep bash emacs_eval)))
+   :required-tools '(read_file grep bash emacs_eval)))
 
 (provide 'magent-command-test)
 ;;; magent-command-test.el ends here

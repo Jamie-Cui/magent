@@ -5,7 +5,9 @@
 [[https://github.com/Jamie-Cui/magent/actions/workflows/coverage.yml][https://github.com/Jamie-Cui/magent/actions/workflows/coverage.yml/badge.svg]]
 [[https://github.com/Jamie-Cui/magent/actions/workflows/melpazoid.yml][https://github.com/Jamie-Cui/magent/actions/workflows/melpazoid.yml/badge.svg]]
 
-An Emacs Lisp AI coding agent with multi-agent architecture, permission-based tool access, and LLM integration via [[https://github.com/karthink/gptel][gptel]].
+An Emacs Lisp AI coding agent with multi-agent architecture, permission-based
+tool access, an Elisp-native slash-command extension API through
+~magent-command~, and LLM integration via [[https://github.com/karthink/gptel][gptel]].
 
 homepage: https://jamie-cui.github.io/magent/
 
@@ -17,6 +19,42 @@ Magent now uses a durable child-agent lifecycle for collaborative agent work: sp
 [[file:docs/assets/img/diagrams/architecture-boundary.svg]]
 
 See [[file:docs/UI_BACKENDS.org][docs/UI_BACKENDS.org]] for the supported agent-shell frontend boundary.
+
+* ~magent-command~ vs Skills in Emacs
+
+~magent-command~ and skills are complementary extension points, not two ways to
+define the same thing:
+
+|                         | ~magent-command~                                                                  | Skill                                                                                             |
+|-------------------------+-----------------------------------------------------------------------------------+---------------------------------------------------------------------------------------------------|
+| Primary role            | An explicit Emacs or slash-command action                                        | Reusable instructions or a model-invokable operation                                              |
+| Definition              | Trusted Elisp registered with ~magent-command-register~                           | A ~SKILL.md~ file; a tool skill may also have a companion Elisp implementation                    |
+| Activation              | The user enters ~/name~ or runs ~M-x magent-agent-shell-run-command~              | An instruction skill is selected or activated by a capability; a tool skill is called by the model |
+| Owns                     | Arguments, preflight, progress, cancellation, completion, and multi-step control  | Model context and workflow guidance, or one named operation through ~skill_invoke~                 |
+| Project trust boundary  | Native handlers are trusted installed Elisp                                      | Project instruction Markdown is data-only; companion Elisp runs only for explicitly trusted roots |
+
+Use ~magent-command~ when you want a stable, user-triggered entry point in
+Emacs.  Use a skill when you want reusable expertise or an operation that the
+agent can apply while handling requests.  Use both when an explicit command
+should activate reusable expertise: a command turn spec can select skills with
+~:skills~, while registration declares preflight requirements with
+~:required-tools~.
+
+An instruction skill with ~default-prompt~ is projected into the command
+registry only as a compatibility adapter.  Invoking that adapter activates the
+original skill; it does not turn Markdown into a native command handler or give
+it trusted Elisp lifecycle authority.
+
+~magent-command~ therefore makes slash commands first-class, explicit user
+actions.  Your init file or another trusted Elisp package can register a command
+through the public ~magent-command-register~ API without changing the agent-shell
+or ACP integration.  A standard command can submit one structured Magent turn,
+while advanced handlers can own cancellable, multi-step workflows.
+
+Registered commands are advertised to agent-shell and can be invoked as slash
+input or selected with ~M-x magent-agent-shell-run-command~.  The complete
+~use-package~ example below registers ~/ask-name~; see
+[[file:docs/COMMANDS.org][docs/COMMANDS.org]] for the full command API and lifecycle.
 
 * Requirements
 
@@ -60,9 +98,36 @@ Magent directly from Git:
   :ensure t
   :after (agent-shell gptel)
   :demand t
+  :custom
+  ;; Uncomment to bypass Magent's tool permission checks and approval prompts.
+  ;; (magent-bypass-permission t)
+  (magent-default-effort 'xhigh)
   :config
-  (magent-agent-shell-ensure-config))
+  ;; Optional: append an additional personal skill directory.  Later entries
+  ;; have higher precedence and become the skill manager's install target.
+  (add-to-list 'magent-skill-directories
+               (expand-file-name "skills" user-emacs-directory)
+               t)
+
+  (magent-agent-shell-ensure-config)
+
+  ;; Register /ask-name as an Elisp-native Magent command.
+  (magent-command-register
+   "ask-name"
+   :description "Ask the selected Magent agent to introduce itself."
+   :turn
+   (magent-command-turn-spec-create
+    :prompt "What is your name?")
+   :owner 'my-magent-commands
+   :source-layer 'user
+   :required-tools '(read_file grep bash emacs_eval)))
 #+end_src
+
+The ~:required-tools~ list declares tools that must be available before the
+command can run; replace it with the command's actual requirements, or omit it
+for a tool-free command. Exactly one of ~:turn~ and ~:handler~ is required. A
+~user~ command can override an installed ~package~ or ~builtin~ command with
+the same name. The core ~/clear~ and ~/compact~ names remain reserved.
 
 * Configuration
 

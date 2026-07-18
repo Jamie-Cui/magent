@@ -362,9 +362,11 @@ keywords."
           :context (list :file-path (car paths)
                          :resource-paths paths))))
 
-(defun magent-acp--prompt-input-with-text (input text)
-  "Return INPUT with textual blocks replaced by one TEXT block."
-  (let* ((resources (plist-get input :resource-blocks))
+(defun magent-acp--prompt-input-with-text (input text &optional resources-before)
+  "Return INPUT with text replaced by TEXT and RESOURCES-BEFORE prepended.
+RESOURCES-BEFORE appear before the frontend resources already stored in INPUT."
+  (let* ((resources (append resources-before
+                            (plist-get input :resource-blocks)))
          (blocks (vconcat (cons (magent-acp--content-block text) resources)))
          (labels
           (mapcar (lambda (block)
@@ -400,11 +402,12 @@ keywords."
 
 (defun magent-acp--command-submission-adapter (input)
   "Return a command submission adapter preserving structured ACP INPUT."
-  (lambda (prompt)
-    (let ((adapted (magent-acp--prompt-input-with-text input prompt)))
+  (lambda (prompt resource-blocks)
+    (let ((adapted
+           (magent-acp--prompt-input-with-text
+            input prompt resource-blocks)))
       (list :prompt (plist-get adapted :display-text)
-            :turn-metadata
-            (list :content-blocks (plist-get adapted :content-blocks))))))
+            :content-blocks (plist-get adapted :content-blocks)))))
 
 (defun magent-acp--notify-agent-message (client session-id text)
   "Send one agent message TEXT through CLIENT for SESSION-ID."

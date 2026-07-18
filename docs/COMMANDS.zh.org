@@ -6,8 +6,8 @@
 
 Magent 为 LLM 辅助工作流提供两类不同的命令入口：
 
-- *Slash commands* 在当前 agent-shell 对话中调用 Elisp-native command handler；
-  大多数内置 handler 运行一次普通 agent turn。
+- *Slash commands* 在当前 agent-shell 对话中调用 Elisp-native command；大多数
+  内置命令声明一次普通 agent turn。
 - *Internal workflow commands* 是显式的 Emacs 命令，在独立、可持久化的
   session 中执行 Magent 维护或诊断工作流。
 
@@ -130,26 +130,83 @@ org-roam capture 约定 ~YYYY-MM-DDtHHMM.org~。后续运行通过 file-level
 #+begin_src emacs-lisp
 (require 'magent-command)
 
+(defun my-magent-review-buffer-p (buffer)
+  "当 BUFFER 含有可 review 的 diff 时返回非 nil。"
+  (with-current-buffer buffer
+    (derived-mode-p 'diff-mode)))
+
 (magent-command-register
  "my-review"
  :description "运行包自定义的 review workflow。"
- :handler
- (magent-command-turn-handler
-  (lambda (_invocation)
-    (magent-command-turn-spec-create
-     :prompt "Review the current changes using my package policy."
-     :context '(:features (code-review))
-     :turn-metadata '(:workflow review))))
+ :turn
+ (lambda (_invocation)
+   (magent-command-turn-spec-create
+    :prompt "Review the attached Emacs buffers using my package policy."
+    :buffers
+    '(agent-shell-mode
+      (magit-status-mode :required-p nil)
+      ("^\\*Warnings\\*" :regexp t
+       :required-p nil :project-only-p nil)
+      (my-magent-review-buffer-p :predicate t :required-p nil))
+    :skills '("code-review")
+    :agent 'build
+    :append-argument-p t))
  :owner 'magent-command-my-review
- :source-layer 'package
- :tools '(read_file grep bash))
+ :source-layer 'project
+ :source-scope "/path/to/project"
+ :requires-project t
+ :required-tools '(read_file grep bash))
 #+end_src
 
-Turn spec 把模型可见的 user prompt、结构化 request context、显式 skill/agent 选择和
-持久化 ledger metadata 分开。Builder 可以读取 invocation，在这些字段依赖 slash
-argument 或 runtime session 时动态构造它们。~append-argument-p~ 默认非 nil，会把
-slash command 后的文本追加为 Additional instruction block；builder 已经消费 argument
-时应设为 nil。
+每个 registration 必须且只能提供 ~:turn~ 和 ~:handler~ 之一。~:turn~ 可以是静态
+~magent-command-turn-spec~，也可以是接收 invocation 并返回 turn spec 的 builder。
+上例使用了所有可与 ~:turn~ 搭配的 registration 字段：~:description~、~:owner~、
+~:source-layer~、~:source-scope~、~:requires-project~ 和
+~:required-tools~；也使用了 turn spec 的全部字段：~:prompt~、~:buffers~、
+~:skills~、~:agent~ 和 ~:append-argument-p~。只有受信任 Elisp 需要自主管理
+生命周期时才改用 ~:handler~，它不能和 ~:turn~ 同时出现。
+
+~:buffers~ 使用类似 popwin 的有序 pattern list：
+
+- buffer object 精确选择该 live buffer。
+- string 精确选择同名 buffer。
+- symbol 选择 ~major-mode~ 与它完全相同的全部 buffer。
+- ~(REGEXP :regexp t ...)~ 选择名称匹配 REGEXP 的全部 buffer。
+- lambda 或 closure 会按 ~(PREDICATE BUFFER)~ 调用。
+- ~(FUNCTION-SYMBOL :predicate t ...)~ 显式指定一个 buffer predicate。
+
+裸 pattern 默认必需，因此 ~'(magent-buffer magit-buffer)~ 表示两个 required
+major-mode selector。展开项支持 ~:required-p~、~:regexp~、~:predicate~ 和
+~:project-only-p~。Required pattern 无匹配时会在提交前终止命令；optional pattern
+会记录日志后跳过。Mode、regexp 和 predicate selector 会按 ~buffer-list~ 顺序选择
+全部 live buffer，并在 session 有项目时默认只匹配该项目；精确 buffer 和精确名称
+默认不做项目过滤。两类默认值都可用 ~:project-only-p~ 显式覆盖。最终结果保持配置
+顺序，并按 buffer identity 去重。
+
+Magent 在 runtime submission 前立即为所有匹配 buffer 建立快照。Active region
+优先；否则捕获当前 accessible range，因此会尊重 narrowing。快照去除 text
+properties，并作为 structured user resource 保存 buffer name、mode、file、modified
+state、point、selected/retained bounds、narrowing state 和 content。不可变快照随 user
+turn 持久化并用于后续 ledger replay；之后修改 live buffer 不会改写历史。
+
+~magent-command-buffer-context-max-chars~ 默认把所有 buffer content 的总量限制为
+24000 characters；较早的 ~:buffers~ 项优先。超过剩余预算的快照会保留以 point 为
+中心的窗口，并加入模型可见的截断标记。预算只计算捕获的 buffer content，不计算
+resource metadata header。
+
+模型可见 user content 的顺序是：展开后的 command prompt、command buffer
+snapshots、frontend attachments。~append-argument-p~ 默认非 nil，会把 slash command
+后的文本追加成 Additional instruction block；builder 已经消费 argument 时应设为
+nil。项目 scope、frontend facts 和附件路径仍属于 command invocation，并自动继承。
+
+Request context 是 runtime metadata，不是额外的模型输入。已识别字段可以影响项目
+instructions 查找、capability resolution 或 runtime routing，但该 plist 不会原样发送
+给模型。高级 handler 确实需要 step-local runtime hints 时，可以给
+~magent-command-submit~ 或 ~magent-command-submit-step~ 传
+~:request-context~；也可以传模型可见的 ~:resource-blocks~，以及仅供自身 ledger
+使用的 ~:turn-metadata~。标准 declarative turn 刻意不暴露通用 ~:context~ 或公开
+~:turn-metadata~，canonical command metadata 由 Magent 管理。模型需要直接看到的
+指令和数据应放入 prompt、~:buffers~ 或附件 resource。
 
 高级 handler 可以调用 ~magent-command-progress~ 和 ~magent-command-submit-step~，
 返回前用 ~magent-command-defer~ 声明异步所有权，之后通过
