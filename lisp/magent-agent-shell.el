@@ -57,6 +57,9 @@
 (defvar-local magent-agent-shell--prompt-skill-queue nil
   "Per-prompt instruction skills waiting for `agent-shell--send-command'.")
 
+(defvar-local magent-agent-shell--owns-session-strategy-p nil
+  "Non-nil when Magent installed the buffer-local session strategy.")
+
 (defun magent-agent-shell--ensure-loaded ()
   "Load `agent-shell' before using its runtime API."
   (require 'agent-shell))
@@ -86,7 +89,9 @@ Install Magent's session strategy before agent-shell snapshots its buffer-local
 startup settings.  Preserve an existing buffer-local value so explicit or
 directory-local frontend configuration keeps precedence."
   (with-current-buffer buffer
-    (unless (local-variable-p 'agent-shell-session-strategy)
+    (when (or magent-agent-shell--owns-session-strategy-p
+              (not (local-variable-p 'agent-shell-session-strategy)))
+      (setq-local magent-agent-shell--owns-session-strategy-p t)
       (setq-local agent-shell-session-strategy
                   magent-agent-shell-session-strategy)))
   (magent-acp-make-client buffer))
