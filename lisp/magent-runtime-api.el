@@ -55,20 +55,27 @@
   "Return SESSION's stable id."
   (magent-session-get-id session))
 
-(defun magent-runtime-session-ensure-registerable (scope session)
-  "Signal when installing SESSION at SCOPE would violate a queue lease."
+(defun magent-runtime-api--scope-lease-conflict-p (scope session)
+  "Return non-nil when installing SESSION at SCOPE would steal a lease."
+  (when-let* ((active-scope (magent-runtime-queue-active-scope)))
+    (and (equal (magent-session-scope-origin scope) active-scope)
+         (not (eq (magent-runtime-queue-active-session-object) session)))))
+
+(defun magent-runtime-session-ensure-registerable
+    (scope session &optional wrapper-only)
+  "Signal when registering SESSION at SCOPE would violate a queue lease.
+When WRAPPER-ONLY is non-nil, validate only the runtime wrapper registration;
+the currently installed session is not replaced."
   (let* ((id (magent-runtime-api--session-id session))
          (existing
           (gethash (magent-runtime-api--session-key scope id)
                    magent-runtime-api--sessions))
          (existing-session
           (and existing (magent-runtime-session-magent-session existing)))
-         (installed (magent-session-get-if-present scope))
-         (active-scope (magent-runtime-queue-active-scope))
-         (active-session (magent-runtime-queue-active-session-object)))
-    (when (and active-scope
-               (equal (magent-session-scope-origin scope) active-scope)
-               (not (eq active-session session)))
+         (installed (and (not wrapper-only)
+                         (magent-session-get-if-present scope))))
+    (when (and (not wrapper-only)
+               (magent-runtime-api--scope-lease-conflict-p scope session))
       (user-error
        "Magent: cannot replace a session while its scope owns the execution lease"))
     (dolist (candidate (delq nil (list existing-session installed)))
@@ -90,7 +97,7 @@
 
 (defun magent-runtime-api--wrap-session (session scope)
   "Return runtime wrapper for Magent SESSION at SCOPE."
-  (magent-runtime-session-ensure-registerable scope session)
+  (magent-runtime-session-ensure-registerable scope session t)
   (let* ((id (magent-runtime-api--session-id session))
          (key (magent-runtime-api--session-key scope id))
          (existing (gethash key magent-runtime-api--sessions)))
@@ -121,11 +128,16 @@
        target-scope (magent-session-create)))))
 
 (defun magent-runtime-session-new (&optional scope)
-  "Create and activate a new runtime session for SCOPE."
+  "Create a new runtime session for SCOPE.
+Activate it immediately unless another session from the same scope owns the
+execution lease.  In that case, keep the new session detached until its first
+queued submission starts."
   (magent-runtime-ensure-initialized)
   (let* ((target-scope (or scope (magent-session-current-scope)))
          (session (magent-session-create)))
-    (magent-runtime-session-register target-scope session)))
+    (if (magent-runtime-api--scope-lease-conflict-p target-scope session)
+        (magent-runtime-api--wrap-session session target-scope)
+      (magent-runtime-session-register target-scope session))))
 
 (defun magent-runtime-session-from-id (session-id &optional scope)
   "Return runtime SESSION-ID, optionally restricted to exact SCOPE."
