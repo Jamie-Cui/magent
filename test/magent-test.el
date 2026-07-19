@@ -14532,6 +14532,58 @@
     (should (eq (magent-session-get-if-present scope) first))
     (should-not (magent-runtime-session-from-id "replacement" scope))))
 
+(ert-deftest magent-test-acp-session-new-defers-install-under-scope-lease ()
+  "ACP can create a fresh same-scope session while another turn executes."
+  (require 'magent-acp)
+  (let* ((magent--initialized t)
+         (magent-runtime-api--sessions (make-hash-table :test #'equal))
+         (magent-acp--client-session-scopes
+          (make-hash-table :test #'eq :weakness 'key))
+         (magent-runtime-queue--active nil)
+         (magent-runtime-queue--pending nil)
+         (magent-runtime-queue--arbiter-active nil)
+         (magent-runtime-queue--arbiter-pending nil)
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (scope "/same")
+         (first (magent-session-create :id "first"))
+         (active-runtime
+          (magent-runtime-session-create
+           :id "first" :scope scope :magent-session first))
+         (submission
+          (magent-runtime-submission-create
+           :id "leased" :scope scope :session active-runtime))
+         (client '((:notification-handlers . nil)
+                   (:request-handlers . nil)))
+         response failure)
+    (magent-session-install scope first)
+    (puthash (list scope "first") active-runtime
+             magent-runtime-api--sessions)
+    (magent-runtime-queue-submit submission #'ignore)
+    (cl-letf (((symbol-function 'magent-session-scope-from-directory)
+               (lambda (_cwd) scope))
+              ((symbol-function 'magent-runtime-prepare-command-context)
+               #'ignore)
+              ((symbol-function 'magent-agent-registry-primary-agents)
+               (lambda () nil))
+              ((symbol-function 'magent-acp--available-commands)
+               (lambda (&optional _runtime-session) [])))
+      (magent-acp--handle-request
+       client
+       '((:method . "session/new") (:params . ((cwd . "/same"))))
+       (lambda (value) (setq response value))
+       (lambda (err &optional _raw) (setq failure err))))
+    (should-not failure)
+    (let* ((fresh-runtime
+            (magent-runtime-session-from-id
+             (map-elt response 'sessionId) scope))
+           (fresh (magent-runtime-session-magent-session fresh-runtime)))
+      (should (magent-runtime-session-p fresh-runtime))
+      (should-not (eq fresh first))
+      (should (eq (magent-session-get-if-present scope) first))
+      (should (eq (magent-runtime-session-from-id
+                   (magent-session-id fresh) scope)
+                  fresh-runtime)))))
+
 (ert-deftest magent-test-runtime-current-does-not-create-under-scope-lease ()
   "Missing scoped state stays missing when another exact session owns it."
   (require 'magent-runtime-api)
