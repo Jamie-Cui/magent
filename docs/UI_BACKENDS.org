@@ -3,16 +3,20 @@
 #+magent_alt_url: /UI_BACKENDS.zh.html
 #+options: toc:nil num:nil
 
-Magent supports one user frontend: ~agent-shell~, connected to the Magent
-runtime through the in-process ACP adapter.  User documentation and examples
-must use the commands exported by ~magent-agent-shell.el~ or agent-shell itself.
+Magent supports one conversational frontend: ~agent-shell~, connected to the
+Magent runtime through the in-process ACP adapter.  Conversational documentation
+and examples must use the commands exported by ~magent-agent-shell.el~ or
+agent-shell itself.  Explicit registered commands may additionally expose
+trusted ~M-x~ wrappers through ~magent-command~; those wrappers are not another
+conversation frontend.
 
 * Public Interface
 
-The agent-shell integration is the complete interactive interface.  Magent does
-not maintain a parallel workspace, compose buffer, command menu, or custom
-output-buffer frontend.  New interactive behavior belongs in agent-shell or in
-the ACP adapter; shared behavior belongs in the runtime API.
+The agent-shell integration is the complete conversational interface.  Magent
+does not maintain a parallel workspace, compose buffer, command menu, or custom
+output-buffer frontend.  New conversational behavior belongs in agent-shell or
+in the ACP adapter; shared runtime behavior belongs in the runtime API, while
+explicit command registration and invocation belong in ~magent-command.el~.
 
 * Supported Modules
 
@@ -20,6 +24,9 @@ the ACP adapter; shared behavior belongs in the runtime API.
   provides the supported interactive entry points.
 - ~magent-acp.el~ implements the in-process ACP request, notification,
   response, permission, and ~session/update~ adapter.
+- ~magent-command.el~ owns registered slash/interactive command discovery and
+  the invocation lifecycle; ~magent-command-session.el~ adds isolated durable
+  persistence without becoming a frontend.
 - ~magent-runtime-api.el~ is the frontend-neutral runtime and session API.
 - ~magent-runtime-queue.el~ owns the global single-execution queue and
   session-scoped cancellation.
@@ -29,17 +36,20 @@ the ACP adapter; shared behavior belongs in the runtime API.
 1. Start or reuse Magent with ~M-x magent-start~, or register Magent
    with ~magent-agent-shell-ensure-config~ and select it from ~M-x agent-shell~.
 2. agent-shell calls the in-process ACP client from ~magent-acp.el~.
-3. ACP normalizes text and resource blocks separately, persists structured
-   blocks in turn metadata, and submits the prompt to ~magent-runtime-api.el~.
-   Local ~file://~ resources also populate scoped request paths; resource bodies
-   remain user-role context when history is reconstructed.
-4. The runtime queue starts exactly one active turn at a time, builds a
+3. ACP normalizes text and resource blocks separately. Local ~file://~ resources
+   populate scoped request paths, while resource bodies remain user-role context
+   when history is reconstructed.
+4. ACP resolves registered slash input against the runtime session's exact
+   scope and invokes it through ~magent-command.el~. Ordinary prompts go
+   directly to ~magent-runtime-api.el~. Command-owned turns and workflow steps
+   also use that API; direct handlers may complete without a general agent turn.
+5. The runtime queue starts exactly one active turn at a time, builds a
    ~magent-request-context~ with ~:ui-visibility 'none~, and calls
    ~magent-agent-run-turn~.
-5. The agent loop emits Magent-native observer events; ~magent-acp.el~ converts
+6. The agent loop emits Magent-native observer events; ~magent-acp.el~ converts
    them to ACP ~session/update~ messages for agent-shell.
-6. ACP prompt requests remain pending until the corresponding Magent turn
-   completes, fails, or is cancelled.
+7. ACP prompt requests remain pending until the corresponding ordinary turn or
+   command invocation completes, fails, or is cancelled.
 
 * Configuration
 
