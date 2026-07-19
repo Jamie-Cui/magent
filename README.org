@@ -433,20 +433,21 @@ Tool availability is controlled by:
 1. Global ~magent-enable-tools~ setting
 2. Per-agent permission rules
 
-* Internal Maintenance Commands
+* Isolated Maintenance Commands
 
-Magent-owned maintenance workflows are explicit Emacs commands, not
-agent-shell slash commands:
+Magent-owned maintenance workflows share one command spec between agent-shell
+slash input and their M-x wrappers:
 
-- ~M-x magent-run-memory-init~ initializes Emacs profile memory.
-- ~M-x magent-run-memory-refresh~ refreshes the managed profile while keeping
+- ~/memory-init~ or ~M-x magent-command-run-memory-init~ initializes Emacs profile memory.
+- ~/memory-refresh~ or ~M-x magent-command-run-memory-refresh~ refreshes the managed profile while keeping
   user notes.
-- ~M-x magent-run-memory-clear~ deactivates and clears the managed profile
+- ~/memory-clear~ or ~M-x magent-command-run-memory-clear~ deactivates and clears the managed profile
   while retaining user notes and a snapshot.
-- ~M-x magent-run-doctor~ collects bounded local diagnostics and sends one
-  sanitized, tool-free analysis request.  ~C-u~ allows manual probe selection.
-- ~M-x magent-list-internal-sessions~ opens the progressive internal-session
-  viewer; ~M-x magent-cancel-internal-command~ cancels active work.
+- ~/doctor~ or ~M-x magent-command-run-doctor~ collects bounded local diagnostics
+  and sends one sanitized, tool-free analysis request. Use ~/doctor select~ or
+  ~C-u~ on the M-x command for manual probe selection.
+- ~M-x magent-command-list-sessions~ opens the progressive command-session
+  viewer; ~M-x magent-command-cancel~ cancels active work.
 
 Doctor never gives the model ~emacs_eval~, shell, or file tools.  Its probes
 are trusted read-only Elisp extensions, and only path-normalized, recursively

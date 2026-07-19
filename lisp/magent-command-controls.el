@@ -25,7 +25,6 @@
 (defun magent-command-controls-register ()
   "Register the reserved Magent session control command."
   (let ((magent-command--allow-core-registration t))
-    (magent-command-remove-source 'core)
     (magent-command-register
      "compact"
      :description "Summarize and compact the current conversation context."

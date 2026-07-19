@@ -43,7 +43,7 @@ Manages conversation history, scoped overlays, and runtime state.
 *Key Files:*
 - ~magent-ledger.el~ — Thread/turn/item ledger, status transitions, snapshot shape
 - ~magent-session.el~ — Conversation projections, JSON persistence, per-project sessions
-- ~magent-internal-command.el~ — Session-backed internal workflows invoked by ~magent-run-*~ commands
+- ~magent-command-session.el~ — Isolated command persistence, ledger, viewer, and cancellation
 - ~magent-doctor.el~ — Trusted read-only probes and one sanitized tool-free analysis request
 - ~magent-redaction.el~ — Fail-closed redaction for Magent-owned outbound diagnostics and memory
 - ~magent-agent-job.el~ — Durable child-agent job records and JSON shape
@@ -53,7 +53,7 @@ Manages conversation history, scoped overlays, and runtime state.
 - ~magent-runtime-queue.el~ — Global single-execution runtime queue with session-scoped cancellation
 - ~magent-audit.el~ — Persistent JSONL audit logging for permissions and sensitive actions
 
-*What it does:* Maintains ledger-backed conversation history scoped by project, persists to ~~/.emacs.d/magent/sessions/~ by default, stores durable child-agent jobs under ~agent-jobs~, and activates or unloads project-local overlays as scope changes. The ACP frontend submits work through ~magent-runtime-api.el~; ~magent-runtime-queue.el~ owns queued/active turn state and session-scoped cancellation. Internal maintenance workflows such as ~magent-run-doctor~ and ~magent-run-memory-init~ run in isolated sessions under ~magent-session-directory/internal~ instead of agent-shell slash commands. Doctor is a direct probe pipeline with no model tools; read [[file:DOCTOR.org][DOCTOR.org]] before changing its data boundary or extension API.
+*What it does:* Maintains ledger-backed conversation history scoped by project, persists to ~~/.emacs.d/magent/sessions/~ by default, stores durable child-agent jobs under ~agent-jobs~, and activates or unloads project-local overlays as scope changes. The ACP frontend submits work through ~magent-runtime-api.el~; ~magent-runtime-queue.el~ owns queued/active turn state and session-scoped cancellation. Doctor and Memory use unified command specs exposed through slash and ~M-x magent-command-run-*~, with isolated sessions under ~magent-session-directory/commands~. Doctor is a direct probe pipeline with no model tools; read [[file:DOCTOR.org][DOCTOR.org]] before changing its data boundary or extension API.
 
 ** Layer 3: Agent System
 
@@ -456,7 +456,7 @@ Skill instructions for the agent.
 
 - *Documentation:* ~README.org~, ~AGENTS.md~ in repo root
 - *Child-agent architecture:* ~docs/AGENT_JOBS.org~
-- *Interactive help:* ~M-x magent-run-doctor~ for self-diagnostics
+- *Interactive help:* ~M-x magent-command-run-doctor~ for self-diagnostics
 - *Frontend:* ~M-x magent-start~
 - *Skills:* ~M-x magent-agent-shell-toggle-skill-for-next-request~
 - *Logs:* open ~*magent-log*~ with ~C-x b~

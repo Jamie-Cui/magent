@@ -45,7 +45,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 
 - ~magent-ledger.el~ ：thread/turn/item ledger、状态转移和 snapshot shape。
 - ~magent-session.el~ ：conversation projections、JSON persistence、per-project sessions。
-- ~magent-internal-command.el~ ：由 ~magent-run-*~ 命令调用的 session-backed internal workflows。
+- ~magent-command-session.el~ ：isolated command 的持久化、ledger、viewer 与取消。
 - ~magent-doctor.el~ ：受信任只读 probes 和一次脱敏后的无工具分析请求。
 - ~magent-redaction.el~ ：Magent-owned outbound diagnostics 与 memory 的 fail-closed 脱敏。
 - ~magent-agent-job.el~ ：durable child-agent job records 和 JSON shape。
@@ -55,7 +55,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 - ~magent-runtime-queue.el~ ：全局单执行 runtime queue 和 session-scoped cancellation。
 - ~magent-audit.el~ ：permission 和 sensitive action 的持久 JSONL audit logging。
 
-*职责：* 维护 project-scoped、ledger-backed conversation history，默认持久化到 ~~/.emacs.d/magent/sessions/~ ，在 ~agent-jobs~ 下保存 durable child-agent jobs，并在 scope 变化时加载或卸载 project-local overlays。~magent-run-doctor~ 和 ~magent-run-memory-init~ 这类 internal maintenance workflow 会在 ~magent-session-directory/internal~ 下使用独立 session，而不是 agent-shell slash command。Doctor 是不向模型开放工具的 direct probe pipeline；修改其数据边界或扩展 API 前先读 [[file:DOCTOR.zh.org][DOCTOR.zh.org]]。
+*职责：* 维护 project-scoped、ledger-backed conversation history，默认持久化到 ~~/.emacs.d/magent/sessions/~ ，在 ~agent-jobs~ 下保存 durable child-agent jobs，并在 scope 变化时加载或卸载 project-local overlays。Doctor 和 Memory 使用同时暴露为 slash 与 ~M-x magent-command-run-*~ 的统一 command spec，并在 ~magent-session-directory/commands~ 下使用独立 session。Doctor 是不向模型开放工具的 direct probe pipeline；修改其数据边界或扩展 API 前先读 [[file:DOCTOR.zh.org][DOCTOR.zh.org]]。
 
 ** 第 3 层：Agent System
 
@@ -396,7 +396,7 @@ Skill instructions for the agent.
 
 - *Documentation:* ~README.org~ 和仓库根目录 ~AGENTS.md~
 - *Child-agent architecture:* ~docs/AGENT_JOBS.org~
-- *Interactive help:* ~M-x magent-run-doctor~
+- *Interactive help:* ~M-x magent-command-run-doctor~
 - *Frontend:* ~M-x magent-start~ 。
 - *Skills:* ~M-x magent-agent-shell-toggle-skill-for-next-request~ 。
 - *Logs:* 使用 ~C-x b~ 打开 ~*magent-log*~ 。

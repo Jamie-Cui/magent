@@ -46,7 +46,7 @@
 1. [[https://github.com/jamie-cui/magent/blob/master/README.org][../README.org]]：安装和配置。
 2. [[file:../COMMANDS.zh.html][COMMANDS.zh.org]]：内置 slash commands 和 Magent-owned LLM workflows。
 3. [[file:../TROUBLESHOOTING.zh.html][TROUBLESHOOTING.zh.org]]：常见问题。
-4. 运行 ~M-x magent-run-doctor~ 做自诊断。
+4. 运行 ~M-x magent-command-run-doctor~ 做自诊断。
 5. 使用 ~M-x magent-start~ 打开受支持的 agent-shell UI。
 
 ** 开发者

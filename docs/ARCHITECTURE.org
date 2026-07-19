@@ -109,7 +109,7 @@ This continuation model is Codex-style in the sense that tool results feed a fol
 #+caption: Magent functional layers
 [[file:assets/img/diagrams/functional-layers.svg]]
 
-Magent can be understood through four user-facing workflows. The first is a coding assistant workflow: read code, search code, edit files, run tests, explain failures, and produce commit or PR-style summaries. The second is an Emacs runtime assistant workflow: use ~emacs_eval~ to inspect buffers, modes, windows, projects, Magit, Org, LSP, and other live editor state. The third is an agent workflow: use skills to encode repeatable procedures, capabilities to activate contextual instructions, and child-agent jobs to split exploration, review, or summarization work. The fourth is an internal command workflow: Emacs commands such as ~magent-run-doctor~ and ~magent-run-memory-init~ run Magent maintenance tasks in isolated durable sessions rather than as agent-shell slash commands.
+Magent can be understood through four user-facing workflows. The first is a coding assistant workflow: read code, search code, edit files, run tests, explain failures, and produce commit or PR-style summaries. The second is an Emacs runtime assistant workflow: use ~emacs_eval~ to inspect buffers, modes, windows, projects, Magit, Org, LSP, and other live editor state. The third is an agent workflow: use skills, capabilities, and child-agent jobs. The fourth is an isolated command workflow: Doctor and Memory execute one command spec from either agent-shell slash input or ~M-x magent-command-run-*~, while keeping their durable ledger separate from the current conversation.
 
 The product is therefore more than a prompt box with tools. It turns Emacs workflows into actions that can be invoked, audited, resumed, and projected back into the UI.
 
@@ -121,10 +121,10 @@ Magent has three file-backed extension layers:
 - Skills under bundled ~skills/~, legacy user ~~/.emacs.d/magent-skills/~ when present, canonical user ~~/.emacs.d/magent/skills~, and project ~.magent/skills/~.
 - Capability metadata embedded in skills with ~capability: true~, plus standalone ~CAPABILITY.md~ files under user capability directories and project ~.magent/capabilities/~ when trigger metadata should live outside one skill.
 
-Slash commands are a separate Elisp-native extension layer. Definitions in
+Commands are a separate Elisp-native extension layer. Definitions in
 ~magent-command.el~ are explicit user actions with layered registration,
-argument handling, project/tool preflight, progress, cancellation, and
-completion. A registration owns exactly one native declarative turn or one
+slash/interactive exposure, current/isolated session policy, argument handling,
+project/tool preflight, progress, cancellation, and completion. A registration owns exactly one native declarative turn or one
 advanced handler. The native path delegates one turn to
 ~magent-runtime-submit~; its turn spec separates prompt text, model-visible
 popwin-style buffer snapshots, and agent/skill selection while inheriting
@@ -144,14 +144,13 @@ the core control is reserved. Project adapters remain keyed by canonical project
 scope; ACP resolves both command discovery and dispatch against each runtime
 session's exact scope, allowing multiple project sessions to coexist safely.
 
-Magent also has an Elisp-level internal command registry in ~magent-internal-command.el~.
-Commands registered with ~magent-internal-command-register~ are invoked by explicit
-~magent-run-*~ user commands, create isolated internal sessions under
-~magent-session-directory/internal~, and may use either direct pipeline runners
-or the normal Magent agent loop. They are intentionally separate from
-agent-shell slash commands.
+~magent-command-session.el~ supplies persistence, ledger recording, inspection,
+and cancellation for specs using ~:session-policy 'isolated~. It does not own a
+second registry or context type. ~/doctor~ and ~/memory-*~ also expose
+~magent-command-run-*~ wrappers, and both surfaces execute the same invocation
+lifecycle. New sessions are stored under ~magent-session-directory/commands~.
 
-~magent-run-doctor~ is the security-sensitive direct-pipeline case.  Trusted,
+~magent-command-run-doctor~ is the security-sensitive direct-pipeline case.  Trusted,
 read-only probes in ~magent-doctor.el~ collect bounded JSON-safe data, which is
 normalized and redacted through ~magent-redaction.el~ before persistence or one
 tool-free provider request.  Doctor never enters the general agent loop and
@@ -169,7 +168,8 @@ a model tool, never manages project overlays, and never reads or writes
 
 The distinction is:
 
-- A ~command~ is an explicit slash invocation implemented by trusted Elisp. A
+- A ~command~ is an explicit trusted-Elisp invocation exposed through slash,
+  interactive, or both surfaces. A
   prompt command normally owns one agent turn; an advanced handler may own
   multiple async steps.
 - A ~skill~ is reusable model instruction or a tool-type operation. The legacy
