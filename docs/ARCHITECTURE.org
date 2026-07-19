@@ -9,8 +9,8 @@ Magent is an Emacs-native AI coding agent. Its core design choice is that a seri
 The boundary is intentionally narrow:
 
 - Provider transport, HTTP/SSE handling, model selection, and API keys stay in ~gptel~ through ~gptel-request~.
-- User interaction is supported only through ~agent-shell~ and its in-process ACP adapter.
-- Agent execution, tool orchestration, permission decisions, sessions, skills, capabilities, and child-agent jobs are owned by Magent.
+- Conversational interaction is supported only through ~agent-shell~ and its in-process ACP adapter. Explicit registered commands may also expose trusted ~M-x~ wrappers without creating another conversation frontend.
+- Agent execution, command invocation, tool orchestration, permission decisions, sessions, skills, capabilities, and child-agent jobs are owned by Magent.
 - Codex-style seatbelt, bubblewrap, sandbox, and shell isolation are out of scope. Magent permissions are workflow controls and audit records, not an OS security boundary.
 
 * System Boundary
@@ -18,7 +18,7 @@ The boundary is intentionally narrow:
 #+caption: Magent architecture boundary
 [[file:assets/img/diagrams/architecture-boundary.svg]]
 
-This shape keeps replacement points visible. A provider change should stay behind ~magent-llm-gptel.el~ and gptel configuration. A frontend change should stay around ~magent-agent-shell.el~, ~magent-acp.el~, and ~magent-runtime-api.el~. A persistence or resume change should go through the ledger and session modules. A tool policy change should go through the permission and orchestrator modules.
+This shape keeps replacement points visible. A provider change should stay behind ~magent-llm-gptel.el~ and gptel configuration. A frontend change should stay around ~magent-agent-shell.el~, ~magent-acp.el~, and ~magent-runtime-api.el~. A command registration or invocation change should go through ~magent-command.el~, while isolated command persistence belongs in ~magent-command-session.el~. A persistence or resume change should otherwise go through the ledger and session modules. A tool policy change should go through the permission and orchestrator modules.
 
 * Dependency Layers
 
@@ -64,7 +64,7 @@ new prompt layer must update the manifest as well as the package data recipe.
 
 ** UI And Runtime API
 
-The supported frontend is ~agent-shell~. ~magent-agent-shell.el~ registers the Magent agent-shell configuration, ~magent-acp.el~ implements the in-process ACP adapter, and ~magent-runtime-api.el~ receives prompt submissions. ACP text and resource blocks are normalized separately: the full structured input is persisted in turn metadata and reconstructed as user-role model context, while local ~file://~ resources contribute scoped file paths for project-instruction and capability resolution. ~magent-runtime-queue.el~ currently runs one active turn globally, while preserving session-scoped cancellation and queue bookkeeping. Magent does not maintain a parallel interactive frontend.
+The supported conversational frontend is ~agent-shell~. ~magent-agent-shell.el~ registers the Magent agent-shell configuration and ~magent-acp.el~ implements the in-process ACP adapter. ACP text and resource blocks are normalized separately: the full structured input is persisted in turn metadata and reconstructed as user-role model context, while local ~file://~ resources contribute scoped file paths for project-instruction and capability resolution. For each ~session/prompt~, ACP dispatches a registered slash command through ~magent-command.el~ and sends an ordinary prompt directly to ~magent-runtime-api.el~. Command-owned agent turns and workflow steps also submit through that runtime API; a trusted direct handler may complete without entering the general agent loop. ~magent-runtime-queue.el~ currently runs one active turn globally, while preserving session-scoped cancellation and queue bookkeeping. Explicit ~M-x~ command wrappers share the command invocation lifecycle rather than forming a parallel conversation frontend.
 
 ** Ledger And Persistence
 
@@ -86,21 +86,23 @@ Legacy ~messages~ remain as the projection used for gptel prompt reuse and migra
 
 * Request Lifecycle
 
-#+caption: One Magent turn
+#+caption: One Magent agent turn
 [[file:assets/img/diagrams/one-magent-turn.svg]]
 
-1. A user prompt enters through agent-shell.
-2. The ACP adapter submits to ~magent-runtime-api.el~.
-3. ~magent-runtime-api.el~ records a queued turn and a completed user item.
-4. ~magent-runtime-queue.el~ starts the turn when the global execution slot is free.
-5. ~magent-agent.el~ chooses the session agent, active skills, capability instructions, and allowed tools.
-6. ~magent-llm-gptel.el~ calls ~gptel-request~ for one sampling request.
-7. ~magent-agent-loop.el~ receives normalized text, reasoning, tool-call, and completion events.
-8. Tool calls are accumulated until ~tool-call-batch-end~, then dispatched serially through the orchestrator.
-9. Tool results update the same ledger item that started with the tool call.
-10. If tool output should be shown to the model, ~magent-agent.el~ rebuilds the prompt from the ledger and starts the next sampling request.
-11. If that post-tool continuation completes with empty assistant text, ~magent-agent.el~ issues one no-tool final-response retry using the recorded tool results.
-12. Completion, failure, abort, or queue drop transitions the turn to its terminal state and notifies the ACP observer.
+1. A user prompt enters through agent-shell as an ACP ~session/prompt~ request.
+2. ACP resolves a registered slash command against the runtime session's exact scope. Unknown slash input remains an ordinary prompt.
+3. A registered command enters ~magent-command.el~ for argument handling, preflight, and session-policy setup. A plain prompt goes directly to ~magent-runtime-api.el~; a native command turn or advanced workflow step reaches the same API through ~magent-command-submit~. A direct handler that submits no agent turn stays outside the rest of this sequence.
+4. ~magent-runtime-api.el~ records a queued turn and a completed user item.
+5. ~magent-runtime-queue.el~ starts the turn when the global execution slot is free.
+6. ~magent-agent.el~ chooses the session agent, active skills, capability instructions, and allowed tools.
+7. ~magent-llm-gptel.el~ calls ~gptel-request~ for one sampling request.
+8. ~magent-agent-loop.el~ receives normalized text, reasoning, tool-call, and completion events.
+9. Tool calls are accumulated until ~tool-call-batch-end~, then dispatched serially through the orchestrator.
+10. Tool results update the same ledger item that started with the tool call.
+11. If tool output should be shown to the model, ~magent-agent.el~ rebuilds the prompt from the ledger and starts the next sampling request.
+12. If that post-tool continuation completes with empty assistant text, ~magent-agent.el~ issues one no-tool final-response retry using the recorded tool results.
+13. Completion, failure, abort, or queue drop transitions the turn to its terminal state and notifies the ACP observer.
+14. A plain prompt resolves the pending ACP request from the turn result. For command-owned work, the runtime callback first returns to the command invocation, whose terminal lifecycle then resolves the ACP request or reports the result to its interactive caller.
 
 This continuation model is Codex-style in the sense that tool results feed a follow-up sampling request, but it remains Emacs-native and gptel-backed.
 
@@ -109,7 +111,7 @@ This continuation model is Codex-style in the sense that tool results feed a fol
 #+caption: Magent functional layers
 [[file:assets/img/diagrams/functional-layers.svg]]
 
-Magent can be understood through four user-facing workflows. The first is a coding assistant workflow: read code, search code, edit files, run tests, explain failures, and produce commit or PR-style summaries. The second is an Emacs runtime assistant workflow: use ~emacs_eval~ to inspect buffers, modes, windows, projects, Magit, Org, LSP, and other live editor state. The third is an agent workflow: use skills to encode repeatable procedures, capabilities to activate contextual instructions, and child-agent jobs to split exploration, review, or summarization work. The fourth is an internal command workflow: Emacs commands such as ~magent-run-doctor~ and ~magent-run-memory-init~ run Magent maintenance tasks in isolated durable sessions rather than as agent-shell slash commands.
+Magent can be understood through four user-facing workflows. The first is a coding assistant workflow: read code, search code, edit files, run tests, explain failures, and produce commit or PR-style summaries. The second is an Emacs runtime assistant workflow: use ~emacs_eval~ to inspect buffers, modes, windows, projects, Magit, Org, LSP, and other live editor state. The third is an agent workflow: use skills, capabilities, and child-agent jobs. The fourth is an explicit command workflow: invoke one registered command from agent-shell slash input or an exposed ~M-x~ wrapper. A command may reuse the current conversation or create an isolated durable session; Doctor and Memory are the bundled isolated examples.
 
 The product is therefore more than a prompt box with tools. It turns Emacs workflows into actions that can be invoked, audited, resumed, and projected back into the UI.
 
@@ -121,10 +123,10 @@ Magent has three file-backed extension layers:
 - Skills under bundled ~skills/~, legacy user ~~/.emacs.d/magent-skills/~ when present, canonical user ~~/.emacs.d/magent/skills~, and project ~.magent/skills/~.
 - Capability metadata embedded in skills with ~capability: true~, plus standalone ~CAPABILITY.md~ files under user capability directories and project ~.magent/capabilities/~ when trigger metadata should live outside one skill.
 
-Slash commands are a separate Elisp-native extension layer. Definitions in
+Commands are a separate Elisp-native extension layer. Definitions in
 ~magent-command.el~ are explicit user actions with layered registration,
-argument handling, project/tool preflight, progress, cancellation, and
-completion. A registration owns exactly one native declarative turn or one
+slash/interactive exposure, current/isolated session policy, argument handling,
+project/tool preflight, progress, cancellation, and completion. A registration owns exactly one native declarative turn or one
 advanced handler. The native path delegates one turn to
 ~magent-runtime-submit~; its turn spec separates prompt text, model-visible
 popwin-style buffer snapshots, and agent/skill selection while inheriting
@@ -144,14 +146,13 @@ the core control is reserved. Project adapters remain keyed by canonical project
 scope; ACP resolves both command discovery and dispatch against each runtime
 session's exact scope, allowing multiple project sessions to coexist safely.
 
-Magent also has an Elisp-level internal command registry in ~magent-internal-command.el~.
-Commands registered with ~magent-internal-command-register~ are invoked by explicit
-~magent-run-*~ user commands, create isolated internal sessions under
-~magent-session-directory/internal~, and may use either direct pipeline runners
-or the normal Magent agent loop. They are intentionally separate from
-agent-shell slash commands.
+~magent-command-session.el~ supplies persistence, ledger recording, inspection,
+and cancellation for specs using ~:session-policy 'isolated~. It does not own a
+second registry or context type. ~/doctor~ and ~/memory-*~ also expose
+~magent-command-run-*~ wrappers, and both surfaces execute the same invocation
+lifecycle. New sessions are stored under ~magent-session-directory/commands~.
 
-~magent-run-doctor~ is the security-sensitive direct-pipeline case.  Trusted,
+~magent-command-run-doctor~ is the security-sensitive direct-pipeline case.  Trusted,
 read-only probes in ~magent-doctor.el~ collect bounded JSON-safe data, which is
 normalized and redacted through ~magent-redaction.el~ before persistence or one
 tool-free provider request.  Doctor never enters the general agent loop and
@@ -169,7 +170,8 @@ a model tool, never manages project overlays, and never reads or writes
 
 The distinction is:
 
-- A ~command~ is an explicit slash invocation implemented by trusted Elisp. A
+- A ~command~ is an explicit trusted-Elisp invocation exposed through slash,
+  interactive, or both surfaces. A
   prompt command normally owns one agent turn; an advanced handler may own
   multiple async steps.
 - A ~skill~ is reusable model instruction or a tool-type operation. The legacy

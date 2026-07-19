@@ -19,7 +19,7 @@
 (require 'subr-x)
 (require 'gptel)
 (require 'magent-config)
-(require 'magent-internal-command)
+(require 'magent-command)
 (require 'magent-llm)
 (require 'magent-llm-gptel)
 (require 'magent-prompt)
@@ -1000,22 +1000,22 @@ with a plan and continuation for scan-based operations."
              (yes-or-no-p "Proceed with Magent memory scan? "))))
 
 ;;;###autoload
-(defun magent-run-memory-init ()
-  "Initialize Magent Emacs profile memory in an internal command session."
+(defun magent-command-run-memory-init ()
+  "Initialize Magent Emacs profile memory in an isolated command session."
   (interactive)
-  (magent-internal-command-run "memory-init"))
+  (magent-command-run "memory-init"))
 
 ;;;###autoload
-(defun magent-run-memory-refresh ()
-  "Refresh Magent Emacs profile memory in an internal command session."
+(defun magent-command-run-memory-refresh ()
+  "Refresh Magent Emacs profile memory in an isolated command session."
   (interactive)
-  (magent-internal-command-run "memory-refresh"))
+  (magent-command-run "memory-refresh"))
 
 ;;;###autoload
-(defun magent-run-memory-clear ()
-  "Deactivate and clear managed profile memory in an internal session."
+(defun magent-command-run-memory-clear ()
+  "Deactivate and clear managed profile memory in an isolated command session."
   (interactive)
-  (magent-internal-command-run "memory-clear"))
+  (magent-command-run "memory-clear"))
 
 ;;;###autoload
 (defun magent-open-memory ()
@@ -1099,7 +1099,7 @@ with a plan and continuation for scan-based operations."
 (defun magent-memory--command-confirm-provider (context operation)
   "Return confirmation function for memory OPERATION in command CONTEXT."
   (lambda (plan continue)
-    (magent-internal-command-record-tool
+    (magent-command-record-tool
      context "memory_scan_plan"
      (if plan
          (magent-memory-scan-plan-approval-input plan)
@@ -1111,7 +1111,7 @@ with a plan and continuation for scan-based operations."
      (list :operation operation))
     (if magent-bypass-permission
         (progn
-          (magent-internal-command-record-tool
+          (magent-command-record-tool
            context "memory_approval"
            (list :operation operation)
            "approved by magent-bypass-permission"
@@ -1122,7 +1122,7 @@ with a plan and continuation for scan-based operations."
       (magent-memory--interactive-confirm
        plan
        (lambda (approved)
-         (magent-internal-command-record-tool
+         (magent-command-record-tool
           context "memory_approval"
           (list :operation operation)
           (if approved "approved" "cancelled")
@@ -1133,6 +1133,9 @@ with a plan and continuation for scan-based operations."
 (defun magent-memory--command-runner (operation)
   "Return a command runner for memory OPERATION."
   (lambda (context)
+    (unless (string-empty-p (magent-command-invocation-argument context))
+      (user-error "Command /memory-%s does not accept arguments" operation))
+    (magent-command-defer context)
     (let ((state
            (magent-memory-run
             operation
@@ -1140,11 +1143,11 @@ with a plan and continuation for scan-based operations."
             (magent-memory--command-confirm-provider context operation)
             :notify-fn (lambda (message)
                          (message "%s" message)
-                         (magent-internal-command-notify context message))
+                         (magent-command-progress context message))
             :on-complete (lambda (status message)
-                           (magent-internal-command-complete context status message))
+                           (magent-command-finish context status message))
             :open-after-write (memq operation '(init refresh)))))
-      (magent-internal-command-set-cancel-function
+      (magent-command-set-cancel-function
        context
        (lambda ()
          (magent-memory-cancel-operation
@@ -1330,26 +1333,29 @@ with a plan and continuation for scan-based operations."
            "internal/memory-injection.org"
            `((memory . ,included-text))))))))
 
-(magent-internal-command-register
- "memory-init"
- :description "Initialize Magent Emacs profile memory."
- :title "Initialize Magent Emacs profile memory"
- :runner-type 'pipeline
- :runner (magent-memory--command-runner 'init))
-
-(magent-internal-command-register
- "memory-refresh"
- :description "Refresh Magent Emacs profile memory."
- :title "Refresh Magent Emacs profile memory"
- :runner-type 'pipeline
- :runner (magent-memory--command-runner 'refresh))
-
-(magent-internal-command-register
- "memory-clear"
- :description "Deactivate and clear managed Magent Emacs profile memory."
- :title "Deactivate and clear Magent Emacs profile memory"
- :runner-type 'pipeline
- :runner (magent-memory--command-runner 'clear))
+(defun magent-memory-register-commands ()
+  "Register the core Magent memory commands."
+  (dolist (definition
+           `(("memory-init"
+              "Initialize Magent Emacs profile memory."
+              "Initialize Magent Emacs profile memory"
+              ,(magent-memory--command-runner 'init))
+             ("memory-refresh"
+              "Refresh Magent Emacs profile memory."
+              "Refresh Magent Emacs profile memory"
+              ,(magent-memory--command-runner 'refresh))
+             ("memory-clear"
+              "Deactivate and clear managed Magent Emacs profile memory."
+              "Deactivate and clear Magent Emacs profile memory"
+              ,(magent-memory--command-runner 'clear))))
+    (magent-command-register
+     (nth 0 definition)
+     :description (nth 1 definition)
+     :title (nth 2 definition)
+     :exposure '(slash interactive)
+     :session-policy 'isolated
+     :handler (nth 3 definition)
+     :source-layer 'core)))
 
 (provide 'magent-memory)
 ;;; magent-memory.el ends here

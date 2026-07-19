@@ -4,16 +4,15 @@
 #+magent_permalink: /COMMANDS.zh.html
 #+options: toc:t num:nil
 
-Magent 为 LLM 辅助工作流提供两类不同的命令入口：
+Magent 使用同一个 command registry 提供两类用户入口：
 
 - *Slash commands* 在当前 agent-shell 对话中调用 Elisp-native command；大多数
   内置命令声明一次普通 agent turn。
-- *Internal workflow commands* 是显式的 Emacs 命令，在独立、可持久化的
-  session 中执行 Magent 维护或诊断工作流。
+- *Interactive commands* 是选择了 interactive exposure 的 command spec 对应的
+  ~M-x~ wrapper。
 
-当前内置包提供 7 个 Elisp-native slash commands 及 4 个 internal workflow
-commands，另有 3 个 Emacs 命令用于查看
-或管理 internal workflows。
+当前内置包提供 11 个 slash commands。Doctor 和三个 Memory command 还提供
+~M-x magent-command-run-*~ wrapper，并使用独立 durable session。
 
 * Slash Commands
 
@@ -39,6 +38,10 @@ Prompt command 或 ~/compact~ 后的文本会作为命令参数。六个内置 p
 | ~/summarize~ | 把项目总结到 org-roam            | 创建或更新一个 canonical Org note |
 | ~/test~    | 运行并解释相关测试                  | 运行聚焦测试；适当时可修复范围内失败 |
 | ~/compact~ | 总结当前对话                        | 用续接摘要替换较早的模型上下文 |
+| ~/doctor~ | 诊断 Magent 和当前 runtime | 使用有界 probes 和一次脱敏、无工具请求 |
+| ~/memory-init~ | 建立 Emacs profile memory | 在独立 command session 中确认并执行 |
+| ~/memory-refresh~ | 刷新 managed profile memory | 在独立 command session 中保留 user notes |
+| ~/memory-clear~ | 停用 managed memory | 确认后在本地清理生成内容 |
 
 ** ~/compact~
 
@@ -130,6 +133,9 @@ org-roam capture 约定 ~YYYY-MM-DDtHHMM.org~。后续运行通过 file-level
 (magent-command-register
  "my-review"
  :description "运行包自定义的 review workflow。"
+ :title "包自定义 review"
+ :exposure '(slash)
+ :session-policy 'current
  :turn
  (lambda (_invocation)
    (magent-command-turn-spec-create
@@ -151,7 +157,8 @@ org-roam capture 约定 ~YYYY-MM-DDtHHMM.org~。后续运行通过 file-level
 
 每个 registration 必须且只能提供 ~:turn~ 和 ~:handler~ 之一。~:turn~ 可以是静态
 ~magent-command-turn-spec~，也可以是接收 invocation 并返回 turn spec 的 builder。
-上例使用了所有可与 ~:turn~ 搭配的 registration 字段：~:description~、
+上例使用了可与 ~:turn~ 搭配的 registration 字段：~:description~、~:title~、
+~:exposure~、~:session-policy~、
 ~:source-layer~、~:source-scope~、~:requires-project~ 和
 ~:required-tools~；也使用了 turn spec 的全部字段：~:prompt~、~:buffers~、
 ~:skills~、~:agent~ 和 ~:append-argument-p~。只有受信任 Elisp 需要自主管理
@@ -249,23 +256,23 @@ commit、description、目标位置、文件数、大小，以及是否含 scrip
 Magent 用户 skill 目录（通常是 ~~/.emacs.d/magent/skills/~），不会管理项目本地
 ~.magent/skills/~，也不会读写 ~~/.agents/skills/~。
 
-* Internal Workflow Commands
+* 独立 Command Workflows
 
-Internal workflows 通过 ~M-x~ 调用，并刻意不作为 agent-shell slash command
-暴露。每次运行都会在 ~magent-session-directory/internal~ 下建立独立 session，
+Doctor 和 Memory 既可以使用 slash name，也可以使用下列 M-x wrapper；两种入口
+执行同一个 command spec。每次运行都会在 ~magent-session-directory/commands~ 下建立独立 session，
 在原始对话中只记录一条紧凑 breadcrumb。
 
 | Emacs 命令                     | 工作流 | LLM 行为 |
 |--------------------------------+--------+----------|
-| ~magent-run-memory-init~       | 建立初始 Emacs profile memory | ~magent-memory-use-llm~ 非 nil 时使用当前 gptel provider |
-| ~magent-run-memory-refresh~    | 刷新 managed profile memory | ~magent-memory-use-llm~ 非 nil 时使用当前 gptel provider |
-| ~magent-run-memory-clear~      | 停用并清理 managed memory | 本地操作，不请求 LLM 总结 |
-| ~magent-run-doctor~            | 诊断 Magent 和当前 runtime 状态 | 发送一次经过脱敏且不带 tools 的分析请求 |
+| ~magent-command-run-memory-init~       | 建立初始 Emacs profile memory | ~magent-memory-use-llm~ 非 nil 时使用当前 gptel provider |
+| ~magent-command-run-memory-refresh~    | 刷新 managed profile memory | ~magent-memory-use-llm~ 非 nil 时使用当前 gptel provider |
+| ~magent-command-run-memory-clear~      | 停用并清理 managed memory | 本地操作，不请求 LLM 总结 |
+| ~magent-command-run-doctor~            | 诊断 Magent 和当前 runtime 状态 | 发送一次经过脱敏且不带 tools 的分析请求 |
 
 ** Memory 初始化与刷新
 
-~M-x magent-run-memory-init~ 发现有边界的 Emacs 配置来源，展示 scan plan 供用户
-确认，然后写入 managed profile memory 文件。~M-x magent-run-memory-refresh~
+~M-x magent-command-run-memory-init~ 发现有边界的 Emacs 配置来源，展示 scan plan 供用户
+确认，然后写入 managed profile memory 文件。~M-x magent-command-run-memory-refresh~
 重新扫描并保留 user notes。
 
 默认情况下，init 和 refresh 使用当前 gptel provider 总结经过清理的 source
@@ -274,32 +281,32 @@ excerpts。把 ~magent-memory-use-llm~ 自定义为 nil，可以在不向 provid
 
 ** Memory 清理
 
-~M-x magent-run-memory-clear~ 经确认后停用 managed profile 并清理生成内容，
+~M-x magent-command-run-memory-clear~ 经确认后停用 managed profile 并清理生成内容，
 同时保留 user notes 和 snapshot。该工作流不会发起 LLM 总结请求。
 
 ** Doctor
 
-~M-x magent-run-doctor~ 通过可信的只读 probes 收集有边界的证据，递归脱敏后
+~M-x magent-command-run-doctor~ 通过可信的只读 probes 收集有边界的证据，递归脱敏后
 发送一次不包含 model tools 的请求。使用前缀参数
-~C-u M-x magent-run-doctor~ 可以先检查适用的 probe selection。Probe API 和
+~C-u M-x magent-command-run-doctor~ 可以先检查适用的 probe selection。Probe API 和
 安全边界见 [[file:DOCTOR.zh.html][DOCTOR.zh.org]]。
 
 * 查看与管理工作流
 
 | Emacs 命令                        | 用途 |
 |-----------------------------------+------|
-| ~magent-list-internal-sessions~   | 选择已保存的 internal session，查看最终结果和执行活动 |
-| ~magent-cancel-internal-command~  | 取消提供 cancellation 的活动 internal workflow |
+| ~magent-command-list-sessions~   | 选择已保存的 command session，查看最终结果和执行活动 |
+| ~magent-command-cancel~          | 取消提供 cancellation 的活动 isolated command |
 | ~magent-open-memory~              | 打开 managed Emacs profile memory 文件 |
 
-Internal session viewer 优先显示最终结果，并默认折叠详细 activity。Cancellation
+Command-session viewer 优先显示最终结果，并默认折叠详细 activity。Cancellation
 按 session 隔离，不会取消其他 Magent 对话所属的工作。
 
 * 如何选择入口
 
 - 当任务属于当前 coding conversation，并需要复用其 agent、上下文和 transcript
   时，使用 slash command。
-- 当任务是 Magent 自身维护、profile-memory 管理或需要独立 durable session 的
-  脱敏诊断时，使用 internal workflow command。
+- 当 Magent 维护、profile-memory 管理或脱敏诊断需要独立 durable session 时，
+  按当前 UI 选择 slash 或 M-x 入口。
 - 对于不属于预定义工作流的自由请求，使用 ~magent-start~ 、
   ~magent-agent-shell-prompt-region~ 和 ~magent-agent-shell-ask-at-point~ 。

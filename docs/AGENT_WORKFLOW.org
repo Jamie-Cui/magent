@@ -190,10 +190,12 @@ queued user submissions from leaking into the active model request.
 
 The supported frontend is agent-shell.  ~magent-agent-shell.el~ creates an
 in-process ACP client implemented by ~magent-acp.el~.  ACP session/prompt
-requests submit to ~magent-runtime-api.el~ and stay pending until the
-corresponding runtime turn completes, fails, or is cancelled.  The runtime
-emits Magent-native observer events; ~magent-acp.el~ converts those events to
-ACP ~session/update~ messages.
+requests dispatch registered slash commands through ~magent-command.el~ and
+submit ordinary prompts directly to ~magent-runtime-api.el~.  They stay pending
+until the corresponding command invocation or ordinary runtime turn completes,
+fails, or is cancelled.  Command-owned turns and workflow steps use the same
+runtime API.  The runtime emits Magent-native observer events;
+~magent-acp.el~ converts those events to ACP ~session/update~ messages.
 
 ~magent-runtime-queue.el~ owns queued/active turn state.  The first
 implementation uses one global active turn at a time, but submissions are
@@ -201,8 +203,10 @@ tagged by runtime session id so cancellation is session-scoped: cancelling one
 ACP session removes that session's queued work and aborts its active turn
 without dropping other sessions' queued turns.
 
-This agent-shell + ACP path is the complete UI projection and public command
-surface. Shared runtime behavior remains frontend-neutral.
+This agent-shell + ACP path is the complete conversational UI projection and
+slash-command surface.  Explicit ~M-x~ wrappers enter the same
+~magent-command~ invocation lifecycle without creating another conversation
+frontend. Shared runtime behavior remains frontend-neutral.
 
 * Codex Differences Still Preserved
 

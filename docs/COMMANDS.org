@@ -4,16 +4,16 @@
 #+magent_permalink: /COMMANDS.html
 #+options: toc:t num:nil
 
-Magent has two distinct command surfaces for LLM-assisted workflows:
+Magent has one command registry with two user-facing entry surfaces:
 
 - *Slash commands* invoke Elisp-native commands in the current agent-shell
   conversation. Most bundled commands declare one ordinary agent turn.
-- *Internal workflow commands* are explicit Emacs commands that run Magent
-  maintenance or diagnostic work in isolated durable sessions.
+- *Interactive commands* are ~M-x~ wrappers over specs that opt into
+  interactive exposure.
 
-The bundled package currently provides seven Elisp-native slash commands and
-four internal workflow commands. Three
-additional Emacs commands inspect or manage the internal workflows.
+The bundled package provides eleven slash commands. Doctor and the three Memory
+commands also expose ~M-x magent-command-run-*~ wrappers and use isolated
+durable sessions.
 
 * Slash Commands
 
@@ -40,6 +40,10 @@ prompt text rather than executed locally.
 | ~/summarize~ | Summarize the project into org-roam   | Creates or updates one canonical Org note |
 | ~/test~    | Run and interpret relevant tests        | Runs focused tests; may fix an in-scope failure when appropriate |
 | ~/compact~ | Summarize the current conversation      | Replaces older model context with a continuation summary |
+| ~/doctor~  | Diagnose Magent and current runtime state | Uses bounded probes and one sanitized tool-free request |
+| ~/memory-init~ | Build Emacs profile memory | Uses an isolated command session and confirmation |
+| ~/memory-refresh~ | Refresh managed profile memory | Preserves user notes in an isolated command session |
+| ~/memory-clear~ | Deactivate managed memory | Confirms and clears generated content locally |
 
 ** ~/compact~
 
@@ -140,6 +144,9 @@ the same public API available to third-party packages:
 (magent-command-register
  "my-review"
  :description "Run my package-specific review workflow."
+ :title "My package review"
+ :exposure '(slash)
+ :session-policy 'current
  :turn
  (lambda (_invocation)
    (magent-command-turn-spec-create
@@ -162,7 +169,8 @@ the same public API available to third-party packages:
 Every registration must provide exactly one of ~:turn~ and ~:handler~. A
 ~:turn~ value is either one static ~magent-command-turn-spec~ or a builder
 function that receives the invocation and returns one. The example uses every
-registration field that can accompany ~:turn~: ~:description~,
+registration field that can accompany ~:turn~: ~:description~, ~:title~,
+~:exposure~, ~:session-policy~,
 ~:source-layer~, ~:source-scope~, ~:requires-project~, and
 ~:required-tools~. The turn spec uses all of its fields: ~:prompt~,
 ~:buffers~, ~:skills~, ~:agent~, and ~:append-argument-p~. Use ~:handler~
@@ -282,25 +290,25 @@ a symbolic-link entry removes only the link. The manager uses Magent's user
 skill directories (normally ~~/.emacs.d/magent/skills/~) and never manages
 project-local ~.magent/skills/~ or ~~/.agents/skills/~.
 
-* Internal Workflow Commands
+* Isolated Command Workflows
 
-Internal workflows are invoked through ~M-x~ and are intentionally not exposed
-as agent-shell slash commands. Every run gets an isolated session under
-~magent-session-directory/internal~ and records only a compact breadcrumb in
+Doctor and Memory can be invoked through their slash names or the M-x wrappers
+below. Both surfaces execute the same command spec. Every run gets an isolated session under
+~magent-session-directory/commands~ and records only a compact breadcrumb in
 the originating conversation.
 
 | Emacs command                  | Workflow | LLM behavior |
 |--------------------------------+----------+--------------|
-| ~magent-run-memory-init~       | Build initial Emacs profile memory | Uses the current gptel provider when ~magent-memory-use-llm~ is non-nil |
-| ~magent-run-memory-refresh~    | Refresh managed profile memory | Uses the current gptel provider when ~magent-memory-use-llm~ is non-nil |
-| ~magent-run-memory-clear~      | Deactivate and clear managed memory | Local operation; does not request an LLM summary |
-| ~magent-run-doctor~            | Diagnose Magent and current runtime state | Sends one sanitized, tool-free analysis request |
+| ~magent-command-run-memory-init~       | Build initial Emacs profile memory | Uses the current gptel provider when ~magent-memory-use-llm~ is non-nil |
+| ~magent-command-run-memory-refresh~    | Refresh managed profile memory | Uses the current gptel provider when ~magent-memory-use-llm~ is non-nil |
+| ~magent-command-run-memory-clear~      | Deactivate and clear managed memory | Local operation; does not request an LLM summary |
+| ~magent-command-run-doctor~            | Diagnose Magent and current runtime state | Sends one sanitized, tool-free analysis request |
 
 ** Memory Initialization And Refresh
 
-~M-x magent-run-memory-init~ discovers bounded Emacs configuration sources,
+~M-x magent-command-run-memory-init~ discovers bounded Emacs configuration sources,
 shows a scan plan for approval, and writes the managed profile memory file.
-~M-x magent-run-memory-refresh~ repeats the scan while preserving user notes.
+~M-x magent-command-run-memory-refresh~ repeats the scan while preserving user notes.
 
 By default, init and refresh summarize sanitized source excerpts with the
 current gptel provider. Customize ~magent-memory-use-llm~ to ~nil~ to write a
@@ -309,15 +317,15 @@ to the provider.
 
 ** Memory Clear
 
-~M-x magent-run-memory-clear~ deactivates the managed profile and clears its
+~M-x magent-command-run-memory-clear~ deactivates the managed profile and clears its
 generated content after confirmation. User notes and a snapshot are retained.
 This workflow does not perform an LLM summarization request.
 
 ** Doctor
 
-~M-x magent-run-doctor~ collects bounded evidence through trusted read-only
+~M-x magent-command-run-doctor~ collects bounded evidence through trusted read-only
 probes, recursively redacts it, and sends one request without model tools. With
-a prefix argument, ~C-u M-x magent-run-doctor~ lets the user review applicable
+a prefix argument, ~C-u M-x magent-command-run-doctor~ lets the user review applicable
 probe selection. See [[file:DOCTOR.html][DOCTOR.org]] for the probe API and security
 boundary.
 
@@ -325,11 +333,11 @@ boundary.
 
 | Emacs command                     | Purpose |
 |-----------------------------------+---------|
-| ~magent-list-internal-sessions~   | Select a saved internal session and inspect its final result and activity |
-| ~magent-cancel-internal-command~  | Cancel an active internal workflow that exposes cancellation |
+| ~magent-command-list-sessions~   | Select a saved command session and inspect its final result and activity |
+| ~magent-command-cancel~          | Cancel an active isolated command that exposes cancellation |
 | ~magent-open-memory~              | Open the managed Emacs profile memory file |
 
-Internal session viewers show the final result first and keep detailed activity
+Command-session viewers show the final result first and keep detailed activity
 collapsed by default. Cancellation is session-scoped and does not cancel work
 belonging to unrelated Magent conversations.
 
@@ -337,8 +345,8 @@ belonging to unrelated Magent conversations.
 
 - Use a slash command when the task belongs to the current coding conversation
   and should reuse its agent, context, and transcript.
-- Use an internal workflow command for Magent-owned maintenance, profile-memory
-  management, or sanitized diagnosis that needs its own durable session.
+- Use Doctor or a Memory command when maintenance or sanitized diagnosis needs
+  its own durable session; choose slash or M-x according to the current UI.
 - Use ~magent-start~, ~magent-agent-shell-prompt-region~, and
   ~magent-agent-shell-ask-at-point~ for free-form requests rather than a
   predefined workflow.

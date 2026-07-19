@@ -266,16 +266,11 @@ tool skills retain their existing loading behavior."
   :type 'directory
   :group 'magent)
 
-(define-obsolete-variable-alias
-  'magent-command-session-directory
-  'magent-internal-command-session-directory
-  "0.2.0")
-
-(defcustom magent-internal-command-session-directory nil
-  "Directory where Magent internal command session files are stored.
-When nil, internal command sessions are stored under
-`magent-session-directory'/internal."
-  :type '(choice (const :tag "Use magent-session-directory/internal" nil)
+(defcustom magent-command-session-directory nil
+  "Directory where isolated Magent command session files are stored.
+When nil, command sessions are stored under
+`magent-session-directory'/commands."
+  :type '(choice (const :tag "Use magent-session-directory/commands" nil)
                  directory)
   :group 'magent)
 

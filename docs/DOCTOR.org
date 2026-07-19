@@ -5,13 +5,13 @@
 
 * Purpose
 
-~M-x magent-run-doctor~ diagnoses Magent, Emacs runtime, and current-project
-state without giving an LLM general Emacs or shell access.  Each run creates an
-isolated internal session under ~magent-session-directory/internal/doctor~.
-It is intentionally not an agent-shell slash command.
+~/doctor~ and ~M-x magent-command-run-doctor~ diagnose Magent, Emacs runtime,
+and current-project state without giving an LLM general Emacs or shell access.
+Both entry points execute the same command spec and create an isolated command
+session under ~magent-session-directory/commands/doctor~.
 
-With a prefix argument, ~C-u M-x magent-run-doctor~ lets the user review the
-applicable probe selection.  Core runtime diagnostics are always included.
+Use ~/doctor select~ or a prefix argument with the M-x command to review the
+applicable probe selection. Core runtime diagnostics are always included.
 
 * Trust Boundary
 
@@ -22,13 +22,13 @@ Doctor uses two phases:
 
 The provider request has no tools and does not enter the normal Magent agent
 loop or runtime queue.  It may run concurrently with an ordinary conversation,
-but it does not install its internal session as the user's current session.
+but it does not install its command session as the user's current session.
 
 Doctor never intentionally collects a gptel backend object, API keys,
 ~auth-source~, environment variables, HTTP headers, or raw ~*gptel-log*~
 content.  Absolute paths are normalized to ~$PROJECT~, ~$HOME~, and ~$TMP~.
 Raw probe return values are not persisted or logged; only bounded, recursively
-redacted output enters the internal session and provider request.
+redacted output enters the command session and provider request.
 
 Redaction is defense in depth, not a sandbox.  Custom probes are trusted Emacs
 Lisp with the same authority as any installed package.  They must follow the
@@ -62,7 +62,7 @@ Register trusted probes with ~magent-doctor-register-probe~:
  :description "Read-only status for my package"
  :predicate (lambda (context)
               (buffer-live-p
-               (magent-internal-command-context-origin-buffer context)))
+               (magent-command-invocation-origin-buffer context)))
  :collector (lambda (_context _state)
               `((feature-loaded . ,(featurep 'my-package))))
  :timeout 2
@@ -81,13 +81,13 @@ test, edit, or otherwise mutate a project.
 
 * Sessions And Cancellation
 
-Use ~M-x magent-list-internal-sessions~ to inspect results.  The viewer shows
+Use ~M-x magent-command-list-sessions~ to inspect results.  The viewer shows
 the final diagnosis first and folds probe activity by default; ~TAB~ toggles a
 section and ~S-TAB~ toggles all activity details.
 
-Use ~M-x magent-cancel-internal-command~ to cancel an active Doctor request.
+Use ~M-x magent-command-cancel~ to cancel an active Doctor request.
 Cancellation terminates an active probe process or aborts the direct gptel
-request, marks the internal session cancelled, and leaves the user's current
+request, marks the command session cancelled, and leaves the user's current
 session unchanged.
 
 * Configuration

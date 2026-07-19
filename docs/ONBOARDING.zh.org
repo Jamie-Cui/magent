@@ -45,7 +45,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 
 - ~magent-ledger.el~ ：thread/turn/item ledger、状态转移和 snapshot shape。
 - ~magent-session.el~ ：conversation projections、JSON persistence、per-project sessions。
-- ~magent-internal-command.el~ ：由 ~magent-run-*~ 命令调用的 session-backed internal workflows。
+- ~magent-command-session.el~ ：isolated command 的持久化、ledger、viewer 与取消。
 - ~magent-doctor.el~ ：受信任只读 probes 和一次脱敏后的无工具分析请求。
 - ~magent-redaction.el~ ：Magent-owned outbound diagnostics 与 memory 的 fail-closed 脱敏。
 - ~magent-agent-job.el~ ：durable child-agent job records 和 JSON shape。
@@ -55,7 +55,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 - ~magent-runtime-queue.el~ ：全局单执行 runtime queue 和 session-scoped cancellation。
 - ~magent-audit.el~ ：permission 和 sensitive action 的持久 JSONL audit logging。
 
-*职责：* 维护 project-scoped、ledger-backed conversation history，默认持久化到 ~~/.emacs.d/magent/sessions/~ ，在 ~agent-jobs~ 下保存 durable child-agent jobs，并在 scope 变化时加载或卸载 project-local overlays。~magent-run-doctor~ 和 ~magent-run-memory-init~ 这类 internal maintenance workflow 会在 ~magent-session-directory/internal~ 下使用独立 session，而不是 agent-shell slash command。Doctor 是不向模型开放工具的 direct probe pipeline；修改其数据边界或扩展 API 前先读 [[file:DOCTOR.zh.org][DOCTOR.zh.org]]。
+*职责：* 维护 project-scoped、ledger-backed conversation history，默认持久化到 ~~/.emacs.d/magent/sessions/~ ，在 ~agent-jobs~ 下保存 durable child-agent jobs，并在 scope 变化时加载或卸载 project-local overlays。普通 ACP prompt 和 command-owned agent work 都通过 ~magent-runtime-api.el~ 提交； ~magent-runtime-queue.el~ 负责 queued/active turn state 和 session-scoped cancellation。Doctor 和 Memory 使用同时暴露为 slash 与 ~M-x magent-command-run-*~ 的统一 command spec，并在 ~magent-session-directory/commands~ 下使用独立 session。Doctor 是不向模型开放工具的 direct probe pipeline；修改其数据边界或扩展 API 前先读 [[file:DOCTOR.zh.org][DOCTOR.zh.org]]。
 
 ** 第 3 层：Agent System
 
@@ -104,19 +104,23 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 
 ** 第 6 层：受支持的 Frontend
 
-agent-shell 是唯一受支持的 frontend。
+agent-shell 是唯一受支持的会话式 frontend。显式 ~M-x~ command wrapper 使用相邻的
+command lifecycle，而不是另一套 UI。
 
 *关键文件：*
 
 - ~magent-agent-shell.el~ ：Magent agent-shell config 和 prompt routing。
 - ~magent-acp.el~ ：in-process ACP adapter。
+- ~magent-command.el~ ：registered slash/interactive command discovery 和 invocation。
+- ~magent-command-session.el~ ：isolated command persistence 和 cancellation。
 - ~magent-runtime-api.el~ ：UI/backend-facing runtime API。
 - ~magent-runtime-queue.el~ ：runtime queue 和 session-scoped cancellation。
 - ~magent-file-loader.el~ ：agent/skill/capability 共享 frontmatter parser。
 
-*职责：* Prompt 走 agent-shell 和进程内 ACP adapter。ACP session/prompt request
-提交到 ~magent-runtime-api.el~ ，直到对应 Magent turn 完成才返回。修改该层前先读
-~docs/UI_BACKENDS.org~ 中的 frontend 开发边界。
+*职责：* Prompt 走 agent-shell 和进程内 ACP adapter。ACP 把 registered slash
+command 交给 ~magent-command.el~ ，普通 prompt 则直接提交 ~magent-runtime-api.el~ 。
+Prompt request 会保持 pending，直到对应普通 turn 或 command invocation 进入 terminal
+state。修改该层前先读 ~docs/UI_BACKENDS.org~ 中的 frontend 开发边界。
 
 ** 第 7 层：Events
 
@@ -183,13 +187,13 @@ Skills 加载来源：内置 ~skills/~、存在时兼容的 legacy 用户目录 
 
 新增或 review 默认能力时保持这些概念分开：
 
-- 显式 slash action 需要 Elisp 入口时，用 ~command~。
+- 显式 slash action 需要 Elisp 入口时，用 ~command~ 。
 - 需要可复用 instruction 或 tool-type operation，并且可以被显式或自动选择时，
-  用 ~skill~；~default-prompt~ 只承担兼容作用。
-- 需要根据 live context 或 prompt text 自动选择某个 skill 时，用 ~capability~。
+  用 ~skill~ ； ~default-prompt~ 只承担兼容作用。
+- 需要根据 live context 或 prompt text 自动选择某个 skill 时，用 ~capability~ 。
 - 如果 capability 只是为了激活同一个 skill，就把 metadata 和说明共址在
-  ~SKILL.md~。只有当触发 metadata 不属于单个 skill，或属于 project overlay 时，
-  才使用独立 ~CAPABILITY.md~。
+  ~SKILL.md~ 。只有当触发 metadata 不属于单个 skill，或属于 project overlay 时，
+  才使用独立 ~CAPABILITY.md~ 。
 
 ** Session Scoping
 
@@ -218,18 +222,21 @@ interactive entry points。
 ** Step 2：UI 边界
 
 读 ~docs/UI_BACKENDS.org~ ，再读 ~magent-agent-shell.el~ 、 ~magent-acp.el~ 和
-~magent-runtime-api.el~ 。关键点：agent-shell 是唯一受支持的交互体验，共享行为必须
-留在 runtime API。
+~magent-runtime-api.el~ 。跟踪 slash 或 interactive command 时再读
+~magent-command.el~ 。关键点：agent-shell 是唯一受支持的会话式 frontend；显式 ~M-x~
+command wrapper 复用 command invocation lifecycle，共享 runtime 行为仍留在 runtime
+API。
 
 ** Step 3：请求生命周期
 
 按顺序跟踪一次请求：
 
-1. ~magent-agent.el~ ： ~magent-agent-process~ 构造 prompt。
-2. ~magent-agent-loop.el~ ：normalized events、tool dispatch、queueing、abort 和 continuation outcomes。
-3. ~magent-llm-gptel.el~ ：为一次 sampling 调用 ~gptel-request~ 。
-4. ~magent-tool-orchestrator.el~ / ~magent-tools.el~ ：解析权限并执行 tool implementations。
-5. ~magent-runtime-api.el~ / ~magent-acp.el~ ：backend submissions 和 agent-shell 的 UI-neutral events。
+1. ~magent-agent-shell.el~ / ~magent-acp.el~ ：接收 ~session/prompt~ 并规范化 frontend input。
+2. ~magent-command.el~ ：按需解析和调用 registered slash command。
+3. ~magent-runtime-api.el~ / ~magent-runtime-queue.el~ / ~magent-ledger.el~ ：记录、排队并启动普通或 command-owned turn。
+4. ~magent-agent.el~ ：构造 prompt，选择 agent、skills、capabilities 和 tools。
+5. ~magent-llm-gptel.el~ / ~magent-agent-loop.el~ ：通过 gptel sampling，并负责 normalized continuation outcomes。
+6. ~magent-tool-orchestrator.el~ / ~magent-tools.el~ ：解析权限并执行 tool implementations。
 
 ** Step 4：权限
 
@@ -241,6 +248,8 @@ interactive entry points。
 
 - ~magent-agent-file.el~ ：custom agents 如何从 ~.magent/agent/*.md~ 加载。
 - ~magent-skills.el~ ：skills 如何扩展 agent 能力。
+- ~magent-command.el~ ：trusted package 如何注册显式 slash 或 interactive action。
+- ~magent-command-session.el~ ：isolated command invocation 如何持久化、报告 progress 和取消。
 - ~magent-file-loader.el~ ：agent、skill、capability 共用的 frontmatter parser。
 
 ** Step 6：工具
@@ -396,7 +405,7 @@ Skill instructions for the agent.
 
 - *Documentation:* ~README.org~ 和仓库根目录 ~AGENTS.md~
 - *Child-agent architecture:* ~docs/AGENT_JOBS.org~
-- *Interactive help:* ~M-x magent-run-doctor~
+- *Interactive help:* ~M-x magent-command-run-doctor~
 - *Frontend:* ~M-x magent-start~ 。
 - *Skills:* ~M-x magent-agent-shell-toggle-skill-for-next-request~ 。
 - *Logs:* 使用 ~C-x b~ 打开 ~*magent-log*~ 。

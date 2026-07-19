@@ -119,27 +119,27 @@ When VALUE is nil, remove KEY.  Return SESSION metadata."
      ((symbolp value) (symbol-name value))
      (t (format "%s" value)))))
 
-(defun magent-session--internal-kind-p (kind)
-  "Return non-nil when KIND denotes an internal command session."
-  (or (eq kind 'internal-command)
-      (equal kind "internal-command")))
+(defun magent-session--command-kind-p (kind)
+  "Return non-nil when KIND denotes an isolated command session."
+  (or (eq kind 'command)
+      (equal kind "command")))
 
-(defun magent-session-internal-scope-p (scope)
-  "Return non-nil when SCOPE is an internal command scope."
+(defun magent-session-command-scope-p (scope)
+  "Return non-nil when SCOPE is an isolated command scope."
   (and (listp scope)
-       (magent-session--internal-kind-p (plist-get scope :kind))))
+       (magent-session--command-kind-p (plist-get scope :kind))))
 
-(defun magent-session-internal-scope
+(defun magent-session-command-scope
     (session-id command origin-scope)
-  "Return an internal command scope for SESSION-ID, COMMAND, and ORIGIN-SCOPE."
-  (list :kind 'internal-command
+  "Return an isolated command scope for SESSION-ID, COMMAND, and ORIGIN-SCOPE."
+  (list :kind 'command
         :id session-id
         :command command
         :origin-scope origin-scope))
 
 (defun magent-session--scope-origin (scope)
   "Return ordinary project/global origin for SCOPE."
-  (if (magent-session-internal-scope-p scope)
+  (if (magent-session-command-scope-p scope)
       (or (plist-get scope :origin-scope) 'global)
     scope))
 
@@ -154,7 +154,7 @@ When VALUE is nil, remove KEY.  Return SESSION metadata."
       'global))
 
 (defun magent-session--command-name-for-storage (name)
-  "Return safe internal command NAME for storage paths."
+  "Return safe command NAME for storage paths."
   (let ((raw (cond
               ((stringp name) name)
               ((symbolp name) (symbol-name name))
@@ -164,10 +164,10 @@ When VALUE is nil, remove KEY.  Return SESSION metadata."
      "[^[:alnum:]_.-]+" "-"
      (string-trim raw))))
 
-(defun magent-session-internal-directory (&optional command)
-  "Return internal command session directory, optionally for COMMAND."
-  (let ((root (or magent-internal-command-session-directory
-                  (expand-file-name "internal" magent-session-directory))))
+(defun magent-session-command-directory (&optional command)
+  "Return isolated command session directory, optionally for COMMAND."
+  (let ((root (or magent-command-session-directory
+                  (expand-file-name "commands" magent-session-directory))))
     (if command
         (expand-file-name
          (magent-session--command-name-for-storage command)
@@ -570,8 +570,8 @@ selected agent, and history limit so runtime UI handles remain valid."
 (defun magent-session--scope-storage-directory (scope)
   "Return the storage directory for SCOPE."
   (cond
-   ((magent-session-internal-scope-p scope)
-    (magent-session-internal-directory (plist-get scope :command)))
+   ((magent-session-command-scope-p scope)
+    (magent-session-command-directory (plist-get scope :command)))
    ((eq scope 'global)
     magent-session-directory)
    (t
@@ -633,9 +633,9 @@ Fall back to the file modification time for legacy filenames."
       (magent-session--sort-files-by-time
        (directory-files-recursively projects-dir "\\.json$")))))
 
-(defun magent-session-list-internal-files (&optional command)
-  "Return internal command session JSON files, optionally limited to COMMAND."
-  (let ((directory (magent-session-internal-directory command)))
+(defun magent-session-list-command-files (&optional command)
+  "Return isolated command session files, optionally limited to COMMAND."
+  (let ((directory (magent-session-command-directory command)))
     (when (file-directory-p directory)
       (magent-session--sort-files-by-time
        (directory-files-recursively directory "\\.json$")))))

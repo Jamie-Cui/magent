@@ -370,7 +370,7 @@ magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
 ** Self-Check
 
 #+begin_src elisp
-M-x magent-run-doctor
+M-x magent-command-run-doctor
 #+end_src
 
 运行 Magent-specific diagnosis request 并报告问题。
@@ -395,7 +395,7 @@ M-x describe-variable RET gptel-api-key
 
 如果问题仍然存在：
 
-1. 运行 ~M-x magent-run-doctor~ 并保存输出。
+1. 运行 ~M-x magent-command-run-doctor~ 并保存输出。
 2. 检查 ~*magent-log*~ 和 ~*Messages*~ 。
 3. 开 GitHub issue，并提供 reproduction steps。
 4. 附上 Emacs version： ~M-x emacs-version~ 。

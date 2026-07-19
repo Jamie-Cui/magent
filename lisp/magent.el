@@ -86,7 +86,7 @@
 (require 'magent-agent-job)
 (require 'magent-llm)
 (require 'magent-llm-gptel)
-(require 'magent-internal-command)
+(require 'magent-command-session)
 (require 'magent-memory)
 (require 'magent-doctor)
 (require 'magent-agent-loop)

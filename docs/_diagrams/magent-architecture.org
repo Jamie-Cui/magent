@@ -20,6 +20,8 @@ package "Emacs runtime" {
 
 package "Magent" {
   [magent-acp.el\nin-process ACP]
+  [magent-command.el\nregistry + invocation]
+  [magent-command-session.el\nisolated persistence]
   [runtime API / queue]
   [thread ledger\nsnapshot + journal]
   [agent loop]
@@ -39,8 +41,13 @@ package "Project / local system" {
 }
 
 User --> [agent-shell]
+User --> [magent-command.el\nregistry + invocation] : interactive M-x
 [agent-shell] --> [magent-acp.el\nin-process ACP]
-[magent-acp.el\nin-process ACP] --> [runtime API / queue]
+[magent-acp.el\nin-process ACP] --> [runtime API / queue] : plain prompt
+[magent-acp.el\nin-process ACP] --> [magent-command.el\nregistry + invocation] : slash command
+[magent-command.el\nregistry + invocation] --> [runtime API / queue] : turn / workflow step
+[magent-command.el\nregistry + invocation] --> [magent-command-session.el\nisolated persistence] : isolated policy
+[magent-command-session.el\nisolated persistence] --> [thread ledger\nsnapshot + journal]
 [runtime API / queue] --> [thread ledger\nsnapshot + journal]
 [runtime API / queue] --> [agent loop]
 [agent loop] --> [gptel-request]
@@ -57,16 +64,18 @@ User --> [agent-shell]
 #+RESULTS:
 [[file:../assets/img/diagrams/architecture-boundary.svg]]
 
-* One Magent Turn
+* One Magent Agent Turn
 
 #+begin_src plantuml :file ../assets/img/diagrams/one-magent-turn.svg :exports results :results file
 @startuml
-title One Magent turn
+title One Magent agent turn
 skinparam monochrome true
 skinparam shadowing false
 
 actor User
 participant "agent-shell" as UI
+participant "magent-acp.el" as ACP
+participant "magent-command.el" as Command
 participant "magent-runtime-api.el" as Runtime
 participant "magent-runtime-queue.el" as Queue
 participant "magent-ledger.el" as Ledger
@@ -78,7 +87,18 @@ participant "magent-tool-orchestrator.el" as Orchestrator
 participant "magent-tools.el" as Tools
 
 User -> UI : prompt
-UI -> Runtime : submit(prompt, session, observer)
+UI -> ACP : session/prompt
+alt registered slash command
+  ACP -> Command : invoke(spec, runtime session)
+  Command -> Command : arguments / preflight / session policy
+  Command -> Runtime : submit turn / workflow step
+else plain prompt
+  ACP -> Runtime : submit(prompt, session, observer)
+end
+note over Command,Runtime
+  Direct handlers that do not submit an agent turn
+  remain outside this sequence.
+end note
 Runtime -> Ledger : queue turn + user item
 Runtime -> Queue : enqueue submission
 Queue -> Runtime : start when active slot free
@@ -102,7 +122,13 @@ alt tool-call-batch-end
 else completed
   Loop -> Ledger : complete assistant item + turn
   Loop --> Runtime : final result
-  Runtime --> UI : session/update
+  alt command-owned turn
+    Runtime --> Command : step completion
+    Command --> ACP : command completion
+  else plain prompt
+    Runtime --> ACP : turn completion
+  end
+  ACP --> UI : session/update / prompt response
 end
 @enduml
 #+end_src
@@ -126,13 +152,15 @@ rectangle "Entry points" as Entry {
   usecase "plain prompt" as Plain
   usecase "region prompt" as Region
   usecase "ask at point" as Point
-  usecase "slash command" as SkillCommand
+  usecase "slash command" as SlashCommand
+  usecase "M-x command" as InteractiveCommand
 }
 
 rectangle "User-facing workflows" as Workflows {
   usecase "coding assistant" as Coding
   usecase "Emacs runtime assistant" as RuntimeAssistant
   usecase "agent workflow" as AgentWorkflow
+  usecase "explicit command workflow" as CommandWorkflow
 }
 
 rectangle "Magent mechanisms" as Mechanisms {
@@ -140,27 +168,36 @@ rectangle "Magent mechanisms" as Mechanisms {
   usecase "emacs_eval" as Eval
   usecase "skills + capabilities" as Skills
   usecase "child-agent jobs" as Jobs
+  usecase "command registry + invocation" as Commands
+  usecase "isolated command sessions" as CommandSessions
   usecase "ledger + audit" as LedgerAudit
 }
 
 User --> Plain
 User --> Region
 User --> Point
-User --> SkillCommand
+User --> SlashCommand
+User --> InteractiveCommand
 
 Plain --> Coding
 Region --> Coding
 Point --> RuntimeAssistant
-SkillCommand --> AgentWorkflow
+Plain --> AgentWorkflow
+SlashCommand --> CommandWorkflow
+InteractiveCommand --> CommandWorkflow
 
 Coding --> CodeTools
 RuntimeAssistant --> Eval
 AgentWorkflow --> Skills
 AgentWorkflow --> Jobs
+CommandWorkflow --> Commands
+Commands --> CommandSessions : isolated
 CodeTools --> LedgerAudit
 Eval --> LedgerAudit
 Skills --> LedgerAudit
 Jobs --> LedgerAudit
+Commands --> LedgerAudit
+CommandSessions --> LedgerAudit
 @enduml
 #+end_src
 
