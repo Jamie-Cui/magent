@@ -62,8 +62,8 @@ input or selected with ~M-x magent-agent-shell-run-command~.  The complete
 - [[https://github.com/karthink/gptel][gptel]] 0.9.8+
 - [[https://elpa.gnu.org/packages/compat.html][compat]] 30.1+
 - [[https://elpa.gnu.org/packages/yaml.html][yaml]] 1.0+
-- acp 0.12.2+
-- agent-shell 20260714.1645+
+- acp 0.13.1+
+- agent-shell 0.62.1+
 - [[https://github.com/BurntSushi/ripgrep][ripgrep]] (for the ~grep~ tool)
 
 * Installation

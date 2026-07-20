@@ -911,14 +911,14 @@ When EXPANDED is non-nil, include the expanded marker."
 (defun magent-audit--entry-id-at-point ()
   "Return the audit entry id at point, or nil."
   (or (get-text-property (point) 'magent-audit-entry-id)
-      (and (> (point) (point-min))
+      (and (not (bobp))
            (get-text-property (1- (point)) 'magent-audit-entry-id))))
 
 (defun magent-audit--goto-entry (entry-id)
   "Move point to ENTRY-ID if present."
   (goto-char (point-min))
   (let ((found nil))
-    (while (and (not found) (< (point) (point-max)))
+    (while (and (not found) (not (eobp)))
       (if (equal (get-text-property (point) 'magent-audit-entry-id) entry-id)
           (setq found t)
         (goto-char (or (next-single-property-change

@@ -37,15 +37,17 @@
 (declare-function magent-runtime-cancel "magent-runtime-api")
 (declare-function magent-runtime-session-available-tool-names "magent-runtime-api")
 (declare-function magent-runtime-session-current "magent-runtime-api")
-(declare-function magent-runtime-session-magent-session "magent-runtime-api")
-(declare-function magent-runtime-session-pending-skills "magent-runtime-api")
-(declare-function magent-runtime-session-scope "magent-runtime-api")
+(declare-function magent-runtime-session-magent-session
+                  "magent-runtime-api" t t)
+(declare-function magent-runtime-session-pending-skills
+                  "magent-runtime-api" t t)
+(declare-function magent-runtime-session-scope "magent-runtime-api" t t)
 (declare-function magent-runtime-submit "magent-runtime-api")
-(declare-function magent-skill-description "magent-skills")
-(declare-function magent-skill-requires-project "magent-skills")
-(declare-function magent-skill-source-layer "magent-skills")
-(declare-function magent-skill-source-scope "magent-skills")
-(declare-function magent-skill-tools "magent-skills")
+(declare-function magent-skill-description "magent-skills" t t)
+(declare-function magent-skill-requires-project "magent-skills" t t)
+(declare-function magent-skill-source-layer "magent-skills" t t)
+(declare-function magent-skill-source-scope "magent-skills" t t)
+(declare-function magent-skill-tools "magent-skills" t t)
 (declare-function magent-skills-command-names "magent-skills")
 (declare-function magent-skills-dedupe-names "magent-skills")
 (declare-function magent-skills-default-prompt "magent-skills")
@@ -235,7 +237,7 @@ SOURCE-SCOPE identify one replaceable registration slot.  REQUIRES-PROJECT and
 REQUIRED-TOOLS are checked before model work or HANDLER execution.  EXPOSURE
 is a non-empty list containing `slash', `interactive', or both.
 SESSION-POLICY is `current' or `isolated'."
-  (unless (xor (not (null turn)) (not (null handler)))
+  (unless (xor turn handler)
     (error "Magent command %S requires exactly one of :turn or :handler" name))
   (when (and turn
              (not (or (magent-command-turn-spec-p turn)
@@ -1012,20 +1014,13 @@ SOURCE-START is the absolute position corresponding to the start of TEXT."
            (retained-end (plist-get truncation :retained-end))
            (notice
             (and (plist-get truncation :truncated-p)
-                 (format
-                  (concat "\n[Buffer content truncated: original %d characters; "
-                          "retained bounds %d..%d; omitted %d before and %d "
-                          "after.]\n")
+                 (format "\n[Buffer content truncated: original %d characters; retained bounds %d..%d; omitted %d before and %d after.]\n"
                   (plist-get truncation :original-length)
                   retained-start retained-end
                   (plist-get truncation :omitted-before)
                   (plist-get truncation :omitted-after))))
            (resource-text
-            (format
-             (concat "Buffer name: %s\nMajor mode: %s\nFile: %s\n"
-                     "Modified: %s\nPoint: %d\nSelection: %s\n"
-                     "Selected bounds: %d..%d\nRetained bounds: %d..%d\n"
-                     "Narrowed: %s\n%s\nContent:\n%s")
+            (format "Buffer name: %s\nMajor mode: %s\nFile: %s\nModified: %s\nPoint: %d\nSelection: %s\nSelected bounds: %d..%d\nRetained bounds: %d..%d\nNarrowed: %s\n%s\nContent:\n%s"
              name major-mode (or buffer-file-name "<none>")
              (if (buffer-modified-p) "true" "false") source-point
              (if region-p "active-region" "accessible-buffer")

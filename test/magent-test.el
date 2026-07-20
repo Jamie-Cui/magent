@@ -101,6 +101,19 @@
      (member "lisp/magent-command-test.el"
              (magent-test-source-files magent-test--root-directory)))))
 
+(ert-deftest magent-test-package-dependencies-use-stable-agent-shell ()
+  "Test package metadata requires the reviewed stable frontend releases."
+  (let ((main-file (expand-file-name "lisp/magent.el"
+                                     magent-test--root-directory))
+        requirements)
+    (with-temp-buffer
+      (insert-file-contents main-file)
+      (should
+       (re-search-forward "^;; Package-Requires: \\(.*\\)$" nil t))
+      (setq requirements (read (match-string 1))))
+    (should (version<= "0.13.1" (cadr (assq 'acp requirements))))
+    (should (version<= "0.62.1" (cadr (assq 'agent-shell requirements))))))
+
 (defconst magent-test--builtin-slash-command-names
   '("explain" "fix" "init" "review" "summarize" "test")
   "Bundled Elisp-native prompt commands.")
@@ -7127,7 +7140,7 @@
         (magent-approval--pending-requests (make-hash-table :test 'equal))
         (magent-approval--completed-requests (make-hash-table :test 'equal))
         (magent-approval--local-prompt-timers (make-hash-table :test 'equal))
-        (magent-approval-state-change-functions '(magent-approval--local-state-changed))
+        (magent-approval-state-change-functions nil)
         (scheduled nil)
         (cancelled nil)
         (prompted nil)
@@ -11534,6 +11547,7 @@
   (require 'magent-agent-shell)
   (let* ((other-maker (lambda () '((:identifier . other))))
          (agent-shell-agent-configs (list other-maker))
+         (magent-command-registry-changed-hook nil)
          (identifier (magent-agent-shell-ensure-config))
          (config (funcall (car agent-shell-agent-configs)))
          (client (with-temp-buffer
@@ -11550,7 +11564,9 @@
     (should (eq (map-elt client :notification-sender)
                 #'magent-acp--notification-sender))
     (should (eq (map-elt client :response-sender)
-                #'magent-acp--response-sender))))
+                #'magent-acp--response-sender))
+    (should (memq #'magent-acp--refresh-available-commands
+                  magent-command-registry-changed-hook))))
 
 (ert-deftest magent-test-agent-shell-config-installs-magent-session-strategy ()
   "Test generic agent-shell selection uses Magent's session strategy."

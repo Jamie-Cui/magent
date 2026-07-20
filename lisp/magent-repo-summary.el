@@ -20,9 +20,9 @@
 (require 'magent-config)
 (require 'magent-log)
 
-(declare-function org-roam-capture- "org-roam-capture" (&rest args))
-(declare-function org-roam-db-update-file "org-roam-db")
-(declare-function org-roam-node-create "org-roam-node" (&rest args))
+(declare-function org-roam-capture- "ext:org-roam-capture" (&rest args))
+(declare-function org-roam-db-update-file "ext:org-roam-db")
+(declare-function org-roam-node-create "ext:org-roam-node" (&rest args))
 (defvar org-roam-directory)
 
 (defun magent-repo-summary--directory ()
@@ -264,10 +264,7 @@ filename.  New notes use the normal Org-roam timestamp naming convention."
          (fragment (magent-repo-summary--validate-fragment content 2))
          (title (if (> (length query) 120) (substring query 0 120) query))
          (block
-          (format
-           (concat "** %s\n:PROPERTIES:\n:SUMMARY_SCOPE_ID: %s\n"
-                   ":SUMMARY_SCOPE_QUERY: %s\n:SUMMARY_SCOPE_FILES: %s\n"
-                   ":END:\n%s\n\n")
+          (format "** %s\n:PROPERTIES:\n:SUMMARY_SCOPE_ID: %s\n:SUMMARY_SCOPE_QUERY: %s\n:SUMMARY_SCOPE_FILES: %s\n:END:\n%s\n\n"
            title scope-id query (string-join scope-files ", ") fragment)))
     (with-temp-buffer
       (insert tail)

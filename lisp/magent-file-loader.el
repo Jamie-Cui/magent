@@ -264,8 +264,8 @@ RELATIVE-DIR is the project-local subdirectory path such as
   "Return sorted FILENAME paths found in DIRECTORIES and their subdirs.
 
 For each directory in DIRECTORIES, include:
-- a direct `FILENAME' inside the directory
-- `FILENAME' inside each non-hidden immediate subdirectory"
+- FILENAME directly inside the directory
+- FILENAME inside each non-hidden immediate subdirectory"
   (let (files)
     (dolist (dir directories)
       (when (file-directory-p dir)

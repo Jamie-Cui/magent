@@ -18,14 +18,13 @@
 (require 'seq)
 (require 'subr-x)
 (require 'gptel)
+(require 'gptel-request)
 (require 'magent-config)
 (require 'magent-command)
 (require 'magent-llm)
 (require 'magent-llm-gptel)
 (require 'magent-prompt)
 (require 'magent-redaction)
-
-(declare-function gptel-backend-name "gptel")
 
 (defvar gptel-backend)
 (defvar gptel-model)
@@ -433,11 +432,7 @@ The return value is a plist with `:files', `:sensitive', and `:excluded'."
 
 (defun magent-memory-scan-plan-summary (plan)
   "Return a human-readable scan summary for PLAN."
-  (format
-   (concat "Magent will scan %d Emacs configuration file(s) from %d root(s), "
-           "%d byte(s) total, using provider %s%s. Sensitive-looking paths "
-           "are skipped first, then matching lines are redacted. Review the "
-           "plan before proceeding.")
+  (format "Magent will scan %d Emacs configuration file(s) from %d root(s), %d byte(s) total, using provider %s%s. Sensitive-looking paths are skipped first, then matching lines are redacted. Review the plan before proceeding."
    (length (magent-memory-scan-plan-files plan))
    (length (magent-memory-scan-plan-roots plan))
    (magent-memory-scan-plan-total-bytes plan)
@@ -524,8 +519,8 @@ The return value is a plist with `:files', `:sensitive', and `:excluded'."
              (content (condition-case err
                           (magent-memory--read-file-excerpt file)
                         (error
-                         (format "[Unable to read: %s]"
-                                 (error-message-string err))))))
+                         (let ((detail (error-message-string err)))
+                           (format "[Unable to read: %s]" detail))))))
         (push (format "## File: %s\n%s" file content) parts)))
     (mapconcat #'identity (nreverse parts) "\n\n")))
 
@@ -900,18 +895,19 @@ NOTIFY-FN receives progress strings.  ON-COMPLETE receives status and message."
                                    (or text "") plan bundle))
                          (result (magent-memory--write-profile
                                   plan managed user-notes :active t))
-                         (message (format "Magent memory %s complete: %s"
-                                          operation
-                                          (plist-get result :file))))
+                         (completion-message
+                          (format "Magent memory %s complete: %s"
+                                  operation
+                                  (plist-get result :file))))
                     (unless (equal source-fingerprint current-fingerprint)
                       (magent-log
                        "INFO memory file changed during generation; preserved latest User Notes"))
                     (when (and open-after-write magent-memory-open-after-write)
                       (find-file (plist-get result :file)))
                     (when notify-fn
-                      (funcall notify-fn message))
+                      (funcall notify-fn completion-message))
                     (magent-memory--complete-operation
-                     state 'completed message))))))
+                     state 'completed completion-message))))))
         (if magent-memory-use-llm
             (progn
               (when notify-fn
@@ -967,12 +963,13 @@ with a plan and continuation for scan-based operations."
                                           (magent-memory--empty-managed-org)
                                           user-notes
                                           :active nil))
-                                 (message (format "Magent memory cleared: %s"
-                                                  (plist-get result :file))))
+                                 (completion-message
+                                  (format "Magent memory cleared: %s"
+                                          (plist-get result :file))))
                             (when notify-fn
-                              (funcall notify-fn message))
+                              (funcall notify-fn completion-message))
                             (magent-memory--complete-operation
-                             state 'completed message)))))))
+                             state 'completed completion-message)))))))
                (if confirm-fn
                    (funcall confirm-fn nil continue)
                  (funcall continue t))))
@@ -980,12 +977,13 @@ with a plan and continuation for scan-based operations."
              (error "Unknown Magent memory operation: %S" operation))))
       (error
        (when (magent-memory--operation-current-p state)
-         (let ((message (format "Magent memory %s failed: %s"
-                                operation
-                                (error-message-string err))))
+         (let ((failure-message (format "Magent memory %s failed: %s"
+                                        operation
+                                        (error-message-string err))))
            (when notify-fn
-             (funcall notify-fn message))
-           (magent-memory--complete-operation state 'failed message)))))
+             (funcall notify-fn failure-message))
+           (magent-memory--complete-operation
+            state 'failed failure-message)))))
     state))
 
 (defun magent-memory--interactive-confirm (plan continue)

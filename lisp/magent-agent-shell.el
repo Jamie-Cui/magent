@@ -45,8 +45,6 @@
 (declare-function agent-shell-queue-request "agent-shell")
 (declare-function agent-shell-start "agent-shell")
 (declare-function shell-maker-busy "shell-maker")
-(declare-function magent-acp--runtime-session-by-id "magent-acp")
-(declare-function magent-acp--client-session-scope "magent-acp")
 
 (defconst magent-agent-shell--identifier 'magent
   "agent-shell config identifier used by Magent.")
@@ -149,10 +147,6 @@ Return Magent's identifier for use as `agent-shell-preferred-agent-config'."
               (eq (map-nested-elt agent-shell--state
                                   '(:agent-config :identifier))
                   magent-agent-shell--identifier)))))
-
-;; Remove the shared-history compaction advice installed by an earlier build.
-(advice-remove 'shell-maker--write-input-ring-history
-               'magent-agent-shell--write-sanitized-input-history)
 
 (defun magent-agent-shell--runtime-session (&optional shell-buffer)
   "Return the runtime session for SHELL-BUFFER, or nil."

@@ -17,6 +17,7 @@
 
 (require 'cl-lib)
 (require 'dom)
+(require 'gptel-request)
 (require 'json)
 (require 'subr-x)
 (require 'magent-config)
@@ -29,16 +30,10 @@
 (require 'magent-runtime)
 (require 'magent-session)
 
-(declare-function magent-skills-get "magent-skills")
-(declare-function magent-skills-list "magent-skills")
 (declare-function magent-skills-invoke "magent-skills")
 (declare-function magent-agent-process "magent-agent")
-(declare-function magent-lifecycle-events-create-subagent-context "magent-lifecycle-events")
-(declare-function magent-lifecycle-events-stop-subagent "magent-lifecycle-events")
 (declare-function magent-agent-loop-abort "magent-agent-loop")
-(declare-function magent-agent-loop-p "magent-agent-loop")
-(declare-function gptel-backend-name "gptel")
-(declare-function dom-inner-text "dom")
+(declare-function magent-agent-loop-p "magent-agent-loop" t t)
 
 (defvar magent--current-session)
 (defvar magent-lifecycle-events--subagent-audit-context)
@@ -157,9 +152,7 @@ whether a live visiting buffer has unsaved changes."
                                    (format "%d-%d" start-line end-line)
                                  "none"))
                    (header
-                    (format
-                     (concat "[read_file: source=%s; modified=%s; lines=%s; "
-                             "total_lines=%d; has_more=%s%s]\n")
+                    (format "[read_file: source=%s; modified=%s; lines=%s; total_lines=%d; has_more=%s%s]\n"
                      source
                      (if modified "true" "false")
                      line-range

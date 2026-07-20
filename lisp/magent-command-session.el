@@ -19,7 +19,7 @@
 (require 'magent-protocol)
 (require 'magent-session)
 
-(declare-function magent-runtime-session-create "magent-runtime-api")
+(declare-function magent-runtime-session-create "magent-runtime-api" t t)
 
 (defun magent-command-session--format-value (value)
   "Return display string for VALUE."

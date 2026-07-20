@@ -17,6 +17,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'project)
 (require 'magent-log)
 (require 'magent-prompt)
 (require 'subr-x)
@@ -589,9 +590,7 @@ and project.el.  Unless NO-FALLBACK is non-nil, return DIRECTORY
         (when (fboundp 'project-current)
           (ignore-errors
             (when-let* ((proj (project-current nil)))
-              (if (fboundp 'project-root)
-                  (project-root proj)
-                (car (with-no-warnings (project-roots proj)))))))
+              (project-root proj))))
         (unless no-fallback
           default-directory))))
 
