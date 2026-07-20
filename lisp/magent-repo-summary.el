@@ -20,9 +20,11 @@
 (require 'magent-config)
 (require 'magent-log)
 
-(declare-function org-roam-capture- "ext:org-roam-capture" (&rest args))
-(declare-function org-roam-db-update-file "ext:org-roam-db")
-(declare-function org-roam-node-create "ext:org-roam-node" (&rest args))
+(declare-function org-roam-capture- "ext:org-roam-capture" t)
+(declare-function org-roam-db-update-file
+                  "ext:org-roam-db"
+                  (&optional file-path _deprecated-arg))
+(declare-function org-roam-node-create "ext:org-roam-node" t t)
 (defvar org-roam-directory)
 
 (defun magent-repo-summary--directory ()
