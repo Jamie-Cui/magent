@@ -32,7 +32,8 @@
 (require 'magent-permission)
 (require 'magent-prompt)
 
-(declare-function magent-capability-resolution-skill-names "magent-capability")
+(declare-function magent-capability-resolution-skill-names
+                  "magent-capability" t t)
 (declare-function magent-capability-resolution-to-plist "magent-capability")
 (declare-function magent-capability-resolve "magent-capability")
 (declare-function magent-capability-resolve-for-turn "magent-capability")
@@ -510,7 +511,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                       session request-scope)))
                   (record-reasoning-delta
                    (text)
-                   (when (not (null magent-include-reasoning))
+                   (when magent-include-reasoning
                      (when-let* ((chunk (and (stringp text) text))
                                  (thread (magent-session-thread-ledger session))
                                  (item (ensure-reasoning-item)))
@@ -852,12 +853,12 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                             (>= sampling-count
                                 magent-max-sampling-requests))
                        (if sample-strict-final-response-retry
-                           (let ((message
+                           (let ((failure-message
                                   (format
                                    "Maximum sampling requests reached for this turn (%d); the forced final request did not complete"
                                    magent-max-sampling-requests)))
                              (finish-turn
-                              'failed message
+                              'failed failure-message
                               (list :status 'sampling-limit
                                     :sampling-count sampling-count
                                     :continuation-reason

@@ -8,7 +8,7 @@
 ;; Maintainer: Jamie Cui <jamie.cui@outlook.com>
 ;; Keywords: tools, ai, copilot
 ;; Package-Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (gptel "0.9.8") (yaml "1.0.0") (compat "30.1.0.0") (acp "0.12.2") (agent-shell "20260714.1645"))
+;; Package-Requires: ((emacs "29.1") (gptel "0.9.8") (yaml "1.0.0") (compat "30.1.0.0") (acp "0.13.1") (agent-shell "0.62.1"))
 ;; URL: https://github.com/jamie-cui/magent
 
 ;; This file is not part of GNU Emacs.
@@ -44,7 +44,8 @@
 ;; - Agent system with specialized agents and permission control
 ;;
 ;; Agent System:
-;; - Built-in agents: build (default), plan, explore, general, compaction, title, summary
+;; - Built-in agents: build (default), plan, explore, general, compaction,
+;;   title, summary
 ;; - Permission-based tool access control per agent
 ;; - Custom agent support via .magent/agent/*.md files
 ;; - Agent selection per session
@@ -63,7 +64,9 @@
 ;;
 ;; Setup:
 ;; 1. Configure gptel with your provider and API key:
-;;    (setq gptel-backend (gptel-make-anthropic "Claude" :key 'gptel-api-key-from-auth-source))
+;;    (setq gptel-backend
+;;          (gptel-make-anthropic
+;;           "Claude" :key 'gptel-api-key-from-auth-source))
 ;;    or set the ANTHROPIC_API_KEY / OPENAI_API_KEY environment variable.
 ;;
 ;;; Code:
@@ -118,8 +121,6 @@
   "Install one user-level Magent instruction skill." t)
 (autoload 'magent-delete-skill "magent-skill-manager"
   "Permanently delete one user-level Magent skill." t)
-
-(declare-function magent-runtime-ensure-initialized "magent-runtime")
 
 (defun magent--ensure-initialized ()
   "Ensure magent is fully initialized.

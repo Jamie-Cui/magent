@@ -14,6 +14,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'magent-agent-info)
 (require 'magent-audit)
 (require 'magent-lifecycle-events)
 (require 'magent-log)
@@ -22,7 +23,6 @@
 (defvar magent-load-custom-agents)
 
 (declare-function magent-agent-file-load-project-scope "magent-agent-file")
-(declare-function magent-agent-info-name "magent-agent-info")
 (declare-function magent-agent-initialize-static "magent-agent-registry")
 (declare-function magent-agent-registry-remove-project-scope "magent-agent-registry")
 (declare-function magent-capability-initialize-static "magent-capability")
@@ -31,10 +31,8 @@
 (declare-function magent-command-initialize-static "magent-command")
 (declare-function magent-command-load-project-scope "magent-command")
 (declare-function magent-command-remove-project-scope "magent-command")
-(declare-function magent-audit-enable "magent-audit")
 (declare-function magent-runtime-queue-active-scope "magent-runtime-queue")
 (declare-function magent-runtime-queue-execution-active-p "magent-runtime-queue")
-(declare-function magent-session-refresh-agent "magent-session")
 (declare-function magent-skills-initialize-static "magent-skills")
 (declare-function magent-skills-load-project-scope "magent-skills")
 (declare-function magent-skills-remove-project-scope "magent-skills")

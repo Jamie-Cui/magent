@@ -17,6 +17,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'gptel-request)
 (require 'magent-config)
 (require 'magent-json)
 (require 'magent-lifecycle-events)
@@ -28,14 +29,7 @@
 (require 'magent-tool-orchestrator)
 (require 'magent-tools)
 
-(declare-function gptel-abort "gptel-request")
-(declare-function gptel-make-tool "gptel")
-(declare-function gptel-tool-args "gptel-request")
-(declare-function gptel-tool-async "gptel-request")
-(declare-function gptel-tool-function "gptel-request")
-(declare-function gptel-tool-name "gptel-request")
 (declare-function magent-audit-record-permission-decision "magent-audit")
-(declare-function magent-tools-permission-key "magent-tools")
 
 (defvar magent-tools--register-cancel)
 (defvar magent-tools--request-context)
@@ -475,7 +469,7 @@ across Magent's own serial tool queue without claiming OS-level isolation."
                      (apply fn fn-args)
                    (quit "Error: Tool execution interrupted")
                    (error
-                    (format "Error: Tool execution failed: %s"
+                    (concat "Error: Tool execution failed: "
                             (error-message-string err)))))))))))))
 
 (defun magent-agent-loop-tool-queue-run (queue)
@@ -908,10 +902,10 @@ available in LOOP's request tools."
 (defun magent-agent-loop--invalid-tool-arguments-result (loop event err)
   "Record and return a model-visible invalid argument result for EVENT and ERR."
   (let* ((raw-call (magent-agent-loop--tool-raw-call event))
-         (message (format "Error: %s" (error-message-string err))))
+         (error-message (format "Error: %s" (error-message-string err))))
     (magent-agent-loop-record-tool-result
-     loop nil (magent-agent-loop--tool-args event) raw-call message)
-    message))
+     loop nil (magent-agent-loop--tool-args event) raw-call error-message)
+    error-message))
 
 (defun magent-agent-loop--unknown-tool-result (loop event known-tool-names)
   "Record and return an unknown-tool result for EVENT."
@@ -919,12 +913,13 @@ available in LOOP's request tools."
          (name (or (magent-llm-event-name event)
                    (plist-get raw-call :name)
                    "unknown"))
-         (message (format "Error: tool '%s' not found. Available: %s"
-                          name
-                          (mapconcat #'identity known-tool-names ", "))))
+         (error-message
+          (format "Error: tool '%s' not found. Available: %s"
+                  name
+                  (mapconcat #'identity known-tool-names ", "))))
     (magent-agent-loop-record-tool-result
-     loop nil (magent-agent-loop--tool-args event) raw-call message)
-    message))
+     loop nil (magent-agent-loop--tool-args event) raw-call error-message)
+    error-message))
 
 (defun magent-agent-loop--tool-dispatch-outcome
     (reason status &optional result)
@@ -1077,7 +1072,7 @@ provider request has emitted no event for `magent-request-timeout' seconds."
               (when (and (magent-agent-loop-p loop)
                          (magent-agent-loop--request-active-p loop)
                          (not (magent-agent-loop--aborted-p loop)))
-                (let ((message
+                (let ((timeout-message
                        (format "Request timed out after %s seconds"
                                magent-request-timeout)))
                   (setf (magent-agent-loop-request-timeout-timer loop)
@@ -1087,7 +1082,7 @@ provider request has emitted no event for `magent-request-timeout' seconds."
                   (magent-agent-loop--abort-request-handle
                    (magent-agent-loop-request-handle loop))
                   (let ((event (magent-llm-error-event
-                                message
+                                timeout-message
                                 (list :status 'timeout
                                       :timeout magent-request-timeout))))
                     (magent-agent-loop-apply-event loop event)

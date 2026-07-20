@@ -14,6 +14,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'magent-agent)
+(require 'magent-agent-info)
 (require 'magent-agent-loop)
 (require 'magent-agent-registry)
 (require 'magent-config)
@@ -25,10 +26,9 @@
 (require 'magent-ledger)
 
 (declare-function magent-skills-get "magent-skills")
-(declare-function magent-skill-requires-project "magent-skills")
-(declare-function magent-agent-info-permission "magent-agent-info")
+(declare-function magent-skill-requires-project "magent-skills" t t)
 (declare-function magent-tool-runtime-for-permission "magent-tool-runtime")
-(declare-function magent-tool-runtime-name "magent-tool-runtime")
+(declare-function magent-tool-runtime-name "magent-tool-runtime" t t)
 
 (cl-defstruct (magent-runtime-session
                (:constructor magent-runtime-session-create)
@@ -497,11 +497,12 @@ Any active or queued work for the session is cancelled first."
                          (magent-agent-loop-p handle))
                 (magent-agent-loop-abort handle))))))
     (error
-     (let* ((message (format "Runtime startup failed: %s"
-                             (error-message-string err)))
+     (let* ((startup-message (format "Runtime startup failed: %s"
+                                     (error-message-string err)))
             (result (magent-agent-result-failed
-                     message (list :status 'startup-error))))
-       (magent-runtime-api--mark-submission-turn-failed submission message)
+                     startup-message (list :status 'startup-error))))
+       (magent-runtime-api--mark-submission-turn-failed
+        submission startup-message)
        (magent-runtime-api--finish-submission submission 'failed result)))))
 
 (defun magent-runtime-api--validate-skill-scope (runtime-session skill-names)

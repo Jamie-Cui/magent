@@ -91,13 +91,6 @@ Unknown fields and live values are never retained."
                                     (random #xFFFFFF)))))
     copy))
 
-(defun magent-approval--notify-state-change (event request-id entry)
-  "Notify listeners that approval state changed.
-EVENT is a symbol, REQUEST-ID identifies the changed request, and ENTRY
-is the current pending/completed entry when applicable."
-  (run-hook-with-args 'magent-approval-state-change-functions
-                      event request-id entry))
-
 (defun magent-approval--local-clear-prompt-timer (request-id)
   "Cancel and forget the local prompt timer for REQUEST-ID."
   (when request-id
@@ -118,6 +111,14 @@ REQUEST-ID and ENTRY follow `magent-approval-state-change-functions'."
      (when (or (null entry)
                (eq (plist-get entry :provider) #'magent-approval-local-request))
        (magent-approval--local-clear-prompt-timer request-id)))))
+
+(defun magent-approval--notify-state-change (event request-id entry)
+  "Notify built-in state handling and listeners of an approval change.
+EVENT is a symbol, REQUEST-ID identifies the changed request, and ENTRY
+is the current pending/completed entry when applicable."
+  (magent-approval--local-state-changed event request-id entry)
+  (run-hook-with-args 'magent-approval-state-change-functions
+                      event request-id entry))
 
 (defun magent-approval-pending-request (request-id)
   "Return the pending request plist for REQUEST-ID, or nil."
@@ -260,9 +261,6 @@ Returns the assigned request id."
            request-id tool-name summary)))
     (when timer
       (puthash request-id timer magent-approval--local-prompt-timers))))
-
-(add-hook 'magent-approval-state-change-functions
-          #'magent-approval--local-state-changed)
 
 (provide 'magent-approval)
 ;;; magent-approval.el ends here

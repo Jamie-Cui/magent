@@ -132,6 +132,15 @@ Bundled and project-local skills are intentionally excluded."
                      "available"))))
    magent-skill-manager--finder-candidates))
 
+(defvar magent-skill-finder-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map tabulated-list-mode-map)
+    (define-key map (kbd "RET") #'magent-skill-manager-preview)
+    (define-key map (kbd "i") #'magent-skill-manager-install-at-point)
+    (define-key map (kbd "g") #'magent-skill-manager-finder-refresh)
+    map)
+  "Keymap for `magent-skill-finder-mode'.")
+
 (define-derived-mode magent-skill-finder-mode tabulated-list-mode
   "Magent-Skills"
   "Major mode for skills.sh search results."
@@ -713,13 +722,6 @@ SOURCE may be a local directory, OWNER/REPO@SKILL, or a public GitHub URL."
       (magent-skills-reload)
       (message "Permanently deleted Magent skill %s"
                (plist-get item :name)))))
-
-(define-key magent-skill-finder-mode-map (kbd "RET")
-            #'magent-skill-manager-preview)
-(define-key magent-skill-finder-mode-map (kbd "i")
-            #'magent-skill-manager-install-at-point)
-(define-key magent-skill-finder-mode-map (kbd "g")
-            #'magent-skill-manager-finder-refresh)
 
 (provide 'magent-skill-manager)
 ;;; magent-skill-manager.el ends here

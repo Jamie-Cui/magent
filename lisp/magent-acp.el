@@ -222,7 +222,7 @@ keywords."
       (while value
         (let ((key (pop value))
               (val (pop value)))
-          (unless (null val)
+          (when val
             (push (cons (magent-acp--raw-input-key key)
                         (magent-acp--raw-input-value val))
                   out))))
@@ -230,14 +230,14 @@ keywords."
    ((magent-json--alist-p value)
     (delq nil
           (mapcar (lambda (entry)
-                    (unless (null (cdr entry))
+                    (when (cdr entry)
                       (cons (magent-acp--raw-input-key (car entry))
                             (magent-acp--raw-input-value (cdr entry)))))
                   value)))
    ((hash-table-p value)
     (let (out)
       (maphash (lambda (key val)
-                 (unless (null val)
+                 (when val
                    (push (cons (magent-acp--raw-input-key key)
                                (magent-acp--raw-input-value val))
                          out)))
@@ -1111,21 +1111,22 @@ active message running forever)."
       (_
        (magent-log "WARN unsupported ACP notification: %s" method)))))
 
+(defun magent-acp--ensure-command-refresh-hook ()
+  "Register command refresh after the ACP frontend is first activated."
+  (add-hook 'magent-command-registry-changed-hook
+            #'magent-acp--refresh-available-commands))
+
 ;;;###autoload
 (defun magent-acp-make-client (&optional context-buffer)
   "Return an in-process ACP client for Magent.
 CONTEXT-BUFFER is passed to `acp-make-client'."
+  (magent-acp--ensure-command-refresh-hook)
   (acp-make-client
    :context-buffer context-buffer
    :command "cat"
    :request-sender #'magent-acp--request-sender
    :notification-sender #'magent-acp--notification-sender
    :response-sender #'magent-acp--response-sender))
-
-(remove-hook 'magent-command-registry-changed-hook
-             #'magent-acp--refresh-available-commands)
-(add-hook 'magent-command-registry-changed-hook
-          #'magent-acp--refresh-available-commands)
 
 (provide 'magent-acp)
 ;;; magent-acp.el ends here

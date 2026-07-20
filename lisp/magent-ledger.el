@@ -1099,7 +1099,7 @@ number of lifecycle objects changed."
       (while value
         (let ((key (pop value))
               (val (pop value)))
-          (unless (null val)
+          (when val
             (setq out
                   (append out
                           (list key

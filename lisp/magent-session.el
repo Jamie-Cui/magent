@@ -17,13 +17,13 @@
 (require 'json)
 (require 'map)
 (require 'subr-x)
+(require 'magent-agent-info)
 (require 'magent-config)
 (require 'magent-json)
 (require 'magent-protocol)
 (require 'magent-ledger)
 (require 'magent-agent-job)
 
-(declare-function magent-agent-info-name "magent-agent-info")
 (declare-function magent-agent-registry-get "magent-agent-registry")
 
 ;;; Session state structure

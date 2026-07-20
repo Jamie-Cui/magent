@@ -88,7 +88,8 @@
 Callbacks keep the runtime queue independent of backend-specific token types.")
 
 (declare-function magent-runtime-api--start-submission "magent-runtime-api")
-(declare-function magent-runtime-session-magent-session "magent-runtime-api")
+(declare-function magent-runtime-session-magent-session
+                  "magent-runtime-api" t t)
 
 (defun magent-runtime-queue--set-ticket-adapters
     (ticket live-p scope session)
