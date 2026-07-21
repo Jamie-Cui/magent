@@ -309,12 +309,12 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 - *.github/workflows/melpazoid.yml* — MELPA-style package checks
 - *test/coverage.el* — Coverage runner used by ~make coverage~
 
-Magent packages runtime data as well as Elisp. ~prompt/~ and ~skills/~
+Magent packages runtime data as well as Elisp. ~prompts/~ and ~skills/~
 must remain included in the melpazoid/MELPA recipe because ~magent-config.el~,
 ~magent-skills.el~, and built-in skill-backed capabilities resolve those paths
 at runtime. This includes internal prompt layers such as the runtime trust
-policy, not only ~prompt/system.org~. Every bundled Org prompt must also appear
-exactly once in ~prompt/manifest.txt~; the unit suite checks the manifest against
+policy, not only ~prompts/system.org~. Every bundled Org prompt must also appear
+exactly once in ~prompts/manifest.txt~; the unit suite checks the manifest against
 the directory. If standalone bundled ~CAPABILITY.md~ files are added, include
 ~capabilities/~ as runtime data too.
 

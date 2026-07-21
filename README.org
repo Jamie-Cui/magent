@@ -198,11 +198,11 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 ** Prompt Files
 
 Core, built-in agent, slash-command, and internal runtime prompts live as
-editable Org files under ~prompt/~. Files containing placeholders such as
+editable Org files under ~prompts/~. Files containing placeholders such as
 ~{{project-root}}~ or ~{{instruction}}~ should keep those placeholders where
 the dynamic value is needed; ordinary percent signs need no escaping. Skill
 prompts remain self-contained in ~skills/*/SKILL.md~. Every bundled Org prompt
-must appear exactly once in ~prompt/manifest.txt~.
+must appear exactly once in ~prompts/manifest.txt~.
 
 * Usage
 

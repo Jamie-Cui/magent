@@ -1,0 +1,27 @@
+[project]
+name = "magent-benchmark"
+version = "0.1.0"
+description = "Reproducible Harbor benchmark harness for Codex, OpenCode, and Magent"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "harbor==0.20.0",
+  "PyYAML>=6.0.2,<7",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.3,<9"]
+
+[project.scripts]
+magent-bench = "magent_benchmark.cli:main"
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["magent_benchmark"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

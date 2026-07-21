@@ -96,7 +96,7 @@
       (setq recipe (read (match-string 1))))
     (should
      (equal (plist-get (cdr recipe) :files)
-            '("lisp/*.el" "prompt" "skills" "capabilities")))
+            '("lisp/*.el" "prompts" "skills" "capabilities")))
     (should
      (member "lisp/magent-command-test.el"
              (magent-test-source-files magent-test--root-directory)))))

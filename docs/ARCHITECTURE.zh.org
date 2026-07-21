@@ -51,7 +51,7 @@ Base prompt 只保留跨任务 coding 行为；tool schema 由 gptel 提供，Em
 流程通过 instruction skills 渐进式披露。~web_search~ 只返回用于发现的结果标题和
 URL，不会抓取结果页或正文，因此 prompt 不会把这些链接当作已经读取的来源。
 
-所有 bundled Org prompt resource 都列在 ~prompt/manifest.txt~。测试要求 manifest
+所有 bundled Org prompt resource 都列在 ~prompts/manifest.txt~。测试要求 manifest
 对每个 bundled ~.org~ prompt 恰好覆盖一次，因此新增 prompt layer 时必须同时更新
 manifest 和 package data recipe。
 

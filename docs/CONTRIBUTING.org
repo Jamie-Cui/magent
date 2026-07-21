@@ -126,7 +126,7 @@ GitHub Actions runs:
 - ~coverage.yml~: ~make coverage~, uploading ~coverage/testcover-summary.tsv~.
 - ~melpazoid.yml~: MELPA-style package checks.
 
-The melpazoid recipe explicitly includes ~lisp/*.el~, ~prompt/~, ~skills/~,
+The melpazoid recipe explicitly includes ~lisp/*.el~, ~prompts/~, ~skills/~,
 and ~capabilities/~. Those production libraries and bundled runtime data must
 stay in the package recipe because Magent resolves them at runtime. Do not use
 ~:defaults~ here: MELPA would exclude the production ~magent-command-test.el~

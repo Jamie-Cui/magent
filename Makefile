@@ -37,7 +37,7 @@ SRCS = $(shell sed -e '/^[[:space:]]*\#/d' -e '/^[[:space:]]*$$/d' $(SOURCE_MANI
 
 COMPILED = $(SRCS:.el=.elc)
 
-.PHONY: all compile clean test test-unit test-live test-live-smoke coverage help
+.PHONY: all compile clean test test-unit test-benchmark test-live test-live-smoke coverage help
 
 all: compile
 
@@ -48,6 +48,7 @@ help:
 	@echo "  compile       - Byte compile all Elisp files"
 	@echo "  test          - Run unit tests and deterministic live smoke tests"
 	@echo "  test-unit     - Run batch unit tests"
+	@echo "  test-benchmark - Run deterministic benchmark adapter tests"
 	@echo "  test-live     - Run real live gptel tests; consumes tokens and requires Emacs server"
 	@echo "  test-live-smoke - Run live Emacs smoke tests with stubbed gptel transport"
 	@echo "  coverage      - Run ERT under built-in testcover"
@@ -71,6 +72,12 @@ test-unit:
 	@$(EMACS) -Q --batch $(LOADPATH) \
 		-l ert \
 		-l test/magent-test.el \
+		-f ert-run-tests-batch-and-exit
+
+test-benchmark:
+	@echo "Running benchmark adapter tests..."
+	@$(EMACS) -Q --batch $(LOADPATH) \
+		-l benchmark/tests/runner-test.el \
 		-f ert-run-tests-batch-and-exit
 
 test-live:

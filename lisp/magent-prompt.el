@@ -9,7 +9,7 @@
 
 ;;; Commentary:
 
-;; Load Magent-owned prompt text from Org files under the bundled prompt/
+;; Load Magent-owned prompt text from Org files under the bundled prompts/
 ;; directory.  Provider transport and dynamic prompt assembly remain in their
 ;; owning modules; this module only resolves and reads static prompt resources.
 
@@ -21,13 +21,13 @@
 (defvar magent-prompt-directory
   (let ((dir (file-name-directory (or load-file-name buffer-file-name))))
     ;; In the repository Elisp lives under lisp/.  MELPA flattens Elisp files
-    ;; into the package root while retaining prompt/ as package data.
-    (or (let ((candidate (expand-file-name "prompt" dir)))
+    ;; into the package root while retaining prompts/ as package data.
+    (or (let ((candidate (expand-file-name "prompts" dir)))
           (and (file-directory-p candidate) candidate))
-        (let ((candidate (expand-file-name "prompt"
+        (let ((candidate (expand-file-name "prompts"
                                            (expand-file-name ".." dir))))
           (and (file-directory-p candidate) candidate))
-        (expand-file-name "prompt" dir)))
+        (expand-file-name "prompts" dir)))
   "Directory containing bundled Magent Org prompt resources.")
 
 (defconst magent-prompt-manifest-file "manifest.txt"

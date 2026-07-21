@@ -58,7 +58,7 @@ instruction skills. ~web_search~ returns result titles and URLs for discovery;
 it does not fetch result pages or provide article text, so the prompt does not
 treat those links as already-read sources.
 
-Bundled Org prompt resources are enumerated in ~prompt/manifest.txt~. Tests
+Bundled Org prompt resources are enumerated in ~prompts/manifest.txt~. Tests
 require the manifest to cover every bundled ~.org~ prompt exactly once, so a
 new prompt layer must update the manifest as well as the package data recipe.
 

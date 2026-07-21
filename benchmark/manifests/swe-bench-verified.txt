@@ -1,0 +1,33 @@
+# Frozen from Harbor dataset ref
+# sha256:b934b0cc3dc800fe945eaf9f1623329db97ee3133c706d20644524c7759fb341
+# Selection: sort all 500 IDs, shuffle with Python Random(20260720), take 30.
+swe-bench/matplotlib__matplotlib-20676
+swe-bench/django__django-16333
+swe-bench/django__django-16429
+swe-bench/astropy__astropy-14096
+swe-bench/matplotlib__matplotlib-26208
+swe-bench/matplotlib__matplotlib-25775
+swe-bench/sympy__sympy-13878
+swe-bench/django__django-16950
+swe-bench/pylint-dev__pylint-4661
+swe-bench/sphinx-doc__sphinx-9711
+swe-bench/django__django-10999
+swe-bench/django__django-13033
+swe-bench/astropy__astropy-13398
+swe-bench/django__django-12209
+swe-bench/psf__requests-6028
+swe-bench/sphinx-doc__sphinx-7440
+swe-bench/sphinx-doc__sphinx-9698
+swe-bench/pydata__xarray-2905
+swe-bench/sympy__sympy-24539
+swe-bench/pytest-dev__pytest-10081
+swe-bench/django__django-12143
+swe-bench/sphinx-doc__sphinx-8475
+swe-bench/pydata__xarray-6938
+swe-bench/django__django-15037
+swe-bench/sphinx-doc__sphinx-8595
+swe-bench/astropy__astropy-13033
+swe-bench/django__django-15957
+swe-bench/sympy__sympy-23824
+swe-bench/django__django-14315
+swe-bench/pydata__xarray-4695
