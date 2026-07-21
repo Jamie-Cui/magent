@@ -18,7 +18,7 @@ If you are debugging agent lifecycle or subagent behavior, first check ~docs/AGE
 *Problem:* The melpazoid job fails with errors like:
 
 #+begin_src text
-Opening input file: No such file or directory, /workspace/pkg/prompt/system.org
+Opening input file: No such file or directory, /workspace/pkg/prompts/system.org
 #+end_src
 
 *Cause:* MELPA-style packaging copies only files matched by the recipe.
@@ -31,7 +31,7 @@ shape:
 
 #+begin_src elisp
 (magent :fetcher github :repo "Jamie-Cui/magent"
-        :files ("lisp/*.el" "prompt" "skills" "capabilities"))
+        :files ("lisp/*.el" "prompts" "skills" "capabilities"))
 #+end_src
 
 The explicit glob supplies every production Elisp file, including

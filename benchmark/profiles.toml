@@ -1,0 +1,48 @@
+# A profile fixes provider/protocol policy.  The concrete model is always
+# supplied explicitly with `--model`; this file intentionally has no default.
+
+[profiles.openai-main]
+scoreboard = "main"
+provider = "openai"
+wire_api = "responses"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+agents = ["codex", "opencode", "magent"]
+
+[profiles.openai-main.model_names]
+codex = "{model}"
+opencode = "openai/{model}"
+magent = "{model}"
+
+[profiles.openai-main.agent_versions]
+# Pin these before a scored run. Empty means Harbor's latest installer.
+codex = ""
+opencode = ""
+
+[profiles.deepseek-compatibility]
+scoreboard = "compatibility"
+provider = "deepseek"
+wire_api = "chat_completions"
+base_url = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+agents = ["opencode", "magent"]
+unsupported = { codex = "Codex has no supported direct DeepSeek provider path; no fallback is allowed." }
+
+[profiles.deepseek-compatibility.model_names]
+opencode = "deepseek/{model}"
+magent = "{model}"
+
+[profiles.deepseek-compatibility.agent_versions]
+opencode = ""
+
+[suites.swe-bench-verified]
+dataset = "swe-bench/swe-bench-verified"
+ref = "sha256:b934b0cc3dc800fe945eaf9f1623329db97ee3133c706d20644524c7759fb341"
+manifest = "manifests/swe-bench-verified.txt"
+expected_tasks = 30
+
+[suites."terminal-bench-2.1"]
+dataset = "terminal-bench/terminal-bench-2-1"
+ref = "6"
+manifest = "manifests/terminal-bench-2.1.txt"
+expected_tasks = 30

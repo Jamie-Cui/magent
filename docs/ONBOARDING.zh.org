@@ -320,8 +320,8 @@ make clean
 
 ~make test-live-smoke~ 需要 Emacs server，并使用 stubbed gptel transport。 ~make test-live~ 使用真实 provider，可能消耗 tokens，应在 isolated daemon 中运行。
 
-Magent 除 Elisp 外还会打包 ~prompt/~ 与 ~skills/~ runtime data。每个 bundled Org
-prompt 必须在 ~prompt/manifest.txt~ 中恰好出现一次；unit test 会把 manifest 与目录
+Magent 除 Elisp 外还会打包 ~prompts/~ 与 ~skills/~ runtime data。每个 bundled Org
+prompt 必须在 ~prompts/manifest.txt~ 中恰好出现一次；unit test 会把 manifest 与目录
 实际内容对照。新增 prompt layer 时同时更新 manifest 和 MELPA/melpazoid package data
 recipe。
 

@@ -49,7 +49,7 @@
 (defcustom magent-system-prompt
   (magent-prompt-read "system.org")
   "System prompt for the AI agent.
-The default value is read from prompt/system.org in the package."
+The default value is read from prompts/system.org in the package."
   :type 'string
   :group 'magent)
 
