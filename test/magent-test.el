@@ -6349,8 +6349,8 @@
     (should (string-match-p "failure-output"
                             (magent-tool-result-output-string result)))))
 
-(ert-deftest magent-test-tools-bash-enforces-errexit-and-pipefail ()
-  "Test strict Bash exposes intermediate and pipeline failures."
+(ert-deftest magent-test-tools-bash-enforces-pipefail-without-errexit ()
+  "Test Bash exposes pipeline failures without forcing errexit."
   (require 'magent-tools)
   (skip-unless (executable-find "bash"))
   (let ((default-directory temporary-file-directory)
@@ -6364,20 +6364,20 @@
                "pipeline-output" (magent-tool-result-output-string result))))
     (let ((result
            (magent-test--run-bash
-            "printf before; false; printf unreachable")))
-      (should (eq (magent-tool-result-status-value result) 'failed))
-      (should (= (magent-tool-result-exit-code result) 1))
+            "printf before; false; printf reachable")))
+      (should (magent-tool-result-success-p result))
+      (should (= (magent-tool-result-exit-code result) 0))
       (should (string-match-p "before"
                               (magent-tool-result-output-string result)))
-      (should-not (string-match-p
-                   "unreachable" (magent-tool-result-output-string result))))
+      (should (string-match-p
+               "reachable" (magent-tool-result-output-string result))))
     (let ((result
            (magent-test--run-bash "{ exit 141; } | true")))
       (should (eq (magent-tool-result-status-value result) 'failed))
       (should (= (magent-tool-result-exit-code result) 141)))))
 
-(ert-deftest magent-test-tools-bash-allows-explicit-failure-handling ()
-  "Test strict Bash permits explicit conditional failure handling."
+(ert-deftest magent-test-tools-bash-supports-explicit-control-flow ()
+  "Test Bash permits explicit failure handling and fail-fast sequencing."
   (require 'magent-tools)
   (skip-unless (executable-find "bash"))
   (let ((default-directory temporary-file-directory)
@@ -6385,11 +6385,14 @@
     (dolist (command '("printf success | tail -n 1"
                        "if false; then printf bad; fi; printf recovered"
                        "false || true; printf handled"
-                       "set +e; false; printf relaxed"
                        "set +o pipefail; { exit 7; } | true; printf pipeline-relaxed"))
       (let ((result (magent-test--run-bash command)))
         (should (magent-tool-result-success-p result))
         (should (= (magent-tool-result-exit-code result) 0))))
+    (let ((result (magent-test--run-bash "false && printf unreachable")))
+      (should-not (magent-tool-result-success-p result))
+      (should-not (string-match-p
+                   "unreachable" (magent-tool-result-output-string result))))
     (let* ((magent-bash-program (executable-find "bash"))
            (result (magent-test--run-bash "printf path-ok")))
       (should (magent-tool-result-success-p result)))))
@@ -6431,7 +6434,7 @@
       (should (plist-get (magent-tool-result-metadata result) :timeout)))))
 
 (ert-deftest magent-test-tools-bash-ignores-host-bash-env ()
-  "Test host BASH_ENV cannot disable the tool's strict execution."
+  "Test host BASH_ENV cannot disable the tool's pipefail execution."
   (require 'magent-tools)
   (skip-unless (executable-find "bash"))
   (let ((bash-env (make-temp-file "magent-bash-env-"))
@@ -6445,12 +6448,9 @@
             (setenv "BASH_ENV" bash-env)
             (let ((result
                    (magent-test--run-bash
-                    "false; printf strict-mode-was-disabled")))
+                    "{ exit 7; } | true")))
               (should-not (magent-tool-result-success-p result))
-              (should-not
-               (string-match-p
-                "strict-mode-was-disabled"
-                (magent-tool-result-output-string result)))))
+              (should (= (magent-tool-result-exit-code result) 7))))
           (should (equal (getenv "BASH_ENV") original-bash-env)))
       (delete-file bash-env))))
 

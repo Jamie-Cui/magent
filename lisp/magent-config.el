@@ -328,8 +328,8 @@ If rg is not found, grep tool calls will fail with an informative error."
 
 (defcustom magent-bash-program "bash"
   "Bash-compatible executable used by the bash tool.
-Commands run with errexit and pipefail enabled.  If this executable cannot
-be resolved, bash tool calls fail without affecting other Magent tools."
+Commands run with pipefail enabled and errexit disabled.  If this executable
+cannot be resolved, bash tool calls fail without affecting other Magent tools."
   :type 'string
   :group 'magent)
 

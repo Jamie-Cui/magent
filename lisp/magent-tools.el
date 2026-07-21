@@ -586,9 +586,9 @@ EXIT-CODE is nil when no process exit status exists.  METADATA is optional."
     (error nil)))
 
 (defun magent-tools--bash (callback command &optional timeout)
-  "Execute COMMAND asynchronously with strict Bash semantics.
-Errexit and pipefail are enabled.  CALLBACK receives a structured tool result
-containing combined stdout and stderr plus the process exit status."
+  "Execute COMMAND asynchronously with Bash pipefail semantics.
+Pipefail is enabled and errexit is not.  CALLBACK receives a structured tool
+result containing combined stdout and stderr plus the process exit status."
   (cond
    ((or (not (stringp command)) (string-blank-p command))
     (funcall callback
@@ -658,7 +658,7 @@ containing combined stdout and stderr plus the process exit status."
                         (make-process
                          :name "magent-bash"
                          :buffer buf
-                         :command (list bash-program "-e" "-o" "pipefail"
+                         :command (list bash-program "-o" "pipefail"
                                         "-c" command)
                          :sentinel
                          (lambda (p _event)
@@ -1534,7 +1534,7 @@ See `magent-agent-loop-filter-display-args'.")
 (defvar magent-tools--bash-tool
   (gptel-make-tool
    :name "bash"
-   :description "Execute a command with Bash errexit and pipefail enabled. Any unhandled command or pipeline-stage failure makes the tool fail. Use explicit shell conditionals or || only when a nonzero status is expected."
+   :description "Execute a command with Bash pipefail enabled and ordinary non-errexit command sequencing. Commands separated by ; continue after a nonzero status; use && or explicit set -e for fail-fast behavior. A failed pipeline stage makes the tool fail unless handled explicitly."
    :args (list '(:name "command"
                        :type string
                        :description "Shell command to execute")
