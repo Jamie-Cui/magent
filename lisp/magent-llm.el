@@ -169,15 +169,13 @@ callback in the batch has been called."
                            :metadata metadata
                            :continuation continuation))
 
-(defun magent-llm-completed-event
-    (&optional text usage stop-reason metadata continuation)
+(defun magent-llm-completed-event (&optional text usage stop-reason metadata)
   "Create a completed event with TEXT, USAGE, STOP-REASON, and METADATA."
   (magent-llm-event-create 'completed
                            :text text
                            :usage usage
                            :stop-reason stop-reason
-                           :metadata metadata
-                           :continuation continuation))
+                           :metadata metadata))
 
 (defun magent-llm-error-event (message &optional metadata)
   "Create an error event with MESSAGE and optional METADATA."

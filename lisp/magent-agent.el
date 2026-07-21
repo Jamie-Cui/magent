@@ -671,18 +671,6 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                    (cl-incf sampling-count)
                    (emit-request-start)
                    (magent-agent-loop-start loop))
-                  (continue-with-provider-prompt
-                   (continuation prompt)
-                   (prepare-sample)
-                   (cl-incf sampling-count)
-                   (emit-request-start)
-                   (condition-case err
-                       (funcall continuation prompt)
-                     (error
-                      (finish-turn
-                       'failed
-                       (format "Provider continuation failed: %s"
-                               (error-message-string err))))))
                   (request-for-current-session
                    ()
                    (let ((request
@@ -871,7 +859,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                    (and sample-strict-final-response-retry
                         (not sample-text-delta-seen)))
                   (retry-empty-final-response
-                   (reason &optional continuation)
+                   (reason)
                    (when (empty-post-tool-final-response-retry-p)
                      (cancel-post-tool-reasoning-idle-timer)
                      (cancel-post-tool-reasoning-deadline-timer)
@@ -890,14 +878,13 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                      (magent-log
                       "INFO retrying empty final response after tool output: %s"
                       reason)
-                     (if (functionp continuation)
-                         (continue-with-provider-prompt
-                          continuation
-                          (magent-agent--empty-final-response-retry-prompt))
-                       (sample))
+                     ;; Recovery changes provider policy (no tools and no
+                     ;; streaming), so it must start from the ledger instead
+                     ;; of resuming the old provider FSM.
+                     (sample)
                      t))
                   (retry-strict-final-response
-                   (reason &optional continuation)
+                   (reason)
                    (when (final-response-retry-reasoning-retry-p)
                      (cancel-post-tool-reasoning-idle-timer)
                      (cancel-post-tool-reasoning-deadline-timer)
@@ -916,11 +903,9 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                      (magent-log
                       "INFO retrying strict final response after retry reasoning: %s"
                       reason)
-                     (if (functionp continuation)
-                         (continue-with-provider-prompt
-                          continuation
-                          (magent-agent--strict-final-response-retry-prompt))
-                       (sample))
+                     ;; This retry also changes provider policy.  Keep native
+                     ;; continuations for tool results only.
+                     (sample)
                      t))
                   (fail-strict-final-response
                    (reason)
@@ -1106,9 +1091,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                       ((and (empty-post-tool-final-response-retry-p)
                             (string-empty-p
                              (or (magent-llm-event-text event) "")))
-                       (retry-empty-final-response
-                        'completed-empty
-                        (magent-llm-event-continuation event)))
+                       (retry-empty-final-response 'completed-empty))
                       ((and sample-strict-final-response-retry
                             (not sample-text-delta-seen)
                             (string-empty-p
@@ -1119,23 +1102,19 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                             (not sample-text-delta-seen)
                             (string-empty-p
                              (or (magent-llm-event-text event) "")))
-                       (if-let* ((continuation
-                                  (magent-llm-event-continuation event)))
-                           (retry-strict-final-response
-                            'completed-empty continuation)
-                         (let ((message
-                                "Error: Model returned an empty final response after tool output retry."))
-                           (magent-log
-                            "WARN empty final response retry returned no text")
-                           (magent-request-context-notify
-                            request-state 'turn-error
-                            :message message
-                            :metadata
-                            (list :status 'empty-final-response-retry))
-                           (finish-turn
-                            'failed message
-                            (list :status
-                                  'empty-final-response-retry)))))
+                       (let ((message
+                              "Error: Model returned an empty final response after tool output retry."))
+                         (magent-log
+                          "WARN empty final response retry returned no text")
+                         (magent-request-context-notify
+                          request-state 'turn-error
+                          :message message
+                          :metadata
+                          (list :status 'empty-final-response-retry))
+                         (finish-turn
+                          'failed message
+                          (list :status
+                                'empty-final-response-retry))))
                       (t
                        (magent-request-context-notify
                         request-state 'assistant-complete

@@ -502,21 +502,6 @@ assistant prose."
   (magent-llm-gptel--continue-with-user-message
    fsm state (magent-llm-gptel--textual-tool-result-message records)))
 
-(defun magent-llm-gptel--prepare-empty-response-continuation
-    (fsm state info)
-  "Return a native prompt continuation for an empty post-tool response."
-  (when (and (plist-get info :magent-after-tool-output)
-             (magent-llm-gptel--openai-chat-continuation-supported-p
-              fsm info))
-    (let (resumed)
-      (lambda (prompt)
-        (unless resumed
-          (unless (and (stringp prompt) (not (string-empty-p prompt)))
-            (error "Provider continuation requires a non-empty prompt"))
-          (setq resumed t)
-          (magent-llm-gptel--continue-with-user-message
-           fsm state (list :role "user" :content prompt)))))))
-
 (defun magent-llm-gptel--prepare-textual-continuation
     (fsm state info events)
   "Attach result callbacks to textual EVENTS and return their continuation."
@@ -572,20 +557,15 @@ context remains paused for Magent recovery."
           (if continuation 'tool-call-paused 'tool-call))
       (unless (string-empty-p (or text ""))
         (magent-llm-gptel--flush-reasoning request state info))
-      (let ((continuation
-             (and (string-empty-p (or text ""))
-                  (magent-llm-gptel--prepare-empty-response-continuation
-                   fsm state info))))
-        (magent-llm-gptel--emit-terminal
-         request
-         state
-         (magent-llm-completed-event
-          text
-          (and (listp info) (plist-get info :tokens))
-          (and (listp info) (plist-get info :stop-reason))
-          metadata
-          continuation))
-        (if continuation 'completed-paused 'completed)))))
+      (magent-llm-gptel--emit-terminal
+       request
+       state
+       (magent-llm-completed-event
+        text
+        (and (listp info) (plist-get info :tokens))
+        (and (listp info) (plist-get info :stop-reason))
+        metadata))
+      'completed)))
 
 (defun magent-llm-gptel--metadata (info)
   "Return adapter metadata extracted from gptel INFO."

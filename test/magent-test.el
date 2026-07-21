@@ -518,13 +518,13 @@
                    "eval:(+ 1 2)"))
     (should (equal response "Done."))))
 
-(ert-deftest magent-test-agent-process-retries-empty-with-provider-continuation ()
-  "Empty post-tool completion retries in the same provider context."
+(ert-deftest magent-test-agent-process-restarts-empty-retry-with-request-policy ()
+  "Empty post-tool completion starts a policy-changing recovery request."
   (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
          (gptel-model 'gpt-4o-mini)
          (magent-max-sampling-requests 0)
          (sample-count 0)
-         recovery-prompt
+         retry-request
          response
          (session (magent-session-create :id "native-empty-continuation"))
          (request-state (magent-request-context-create
@@ -548,27 +548,32 @@
                (lambda (request)
                  (cl-incf sample-count)
                  (let ((callback (magent-llm-request-callback request)))
-                   (funcall
-                    callback
-                    (magent-llm-tool-call-event
-                     "call-1" "emacs_eval" '(:sexp "(+ 1 2)")
-                     '(:id "call-1" :name "emacs_eval"
-                       :args (:sexp "(+ 1 2)"))
-                     nil #'ignore))
-                   (funcall
-                    callback
-                    (magent-llm-tool-call-batch-end-event
-                     nil
-                     (lambda ()
-                       (funcall
-                        callback
-                        (magent-llm-completed-event
-                         "" nil nil nil
-                         (lambda (prompt)
-                           (setq recovery-prompt prompt)
-                           (funcall callback
-                                    (magent-llm-completed-event
-                                     "Final answer.")))))))))))
+                   (pcase sample-count
+                     (1
+                      (funcall
+                       callback
+                       (magent-llm-tool-call-event
+                        "call-1" "emacs_eval" '(:sexp "(+ 1 2)")
+                        '(:id "call-1" :name "emacs_eval"
+                          :args (:sexp "(+ 1 2)"))
+                        nil #'ignore))
+                      (funcall
+                       callback
+                       (magent-llm-tool-call-batch-end-event
+                        nil
+                        (lambda ()
+                          (funcall
+                           callback
+                           (magent-llm-completed-event
+                            ""))))))
+                     (2
+                      (setq retry-request request)
+                      (funcall callback
+                               (magent-llm-completed-event
+                                "Final answer.")))
+                     (_
+                      (error "unexpected sampling request %d"
+                             sample-count))))))
               ((symbol-function 'magent-log) #'ignore)
               ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
               ((symbol-function 'magent-lifecycle-events-begin-turn)
@@ -578,9 +583,14 @@
        "Run eval"
        (lambda (result) (setq response result))
        agent nil nil nil nil nil nil request-state))
-    (should (= sample-count 1))
-    (should (equal recovery-prompt
-                   (magent-agent--empty-final-response-retry-prompt)))
+    (should (= sample-count 2))
+    (should-not (magent-llm-request-stream retry-request))
+    (should (plist-get (magent-llm-request-metadata retry-request)
+                       :disable-provider-tools))
+    (should (equal
+             (car (last (magent-llm-request-prompt retry-request)))
+             (cons 'prompt
+                   (magent-agent--empty-final-response-retry-prompt))))
     (should (equal response "Final answer."))))
 
 (ert-deftest magent-test-agent-process-retries-empty-after-tool-output ()
@@ -9788,8 +9798,8 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest magent-test-llm-gptel-retries-empty-in-native-tool-context ()
-  "Empty post-tool replies expose a prompt continuation on the same FSM."
+(ert-deftest magent-test-llm-gptel-closes-empty-native-tool-context ()
+  "Empty post-tool replies close the FSM so policy can change on retry."
   (require 'magent-llm-gptel)
   (require 'gptel-openai)
   (let* ((backend (gptel-make-openai
@@ -9809,7 +9819,6 @@
           (list :role "tool" :tool_call_id "call-1" :content "match"))
          (data (list :messages (vector assistant tool-result)))
          events
-         next-state
          (request (magent-llm-request-create
                    :stream t
                    :callback (lambda (event) (push event events))))
@@ -9829,24 +9838,14 @@
                   (magent-llm-event-continuation completed)))
             (should (eq (magent-llm-event-type completed) 'completed))
             (should (equal (magent-llm-event-text completed) ""))
-            (should (functionp continuation))
-            (should (buffer-live-p buffer))
-            (cl-letf (((symbol-function 'gptel--fsm-transition)
-                       (lambda (_fsm state-name)
-                         (setq next-state state-name))))
-              (funcall continuation "Return the final answer only.")
-              (funcall continuation "Do not append twice."))
-            (let* ((messages (plist-get data :messages))
-                   (recovery (aref messages 2)))
-              (should (eq next-state 'WAIT))
-              (should (= (length messages) 3))
+            (should-not continuation)
+            (should-not (buffer-live-p buffer))
+            (let ((messages (plist-get data :messages)))
+              (should (= (length messages) 2))
               (should (eq (aref messages 0) assistant))
               (should (eq (aref messages 1) tool-result))
               (should (equal (plist-get assistant :reasoning_content)
-                             "Inspect the source."))
-              (should (equal (plist-get recovery :role) "user"))
-              (should (equal (plist-get recovery :content)
-                             "Return the final answer only.")))))
+                             "Inspect the source.")))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

@@ -1193,7 +1193,9 @@ the sampler return value."
             :metadata (magent-llm-request-metadata request)
             :callback (lambda (event)
                         (unless (magent-agent-loop--aborted-p loop)
-                          (when-let* ((continuation
+                          (when-let* (((eq (magent-llm-event-type event)
+                                           'tool-call-batch-end))
+                                      (continuation
                                        (magent-llm-event-continuation event)))
                             (magent-llm-event-set-continuation
                              event
