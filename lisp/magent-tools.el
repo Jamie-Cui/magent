@@ -561,94 +561,145 @@ Evaluation runs in the user's context buffer when known
                 (format "Error evaluating sexp: %s"
                         (error-message-string err)))))))
 
+(defun magent-tools--bash-failure (message &optional exit-code metadata)
+  "Return a structured bash failure for MESSAGE.
+EXIT-CODE is nil when no process exit status exists.  METADATA is optional."
+  (magent-tool-result-create
+   :status 'failed
+   :success nil
+   :exit-code exit-code
+   :error message
+   :output message
+   :metadata metadata))
+
+(defun magent-tools--bash-executable ()
+  "Return the configured Bash executable, or nil when unavailable."
+  (condition-case nil
+      (when (and (stringp magent-bash-program)
+                 (not (string-blank-p magent-bash-program)))
+        (if (file-name-directory magent-bash-program)
+            (let ((program (expand-file-name magent-bash-program)))
+              (and (not (file-directory-p program))
+                   (file-executable-p program)
+                   program))
+          (executable-find magent-bash-program)))
+    (error nil)))
+
 (defun magent-tools--bash (callback command &optional timeout)
-  "Execute shell COMMAND asynchronously with optional TIMEOUT in seconds.
-CALLBACK is called with the command output (stdout + stderr)."
-  (if (not (stringp command))
-      (funcall callback "Error: 'command' argument is required but was not provided. Please call bash with a valid shell command string.")
-    (let* ((timeout (or timeout magent-bash-timeout))
-           (default-directory (magent-tools--request-project-root))
-           (buf (generate-new-buffer " *magent-bash*"))
-           (timer nil)
-           (proc nil)
-           (finished nil)
-           (cleanup
-            (lambda ()
-              (when timer (cancel-timer timer) (setq timer nil))
-              (when (process-live-p proc) (delete-process proc))
-              (when (buffer-live-p buf) (kill-buffer buf)))))
-      (magent-tools--register-cancel-cleanup cleanup)
-      (setq timer
-            (run-at-time
-             timeout nil
-             (lambda ()
-               (unless finished
-                 (setq finished t)
-                 (when (process-live-p proc)
-                   (delete-process proc))
-                 (when (buffer-live-p buf)
-                   (with-current-buffer buf
-                     (let ((output (buffer-string)))
-                       (funcall cleanup)
-                       (funcall callback
-                                (let ((message
+  "Execute COMMAND asynchronously with strict Bash semantics.
+Errexit and pipefail are enabled.  CALLBACK receives a structured tool result
+containing combined stdout and stderr plus the process exit status."
+  (cond
+   ((or (not (stringp command)) (string-blank-p command))
+    (funcall callback
+             (magent-tools--bash-failure
+              "Error: 'command' must be a non-blank shell command string.")))
+   (t
+    (let ((bash-program (magent-tools--bash-executable)))
+      (if (not bash-program)
+          (funcall callback
+                   (magent-tools--bash-failure
+                    (format
+                     "Error: Bash executable not found: %s. Customize magent-bash-program."
+                     magent-bash-program)))
+        (let ((buf nil)
+              (timer nil)
+              (proc nil)
+              (finished nil)
+              (cleanup nil))
+          (setq cleanup
+                (lambda ()
+                  (when timer
+                    (cancel-timer timer)
+                    (setq timer nil))
+                  (when (process-live-p proc)
+                    (delete-process proc))
+                  (when (buffer-live-p buf)
+                    (kill-buffer buf))))
+          (condition-case err
+              (let ((timeout (or timeout magent-bash-timeout))
+                    (default-directory (magent-tools--request-project-root)))
+                (setq buf (generate-new-buffer " *magent-bash*"))
+                (magent-tools--register-cancel-cleanup cleanup)
+                (setq timer
+                      (run-at-time
+                       timeout nil
+                       (lambda ()
+                         (unless finished
+                           (setq finished t)
+                           (when (process-live-p proc)
+                             (delete-process proc))
+                           (when (buffer-live-p buf)
+                             (with-current-buffer buf
+                               (let* ((output (buffer-string))
+                                      (message
                                        (if (string-blank-p output)
                                            "Command timed out with no output"
                                          (format
                                           "Command timed out. Partial output:\n%s"
                                           (string-trim-right output)))))
-                                  (magent-tool-result-create
-                                   :status 'failed
-                                   :success nil
-                                   :error message
-                                   :output message
-                                   :metadata (list :timeout t)))))))))))
-      (condition-case err
-          (let ((process-environment
-                 (append '("PAGER=cat"
-                           "GIT_PAGER=cat"
-                           "MANPAGER=cat"
-                           "SYSTEMD_PAGER=cat"
-                           "GIT_TERMINAL_PROMPT=0"
-                           "DEBIAN_FRONTEND=noninteractive")
-                         process-environment)))
-            (setq proc
-                  (make-process
-                   :name "magent-bash"
-                   :buffer buf
-                   :command (list shell-file-name shell-command-switch command)
-                   :sentinel
-                   (lambda (p _event)
-                     (when (and (memq (process-status p) '(exit signal))
-                                (not finished))
-                       (setq finished t)
-                       (let ((output (if (buffer-live-p buf)
+                                 (funcall cleanup)
+                                 (funcall
+                                  callback
+                                  (magent-tools--bash-failure
+                                   message nil (list :timeout t))))))))))
+                (let ((process-environment
+                       (copy-sequence process-environment)))
+                  (setq process-environment
+                        (append '("PAGER=cat"
+                                  "GIT_PAGER=cat"
+                                  "MANPAGER=cat"
+                                  "SYSTEMD_PAGER=cat"
+                                  "GIT_TERMINAL_PROMPT=0"
+                                  "DEBIAN_FRONTEND=noninteractive")
+                                process-environment))
+                  (setenv "BASH_ENV" nil)
+                  (setq proc
+                        (make-process
+                         :name "magent-bash"
+                         :buffer buf
+                         :command (list bash-program "-e" "-o" "pipefail"
+                                        "-c" command)
+                         :sentinel
+                         (lambda (p _event)
+                           (when (and (memq (process-status p) '(exit signal))
+                                      (not finished))
+                             (setq finished t)
+                             (let* ((output
+                                     (if (buffer-live-p buf)
                                          (with-current-buffer buf
                                            (buffer-string))
                                        ""))
-                             (exit-code (process-exit-status p)))
-                         (funcall cleanup)
-                         (funcall callback
-                                  (let* ((success (and (eq (process-status p) 'exit)
-                                                       (= exit-code 0)))
-                                         (message
-                                          (if (string-blank-p output)
-                                              (if success
-                                                  "Command completed with no output"
-                                                (format
-                                                 "Command failed with exit code %d and no output"
-                                                 exit-code))
-                                            (string-trim-right output))))
+                                    (exit-code (process-exit-status p))
+                                    (success
+                                     (and (eq (process-status p) 'exit)
+                                          (= exit-code 0)))
+                                    (message
+                                     (if (string-blank-p output)
+                                         (if success
+                                             "Command completed with no output"
+                                           (format
+                                            "Command failed with exit code %d and no output"
+                                            exit-code))
+                                       (string-trim-right output))))
+                               (funcall cleanup)
+                               (funcall
+                                callback
+                                (if success
                                     (magent-tool-result-create
-                                     :status (if success 'completed 'failed)
-                                     :success success
+                                     :status 'completed
+                                     :success t
                                      :exit-code exit-code
-                                     :output message
-                                     :error (unless success message))))))))))
-        (error
-         (funcall cleanup)
-         (funcall callback (format "Error starting process: %s"
-                                   (error-message-string err))))))))
+                                     :output message)
+                                  (magent-tools--bash-failure
+                                   message exit-code))))))))))
+            (error
+             (setq finished t)
+             (funcall cleanup)
+             (funcall callback
+                      (magent-tools--bash-failure
+                       (format "Error starting Bash process: %s"
+                               (error-message-string err))))))))))))
 
 (defun magent-tools--parent-session ()
   "Return the parent session for a child-agent tool call."
@@ -1483,7 +1534,7 @@ See `magent-agent-loop-filter-display-args'.")
 (defvar magent-tools--bash-tool
   (gptel-make-tool
    :name "bash"
-   :description "Execute a shell command. Use for running tests, builds, git operations, etc."
+   :description "Execute a command with Bash errexit and pipefail enabled. Any unhandled command or pipeline-stage failure makes the tool fail. Use explicit shell conditionals or || only when a nonzero status is expected."
    :args (list '(:name "command"
                        :type string
                        :description "Shell command to execute")

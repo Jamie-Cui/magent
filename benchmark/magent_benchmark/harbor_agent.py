@@ -342,16 +342,28 @@ class MagentHarborAgent(BaseInstalledAgent):
     @override
     async def install(self, environment: BaseEnvironment) -> None:
         emacs_package = "" if self._emacs_bundle else "emacs-nox "
+        apt_runtime = (
+            "libgnutls30 libjansson4 libncurses6 libxml2 zlib1g "
+            if self._emacs_bundle
+            else ""
+        )
+        portable_runtime = (
+            "gnutls jansson ncurses-libs libxml2 zlib "
+            if self._emacs_bundle
+            else ""
+        )
         await self.exec_as_root(
             environment,
             command=(
                 "if command -v apt-get >/dev/null 2>&1; then "
                 "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y "
-                f"{emacs_package}ca-certificates curl git ripgrep; "
+                f"{emacs_package}{apt_runtime}ca-certificates curl git ripgrep; "
                 "elif command -v apk >/dev/null 2>&1; then "
-                f"apk add --no-cache {emacs_package}ca-certificates curl git ripgrep; "
+                f"apk add --no-cache {emacs_package}{portable_runtime}"
+                "ca-certificates curl git ripgrep; "
                 "elif command -v yum >/dev/null 2>&1; then "
-                f"yum install -y {emacs_package}ca-certificates curl git ripgrep; "
+                f"yum install -y {emacs_package}{portable_runtime}"
+                "ca-certificates curl git ripgrep; "
                 "else echo 'No supported package manager for Emacs' >&2; exit 1; fi"
             ),
         )

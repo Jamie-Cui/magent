@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
-import os
 from pathlib import Path
 from urllib.parse import urlparse
 from typing import Any
@@ -29,7 +28,7 @@ def _agent_config(
     host = urlparse(profile.base_url).hostname
     result: dict[str, Any] = {
         "model_name": rendered[agent],
-        "env": {profile.api_key_env: f"${{{profile.api_key_env}}}"},
+        "env": {profile.api_key_env: profile.api_key},
     }
     if host:
         result["extra_allowed_hosts"] = [host]
@@ -93,6 +92,8 @@ def build_job(
     cached_input_price_per_million: float | None = None,
     approved_full: bool = False,
     concurrency: int = 3,
+    elpa_bundle: str | Path | None = None,
+    emacs_bundle: str | Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     task_count, attempts = stage_shape(stage, approved_full)
     prices = {
@@ -154,8 +155,6 @@ def build_job(
             }
         ],
     }
-    elpa_bundle = os.environ.get("MAGENT_BENCH_ELPA_BUNDLE")
-    emacs_bundle = os.environ.get("MAGENT_BENCH_EMACS_BUNDLE")
     magent = next(agent for agent in job["agents"] if agent.get("import_path"))
     magent.setdefault("kwargs", {}).update(
         {key: value for key, value in prices.items() if value is not None}
@@ -163,17 +162,17 @@ def build_job(
     if elpa_bundle:
         bundle_path = Path(elpa_bundle).expanduser().resolve()
         if not bundle_path.is_dir():
-            raise ValueError(f"MAGENT_BENCH_ELPA_BUNDLE is not a directory: {bundle_path}")
+            raise ValueError(f"ELPA bundle is not a directory: {bundle_path}")
         if stage == "full" and not (bundle_path / "bundle.json").is_file():
             raise ValueError(
-                "full stage requires bundle.json in MAGENT_BENCH_ELPA_BUNDLE; "
+                "full stage requires bundle.json in benchmark.elpa_bundle; "
                 "create it with magent-bench prepare-elpa"
             )
         elpa_bundle = str(bundle_path)
         magent.setdefault("kwargs", {})["elpa_bundle"] = str(bundle_path)
     elif stage == "full":
         raise ValueError(
-            "full stage requires MAGENT_BENCH_ELPA_BUNDLE so Elisp dependencies are frozen"
+            "full stage requires benchmark.elpa_bundle so Elisp dependencies are frozen"
         )
     if emacs_bundle:
         emacs_path = Path(emacs_bundle).expanduser().resolve()
@@ -184,14 +183,14 @@ def build_job(
         ]
         if missing_bins:
             raise ValueError(
-                "MAGENT_BENCH_EMACS_BUNDLE is missing: "
+                "Emacs bundle is missing: "
                 + ", ".join(f"bin/{name}" for name in missing_bins)
             )
         emacs_bundle = str(emacs_path)
         magent.setdefault("kwargs", {})["emacs_bundle"] = str(emacs_path)
     elif stage == "full":
         raise ValueError(
-            "full stage requires MAGENT_BENCH_EMACS_BUNDLE so Emacs is frozen "
+            "full stage requires benchmark.emacs_bundle so Emacs is frozen "
             "and does not depend on each task image's package repository"
         )
     fingerprint = {
@@ -225,6 +224,7 @@ def write_job(
     output.write_text(
         yaml.safe_dump(job, sort_keys=False, allow_unicode=True), encoding="utf-8"
     )
+    output.chmod(0o600)
     fingerprint_path = output.with_suffix(output.suffix + ".fingerprint.json")
     fingerprint_path.write_text(
         json.dumps(fingerprint, indent=2, ensure_ascii=False, sort_keys=True) + "\n",

@@ -116,6 +116,21 @@ If CONTROLLER is already aborted, run CLEANUP immediately."
   (make-hash-table :test #'eq :weakness 'key)
   "Lifecycle ownership markers keyed by loop identity.")
 
+(defvar magent-agent-loop--tool-continuations
+  (make-hash-table :test #'eq :weakness 'key)
+  "Provider continuation callbacks keyed by loop identity.")
+
+(defun magent-agent-loop-tool-continuation (loop)
+  "Return LOOP's pending provider continuation, if any."
+  (gethash loop magent-agent-loop--tool-continuations))
+
+(defun magent-agent-loop-set-tool-continuation (loop continuation)
+  "Set LOOP's pending provider CONTINUATION and return it."
+  (if continuation
+      (puthash loop continuation magent-agent-loop--tool-continuations)
+    (remhash loop magent-agent-loop--tool-continuations))
+  continuation)
+
 (defun magent-agent-loop-event-context (loop)
   "Return LOOP's captured lifecycle context, if any."
   (gethash loop magent-agent-loop--event-contexts))
@@ -181,6 +196,8 @@ SAMPLER is a function called with REQUEST by `magent-agent-loop-start'."
     streamed)
    ((string-prefix-p streamed final)
     final)
+   ((string-suffix-p final streamed)
+    streamed)
    (t
     (concat streamed final))))
 
@@ -205,7 +222,9 @@ SAMPLER is a function called with REQUEST by `magent-agent-loop-start'."
      (push event (magent-agent-loop-tool-calls loop))
      (setf (magent-agent-loop-status loop) 'tool-pending))
     ('tool-call-batch-end
-     (setf (magent-agent-loop-status loop) 'tool-pending))
+     (setf (magent-agent-loop-status loop) 'tool-pending)
+     (magent-agent-loop-set-tool-continuation
+      loop (magent-llm-event-continuation event)))
     ('completed
      (setf (magent-agent-loop-status loop) 'completed
            (magent-agent-loop-result loop)
@@ -896,7 +915,7 @@ available in LOOP's request tools."
         (list tool-spec
               (magent-agent-loop--tool-arg-values
                tool-spec args textual-dsml-p)
-              nil
+              (magent-llm-event-result-callback event)
               raw-call)))))
 
 (defun magent-agent-loop--invalid-tool-arguments-result (loop event err)
@@ -905,6 +924,8 @@ available in LOOP's request tools."
          (error-message (format "Error: %s" (error-message-string err))))
     (magent-agent-loop-record-tool-result
      loop nil (magent-agent-loop--tool-args event) raw-call error-message)
+    (when-let* ((result-callback (magent-llm-event-result-callback event)))
+      (funcall result-callback error-message))
     error-message))
 
 (defun magent-agent-loop--unknown-tool-result (loop event known-tool-names)
@@ -919,6 +940,8 @@ available in LOOP's request tools."
                   (mapconcat #'identity known-tool-names ", "))))
     (magent-agent-loop-record-tool-result
      loop nil (magent-agent-loop--tool-args event) raw-call error-message)
+    (when-let* ((result-callback (magent-llm-event-result-callback event)))
+      (funcall result-callback error-message))
     error-message))
 
 (defun magent-agent-loop--tool-dispatch-outcome
@@ -1170,6 +1193,16 @@ the sampler return value."
             :metadata (magent-llm-request-metadata request)
             :callback (lambda (event)
                         (unless (magent-agent-loop--aborted-p loop)
+                          (when-let* ((continuation
+                                       (magent-llm-event-continuation event)))
+                            (magent-llm-event-set-continuation
+                             event
+                             (lambda (&rest args)
+                               (setq terminal-event-seen nil)
+                               (setf (magent-agent-loop-status loop) 'running)
+                               (magent-agent-loop--schedule-request-timeout
+                                loop original-callback)
+                               (apply continuation args))))
                           (if (memq (magent-llm-event-type event)
                                     '(tool-call-batch-end completed error))
                               (progn

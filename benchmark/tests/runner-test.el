@@ -44,6 +44,7 @@
           (magent-benchmark--add-elpa-load-path elpa)
           (add-to-list 'load-path (expand-file-name "lisp" magent-benchmark-test--root))
           (require 'magent)
+          (should (= magent-max-sampling-requests 0))
           (cl-letf (((symbol-function 'gptel-request)
                      (lambda (_prompt &rest kwargs)
                        (let ((callback (plist-get kwargs :callback))

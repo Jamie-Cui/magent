@@ -248,7 +248,10 @@ Expected final status files include ~:status passed~, ~:repo-source~ paths under
 3. Run ~M-x magent-list-agents~ and verify the current agent-shell session mode.
 
 *Solution:*
-- For bash: Ensure command is valid in your shell
+- For bash: Verify Bash is installed and ~magent-bash-program~ resolves to it.
+  Commands run with errexit and pipefail, so use conditionals or ~|| true~ only
+  when a nonzero status is intentionally accepted.  Output-limiting pipelines
+  such as ~rg ... | head~ can fail on SIGPIPE; prefer native limit options.
 - For emacs_eval: Check for syntax errors
 - For grep: Verify ripgrep is installed: ~which rg~
 

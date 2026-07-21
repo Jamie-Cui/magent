@@ -1117,31 +1117,47 @@ number of lifecycle objects changed."
 
 (defun magent-thread--model-visible-tool-result (result)
   "Return RESULT bounded for model-visible tool history."
-  (let* ((value (if (magent-tool-result-p result)
-                    (magent-tool-result-output result)
+  (let* ((structured-p (magent-tool-result-p result))
+         (status (and structured-p
+                      (magent-tool-result-status-value result)))
+         (failed-p (and structured-p (not (eq status 'completed))))
+         (value (if structured-p
+                    (or (magent-tool-result-output result)
+                        (magent-tool-result-error result)
+                        "")
                   result))
          (safe-result (if (stringp value)
                           value
                         (magent-json-safe-value value)))
-         (text (if (stringp safe-result)
+         (body (if (stringp safe-result)
                    safe-result
                  (format "%s" safe-result)))
-         (max-length magent-tool-result-model-max-length))
-    (if (and (numberp max-length)
-             (> max-length 0)
-             (> (length text) max-length))
-        (let* ((preview-length
-                (min (max 0 (or magent-tool-result-model-preview-length
-                                max-length))
-                     max-length
-                     (length text)))
-               (truncated (- (length text) preview-length)))
-          (format "%s\n\n[Tool result truncated: original %d characters, kept first %d, omitted %d. Narrow the command, read a smaller range, or refine the query for more detail.]"
-                  (substring text 0 preview-length)
-                  (length text)
-                  preview-length
-                  truncated))
-      safe-result)))
+         (header (and failed-p
+                      (format "[Tool result: status=%s; exit-code=%s]\n"
+                              status
+                              (or (magent-tool-result-exit-code result)
+                                  "unavailable"))))
+         (max-length magent-tool-result-model-max-length)
+         (bounded-body
+          (if (and (numberp max-length)
+                   (> max-length 0)
+                   (> (length body) max-length))
+              (let* ((preview-length
+                      (min (max 0
+                                (or magent-tool-result-model-preview-length
+                                    max-length))
+                           max-length
+                           (length body)))
+                     (truncated (- (length body) preview-length)))
+                (format "%s\n\n[Tool result truncated: original %d characters, kept first %d, omitted %d. Narrow the command, read a smaller range, or refine the query for more detail.]"
+                        (substring body 0 preview-length)
+                        (length body)
+                        preview-length
+                        truncated))
+            (if failed-p body safe-result))))
+    (if failed-p
+        (concat header bounded-body)
+      bounded-body)))
 
 (defun magent-thread-record-message
     (thread turn-id role content &optional phase metadata)

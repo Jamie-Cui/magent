@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import random
 import re
@@ -12,53 +14,19 @@ import subprocess
 import sys
 from typing import Sequence
 
+import yaml
+
 from .job import build_job, write_job
 from .profiles import (
     ConfigurationError,
     check_api_key,
     load_config,
     read_manifest,
+    require_benchmark,
     require_profile,
     require_suite,
+    stage_shape,
 )
-
-
-def _common_run_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--config", type=Path, help="profiles TOML path")
-    parser.add_argument("--profile", required=True, help="provider profile name")
-    parser.add_argument("--model", required=True, help="canonical model ID")
-    parser.add_argument(
-        "--effort",
-        choices=("auto", "minimal", "low", "medium", "high", "xhigh"),
-        default="auto",
-        help="same reasoning-effort label for agents that expose the control",
-    )
-    parser.add_argument("--suite", required=True, help="suite name")
-    parser.add_argument(
-        "--stage", choices=("smoke", "pilot", "full"), required=True
-    )
-    parser.add_argument(
-        "--approve-full",
-        action="store_true",
-        help="acknowledge review of smoke and pilot before a 30x3 run",
-    )
-    parser.add_argument("--concurrency", type=int, default=3)
-    parser.add_argument(
-        "--input-price", type=float, help="USD per million non-cached input tokens"
-    )
-    parser.add_argument(
-        "--output-price", type=float, help="USD per million output tokens"
-    )
-    parser.add_argument(
-        "--cached-input-price", type=float, help="USD per million cached input tokens"
-    )
-
-
-def _resolve(args: argparse.Namespace):
-    config = load_config(args.config)
-    profile = require_profile(config, args.profile)
-    suite = require_suite(config, args.suite)
-    return config, profile, suite
 
 
 def cmd_profiles(args: argparse.Namespace) -> int:
@@ -77,21 +45,193 @@ def cmd_profiles(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_preflight(args: argparse.Namespace) -> int:
-    config, profile, suite = _resolve(args)
-    profile.rendered_models(args.model)
-    tasks = read_manifest(suite)
-    if not args.skip_key_check:
-        check_api_key(profile)
+def _prepared_job_path(config) -> Path:
+    return config.path.parent / "generated" / "benchmark.yaml"
+
+
+def _fresh_job_name(prepared_name: str) -> str:
+    suffix = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{prepared_name}-{suffix}"
+
+
+def _check_local_runtime() -> None:
+    for command in ("docker", "harbor"):
+        if shutil.which(command) is None:
+            raise ConfigurationError(
+                f"{command} is required; install it before running make"
+            )
+    result = subprocess.run(
+        ["docker", "info"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if result.returncode:
+        detail = (result.stderr or "").strip().splitlines()
+        message = detail[-1] if detail else "Docker daemon is not available"
+        raise ConfigurationError(f"Docker is not ready: {message}")
+
+
+def prepare_elpa_bundle(source: Path, output: Path) -> Path:
+    """Copy the exact local Magent dependencies into OUTPUT once."""
+    source = source.expanduser().resolve()
+    output = output.expanduser().resolve()
+    if output.exists():
+        return output
+    if not source.is_dir():
+        raise ConfigurationError(f"ELPA source directory does not exist: {source}")
+    packages = (
+        "gptel",
+        "transient",
+        "acp",
+        "shell-maker",
+        "agent-shell",
+        "cond-let",
+        "compat",
+        "yaml",
+        "llama",
+        "with-editor",
+    )
+    selected: dict[str, Path] = {}
+    missing: list[str] = []
+    for package in packages:
+        pattern = re.compile(rf"^{re.escape(package)}-[0-9].*$")
+        candidates = sorted(
+            (path for path in source.iterdir() if path.is_dir() and pattern.match(path.name)),
+            key=lambda path: path.name,
+        )
+        if candidates:
+            selected[package] = candidates[-1]
+        else:
+            missing.append(package)
+    if any(package in missing for package in ("gptel", "acp", "agent-shell", "yaml")):
+        raise ConfigurationError(
+            "required packages missing from ELPA source: " + ", ".join(missing)
+        )
+    output.mkdir(parents=True)
+    for path in selected.values():
+        shutil.copytree(path, output / path.name, symlinks=True)
+    (output / "bundle.json").write_text(
+        json.dumps(
+            {
+                "source": str(source),
+                "packages": {name: path.name for name, path in selected.items()},
+                "not_present": missing,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return output
+
+
+def prepare_emacs_bundle(
+    dockerfile: Path, output: Path, *, proxy: str | None = None
+) -> Path:
+    """Build the pinned Emacs prefix without exposing proxy credentials."""
+    dockerfile = dockerfile.resolve()
+    output = output.resolve()
+    bins = tuple(output / "bin" / name for name in ("emacs", "emacsclient"))
+    if all(path.is_file() for path in bins):
+        return output
+    if not dockerfile.is_file():
+        raise ConfigurationError(f"Emacs bundle Dockerfile not found: {dockerfile}")
+
+    command = [
+        "docker",
+        "build",
+        "--file",
+        str(dockerfile),
+        "--build-arg",
+        f"OUTPUT_UID={os.getuid()}",
+        "--build-arg",
+        f"OUTPUT_GID={os.getgid()}",
+    ]
+    environment = os.environ.copy()
+    if proxy:
+        environment.update(
+            {
+                "HTTP_PROXY": proxy,
+                "HTTPS_PROXY": proxy,
+                "http_proxy": proxy,
+                "https_proxy": proxy,
+            }
+        )
+        command.extend(
+            [
+                "--network",
+                "host",
+                "--build-arg",
+                "HTTP_PROXY",
+                "--build-arg",
+                "HTTPS_PROXY",
+            ]
+        )
+    command.extend(["--output", f"type=local,dest={output}", str(dockerfile.parent)])
+    result = subprocess.run(command, env=environment, check=False)
+    if result.returncode:
+        raise ConfigurationError("failed to build the portable Emacs bundle")
+    if not all(path.is_file() for path in bins):
+        raise ConfigurationError(f"Emacs bundle is missing bin/emacs: {output}")
+    return output
+
+
+def prepare_config(config, *, check_runtime: bool = True) -> tuple[Path, Path]:
+    """Validate config.toml and write the one Harbor job consumed by make bench."""
+    selected = require_benchmark(config)
+    profile = require_profile(config, selected.profile)
+    suite = require_suite(config, selected.suite)
+    check_api_key(profile)
+    if check_runtime:
+        _check_local_runtime()
+    if selected.elpa_bundle:
+        prepare_elpa_bundle(Path("~/.emacs.d/elpa"), selected.elpa_bundle)
+    job, fingerprint = build_job(
+        config,
+        profile,
+        suite,
+        selected.model,
+        selected.stage,
+        effort=selected.effort,
+        input_price_per_million=selected.input_price_per_million,
+        output_price_per_million=selected.output_price_per_million,
+        cached_input_price_per_million=selected.cached_input_price_per_million,
+        approved_full=selected.approve_full,
+        concurrency=selected.concurrency,
+        elpa_bundle=selected.elpa_bundle,
+        emacs_bundle=selected.emacs_bundle,
+    )
+    job["jobs_dir"] = str((config.path.parent / "jobs").resolve())
+
+    # Fail during preparation, before any paid run, if Harbor rejects the job.
+    from harbor.models.job.config import JobConfig
+
+    JobConfig.model_validate(job)
+    return write_job(_prepared_job_path(config), job, fingerprint)
+
+
+def cmd_prepare(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    output, fingerprint = prepare_config(config)
+    selected = require_benchmark(config)
+    profile = require_profile(config, selected.profile)
+    task_count, attempts = stage_shape(selected.stage, selected.approve_full)
     print(
         json.dumps(
             {
-                "ok": True,
-                "profile": profile.name,
-                "scoreboard": profile.scoreboard,
-                "model": args.model,
-                "suite": suite.name,
-                "tasks": len(tasks),
+                "ready": True,
+                "profile": selected.profile,
+                "model": selected.model,
+                "suite": selected.suite,
+                "stage": selected.stage,
+                "agents": list(profile.agents),
+                "trials": task_count * attempts * len(profile.agents),
+                "job_config": str(output),
+                "fingerprint": str(fingerprint),
+                "next": "make bench",
             },
             indent=2,
             ensure_ascii=False,
@@ -100,43 +240,43 @@ def cmd_preflight(args: argparse.Namespace) -> int:
     return 0
 
 
-def _generate(args: argparse.Namespace) -> tuple[Path, Path]:
-    config, profile, suite = _resolve(args)
-    if args.concurrency < 1:
-        raise ConfigurationError("--concurrency must be at least 1")
+def cmd_bench(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    selected = require_benchmark(config)
+    profile = require_profile(config, selected.profile)
     check_api_key(profile)
-    job, fingerprint = build_job(
-        config,
-        profile,
-        suite,
-        args.model,
-        args.stage,
-        effort=args.effort,
-        input_price_per_million=args.input_price,
-        output_price_per_million=args.output_price,
-        cached_input_price_per_million=args.cached_input_price,
-        approved_full=args.approve_full,
-        concurrency=args.concurrency,
-    )
-    output = args.output or (
-        config.path.parent
-        / "generated"
-        / f"{profile.name}-{args.model.replace('/', '-')}-{suite.name}-{args.stage}.yaml"
-    )
-    return write_job(output, job, fingerprint)
+    _check_local_runtime()
+    output = _prepared_job_path(config)
+    if not output.is_file():
+        raise ConfigurationError("benchmark is not prepared; run make first")
+    if config.path.stat().st_mtime_ns > output.stat().st_mtime_ns:
+        raise ConfigurationError("config.toml changed after preparation; run make again")
 
+    job = yaml.safe_load(output.read_text(encoding="utf-8"))
+    run_name = _fresh_job_name(str(job["job_name"]))
+    command = [
+        "harbor",
+        "jobs",
+        "start",
+        "--config",
+        str(output),
+        "--job-name",
+        run_name,
+        "--yes",
+    ]
+    result = subprocess.run(command, check=False)
+    if result.returncode:
+        return result.returncode
 
-def cmd_generate(args: argparse.Namespace) -> int:
-    output, fingerprint = _generate(args)
-    print(output)
-    print(fingerprint)
+    from .report import write_reports
+
+    job_dir = Path(job["jobs_dir"]) / run_name
+    report_dir = config.path.parent / "reports" / run_name
+    paths = write_reports(job_dir, report_dir)
+    print("Benchmark complete:")
+    for path in paths:
+        print(path)
     return 0
-
-
-def cmd_run(args: argparse.Namespace) -> int:
-    output, _ = _generate(args)
-    command = ["harbor", "jobs", "start", "--config", str(output), "--yes"]
-    return subprocess.run(command, check=False).returncode
 
 
 def _read_candidate_ids(path: Path) -> list[str]:
@@ -188,62 +328,22 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 
 def cmd_prepare_elpa(args: argparse.Namespace) -> int:
-    source = args.from_dir.expanduser().resolve()
-    output = args.output.expanduser().resolve()
-    if output.exists():
-        raise ConfigurationError(f"output already exists; refusing to overwrite: {output}")
-    if not source.is_dir():
-        raise ConfigurationError(f"ELPA source directory does not exist: {source}")
-    packages = (
-        "gptel",
-        "transient",
-        "acp",
-        "shell-maker",
-        "agent-shell",
-        "cond-let",
-        "compat",
-        "yaml",
-        "llama",
-        "with-editor",
-    )
-    selected: dict[str, Path] = {}
-    missing: list[str] = []
-    for package in packages:
-        pattern = re.compile(rf"^{re.escape(package)}-[0-9].*$")
-        candidates = sorted(
-            (path for path in source.iterdir() if path.is_dir() and pattern.match(path.name)),
-            key=lambda path: path.name,
-        )
-        if candidates:
-            selected[package] = candidates[-1]
-        else:
-            missing.append(package)
-    if any(package in missing for package in ("gptel", "acp", "agent-shell", "yaml")):
-        raise ConfigurationError(
-            "required packages missing from ELPA source: " + ", ".join(missing)
-        )
-    output.mkdir(parents=True)
-    for path in selected.values():
-        shutil.copytree(path, output / path.name, symlinks=True)
-    (output / "bundle.json").write_text(
-        json.dumps(
-            {
-                "source": str(source),
-                "packages": {name: path.name for name, path in selected.items()},
-                "not_present": missing,
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+    output = prepare_elpa_bundle(args.from_dir, args.output)
+    print(output)
+    return 0
+
+
+def cmd_prepare_emacs(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    selected = require_benchmark(config)
+    if selected.emacs_bundle is None:
+        raise ConfigurationError("set benchmark.emacs_bundle in config.toml")
+    output = prepare_emacs_bundle(
+        config.path.parent / "emacs-bundle.Dockerfile",
+        selected.emacs_bundle,
+        proxy=selected.proxy,
     )
     print(output)
-    if missing:
-        print(
-            "not copied (may be built in or still need installation): " + ", ".join(missing),
-            file=sys.stderr,
-        )
     return 0
 
 
@@ -251,27 +351,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="magent-bench")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    prepare = sub.add_parser(
+        "prepare", help="validate config.toml and generate the one prepared Harbor job"
+    )
+    prepare.add_argument("--config", type=Path)
+    prepare.set_defaults(func=cmd_prepare)
+
+    bench = sub.add_parser(
+        "bench", help="run the prepared Harbor job and write its report"
+    )
+    bench.add_argument("--config", type=Path)
+    bench.set_defaults(func=cmd_bench)
+
     profiles = sub.add_parser("profiles", help="list provider profiles")
     profiles.add_argument("--config", type=Path)
     profiles.set_defaults(func=cmd_profiles)
-
-    preflight = sub.add_parser("preflight", help="validate a scored-run selection")
-    preflight.add_argument("--config", type=Path)
-    preflight.add_argument("--profile", required=True)
-    preflight.add_argument("--model", required=True)
-    preflight.add_argument("--suite", required=True)
-    preflight.add_argument("--skip-key-check", action="store_true")
-    preflight.set_defaults(func=cmd_preflight)
-
-    generate = sub.add_parser("generate", help="write a gated Harbor job YAML")
-    _common_run_arguments(generate)
-    generate.add_argument("--output", type=Path)
-    generate.set_defaults(func=cmd_generate)
-
-    run = sub.add_parser("run", help="generate and start a Harbor job")
-    _common_run_arguments(run)
-    run.add_argument("--output", type=Path)
-    run.set_defaults(func=cmd_run)
 
     freeze = sub.add_parser(
         "freeze-manifest", help="deterministically select from eligible task IDs"
@@ -289,12 +383,20 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--bootstrap", type=int, default=10_000)
     report.set_defaults(func=cmd_report)
 
-    prepare = sub.add_parser(
+    prepare_elpa = sub.add_parser(
         "prepare-elpa", help="copy exact local Magent dependencies into a run bundle"
     )
-    prepare.add_argument("--from-dir", type=Path, default=Path("~/.emacs.d/elpa"))
-    prepare.add_argument("--output", type=Path, required=True)
-    prepare.set_defaults(func=cmd_prepare_elpa)
+    prepare_elpa.add_argument(
+        "--from-dir", type=Path, default=Path("~/.emacs.d/elpa")
+    )
+    prepare_elpa.add_argument("--output", type=Path, required=True)
+    prepare_elpa.set_defaults(func=cmd_prepare_elpa)
+
+    prepare_emacs = sub.add_parser(
+        "prepare-emacs", help="build the pinned portable Emacs bundle"
+    )
+    prepare_emacs.add_argument("--config", type=Path)
+    prepare_emacs.set_defaults(func=cmd_prepare_emacs)
     return parser
 
 

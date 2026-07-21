@@ -1,0 +1,1 @@
+Your previous response printed an intended tool call as Markdown instead of invoking it. Continue the task now. If inspection or an action is still required, invoke the available tool through the tool interface; do not write “Calling:” blocks or tool arguments as prose. If no tool is required, provide the final answer directly.

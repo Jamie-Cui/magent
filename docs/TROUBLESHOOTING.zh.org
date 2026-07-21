@@ -267,7 +267,10 @@ make EMACSCLIENT="emacsclient -s magent-live-test" test-live-smoke
 
 *解决：*
 
-- bash：确认命令在 shell 中有效。
+- bash：确认已安装 Bash，且 ~magent-bash-program~ 能解析到它。命令默认启用
+  errexit 和 pipefail；只有明确接受非零状态时才使用条件判断或 ~|| true~ 。
+  ~rg ... | head~ 一类限流 pipeline 可能因 SIGPIPE 失败，应优先使用工具原生
+  limit 参数。
 - emacs_eval：检查 Lisp 语法错误。
 - grep：确认 ripgrep 已安装： ~which rg~ 。
 

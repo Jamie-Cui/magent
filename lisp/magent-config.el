@@ -326,6 +326,13 @@ If rg is not found, grep tool calls will fail with an informative error."
   :type 'integer
   :group 'magent)
 
+(defcustom magent-bash-program "bash"
+  "Bash-compatible executable used by the bash tool.
+Commands run with errexit and pipefail enabled.  If this executable cannot
+be resolved, bash tool calls fail without affecting other Magent tools."
+  :type 'string
+  :group 'magent)
+
 (defcustom magent-bash-timeout 30
   "Default timeout in seconds for bash commands."
   :type 'integer
@@ -337,17 +344,18 @@ If rg is not found, grep tool calls will fail with an informative error."
   :group 'magent)
 
 (defcustom magent-tool-result-model-max-length 12000
-  "Maximum characters of any tool result kept in model-visible history.
-Longer results are truncated before they are recorded in the session
-ledger, legacy messages, context items, and subsequent gptel prompts."
+  "Maximum tool output body characters kept in model-visible history.
+Longer bodies are truncated before they are recorded in the session ledger,
+legacy messages, context items, and subsequent gptel prompts.  Structured
+failure status headers are always retained outside this limit."
   :type '(choice (const :tag "Do not truncate tool results" nil)
                  integer)
   :group 'magent)
 
 (defcustom magent-tool-result-model-preview-length 10000
-  "Prefix characters retained when a tool result is model-visible truncated.
-The final record also includes a compact truncation notice with the
-original result length."
+  "Body prefix characters retained when a tool result is truncated.
+The final record also includes a compact truncation notice with the original
+body length.  Structured failure status headers are not part of this budget."
   :type 'integer
   :group 'magent)
 

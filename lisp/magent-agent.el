@@ -51,6 +51,29 @@
   "Return the prompt for strict final-response recovery."
   (magent-prompt-read "internal/strict-final-response-retry.org"))
 
+(defun magent-agent--unexecuted-tool-call-retry-prompt ()
+  "Return the prompt for retrying a Markdown pseudo-tool call."
+  (magent-prompt-read "internal/unexecuted-tool-call-retry.org"))
+
+(defun magent-agent--unexecuted-tool-call-p (text tool-names)
+  "Return non-nil when TEXT contains a Markdown pseudo-call.
+The call must use one of TOOL-NAMES and be followed by a fenced JSON object.
+This intentionally recognizes only the narrow shape observed from providers
+that print Magent tool calls instead of invoking the tool interface."
+  (when (stringp text)
+    (let ((case-fold-search nil))
+      (cl-some
+       (lambda (tool-name)
+         (string-match-p
+          (concat
+           "\\(?:\\`\\|\n\\)[ \t>*#_-]*\\(?:\\*\\*\\)?Calling:"
+           "\\(?:\\*\\*\\)?[ \t]*`?"
+           (regexp-quote (format "%s" tool-name))
+           "`?[ \t]*\\(?:\r\\)?\n[ \t]*"
+           "```\\(?:json\\)?[ \t]*\\(?:\r\\)?\n[ \t]*{")
+          text))
+       tool-names))))
+
 (defcustom magent-post-tool-reasoning-idle-retry-delay 5
   "Seconds to wait after post-tool reasoning ends with no assistant text.
 When a provider emits only reasoning after tool output and then stalls,
@@ -82,6 +105,7 @@ lock the Emacs main thread."
               (value (pop metadata)))
           (unless (memq key '(:final-response-retry
                               :strict-final-response-retry
+                              :unexecuted-tool-call-retry
                               :include-reasoning
                               :disable-provider-tools))
             (push key result)
@@ -442,6 +466,10 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                   (gptel-model model)
                   (gptel-temperature temperature)
                   (request-tools (magent-agent-loop-tools-to-gptel tools))
+                  (request-tool-names
+                   (mapcar (lambda (tool)
+                             (format "%s" (gptel-tool-name tool)))
+                           request-tools))
                   (gptel-tools request-tools)
                   (live-p (or request-live-p
                               (and request-state
@@ -455,10 +483,14 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                   (sample-text-delta-seen nil)
                   (sample-final-response-retry nil)
                   (sample-strict-final-response-retry nil)
+                  (sample-unexecuted-tool-call-retry nil)
+                  (sample-text-chunk-count 0)
+                  (sample-assistant-content-before nil)
                   (last-continuation-reason nil)
                   (tool-output-seq 0)
                   (empty-final-response-retried-for-tool-output-seq nil)
                   (strict-final-response-retried-for-tool-output-seq nil)
+                  (unexecuted-tool-call-retried-for-tool-output-seq nil)
                   (post-tool-reasoning-idle-timer nil)
                   (post-tool-reasoning-deadline-timer nil)
                   (post-tool-reasoning-deadline-start-time nil)
@@ -599,7 +631,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                   (close-reasoning
                    ()
                    (finish-reasoning-item))
-                  (sample
+                  (prepare-sample
                    ()
                    (when post-tool-reasoning-idle-timer
                      (cancel-timer post-tool-reasoning-idle-timer)
@@ -608,7 +640,13 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                      (cancel-timer post-tool-reasoning-deadline-timer)
                      (setq post-tool-reasoning-deadline-timer nil))
                    (setq post-tool-reasoning-deadline-start-time nil)
-                   (setq sample-text-delta-seen nil
+                   (setq sample-text-chunk-count
+                         (length (magent-agent-loop-text-chunks loop))
+                         sample-assistant-content-before
+                         (and assistant-item
+                              (copy-tree
+                               (magent-thread-item-content assistant-item)))
+                         sample-text-delta-seen nil
                          sample-final-response-retry
                          (and loop
                               (plist-get
@@ -620,10 +658,31 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                               (plist-get
                                (magent-llm-request-metadata
                                 (magent-agent-loop-request loop))
-                               :strict-final-response-retry)))
+                               :strict-final-response-retry))
+                         sample-unexecuted-tool-call-retry
+                         (and loop
+                              (plist-get
+                               (magent-llm-request-metadata
+                                (magent-agent-loop-request loop))
+                               :unexecuted-tool-call-retry))))
+                  (sample
+                   ()
+                   (prepare-sample)
                    (cl-incf sampling-count)
                    (emit-request-start)
                    (magent-agent-loop-start loop))
+                  (continue-with-provider-prompt
+                   (continuation prompt)
+                   (prepare-sample)
+                   (cl-incf sampling-count)
+                   (emit-request-start)
+                   (condition-case err
+                       (funcall continuation prompt)
+                     (error
+                      (finish-turn
+                       'failed
+                       (format "Provider continuation failed: %s"
+                               (error-message-string err))))))
                   (request-for-current-session
                    ()
                    (let ((request
@@ -689,6 +748,95 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                              :effort 'minimal
                              :include-reasoning nil
                              :disable-provider-tools t)))))
+                  (request-for-current-session-unexecuted-tool-call-retry
+                   ()
+                   (let ((request (request-for-current-session)))
+                     (magent-llm-request-create
+                      :prompt
+                      (append
+                       (magent-llm-request-prompt request)
+                       (list
+                        (cons
+                         'prompt
+                         (magent-agent--unexecuted-tool-call-retry-prompt))))
+                      :system (magent-llm-request-system request)
+                      :tools (magent-llm-request-tools request)
+                      :model (magent-llm-request-model request)
+                      :backend (magent-llm-request-backend request)
+                      :stream t
+                      :callback (magent-llm-request-callback request)
+                      :metadata
+                      (append
+                       (magent-agent--metadata-without-retry-flags
+                        (magent-llm-request-metadata request))
+                       (list :unexecuted-tool-call-retry t)))))
+                  (current-sample-response
+                   (event)
+                   (let* ((chunks (magent-agent-loop-text-chunks loop))
+                          (new-count
+                           (max 0 (- (length chunks)
+                                     sample-text-chunk-count)))
+                          (streamed
+                           (apply #'concat
+                                  (nreverse
+                                   (copy-sequence
+                                    (cl-subseq chunks 0 new-count)))))
+                          (final (magent-llm-event-text event)))
+                     (magent-agent-loop--combined-result streamed final)))
+                  (rollback-current-sample-text
+                   ()
+                   (let* ((chunks (magent-agent-loop-text-chunks loop))
+                          (new-count
+                           (max 0 (- (length chunks)
+                                     sample-text-chunk-count))))
+                     (setf (magent-agent-loop-text-chunks loop)
+                           (nthcdr new-count chunks)
+                           (magent-agent-loop-result loop)
+                           (magent-agent-loop-text loop)))
+                   (when assistant-item
+                     (setf (magent-thread-item-content assistant-item)
+                           (copy-tree sample-assistant-content-before))
+                     (magent-session-refresh-projections session)
+                     (magent-session-save-deferred-for-session
+                      session request-scope)))
+                  (unexecuted-tool-call-completion-p
+                   (event)
+                   (and (> tool-output-seq 0)
+                        (magent-agent--unexecuted-tool-call-p
+                         (current-sample-response event)
+                         request-tool-names)))
+                  (retry-unexecuted-tool-call
+                   (event)
+                   (when (and (unexecuted-tool-call-completion-p event)
+                              (not
+                               (equal
+                                unexecuted-tool-call-retried-for-tool-output-seq
+                                tool-output-seq)))
+                     (rollback-current-sample-text)
+                     (setq unexecuted-tool-call-retried-for-tool-output-seq
+                           tool-output-seq
+                           last-continuation-reason
+                           'unexecuted-tool-call-retry)
+                     (setf (magent-agent-loop-request loop)
+                           (request-for-current-session-unexecuted-tool-call-retry))
+                     (magent-log
+                      "WARN retrying unexecuted Markdown tool call after tool output")
+                     (sample)
+                     t))
+                  (fail-unexecuted-tool-call
+                   (event)
+                   (when (unexecuted-tool-call-completion-p event)
+                     (let ((message
+                            "Error: Model repeatedly described a tool call as text instead of invoking it."))
+                       (magent-request-context-notify
+                        request-state 'turn-error
+                        :message message
+                        :metadata (list :status 'unexecuted-tool-call))
+                       (finish-turn
+                        'failed message
+                        (list :status 'unexecuted-tool-call
+                              :retry sample-unexecuted-tool-call-retry)))
+                     t))
                   (cancel-post-tool-reasoning-idle-timer
                    ()
                    (when post-tool-reasoning-idle-timer
@@ -723,7 +871,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                    (and sample-strict-final-response-retry
                         (not sample-text-delta-seen)))
                   (retry-empty-final-response
-                   (reason)
+                   (reason &optional continuation)
                    (when (empty-post-tool-final-response-retry-p)
                      (cancel-post-tool-reasoning-idle-timer)
                      (cancel-post-tool-reasoning-deadline-timer)
@@ -742,10 +890,14 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                      (magent-log
                       "INFO retrying empty final response after tool output: %s"
                       reason)
-                     (sample)
+                     (if (functionp continuation)
+                         (continue-with-provider-prompt
+                          continuation
+                          (magent-agent--empty-final-response-retry-prompt))
+                       (sample))
                      t))
                   (retry-strict-final-response
-                   (reason)
+                   (reason &optional continuation)
                    (when (final-response-retry-reasoning-retry-p)
                      (cancel-post-tool-reasoning-idle-timer)
                      (cancel-post-tool-reasoning-deadline-timer)
@@ -764,7 +916,11 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                      (magent-log
                       "INFO retrying strict final response after retry reasoning: %s"
                       reason)
-                     (sample)
+                     (if (functionp continuation)
+                         (continue-with-provider-prompt
+                          continuation
+                          (magent-agent--strict-final-response-retry-prompt))
+                       (sample))
                      t))
                   (fail-strict-final-response
                    (reason)
@@ -865,17 +1021,38 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                     last-continuation-reason)))
                          (setf (magent-agent-loop-request loop)
                                (request-for-current-session-strict-final-response-retry))
+                         (when (magent-agent-loop-tool-continuation loop)
+                           (magent-agent-loop-set-tool-continuation loop nil)
+                           (magent-agent-loop--cancel-request-timeout loop)
+                           (setq suppress-next-abort-error t)
+                           (magent-agent-loop--abort-request-handle
+                            (magent-agent-loop-request-handle loop)))
                          (magent-log
                           "WARN sampling budget reached after %d request(s); forcing one provider-tools-disabled final request: %s"
                           sampling-count last-continuation-reason)
                          (sample))
-                     (setf (magent-agent-loop-request loop)
-                           (request-for-current-session))
-                     (magent-log
-                      "INFO continuing model response: reason=%s count=%d"
-                      (plist-get outcome :reason)
-                      (1+ sampling-count))
-                     (sample)))
+                     (let ((continuation
+                            (magent-agent-loop-tool-continuation loop)))
+                       (magent-log
+                        "INFO continuing model response: reason=%s count=%d"
+                        (plist-get outcome :reason)
+                        (1+ sampling-count))
+                       (if (functionp continuation)
+                           (progn
+                             (magent-agent-loop-set-tool-continuation loop nil)
+                             (prepare-sample)
+                             (cl-incf sampling-count)
+                             (emit-request-start)
+                             (condition-case err
+                                 (funcall continuation)
+                               (error
+                                (finish-turn
+                                 'failed
+                                 (format "Provider continuation failed: %s"
+                                         (error-message-string err))))))
+                         (setf (magent-agent-loop-request loop)
+                               (request-for-current-session))
+                         (sample)))))
                   (finish-streaming
                    ()
                    (cancel-post-tool-reasoning-idle-timer)
@@ -955,6 +1132,10 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                          :arguments (magent-llm-event-arguments event)))
                        ('tool-call-batch-end
                         (close-reasoning)
+                        (when (eq (plist-get (magent-llm-event-metadata event)
+                                             :source)
+                                  'textual-dsml)
+                          (rollback-current-sample-text))
                         (magent-lifecycle-events-emit
                          'llm-request-end
                          :context context
@@ -975,57 +1156,66 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                             (plist-get outcome :result))
                              (continue-turn outcome)))))
                        ('completed
-                        (let ((observer-text
-                               (magent-agent--completion-callback-text
-                                loop event text-delta-seen))
-                              (callback-text
-                               (magent-agent--completion-callback-text
-                                loop event streaming-started)))
-                          (when (and (stringp observer-text)
-                                     (not (string-empty-p observer-text)))
+                        (unless
+                            (or (retry-unexecuted-tool-call event)
+                                (fail-unexecuted-tool-call event))
+                          (let ((observer-text
+                                 (magent-agent--completion-callback-text
+                                  loop event text-delta-seen))
+                                (callback-text
+                                 (magent-agent--completion-callback-text
+                                  loop event streaming-started)))
+                            (when (and (stringp observer-text)
+                                       (not (string-empty-p observer-text)))
+                              (magent-request-context-notify
+                               request-state 'assistant-delta
+                               :text observer-text))
+                            (when (and (stringp callback-text)
+                                       (not (string-empty-p callback-text)))
+                              (start-streaming)
+                              (when (and text-callback
+                                         (magent-agent--ui-visible-p request-state))
+                                (funcall text-callback callback-text))))
+                          (cond
+                           ((and (empty-post-tool-final-response-retry-p)
+                                 (string-empty-p
+                                  (or (magent-llm-event-text event) "")))
+                            (retry-empty-final-response
+                             'completed-empty
+                             (magent-llm-event-continuation event)))
+                           ((and sample-strict-final-response-retry
+                                 (not sample-text-delta-seen)
+                                 (string-empty-p
+                                  (or (magent-llm-event-text event) "")))
+                            (fail-strict-final-response 'completed-empty))
+                           ((and sample-final-response-retry
+                                 (not sample-strict-final-response-retry)
+                                 (not sample-text-delta-seen)
+                                 (string-empty-p
+                                  (or (magent-llm-event-text event) "")))
+                            (if-let* ((continuation
+                                       (magent-llm-event-continuation event)))
+                                (retry-strict-final-response
+                                 'completed-empty continuation)
+                              (let ((message
+                                     "Error: Model returned an empty final response after tool output retry."))
+                                (magent-log
+                                 "WARN empty final response retry returned no text")
+                                (magent-request-context-notify
+                                 request-state 'turn-error
+                                 :message message
+                                 :metadata
+                                 (list :status 'empty-final-response-retry))
+                                (finish-turn
+                                 'failed message
+                                 (list :status
+                                       'empty-final-response-retry)))))
+                           (t
                             (magent-request-context-notify
-                             request-state 'assistant-delta
-                             :text observer-text))
-                          (when (and (stringp callback-text)
-                                     (not (string-empty-p callback-text)))
-                            (start-streaming)
-                            (when (and text-callback
-                                       (magent-agent--ui-visible-p request-state))
-                              (funcall text-callback callback-text))))
-                        (cond
-                         ((and (empty-post-tool-final-response-retry-p)
-                               (string-empty-p
-                                (or (magent-llm-event-text event) "")))
-                          (retry-empty-final-response 'completed-empty))
-                         ((and sample-strict-final-response-retry
-                               (not sample-text-delta-seen)
-                               (string-empty-p
-                                (or (magent-llm-event-text event) "")))
-                          (fail-strict-final-response 'completed-empty))
-                         ((and sample-final-response-retry
-                               (not sample-strict-final-response-retry)
-                               (not sample-text-delta-seen)
-                               (string-empty-p
-                                (or (magent-llm-event-text event) "")))
-                          (let ((message
-                                 "Error: Model returned an empty final response after tool output retry."))
-                            (magent-log
-                             "WARN empty final response retry returned no text")
-                            (magent-request-context-notify
-                             request-state 'turn-error
-                             :message message
-                             :metadata
-                             (list :status 'empty-final-response-retry))
-                            (finish-turn
-                             'failed message
-                             (list :status
-                                   'empty-final-response-retry))))
-                         (t
-                          (magent-request-context-notify
-                           request-state 'assistant-complete
-                           :text (magent-agent-loop-result loop))
-                          (finish-turn 'completed
-                                       (magent-agent-loop-result loop)))))
+                             request-state 'assistant-complete
+                             :text (magent-agent-loop-result loop))
+                            (finish-turn 'completed
+                                         (magent-agent-loop-result loop))))))
                       ('error
                        (if (and suppress-next-abort-error
                                 (magent-agent--abort-error-event-p event))
