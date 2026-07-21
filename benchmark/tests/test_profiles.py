@@ -348,6 +348,7 @@ def test_config_driven_bench_runs_prepared_job_and_writes_report(
         str(output),
         "--job-name",
         "magent-bench-main-model-x-suite-smoke-run",
+        "--quiet",
         "--yes",
     ]
     assert calls["job_dir"] == tmp_path / "jobs" / (

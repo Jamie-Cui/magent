@@ -1080,6 +1080,68 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                    ()
                    (close-reasoning)
                    (setq streaming-started t))
+                  (handle-completed-event
+                   (event)
+                   (unless
+                       (or (retry-unexecuted-tool-call event)
+                           (fail-unexecuted-tool-call event))
+                     (let ((observer-text
+                            (magent-agent--completion-callback-text
+                             loop event text-delta-seen))
+                           (callback-text
+                            (magent-agent--completion-callback-text
+                             loop event streaming-started)))
+                       (when (and (stringp observer-text)
+                                  (not (string-empty-p observer-text)))
+                         (magent-request-context-notify
+                          request-state 'assistant-delta
+                          :text observer-text))
+                       (when (and (stringp callback-text)
+                                  (not (string-empty-p callback-text)))
+                         (start-streaming)
+                         (when (and text-callback
+                                    (magent-agent--ui-visible-p request-state))
+                           (funcall text-callback callback-text))))
+                     (cond
+                      ((and (empty-post-tool-final-response-retry-p)
+                            (string-empty-p
+                             (or (magent-llm-event-text event) "")))
+                       (retry-empty-final-response
+                        'completed-empty
+                        (magent-llm-event-continuation event)))
+                      ((and sample-strict-final-response-retry
+                            (not sample-text-delta-seen)
+                            (string-empty-p
+                             (or (magent-llm-event-text event) "")))
+                       (fail-strict-final-response 'completed-empty))
+                      ((and sample-final-response-retry
+                            (not sample-strict-final-response-retry)
+                            (not sample-text-delta-seen)
+                            (string-empty-p
+                             (or (magent-llm-event-text event) "")))
+                       (if-let* ((continuation
+                                  (magent-llm-event-continuation event)))
+                           (retry-strict-final-response
+                            'completed-empty continuation)
+                         (let ((message
+                                "Error: Model returned an empty final response after tool output retry."))
+                           (magent-log
+                            "WARN empty final response retry returned no text")
+                           (magent-request-context-notify
+                            request-state 'turn-error
+                            :message message
+                            :metadata
+                            (list :status 'empty-final-response-retry))
+                           (finish-turn
+                            'failed message
+                            (list :status
+                                  'empty-final-response-retry)))))
+                      (t
+                       (magent-request-context-notify
+                        request-state 'assistant-complete
+                        :text (magent-agent-loop-result loop))
+                       (finish-turn 'completed
+                                    (magent-agent-loop-result loop))))))
                   (handle-event
                    (event)
                    (when (magent-agent--request-live-p live-p)
@@ -1156,66 +1218,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                             (plist-get outcome :result))
                              (continue-turn outcome)))))
                        ('completed
-                        (unless
-                            (or (retry-unexecuted-tool-call event)
-                                (fail-unexecuted-tool-call event))
-                          (let ((observer-text
-                                 (magent-agent--completion-callback-text
-                                  loop event text-delta-seen))
-                                (callback-text
-                                 (magent-agent--completion-callback-text
-                                  loop event streaming-started)))
-                            (when (and (stringp observer-text)
-                                       (not (string-empty-p observer-text)))
-                              (magent-request-context-notify
-                               request-state 'assistant-delta
-                               :text observer-text))
-                            (when (and (stringp callback-text)
-                                       (not (string-empty-p callback-text)))
-                              (start-streaming)
-                              (when (and text-callback
-                                         (magent-agent--ui-visible-p request-state))
-                                (funcall text-callback callback-text))))
-                          (cond
-                           ((and (empty-post-tool-final-response-retry-p)
-                                 (string-empty-p
-                                  (or (magent-llm-event-text event) "")))
-                            (retry-empty-final-response
-                             'completed-empty
-                             (magent-llm-event-continuation event)))
-                           ((and sample-strict-final-response-retry
-                                 (not sample-text-delta-seen)
-                                 (string-empty-p
-                                  (or (magent-llm-event-text event) "")))
-                            (fail-strict-final-response 'completed-empty))
-                           ((and sample-final-response-retry
-                                 (not sample-strict-final-response-retry)
-                                 (not sample-text-delta-seen)
-                                 (string-empty-p
-                                  (or (magent-llm-event-text event) "")))
-                            (if-let* ((continuation
-                                       (magent-llm-event-continuation event)))
-                                (retry-strict-final-response
-                                 'completed-empty continuation)
-                              (let ((message
-                                     "Error: Model returned an empty final response after tool output retry."))
-                                (magent-log
-                                 "WARN empty final response retry returned no text")
-                                (magent-request-context-notify
-                                 request-state 'turn-error
-                                 :message message
-                                 :metadata
-                                 (list :status 'empty-final-response-retry))
-                                (finish-turn
-                                 'failed message
-                                 (list :status
-                                       'empty-final-response-retry)))))
-                           (t
-                            (magent-request-context-notify
-                             request-state 'assistant-complete
-                             :text (magent-agent-loop-result loop))
-                            (finish-turn 'completed
-                                         (magent-agent-loop-result loop))))))
+                        (handle-completed-event event))
                       ('error
                        (if (and suppress-next-abort-error
                                 (magent-agent--abort-error-event-p event))

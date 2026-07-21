@@ -262,6 +262,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
         str(output),
         "--job-name",
         run_name,
+        "--quiet",
         "--yes",
     ]
     result = subprocess.run(command, check=False)

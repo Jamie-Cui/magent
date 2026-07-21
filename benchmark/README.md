@@ -75,6 +75,8 @@ stage = "smoke"
 
 `make bench` 只运行已经准备好的配置。若 `config.toml` 在 prepare 后发生变化，
 它会要求重新运行 `make`。成功后自动生成报告，无需再调用 report 命令。
+Harbor 的动态 trial progress 默认关闭，避免它与 worker 日志在同一 TTY 行互相覆盖；
+warning、最终结果表和报告路径仍会正常输出。
 
 `config.toml` 已被 Git 忽略，模板里的 `api_key` 必须始终留空。生成的
 `generated/benchmark.yaml` 也被忽略并设为 `0600`，因为它包含传给 Harbor
