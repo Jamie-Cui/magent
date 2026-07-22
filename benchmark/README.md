@@ -1,162 +1,119 @@
 # Magent coding-agent benchmark
 
-这个目录用 [Harbor](https://github.com/laude-institute/harbor) 0.20.0 对比完整的
-Codex、OpenCode 和 Magent 产品能力。它不会把三个代理压成同一套工具或系统提示；唯一完全相同的输入是 benchmark 的用户 instruction。
+日常使用只需要看三个文件：
 
-## 固定的评测口径
+- `config.toml`：本地配置，包含 provider、model、suite、stage、价格和 API key；
+- `config.example.toml`：可提交的无密钥模板；
+- `Makefile`：`make` 准备，`make bench` 执行。
 
-- 两个 suite 分开报告：SWE-bench Verified 30 题和 Terminal-Bench 2.1 30 个 CPU-compatible 任务，不计算综合分。
-- `smoke = 1×1`，`pilot = 10×1`，`full = 30×3`。`full` 必须显式传 `--approve-full`，并要求固定 dataset ref、Codex/OpenCode 版本、Emacs/ELPA bundle 和模型价格。
-- `openai-main` 主榜必须同时包含 Codex、OpenCode、Magent，并把一个显式提供的 canonical model 映射给三者。
-- `deepseek-compatibility` 是兼容榜，只跑 OpenCode 和 Magent。Codex 不支持的 provider 不做静默 fallback。
-- 代理自身的 web search/web fetch 被关闭；Harbor task 定义自身的网络策略保持不变。代理执行阶段只额外放行 profile 的模型 API host。
-- 三者在 task container 内使用自动权限。Magent 保留原生 gptel transport、skills、capabilities 和 child-agent tools。
-- Harbor 的 verifier 是唯一 correctness oracle。只有 oracle 本身失败，或三个代理在同一题发生相同基础设施错误时，才允许从已冻结 manifest 中删题；不能补题。
+评测基于 Harbor 0.20.0，分别报告 SWE-bench Verified 和 Terminal-Bench
+2.1；不会生成跨 suite 综合分。
 
-## 安装
+## 两步运行
 
-需要 Python 3.12+、`uv`、Docker，以及能安装 Emacs 29.1+ 的 Linux task image。
+首次使用先创建权限为 `0600` 的本地配置：
 
 ```bash
 cd benchmark
-uv sync --extra test
-uv run magent-bench profiles
+install -m 600 config.example.toml config.toml
 ```
 
-`profiles.toml` 没有默认模型。每次生成都必须选择 profile 和 model，例如：
+然后编辑 `config.toml` 顶部的 `[benchmark]`，并只在所选 profile 中填写
+`api_key`：
+
+```toml
+[profiles.deepseek-compatibility]
+api_key = "你的密钥"
+```
+
+每个 agent 的名称、模型模板和可选 CLI 版本写在同一行。要做单 agent
+调试，直接注释掉对应整行即可，不需要同步修改其他表。例如：
+
+```toml
+agents = [
+  # { name = "opencode", model = "deepseek/{model}", version = "" },
+  { name = "magent", model = "{model}" },
+]
+```
+
+`version = ""` 表示使用最新外部 CLI；Magent 直接记录当前源码 digest，
+不需要 `version`。OpenAI 主榜的正式运行仍要求保留三个 agent。
+
+如果本机代理监听 `10808`，可以在同一个本地配置的 `[benchmark]` 中设置：
+
+```toml
+proxy = "http://127.0.0.1:10808"
+```
+
+该代理只用于本地构建 Emacs bundle，不会传给模型请求或写入 fingerprint。
+
+运行：
 
 ```bash
-export OPENAI_API_KEY=...
-uv run magent-bench preflight \
-  --profile openai-main \
-  --model YOUR_OPENAI_MODEL \
-  --suite swe-bench-verified
-
-export DEEPSEEK_API_KEY=...
-uv run magent-bench preflight \
-  --profile deepseek-compatibility \
-  --model deepseek-v4-pro \
-  --suite terminal-bench-2.1
+make
+make bench
 ```
 
-如果 endpoint 是 OpenAI-compatible Chat Completions proxy，请另建 `wire_api = "chat_completions"` profile。gptel 当前只能在官方 `api.openai.com` host 上由 `gptel-make-openai` 选择 Responses API；preflight 对错误组合会直接失败。
+例如 DeepSeek 兼容榜的 `[benchmark]` 为：
 
-## 冻结任务
-
-仓库不会假装随机 30 题已经审过。先从 Harbor 对应 immutable dataset ref 导出全部 task ID；Terminal-Bench 候选列表还应先排除要求 GPU 或非 CPU-compatible 的任务。然后生成确定性候选 manifest：
-
-```bash
-uv run magent-bench freeze-manifest \
-  --suite swe-bench-verified \
-  --from-file /path/to/eligible-swe-task-ids.txt \
-  --seed 20260720
-
-# 审阅 stdout 后才写入
-uv run magent-bench freeze-manifest \
-  --suite swe-bench-verified \
-  --from-file /path/to/eligible-swe-task-ids.txt \
-  --seed 20260720 \
-  --approve-write
+```toml
+[benchmark]
+profile = "deepseek-compatibility"
+model = "deepseek-v4-pro"
+suite = "terminal-bench-2.1"
+stage = "smoke"
 ```
 
-manifest 必须恰好包含 30 个唯一 ID，否则任何 run config 都不会生成。开始正式跑之前，把 `profiles.toml` 中 suite 的 `ref` 改成 Harbor 解析出的 immutable ref。
+`make` 会自动：
 
-## 固定 Magent 的 Emacs/Elisp 运行时
+1. 安装固定的 Python/Harbor 依赖；
+2. 运行 Python 与 Elisp 的免费确定性测试；
+3. 创建或复用固定的本地 ELPA bundle；
+4. 首次构建基于 Ubuntu 22.04 的 Emacs 29.4 bundle，之后复用；
+5. 检查 model、本地配置中的 API key、Docker、manifest、full-run 门禁和 Harbor schema；
+6. 生成 `generated/benchmark.yaml` 及 fingerprint。
 
-Smoke/pilot 在没有 bundle 时可以在 container setup 阶段从 package archives 安装依赖。正式跑必须先冻结本机已安装版本：
+`make bench` 只运行已经准备好的配置。若 `config.toml` 在 prepare 后发生变化，
+它会要求重新运行 `make`。成功后自动生成报告，无需再调用 report 命令。
+Harbor 的动态 trial progress 默认关闭，避免它与 worker 日志在同一 TTY 行互相覆盖；
+warning、最终结果表和报告路径仍会正常输出。
 
-```bash
-uv run magent-bench prepare-elpa --output runtime/elpa
+`config.toml` 已被 Git 忽略，模板里的 `api_key` 必须始终留空。生成的
+`generated/benchmark.yaml` 也被忽略并设为 `0600`，因为它包含传给 Harbor
+容器的运行时密钥；不要复制或发布该文件。`api_key_env` 只是容器内部接收
+密钥的变量名，不再从宿主机环境变量读取。
 
-# 补齐本机没有、但目标 Emacs 需要的依赖，并写版本清单
-MAGENT_BENCH_ELPA_DIR="$PWD/runtime/elpa" \
-MAGENT_BENCH_DEPENDENCIES_FILE="$PWD/runtime/elpa/dependencies.json" \
-emacs -Q --batch -l elisp/install-deps.el
+## Stage
 
-export MAGENT_BENCH_ELPA_BUNDLE="$PWD/runtime/elpa"
-```
+| Stage | 任务 | 每题次数 | OpenAI 主榜 trials |
+|---|---:|---:|---:|
+| `smoke` | 1 | 1 | 3 |
+| `pilot` | 10 | 1 | 30 |
+| `full` | 30 | 3 | 270 |
 
-不同任务镜像的软件仓库可能只提供 Emacs 27/28。Smoke/pilot 会先尝试镜像自己的 `emacs-nox`，并在低于 29.1 时明确失败；也可提前提供一个与目标 Linux ABI 兼容、目录中含 `bin/emacs` 与 `bin/emacsclient` 的固定 Emacs prefix：
+OpenAI 主榜同时运行 Codex、OpenCode 和 Magent。DeepSeek 兼容榜默认运行
+OpenCode 和 Magent，本地调试时可以按上面的方式注释一行只运行 Magent；
+不会为 Codex 静默切换模型或 provider。
 
-```bash
-export MAGENT_BENCH_EMACS_BUNDLE=/absolute/path/to/emacs-29.4-prefix
-```
+`full` 仍然保留必要的可复现性门禁，全部写在同一个 `config.toml`：
 
-正式跑强制要求这个变量，避免 90 次 trial 因各任务镜像的包仓库而得到不同 Emacs。建议用较老的 glibc 基线构建该 prefix，并先在 smoke 的实际 Harbor task image 中验证动态库兼容性。
+- `approve_full = true`；
+- 输入、输出 token 价格；
+- Codex/OpenCode 固定版本；
+- `elpa_bundle` 与 `emacs_bundle`。
 
-同时在 `profiles.toml` 的 `agent_versions` 中填写正式跑使用的 Codex/OpenCode CLI 版本。Magent 的 source tree SHA-256 前缀自动写入 Harbor `agent_info.version`；每个 job 旁还会生成不含 secret 的 fingerprint JSON。
+这些门禁不会为了缩短命令而被隐藏或跳过。
 
-## 分阶段运行
+## 结果
 
-先只生成 YAML，检查 agent、model、dataset 和任务列表：
+Harbor 原始结果写入 `jobs/`，聚合报告自动写入 `reports/`。报告包含：
 
-```bash
-uv run magent-bench generate \
-  --profile openai-main \
-  --model YOUR_OPENAI_MODEL \
-  --effort medium \
-  --input-price INPUT_USD_PER_MILLION \
-  --output-price OUTPUT_USD_PER_MILLION \
-  --cached-input-price CACHED_INPUT_USD_PER_MILLION \
-  --suite swe-bench-verified \
-  --stage smoke
+- pass@1、pass@3、resolved rate；
+- token、成本、耗时和 tool calls；
+- 失败分类；
+- paired bootstrap 95% CI。
 
-uv run magent-bench generate \
-  --profile openai-main \
-  --model YOUR_OPENAI_MODEL \
-  --effort medium \
-  --input-price INPUT_USD_PER_MILLION \
-  --output-price OUTPUT_USD_PER_MILLION \
-  --cached-input-price CACHED_INPUT_USD_PER_MILLION \
-  --suite swe-bench-verified \
-  --stage pilot
-```
+Magent trial 还会保存 `magent-ledger.json`、`magent-result.json` 和 ATIF
+`trajectory.json`。
 
-生成物位于 `generated/`。可用 Harbor 执行：
-
-```bash
-uv run harbor jobs start --config generated/PROFILE-MODEL-SUITE-STAGE.yaml --yes
-```
-
-也可以显式使用 `magent-bench run` 生成并立即执行。只有审完 smoke/pilot 的 ledger、ATIF、失败分类与 verifier 后才执行正式门禁：
-
-```bash
-uv run magent-bench run \
-  --profile openai-main \
-  --model YOUR_OPENAI_MODEL \
-  --effort medium \
-  --input-price INPUT_USD_PER_MILLION \
-  --output-price OUTPUT_USD_PER_MILLION \
-  --cached-input-price CACHED_INPUT_USD_PER_MILLION \
-  --suite swe-bench-verified \
-  --stage full \
-  --approve-full
-```
-
-对另一个 suite 单独生成/运行。不要把两个 suite 合成一行得分。
-
-## 产物与报告
-
-Magent 每个 trial 会写：
-
-- `instruction.txt`：原始 Harbor instruction；
-- `magent-result.json`：终态、耗时和每次 sampling 的 token usage；
-- `magent-ledger.json`：Magent canonical thread/turn/item ledger；
-- `trajectory.json`：ATIF v1.7；
-- `dependencies.json`、`emacs-version.txt` 和 `emacsclient.txt`：运行环境诊断信息。
-
-Codex/OpenCode 的 ATIF 由 Harbor 内置 adapter 生成。聚合报告：
-
-```bash
-uv run magent-bench report jobs/your-job --output-dir reports/your-job
-```
-
-输出 `trials.csv`、`summary.json`、`report.md`。报告按 suite/model/agent 给出 pass@1、pass@3、resolved rate、token、cost、耗时、tool calls 和失败分类，并对共同实例做 paired bootstrap 95% CI；没有跨 suite composite。
-
-## 本地验证
-
-```bash
-make check
-```
-
-这只验证免费、确定性的配置/转换/统计逻辑，不会调用模型或启动付费 benchmark。
+高级调试时仍可运行 `uv run magent-bench --help`，但正常 benchmark 不需要直接使用这些子命令。

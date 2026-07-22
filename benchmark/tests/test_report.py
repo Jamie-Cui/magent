@@ -1,7 +1,12 @@
 import json
 from pathlib import Path
 
-from magent_benchmark.report import load_trials, paired_bootstrap, write_reports
+from magent_benchmark.report import (
+    classify_failure,
+    load_trials,
+    paired_bootstrap,
+    write_reports,
+)
 
 
 def _result(
@@ -66,6 +71,41 @@ def test_report_keeps_suite_and_paired_statistics(tmp_path: Path) -> None:
     assert "swe-bench-verified" in report
     assert "Input tok." in report
     assert "—" in report
+
+
+def test_failure_classification_uses_exception_detail() -> None:
+    assert (
+        classify_failure(
+            "RuntimeError", False, "Docker compose environment build failed"
+        )
+        == "environment_infrastructure"
+    )
+    assert (
+        classify_failure(
+            "NonZeroAgentExitCodeError",
+            False,
+            "Magent requires Emacs >=29.1, found 27.1",
+        )
+        == "environment_infrastructure"
+    )
+    assert classify_failure("", False) == "task_failure"
+
+
+def test_load_trials_accepts_harbor_0_20_result_filename(tmp_path: Path) -> None:
+    result_path = tmp_path / "trial" / "result.json"
+    _result(
+        result_path,
+        task="one",
+        agent="magent",
+        passed=True,
+        start="1",
+    )
+
+    trials = load_trials(tmp_path)
+
+    assert len(trials) == 1
+    assert trials[0].result_path == str(result_path)
+    assert trials[0].passed
 
 
 def test_pass_at_3_requires_and_uses_three_attempts(tmp_path: Path) -> None:

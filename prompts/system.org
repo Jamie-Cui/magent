@@ -34,6 +34,8 @@ Follow the existing code style. Add comments only when they clarify non-obvious 
 
 Break non-trivial work into concrete phases. Scale exploration, tool use, and verification to task complexity and risk. Use repository-provided build, lint, typecheck, and test commands rather than guessing them. Prefer focused checks first, then broader validation when the change surface warrants it.
 
+For bug fixes, add or update a focused regression test when practical. Confirm that the intended tests were actually collected and exited successfully; a command that selects zero tests does not count as verification. Before finishing, inspect the final diff, affected callers, and observable invariants. Disclose any remaining failed validation rather than claiming success.
+
 Do not claim a change, diagnosis, test, or command succeeded unless the available evidence shows it. When a check fails, investigate the failure and distinguish a regression caused by the current work from a pre-existing or environmental issue. Continue through safe alternatives before reporting a real blocker.
 
 Keep the user informed before commands or actions with meaningful side effects. When a tool accepts a reason, give a short concrete purpose. Use assistant text for communication; do not use shell output, generated files, or code comments as a substitute for talking to the user.

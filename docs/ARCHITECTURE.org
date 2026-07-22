@@ -30,11 +30,16 @@ Emacs is not just a host process. Magent depends on live editor state through bu
 
 ~magent-llm.el~ defines provider-neutral request and event shapes. ~magent-llm-gptel.el~ performs one sampling request by calling ~gptel-request~ and translating gptel callbacks into normalized Magent events. Magent may hide gptel callback/FSM details inside this adapter, but the rest of the loop consumes only normalized events. Reasoning events are kept separate from assistant text; reasoning-only completions are allowed to complete with empty assistant content instead of leaking chain text into the answer.
 
+Each provider continuation starts a new sample boundary. The public terminal
+result contains only the final sample's assistant text, while the ledger keeps
+the complete turn transcript and tool history. This separation is deterministic
+and does not trigger a hidden finalization or recovery request.
+
 ** Prompt Assembly And Trust
 
 ~magent-agent.el~ assembles each agent-loop system message from ordered,
-file-backed layers. The first layer is either the agent-specific prompt or
-~magent-system-prompt~. Project-root context is followed by applicable
+file-backed layers. ~magent-system-prompt~ is always first, followed by the
+optional agent-specific role prompt. Project-root context is followed by applicable
 ~AGENTS.md~ files discovered from the project root toward request-local file
 resources, selected Emacs profile memory, and capability/explicit instruction
 skills. A short runtime trust policy is appended last, so built-in utility
@@ -100,7 +105,7 @@ Legacy ~messages~ remain as the projection used for gptel prompt reuse and migra
 9. Tool calls are accumulated until ~tool-call-batch-end~, then dispatched serially through the orchestrator.
 10. Tool results update the same ledger item that started with the tool call.
 11. If tool output should be shown to the model, ~magent-agent.el~ rebuilds the prompt from the ledger and starts the next sampling request.
-12. If that post-tool continuation completes with empty assistant text, ~magent-agent.el~ issues one no-tool final-response retry using the recorded tool results.
+12. If a provider completes with empty assistant text, ~magent-agent.el~ completes the turn with ~empty-completion~ metadata and does not issue another request.
 13. Completion, failure, abort, or queue drop transitions the turn to its terminal state and notifies the ACP observer.
 14. A plain prompt resolves the pending ACP request from the turn result. For command-owned work, the runtime callback first returns to the command invocation, whose terminal lifecycle then resolves the ACP request or reports the result to its interactive caller.
 

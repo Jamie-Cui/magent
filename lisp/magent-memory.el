@@ -1142,8 +1142,12 @@ with a plan and continuation for scan-based operations."
             :notify-fn (lambda (message)
                          (message "%s" message)
                          (magent-command-progress context message))
-            :on-complete (lambda (status message)
-                           (magent-command-finish context status message))
+            :on-complete
+            (lambda (status message)
+              (pcase status
+                ('completed (magent-command-complete context message))
+                ('cancelled (magent-command-cancel context message))
+                (_ (magent-command-fail context message))))
             :open-after-write (memq operation '(init refresh)))))
       (magent-command-set-cancel-function
        context

@@ -158,28 +158,37 @@ def _duration(data: dict[str, Any]) -> float | None:
         return None
 
 
-def classify_failure(exception_type: str, passed: bool) -> str:
+def classify_failure(exception_type: str, passed: bool, detail: str = "") -> str:
     if passed:
         return "passed"
-    lowered = exception_type.lower()
+    lowered = f"{exception_type} {detail}".lower().strip()
     if not lowered:
         return "task_failure"
     if "timeout" in lowered:
         return "timeout"
-    if any(token in lowered for token in ("authentication", "usagelimit", "modelfound")):
+    if any(
+        token in lowered for token in ("authentication", "usagelimit", "modelfound")
+    ):
         return "configuration"
     if "api" in lowered or "network" in lowered or "connection" in lowered:
         return "provider_or_network"
     if "verifier" in lowered or "reward" in lowered:
         return "verifier_infrastructure"
-    if "setup" in lowered or "build" in lowered or "environment" in lowered:
+    if any(
+        token in lowered
+        for token in ("setup", "build", "environment", "requires emacs")
+    ):
         return "environment_infrastructure"
     return "agent_runtime"
 
 
 def load_trials(jobs_dir: Path) -> list[Trial]:
+    root = jobs_dir.resolve()
+    result_paths = list(root.rglob("result.json"))
+    result_paths.extend(root.rglob("results.json"))
+
     trials: list[Trial] = []
-    for path in sorted(jobs_dir.resolve().rglob("results.json")):
+    for path in sorted(result_paths):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -188,7 +197,12 @@ def load_trials(jobs_dir: Path) -> list[Trial]:
             continue
         reward = _reward(data)
         passed = reward >= 1.0
-        exception_type = str(_nested(data, "exception_info", "exception_type", default="") or "")
+        exception_type = str(
+            _nested(data, "exception_info", "exception_type", default="") or ""
+        )
+        exception_detail = str(
+            _nested(data, "exception_info", "exception_message", default="") or ""
+        )
         contexts = _contexts(data)
         agent = str(_nested(data, "agent_info", "name", default="unknown"))
         model, provider = _model(data, agent)
@@ -214,7 +228,9 @@ def load_trials(jobs_dir: Path) -> list[Trial]:
                 cost_usd=_sum_optional(contexts, "cost_usd"),
                 tool_calls=_tool_calls(contexts, path),
                 exception_type=exception_type,
-                failure_category=classify_failure(exception_type, passed),
+                failure_category=classify_failure(
+                    exception_type, passed, exception_detail
+                ),
             )
         )
     return trials
@@ -398,7 +414,7 @@ def _markdown(summary: list[dict[str, Any]], comparisons: list[dict[str, Any]]) 
 def write_reports(jobs_dir: Path, output_dir: Path, *, bootstrap: int = 10_000) -> list[Path]:
     trials = load_trials(jobs_dir)
     if not trials:
-        raise ValueError(f"no Harbor results.json files found under {jobs_dir}")
+        raise ValueError(f"no Harbor trial result files found under {jobs_dir}")
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     summary = _group_summary(trials)

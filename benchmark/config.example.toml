@@ -1,0 +1,83 @@
+# Tracked template. Copy this file to config.toml, which is gitignored.
+# Put API keys only in the local config.toml. Never put secrets in this example.
+# Normally edit only [benchmark], the selected profile's api_key, and its
+# commentable agents list.
+[benchmark]
+
+# or "deepseek-compatibility", "openai-main"
+profile = "deepseek-compatibility"
+
+# required, for example your OpenAI model ID
+model = "deepseek-v4-pro"
+
+# or "terminal-bench-2.1"
+suite = "swe-bench-verified"
+
+# smoke, pilot, or full
+stage = "smoke"
+
+# auto, minimal, low, medium, high, xhigh
+effort = "auto"
+
+concurrency = 3
+
+approve_full = false
+
+# Optional proxy for the local Docker build of the Emacs bundle. It is not
+# injected into model requests or recorded in fingerprints.
+proxy = ""
+
+# Optional cost reporting, in USD per million tokens. Full runs require input
+# and output prices; uncomment and replace with the selected model's prices.
+# input_price_per_million = 0.0
+# output_price_per_million = 0.0
+# cached_input_price_per_million = 0.0
+
+# `make` creates this frozen ELPA bundle from ~/.emacs.d/elpa when absent.
+elpa_bundle = "runtime/elpa"
+
+# `make` builds this Ubuntu 22.04-compatible Emacs 29.4 bundle when absent.
+emacs_bundle = "runtime/emacs"
+
+# Everything below fixes provider, agent, and dataset policy. Normal smoke and
+# pilot runs do not need to edit it.
+
+[profiles.openai-main]
+scoreboard = "main"
+provider = "openai"
+wire_api = "responses"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+api_key = ""
+# Each line owns one agent's model template and optional CLI version. Comment
+# out a whole line to disable that agent. Full main runs still require all three.
+agents = [
+  { name = "codex", model = "{model}", version = "" },
+  { name = "opencode", model = "openai/{model}", version = "" },
+  { name = "magent", model = "{model}" },
+]
+
+[profiles.deepseek-compatibility]
+scoreboard = "compatibility"
+provider = "deepseek"
+wire_api = "chat_completions"
+base_url = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+api_key = ""
+unsupported = { codex = "Codex has no supported direct DeepSeek provider path; no fallback is allowed." }
+agents = [
+  { name = "opencode", model = "deepseek/{model}", version = "" },
+  { name = "magent", model = "{model}" },
+]
+
+[suites.swe-bench-verified]
+dataset = "swe-bench/swe-bench-verified"
+ref = "sha256:b934b0cc3dc800fe945eaf9f1623329db97ee3133c706d20644524c7759fb341"
+manifest = "manifests/swe-bench-verified.txt"
+expected_tasks = 30
+
+[suites."terminal-bench-2.1"]
+dataset = "terminal-bench/terminal-bench-2-1"
+ref = "6"
+manifest = "manifests/terminal-bench-2.1.txt"
+expected_tasks = 30

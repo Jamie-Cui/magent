@@ -55,6 +55,36 @@
   message
   metadata)
 
+(defvar magent-llm--event-result-callbacks
+  (make-hash-table :test #'eq :weakness 'key)
+  "Runtime result callbacks keyed by tool-call event identity.")
+
+(defvar magent-llm--event-continuations
+  (make-hash-table :test #'eq :weakness 'key)
+  "Runtime provider continuations keyed by batch-end event identity.")
+
+(defun magent-llm-event-result-callback (event)
+  "Return EVENT's runtime tool-result callback, if any."
+  (gethash event magent-llm--event-result-callbacks))
+
+(defun magent-llm-event-set-result-callback (event callback)
+  "Set EVENT's runtime tool-result CALLBACK and return it."
+  (if callback
+      (puthash event callback magent-llm--event-result-callbacks)
+    (remhash event magent-llm--event-result-callbacks))
+  callback)
+
+(defun magent-llm-event-continuation (event)
+  "Return EVENT's runtime provider continuation, if any."
+  (gethash event magent-llm--event-continuations))
+
+(defun magent-llm-event-set-continuation (event continuation)
+  "Set EVENT's runtime provider CONTINUATION and return it."
+  (if continuation
+      (puthash event continuation magent-llm--event-continuations)
+    (remhash event magent-llm--event-continuations))
+  continuation)
+
 (defun magent-llm-event-type-p (type)
   "Return non-nil when TYPE is a valid normalized LLM event type."
   (memq type magent-llm-event-types))
@@ -88,17 +118,23 @@ Recognized keys are `:prompt', `:system', `:tools', `:model',
 
 (defun magent-llm-event-create (type &rest props)
   "Create a normalized `magent-llm-event' of TYPE with PROPS."
-  (magent-llm-event--create
-   :type (magent-llm--coerce-event-type type)
-   :text (plist-get props :text)
-   :id (plist-get props :id)
-   :name (plist-get props :name)
-   :arguments (plist-get props :arguments)
-   :raw (plist-get props :raw)
-   :usage (plist-get props :usage)
-   :stop-reason (plist-get props :stop-reason)
-   :message (plist-get props :message)
-   :metadata (plist-get props :metadata)))
+  (let ((event
+         (magent-llm-event--create
+          :type (magent-llm--coerce-event-type type)
+          :text (plist-get props :text)
+          :id (plist-get props :id)
+          :name (plist-get props :name)
+          :arguments (plist-get props :arguments)
+          :raw (plist-get props :raw)
+          :usage (plist-get props :usage)
+          :stop-reason (plist-get props :stop-reason)
+          :message (plist-get props :message)
+          :metadata (plist-get props :metadata))))
+    (magent-llm-event-set-result-callback
+     event (plist-get props :result-callback))
+    (magent-llm-event-set-continuation
+     event (plist-get props :continuation))
+    event))
 
 (defun magent-llm-text-delta-event (text &optional metadata)
   "Create a text delta event for TEXT and optional METADATA."
@@ -112,18 +148,26 @@ Recognized keys are `:prompt', `:system', `:tools', `:model',
   "Create a reasoning end event with optional METADATA."
   (magent-llm-event-create 'reasoning-end :metadata metadata))
 
-(defun magent-llm-tool-call-event (id name arguments &optional raw metadata)
-  "Create a tool call event with ID, NAME, ARGUMENTS, RAW, and METADATA."
+(defun magent-llm-tool-call-event
+    (id name arguments &optional raw metadata result-callback)
+  "Create a tool call event with ID, NAME, ARGUMENTS, RAW, and METADATA.
+RESULT-CALLBACK, when non-nil, accepts the model-visible tool result so the
+provider adapter can retain its native continuation context."
   (magent-llm-event-create 'tool-call
                            :id id
                            :name name
                            :arguments arguments
                            :raw raw
-                           :metadata metadata))
+                           :metadata metadata
+                           :result-callback result-callback))
 
-(defun magent-llm-tool-call-batch-end-event (&optional metadata)
-  "Create a tool-call batch-end event with optional METADATA."
-  (magent-llm-event-create 'tool-call-batch-end :metadata metadata))
+(defun magent-llm-tool-call-batch-end-event (&optional metadata continuation)
+  "Create a tool-call batch-end event with METADATA and CONTINUATION.
+CONTINUATION, when non-nil, resumes the provider request after every tool result
+callback in the batch has been called."
+  (magent-llm-event-create 'tool-call-batch-end
+                           :metadata metadata
+                           :continuation continuation))
 
 (defun magent-llm-completed-event (&optional text usage stop-reason metadata)
   "Create a completed event with TEXT, USAGE, STOP-REASON, and METADATA."
@@ -148,7 +192,9 @@ Recognized keys are `:prompt', `:system', `:tools', `:model',
                     (:usage . magent-llm-event-usage)
                     (:stop-reason . magent-llm-event-stop-reason)
                     (:message . magent-llm-event-message)
-                    (:metadata . magent-llm-event-metadata)))
+                    (:metadata . magent-llm-event-metadata)
+                    (:result-callback . magent-llm-event-result-callback)
+                    (:continuation . magent-llm-event-continuation)))
       (let ((value (funcall (cdr slot) event)))
         (when value
           (setq plist (append plist (list (car slot) value))))))

@@ -23,6 +23,7 @@
 (require 'magent-config)
 (require 'magent-json)
 (require 'magent-llm)
+(require 'magent-protocol)
 
 (declare-function gptel-openai-p "gptel-openai" t t)
 (declare-function gptel-openai-responses-p "gptel-openai" t t)
@@ -431,33 +432,124 @@ assistant prose."
       (nreverse events))))
 
 (defun magent-llm-gptel--emit-tool-call-batch
-    (request state events metadata)
+    (request state events metadata &optional continuation)
   "Emit normalized tool-call EVENTS followed by a batch-end event."
   (puthash :terminal-emitted t state)
   (dolist (event events)
     (magent-llm-gptel--emit request event))
   (magent-llm-gptel--emit
    request
-   (magent-llm-tool-call-batch-end-event metadata)))
+   (magent-llm-tool-call-batch-end-event metadata continuation)))
+
+(defun magent-llm-gptel--record-textual-tool-result (record result)
+  "Store model-visible RESULT in textual tool RECORD."
+  (plist-put record :output
+             (if (magent-tool-result-p result)
+                 (magent-tool-result-output-string result)
+               (gptel--to-string result)))
+  (plist-put record :done t))
+
+(defun magent-llm-gptel--textual-tool-result-message (records)
+  "Return an OpenAI chat user message containing textual tool RECORDS."
+  (list
+   :role "user"
+   :content
+   (concat
+    "The previous model response encoded tool requests as assistant text "
+    "instead of using the provider's tool-call protocol.  Magent recovered "
+    "and executed those requests.  Continue from these results, and use the "
+    "native tool-call protocol for any further tools.\n\n"
+    (magent-json-encode
+     (list
+      :recovered_textual_tool_results
+      (vconcat
+       (mapcar
+        (lambda (record)
+          (list :id (plist-get record :id)
+                :name (plist-get record :name)
+                :arguments
+                (magent-json-safe-value (plist-get record :arguments))
+                :output (plist-get record :output)))
+        records)))))))
+
+(defun magent-llm-gptel--openai-chat-continuation-supported-p (fsm info)
+  "Return non-nil when FSM and INFO support native OpenAI chat continuation."
+  (let* ((backend (and (listp info) (plist-get info :backend)))
+         (data (and (listp info) (plist-get info :data)))
+         (messages (and (listp data) (plist-get data :messages))))
+    (and fsm
+         backend
+         (fboundp 'gptel-openai-p)
+         (gptel-openai-p backend)
+         (vectorp messages))))
+
+(defun magent-llm-gptel--continue-with-user-message (fsm state message)
+  "Append OpenAI chat MESSAGE to FSM's context and continue it."
+  (let ((info (gptel-fsm-info fsm)))
+    (gptel--inject-prompt
+     (plist-get info :backend)
+     (plist-get info :data)
+     message)
+    (plist-put info :magent-after-tool-output t)
+    (magent-llm-gptel--reset-sample-state state info)
+    (gptel--fsm-transition fsm 'WAIT)))
+
+(defun magent-llm-gptel--continue-textual-tool-use
+    (fsm state records)
+  "Append textual tool RECORDS to FSM's native context and continue it."
+  (unless (cl-every (lambda (record) (plist-get record :done)) records)
+    (error "Cannot continue gptel request before all textual tools finish"))
+  (magent-llm-gptel--continue-with-user-message
+   fsm state (magent-llm-gptel--textual-tool-result-message records)))
+
+(defun magent-llm-gptel--prepare-textual-continuation
+    (fsm state info events)
+  "Attach result callbacks to textual EVENTS and return their continuation."
+  (when (magent-llm-gptel--openai-chat-continuation-supported-p fsm info)
+    (let ((records
+           (mapcar
+            (lambda (event)
+              (list :id (magent-llm-event-id event)
+                    :name (magent-llm-event-name event)
+                    :arguments (magent-llm-event-arguments event)
+                    :output nil
+                    :done nil))
+            events))
+          resumed)
+      (cl-mapc
+       (lambda (event record)
+         (magent-llm-event-set-result-callback
+          event
+          (apply-partially
+           #'magent-llm-gptel--record-textual-tool-result record)))
+       events records)
+      (lambda ()
+        (unless resumed
+          (unless (cl-every (lambda (record) (plist-get record :done))
+                            records)
+            (error
+             "Cannot continue gptel request before all textual tools finish"))
+          (setq resumed t)
+          (magent-llm-gptel--continue-textual-tool-use
+           fsm state records))))))
 
 (defun magent-llm-gptel--emit-completed-or-textual-tool-calls
-    (request state info text)
+    (request state info text &optional fsm)
   "Emit completion TEXT, or convert textual DSML tool calls into tool events.
-Return `tool-call' when textual tool calls were emitted, otherwise
-`completed'."
+Return a symbol describing completion, including whether the native provider
+context remains paused for Magent recovery."
   (let* ((metadata (magent-llm-gptel--metadata info))
-         (strict-final
-          (plist-get (magent-llm-request-metadata request)
-                     :strict-final-response-retry))
-         (events (unless strict-final
-                   (magent-llm-gptel--parse-dsml-tool-calls
-                    text metadata))))
+         (events (magent-llm-gptel--parse-dsml-tool-calls text metadata)))
     (if events
-      (progn
-        (magent-llm-gptel--flush-reasoning request state info)
-        (magent-llm-gptel--emit-tool-call-batch
-         request state events metadata)
-        'tool-call)
+        (let ((continuation
+               (magent-llm-gptel--prepare-textual-continuation
+                fsm state info events)))
+          (magent-llm-gptel--flush-reasoning request state info)
+          (magent-llm-gptel--emit-tool-call-batch
+           request state events
+           (append metadata '(:source textual-dsml))
+           continuation)
+          (if continuation 'tool-call-paused 'tool-call))
       (unless (string-empty-p (or text ""))
         (magent-llm-gptel--flush-reasoning request state info))
       (magent-llm-gptel--emit-terminal
@@ -477,6 +569,19 @@ Return `tool-call' when textual tool calls were emitted, otherwise
       (when-let* ((value (plist-get info key)))
         (setq metadata (append metadata (list key value)))))
     metadata))
+
+(defun magent-llm-gptel--error-message (info)
+  "Return the most useful provider error message from gptel INFO."
+  (let ((provider-error (plist-get info :error))
+        (status (plist-get info :status)))
+    (cond
+     ((stringp provider-error) provider-error)
+     ((and (listp provider-error)
+           (stringp (plist-get provider-error :message)))
+      (plist-get provider-error :message))
+     (provider-error (format "%S" provider-error))
+     (status (format "%s" status))
+     (t "gptel request failed"))))
 
 (defun magent-llm-gptel--tool-name (tool-spec raw-call)
   "Return the tool name from TOOL-SPEC or RAW-CALL."
@@ -507,25 +612,79 @@ METADATA is merged into the event metadata."
      raw-call
      (if (plist-member metadata :provider)
          metadata
-       (append (list :provider 'gptel) metadata)))))
+       (append (list :provider 'gptel) metadata))
+     (nth 2 call))))
 
-(defun magent-llm-gptel--handle-tool-use (fsm)
-  "Report pending gptel tool calls without executing them."
+(defun magent-llm-gptel--record-tool-result
+    (info tool-spec tool-call result)
+  "Record RESULT for TOOL-CALL in gptel INFO without resuming the request."
+  (let ((result (if (magent-tool-result-p result)
+                    (magent-tool-result-output-string result)
+                  (gptel--to-string result))))
+    (push (list tool-spec (plist-get tool-call :args) result)
+          (plist-get info :tool-result))
+    (plist-put tool-call :result result)))
+
+(defun magent-llm-gptel--reset-sample-state (state &optional info)
+  "Reset adapter STATE and optional gptel INFO before continuation."
+  (puthash :text-chunks nil state)
+  (puthash :reasoning-chunks nil state)
+  (puthash :reasoning-emitted nil state)
+  (puthash :reasoning-ended nil state)
+  (puthash :terminal-emitted nil state)
+  (when (listp info)
+    (plist-put info :content nil)
+    (plist-put info :stop-reason nil)))
+
+(defun magent-llm-gptel--continue-tool-use (fsm state)
+  "Inject completed tool results into FSM and continue its provider request."
+  (let* ((info (gptel-fsm-info fsm))
+         (tool-use (plist-get info :tool-use)))
+    (unless tool-use
+      (error "No gptel tool calls are available to continue"))
+    (unless (cl-every (lambda (tool-call)
+                        (plist-member tool-call :result))
+                      tool-use)
+      (error "Cannot continue gptel request before all tools finish"))
+    (gptel--inject-prompt
+     (plist-get info :backend)
+     (plist-get info :data)
+     (gptel--parse-tool-results (plist-get info :backend) tool-use))
+    (plist-put info :tool-pending nil)
+    (plist-put info :magent-tool-continuation nil)
+    (plist-put info :magent-after-tool-output t)
+    (magent-llm-gptel--reset-sample-state state info)
+    (gptel--fsm-transition fsm 'WAIT)))
+
+(defun magent-llm-gptel--handle-tool-use (state fsm)
+  "Report pending gptel tool calls and pause FSM for Magent execution."
   (when-let* ((info (gptel-fsm-info fsm))
               (callback (plist-get info :callback))
               (tools (plist-get info :tools))
               (tool-use (cl-remove-if (lambda (tc) (plist-get tc :result))
                                       (plist-get info :tool-use))))
     (magent-llm-gptel--sanitize-info info)
-    (let (pending-calls)
+    (let (pending-calls
+          resumed)
       (dolist (tool-call tool-use)
         (let* ((name (plist-get tool-call :name))
                (tool-spec (cl-find-if
                            (lambda (ts)
                              (equal (gptel-tool-name ts) name))
                            tools))
-               (args (plist-get tool-call :args)))
-          (push (list tool-spec args nil tool-call) pending-calls)))
+               (args (plist-get tool-call :args))
+               (result-callback
+                (apply-partially #'magent-llm-gptel--record-tool-result
+                                 info tool-spec tool-call)))
+          (push (list tool-spec args result-callback tool-call)
+                pending-calls)))
+      (plist-put info :tool-pending t)
+      (plist-put
+       info :magent-tool-continuation
+       (lambda ()
+         (unless resumed
+           (setq resumed t)
+           (magent-llm-gptel--continue-tool-use fsm state))))
       (funcall callback (cons 'tool-call (nreverse pending-calls)) info))))
 
 (defun magent-llm-gptel--handle-done (request state buffer fsm)
@@ -546,18 +705,22 @@ input."
                     (not (string-empty-p
                           (magent-llm-gptel--streamed-text state))))
             (magent-llm-gptel--flush-reasoning request state info)))
-        (magent-llm-gptel--emit-completed-or-textual-tool-calls
-         request
-         state
-         info
-         (magent-llm-gptel--final-text state info))
-        (when (buffer-live-p buffer)
-          (kill-buffer buffer))))))
+        (unless
+            (memq
+             (magent-llm-gptel--emit-completed-or-textual-tool-calls
+              request
+              state
+              info
+              (magent-llm-gptel--final-text state info)
+              fsm)
+             '(tool-call-paused completed-paused))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer)))))))
 
 (defun magent-llm-gptel--make-sampling-fsm (&optional request state buffer)
   "Create a gptel FSM for one model sampling request.
-It lets gptel own transport/parsing while preventing gptel from
-executing tools or continuing the tool loop."
+gptel owns transport and its native request data.  Magent pauses the FSM at
+tool calls, executes them itself, and explicitly resumes the same context."
   (gptel-make-fsm
    :table `((INIT . ((t . WAIT)))
             (WAIT . ((t . TYPE)))
@@ -566,32 +729,34 @@ executing tools or continuing the tool loop."
                      (t . DONE)))
             (TOOL . ((t . DONE))))
    :handlers `((WAIT ,#'gptel--handle-wait)
-               (TOOL ,#'magent-llm-gptel--handle-tool-use)
+               (TOOL ,(apply-partially
+                       #'magent-llm-gptel--handle-tool-use state))
                (DONE ,(apply-partially #'magent-llm-gptel--handle-done
                                         request state buffer)
                      ,#'gptel--handle-post)
                (ERRS ,#'gptel--handle-post)
                (ABRT ,#'gptel--handle-post))))
 
-(defun magent-llm-gptel--callback (request state buffer response info)
+(defun magent-llm-gptel--callback
+    (request state buffer response info &optional fsm)
   "Map gptel RESPONSE and INFO to normalized events for REQUEST."
   (cond
    ((stringp response)
     (if (and (not (plist-get info :stream))
              (not (magent-llm-gptel--pending-tool-use-p info)))
-        (progn
-          (magent-llm-gptel--emit-completed-or-textual-tool-calls
-           request state info response)
+        (unless
+            (memq
+             (magent-llm-gptel--emit-completed-or-textual-tool-calls
+              request state info response fsm)
+             '(tool-call-paused completed-paused))
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))
       (push response (gethash :text-chunks state))
-      (unless (plist-get (magent-llm-request-metadata request)
-                         :final-response-retry)
-        (magent-llm-gptel--emit
-         request
-         (magent-llm-text-delta-event
-          response
-          (magent-llm-gptel--metadata info))))))
+      (magent-llm-gptel--emit
+       request
+       (magent-llm-text-delta-event
+        response
+        (magent-llm-gptel--metadata info)))))
    ((and (consp response) (eq (car response) 'reasoning))
     (if (eq (cdr response) t)
         (progn
@@ -620,17 +785,19 @@ executing tools or continuing the tool loop."
          (magent-llm-gptel--normalize-tool-call call metadata)))
       (magent-llm-gptel--emit
        request
-       (magent-llm-tool-call-batch-end-event metadata))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))))
+       (magent-llm-tool-call-batch-end-event
+        metadata
+        (plist-get info :magent-tool-continuation)))))
    ((eq response t)
     (if (magent-llm-gptel--pending-tool-use-p info)
+        nil
+      (unless
+          (memq
+           (magent-llm-gptel--emit-completed-or-textual-tool-calls
+            request state info (magent-llm-gptel--final-text state info) fsm)
+           '(tool-call-paused completed-paused))
         (when (buffer-live-p buffer)
-          (kill-buffer buffer))
-      (magent-llm-gptel--emit-completed-or-textual-tool-calls
-       request state info (magent-llm-gptel--final-text state info))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))))
+          (kill-buffer buffer)))))
    ((eq response 'abort)
     (magent-llm-gptel--emit-terminal
      request
@@ -645,9 +812,7 @@ executing tools or continuing the tool loop."
      request
      state
      (magent-llm-error-event
-      (or (plist-get info :status)
-          (plist-get info :error)
-          "gptel request failed")
+      (magent-llm-gptel--error-message info)
       (magent-llm-gptel--metadata info)))
     (when (buffer-live-p buffer)
       (kill-buffer buffer)))))
@@ -792,19 +957,21 @@ Return the request buffer as the abort handle.  REQUEST must be a
                     (if (plist-member metadata :include-reasoning)
                         (plist-get metadata :include-reasoning)
                       magent-include-reasoning)))
-      (gptel-request
-          (magent-llm-request-prompt request)
-        :buffer buffer
-        :context (append
-                  (list :magent-llm-gptel t)
-                  (when (plist-member metadata :top-p)
-                    (list :top-p (plist-get metadata :top-p))))
-        :system (magent-llm-request-system request)
-        :stream (magent-llm-request-stream request)
-        :fsm (magent-llm-gptel--make-sampling-fsm request state buffer)
-        :callback (lambda (response info)
-                    (magent-llm-gptel--callback
-                     request state buffer response info))))
+      (let ((fsm (magent-llm-gptel--make-sampling-fsm
+                  request state buffer)))
+        (gptel-request
+            (magent-llm-request-prompt request)
+          :buffer buffer
+          :context (append
+                    (list :magent-llm-gptel t)
+                    (when (plist-member metadata :top-p)
+                      (list :top-p (plist-get metadata :top-p))))
+          :system (magent-llm-request-system request)
+          :stream (magent-llm-request-stream request)
+          :fsm fsm
+          :callback (lambda (response info)
+                      (magent-llm-gptel--callback
+                       request state buffer response info fsm)))))
     buffer))
 
 (provide 'magent-llm-gptel)

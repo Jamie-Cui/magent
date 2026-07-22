@@ -125,12 +125,12 @@ transitions to an error state.  Set to 0 to disable."
   :group 'magent)
 
 (defcustom magent-max-sampling-requests 0
-  "Compatibility safety guard for model sampling requests in one turn.
+  "Safety guard for model sampling requests in one turn.
 Magent normally follows Codex-style turn continuation and does not impose a
 per-turn sampling limit.  When this value is positive, the initial request
 counts as one and tool-output continuations count as additional requests; the
-limit replaces the next continuation with one provider-tools-disabled final
-request.  Set to 0 to disable."
+turn fails directly when the next continuation would exceed the limit.  No
+extra provider request is made.  Set to 0 to disable."
   :type 'integer
   :group 'magent)
 
@@ -326,8 +326,15 @@ If rg is not found, grep tool calls will fail with an informative error."
   :type 'integer
   :group 'magent)
 
-(defcustom magent-bash-timeout 30
-  "Default timeout in seconds for bash commands."
+(defcustom magent-bash-program "bash"
+  "Bash-compatible executable used by the bash tool.
+Commands run with pipefail enabled and errexit disabled.  If this executable
+cannot be resolved, bash tool calls fail without affecting other Magent tools."
+  :type 'string
+  :group 'magent)
+
+(defcustom magent-bash-timeout 300
+  "Positive host-controlled timeout in seconds for Bash commands."
   :type 'integer
   :group 'magent)
 
@@ -337,17 +344,18 @@ If rg is not found, grep tool calls will fail with an informative error."
   :group 'magent)
 
 (defcustom magent-tool-result-model-max-length 12000
-  "Maximum characters of any tool result kept in model-visible history.
-Longer results are truncated before they are recorded in the session
-ledger, legacy messages, context items, and subsequent gptel prompts."
+  "Maximum tool output body characters kept in model-visible history.
+Longer bodies are truncated before they are recorded in the session ledger,
+legacy messages, context items, and subsequent gptel prompts.  Structured
+failure status headers are always retained outside this limit."
   :type '(choice (const :tag "Do not truncate tool results" nil)
                  integer)
   :group 'magent)
 
 (defcustom magent-tool-result-model-preview-length 10000
-  "Prefix characters retained when a tool result is model-visible truncated.
-The final record also includes a compact truncation notice with the
-original result length."
+  "Body prefix characters retained when a tool result is truncated.
+The final record also includes a compact truncation notice with the original
+body length.  Structured failure status headers are not part of this budget."
   :type 'integer
   :group 'magent)
 

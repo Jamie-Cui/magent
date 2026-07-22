@@ -168,19 +168,15 @@ is a bounded recovery tail. The two are not interchangeable.
    ~magent-agent-process~ owns the decision to rebuild the prompt from
    session history and start the next sampling request.  This keeps tool
    execution separate from turn continuation policy.
-10. If a post-tool continuation completes with empty assistant text, Magent
-    makes one provider-tools-disabled final-response retry.  If that retry only
-    reasons without producing text, one stricter no-reasoning retry is used;
-    an empty strict response fails the turn.
+10. An empty provider completion records ~empty-completion~ metadata and
+    completes the turn without another model request.
 11. Assistant completion records an assistant message item and completes
    the turn.
 12. Abort, failure, and dropped queued submissions transition the turn to
    ~interrupted~, ~failed~, or ~dropped~; in-progress items under an
    aborted turn are marked ~cancelled~.
-13. ~magent-max-sampling-requests~ is an optional compatibility safety guard,
-    disabled by default.  Codex does not impose a per-turn sampling cap; when
-    this guard is explicitly enabled, Magent replaces the continuation at the
-    limit with one provider-tools-disabled final request.
+13. ~magent-max-sampling-requests~ is an optional safety guard, disabled by
+    default.  When enabled, reaching the limit fails the turn directly.
 
 Prompt reconstruction is ledger-driven.  When a current turn id is known,
 Magent includes completed history plus that turn only, preventing later

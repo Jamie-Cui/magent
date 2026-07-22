@@ -1,1 +1,0 @@
-The previous assistant response after tool execution was empty. Continue the task now. Use tools if additional inspection is required; otherwise write the final answer.

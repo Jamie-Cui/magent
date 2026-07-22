@@ -28,6 +28,9 @@ coverage/
 docs/_site/
 /_site/
 
+# Local benchmark credentials
+/benchmark/config.toml
+
 # Session files
 .emacs.desktop
 .emacs.desktop.lock

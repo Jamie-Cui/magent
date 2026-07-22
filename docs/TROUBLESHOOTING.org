@@ -193,7 +193,7 @@ variables explicitly, such as ~GPTEL_DIR~, ~COMPAT_DIR~, or
 
 - If a tool continuation hangs after the first tool result, inspect ~/tmp/magent-live-trace.el~. A ~gptel-curl-get-args :event enter~ with no matching ~:event leave~ usually means gptel hit a serialization error before curl started. Check tool-call names, tool args, and assistant ~tool_calls~ history for Lisp symbols or non-JSON-safe values.
 - If the first provider request emits a tool call but the second request never starts, check whether Magent recorded the tool result in the session and rebuilt the continuation prompt via ~magent-agent-loop-request-for-current-session~.
-- If the continuation starts but the UI still gets an empty final answer after tool output, check for the ~retrying empty final response after tool output~ log line. Magent should attempt exactly one no-tool final-response retry; reasoning-only completions should remain empty assistant text rather than being displayed as the answer.
+- If the continuation completes without assistant text, inspect the turn result for ~(:reason empty-completion)~. Magent does not issue a recovery request; reasoning-only content remains separate from assistant text.
 - If the second request completes but agent-shell omits the final assistant
   text, remember that tool-enabled requests may be non-streaming. A
   non-streaming string callback can be the final completion, not a text delta;
@@ -248,7 +248,10 @@ Expected final status files include ~:status passed~, ~:repo-source~ paths under
 3. Run ~M-x magent-list-agents~ and verify the current agent-shell session mode.
 
 *Solution:*
-- For bash: Ensure command is valid in your shell
+- For bash: Verify Bash is installed and ~magent-bash-program~ resolves to it.
+  Commands run without errexit and with pipefail.  Use ~&&~ or explicit ~set -e~
+  when fail-fast sequencing is required.  Output-limiting pipelines such as
+  ~rg ... | head~ can fail on SIGPIPE; prefer native limit options.
 - For emacs_eval: Check for syntax errors
 - For grep: Verify ripgrep is installed: ~which rg~
 

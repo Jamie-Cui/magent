@@ -48,6 +48,12 @@ The parent ~magent-session~ persists child jobs in its ~agent-jobs~ slot. Runtim
 4. Completion, failure, close, and wait events update the durable job record.
 5. Tool results return model-visible JSON summaries to the root agent.
 
+A successful ~spawn_agent~ result includes a machine-readable ~next_action~
+that calls ~wait_agent~ with the returned job id. It deliberately omits a
+timeout so host policy remains authoritative. When ~wait_agent~ omits its
+timeout, it uses a positive ~magent-request-timeout~ or a finite 300-second
+fallback. Timing out one wait does not cancel or close the child job.
+
 The provider boundary remains ~gptel-request~ through ~magent-llm-gptel.el~. Magent owns orchestration, tool dispatch, persistence, abort behavior, and child-job coordination.
 
 * Inheritance

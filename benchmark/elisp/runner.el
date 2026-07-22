@@ -114,8 +114,9 @@
   `((status . ,(symbol-name status))
     (success . ,(if (magent-agent-result-success-p result) t :json-false))
     (output . ,(magent-agent-result-content-string result))
-    (error . ,(and (magent-agent-result-p result)
-                   (magent-agent-result-error result)))
+    (error . ,(magent-agent-result-error result))
+    (metadata . ,(magent-json-safe-value
+                  (magent-agent-result-metadata result)))
     (model . ,(magent-benchmark--env "MAGENT_BENCH_MODEL"))
     (provider . ,(magent-benchmark--env "MAGENT_BENCH_PROVIDER"))
     (wire-api . ,(magent-benchmark--env "MAGENT_BENCH_WIRE_API"))
@@ -153,7 +154,8 @@
      magent-enable-capabilities t
      magent-session-directory (expand-file-name "sessions/" logs)
      magent-audit-directory (expand-file-name "audit/" logs)
-     magent-request-timeout 0
+     magent-request-timeout 300
+     magent-bash-timeout 300
      magent-max-sampling-requests 0)
     (when-let* ((effort (magent-benchmark--env "MAGENT_BENCH_EFFORT")))
       (unless (string= effort "auto")

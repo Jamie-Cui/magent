@@ -622,7 +622,9 @@ restored after the request finishes."
       (magent-runtime-api--mark-submission-turn-dropped
        submission "Queued turn cancelled")
       (magent-runtime-api--finish-submission
-       submission 'cancelled "Queued turn cancelled"))
+       submission 'cancelled
+       (magent-agent-result-cancelled
+        "Queued turn cancelled" (list :reason 'cancelled))))
     (when (and active
                (eq (magent-runtime-submission-session active)
                    runtime-session))
@@ -633,7 +635,9 @@ restored after the request finishes."
       (magent-runtime-api--mark-submission-turn-interrupted
        active "Active turn cancelled")
       (magent-runtime-api--finish-submission
-       active 'cancelled "Active turn cancelled"))
+       active 'cancelled
+       (magent-agent-result-cancelled
+        "Active turn cancelled" (list :reason 'cancelled))))
     (+ (length removed)
        (if (and active
                 (eq (magent-runtime-submission-session active)
