@@ -67,6 +67,18 @@ parent `magent-session' under `agent-jobs'.")
 Pages end at a line boundary when possible.  A single longer line is returned
 whole so a subsequent line-based request always makes progress.")
 
+(defconst magent-tools--agent-wait-fallback-timeout 300
+  "Fallback wait timeout in seconds when the host request timeout is disabled.")
+
+(defun magent-tools--agent-wait-timeout (&optional timeout)
+  "Return explicit child-agent TIMEOUT or the host's finite default."
+  (cond
+   ((numberp timeout) timeout)
+   ((and (numberp magent-request-timeout)
+         (> magent-request-timeout 0))
+    magent-request-timeout)
+   (t magent-tools--agent-wait-fallback-timeout)))
+
 (defun magent-tools--origin-buffer-name ()
   "Return the request origin buffer name for the current tool call."
   (and magent-tools--request-context
@@ -1159,10 +1171,16 @@ Return the child loop handle when startup succeeds."
         (funcall
          callback
          (magent-tools--agent-job-result-json
-          `((status . ,(if (eq (magent-agent-job-status job) 'failed)
-                           "failed"
-                         "spawned"))
-            (job . ,(magent-tools--agent-job-summary job t))))))))))
+          (append
+           `((status . ,(if (eq (magent-agent-job-status job) 'failed)
+                            "failed"
+                          "spawned"))
+             (job . ,(magent-tools--agent-job-summary job t)))
+           (unless (eq (magent-agent-job-status job) 'failed)
+             `((next_action
+                . ((tool . "wait_agent")
+                   (arguments
+                    . ((job_id . ,(magent-agent-job-id job))))))))))))))))
 
 (defun magent-tools--send-agent-message (callback job-id message)
   "Send follow-up MESSAGE to child-agent JOB-ID."
@@ -1237,7 +1255,7 @@ When INCLUDE-CLOSED is non-nil, include terminal closed/cancelled jobs."
          (parent-context magent-tools--request-context)
          (parent-scope (magent-tools--parent-scope))
          (ids (magent-tools--agent-job-ids job-id job-ids))
-         (timeout (or timeout 30)))
+         (timeout (magent-tools--agent-wait-timeout timeout)))
     (condition-case err
         (let* ((jobs (magent-tools--agent-jobs-for-ids session ids))
                (deadline (+ (float-time) (max 0 timeout)))
@@ -1569,7 +1587,7 @@ See `magent-agent-loop-filter-display-args'.")
 (defvar magent-tools--spawn-agent-tool
   (gptel-make-tool
    :name "spawn_agent"
-   :description "Start a durable child-agent job. Use explore for focused codebase search and general for broader multi-step work. Returns a stable job id that can be listed, waited on, messaged, or closed."
+   :description "Start a durable child-agent job. Use explore for focused codebase search and general for broader multi-step work. Returns a stable job id and a machine-readable next action for wait_agent."
    :args (list '(:name "agent"
                        :type string
                        :description "Name of the subagent to start (e.g. 'explore', 'general')")
@@ -1616,7 +1634,7 @@ See `magent-agent-loop-filter-display-args'.")
                        :optional t)
                '(:name "timeout"
                        :type integer
-                       :description "Maximum seconds to wait, defaults to 30"
+                       :description "Maximum seconds to wait; defaults to magent-request-timeout, or 300 when that setting is disabled"
                        :optional t)
                magent-tools--reason-arg)
    :function #'magent-tools--wait-agent

@@ -30,11 +30,16 @@ Emacs 不只是宿主进程。Magent 依赖活的编辑器状态：buffer、majo
 
 ~magent-llm.el~ 定义 provider-neutral request/event。 ~magent-llm-gptel.el~ 负责一次 sampling request：调用 ~gptel-request~ ，再把 gptel callback 转成 Magent normalized events。这个 adapter 可以隐藏 gptel callback/FSM 细节，但主 loop 只消费 normalized events。Reasoning event 与 assistant text 分开保存；reasoning-only completion 可以产生空 assistant content，不会把 chain text 泄漏成最终回答。
 
+每次 provider continuation 都会开始一个新的 sample 边界。公开的 terminal result
+只包含最后一个 sample 的 assistant text，ledger 则保留完整 turn transcript 和 tool
+history。这个分离是确定性的，不会触发隐藏的 finalization 或 recovery request。
+
 ** Prompt 装配与信任边界
 
 ~magent-agent.el~ 按固定顺序装配每次 agent-loop 的 file-backed system message。
-第一层是 agent-specific prompt 或 ~magent-system-prompt~，后面依次加入 project-root
-context、从项目根到请求相关本地文件逐层发现的适用 ~AGENTS.md~、经过选择的 Emacs
+~magent-system-prompt~ 始终位于第一层，后面是可选的 agent-specific role prompt，
+再依次加入 project-root context、从项目根到请求相关本地文件逐层发现的适用
+~AGENTS.md~、经过选择的 Emacs
 profile memory，以及 capability/显式 instruction skills。最后追加短小的 runtime
 trust policy，因此内置 utility agents 和 custom agents 能保留各自的输出契约，同时
 共享 instruction provenance 与 permission 不变量。项目指令发现不会越过 canonical

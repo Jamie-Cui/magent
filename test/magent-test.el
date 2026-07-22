@@ -388,7 +388,7 @@
     (should (magent-agent-loop-p captured))))
 
 (ert-deftest magent-test-agent-process-continues-after-tool-output ()
-  "Test tool continuation does not duplicate its streamed final text."
+  "Test a tool continuation returns only its terminal sample."
   (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
          (gptel-model 'gpt-4o-mini)
          (magent-max-sampling-requests 0)
@@ -452,7 +452,18 @@
        agent nil nil nil nil nil nil request-state))
     (should (= call-count 2))
     (should (equal (magent-agent-result-content-string response)
-                   "Checking buffers. Done."))
+                   "Done."))
+    (let* ((turn (car (magent-thread-turns
+                       (magent-session-thread-ledger session))))
+           (assistant
+            (cl-find-if
+             (lambda (item)
+               (and (eq (magent-thread-item-type item) 'message)
+                    (eq (magent-thread-item-role item) 'assistant)))
+             (magent-thread-turn-items turn))))
+      (should assistant)
+      (should (equal (magent-thread-item-content assistant)
+                     "Checking buffers. Done.")))
     (let ((second-prompt (car sampled-prompts)))
       (should (equal second-prompt
                      '((prompt . "Run eval")
@@ -1802,6 +1813,7 @@
   (let* ((backend (gptel-make-openai "scope-root" :key "key"))
          (gptel-backend backend)
          (gptel-model 'scope-model)
+         (magent-system-prompt "Global system.")
          (agent (magent-agent-info-create
                  :name "build"
                  :mode 'primary
@@ -1850,7 +1862,11 @@
       (should (string-match-p
                (regexp-quote "do not invent unrelated absolute paths")
                system))
-      (should (string-prefix-p "Base system." system))
+      (should (string-prefix-p "Global system." system))
+      (should (< (string-match "Global system" system)
+                 (string-match "Base system" system)))
+      (should (< (string-match "Base system" system)
+                 (string-match "Current project root" system)))
       (should (string-match-p
                (regexp-quote "* Runtime Trust Boundary")
                system))
@@ -1863,21 +1879,25 @@
   "Test dynamic context precedes the universal runtime trust policy."
   (require 'magent-agent)
   (let* ((system (magent-agent--compose-system-message
+                  "Global system contract."
                   "Agent-specific output contract."
                   "/tmp/project"
                   "Memory block."
                   '("Skill block.")
                   "Project instructions block."))
-         (base-pos (string-match "Agent-specific output contract" system))
+         (global-pos (string-match "Global system contract" system))
+         (role-pos (string-match "Agent-specific output contract" system))
          (project-pos (string-match "Current project root" system))
          (instructions-pos (string-match "Project instructions block" system))
          (memory-pos (string-match "Memory block" system))
          (skill-pos (string-match "Skill block" system))
          (policy-pos (string-match "Runtime Trust Boundary" system)))
     (should (cl-every #'integerp
-                      (list base-pos project-pos instructions-pos memory-pos
+                      (list global-pos role-pos project-pos
+                            instructions-pos memory-pos
                             skill-pos policy-pos)))
-    (should (< base-pos project-pos))
+    (should (< global-pos role-pos))
+    (should (< role-pos project-pos))
     (should (< project-pos instructions-pos))
     (should (< instructions-pos memory-pos))
     (should (< memory-pos skill-pos))
@@ -2770,6 +2790,24 @@
     (should-not (string-match-p "<system-reminder>" prompt))
     (should-not (string-match-p "Available Tools:" prompt))
     (should-not (string-match-p "Built-in Skill files" prompt))))
+
+(ert-deftest magent-test-build-agent-prompt-defines-debugging-protocol ()
+  "Test the build role adds causal verification and conditional delegation."
+  (require 'magent-agent-builtins)
+  (let ((prompt (magent-agent-info-prompt
+                 (magent-agent-builtins--build))))
+    (should (string-match-p "exact operation order" prompt))
+    (should (string-match-p "potentially state-changing" prompt))
+    (should (string-match-p "observable invariants" prompt))
+    (should (string-match-p "causal checklist" prompt))
+    (should (string-match-p "direct[[:space:]]+assertion" prompt))
+    (should (string-match-p "prove it[[:space:]]+irrelevant" prompt))
+    (should (string-match-p "arbitrary in-range sentinel" prompt))
+    (should (string-match-p "every[[:space:]]+state derived" prompt))
+    (should (string-match-p "compatibility oracle" prompt))
+    (should (string-match-p "immediately after construction" prompt))
+    (should (string-match-p "Spawn an explore agent when" prompt))
+    (should (string-match-p "collected zero tests" prompt))))
 
 (ert-deftest magent-test-memory-prompt-declares-precedence ()
   "Test injected profile memory cannot silently override current state."
@@ -5731,6 +5769,11 @@
            (metadata (magent-agent-job-metadata job))
            (permission-profile (cdr (assq 'permission-profile metadata))))
       (should (equal (cdr (assq 'status decoded)) "spawned"))
+      (let* ((next-action (cdr (assq 'next_action decoded)))
+             (arguments (cdr (assq 'arguments next-action))))
+        (should (equal (cdr (assq 'tool next-action)) "wait_agent"))
+        (should (equal (cdr (assq 'job_id arguments)) job-id))
+        (should-not (assq 'timeout arguments)))
       (should (magent-agent-job-p job))
       (should (equal (magent-agent-job-agent-name job) "explore"))
       (should (equal (magent-agent-job-task-name job) "scan"))
@@ -5825,6 +5868,7 @@
            (job (magent-session-agent-job parent-session job-id))
            (metadata (magent-agent-job-metadata job)))
       (should (equal (cdr (assq 'status decoded)) "failed"))
+      (should-not (assq 'next_action decoded))
       (should (magent-agent-job-p job))
       (should (eq (magent-agent-job-status job) 'failed))
       (should (string-match-p "max depth 1 exceeded"
@@ -5988,6 +6032,17 @@
       (should (equal (magent-agent-job-result job) "reply: follow up"))
       (should (equal (cdr (assq 'status close-json)) "closed"))
       (should-not aborted))))
+
+(ert-deftest magent-test-tools-wait-agent-default-timeout-follows-host ()
+  "Test child waits can outlive 30 seconds without becoming unbounded."
+  (require 'magent-tools)
+  (let ((magent-request-timeout 120))
+    (should (= (magent-tools--agent-wait-timeout) 120))
+    (should (= (magent-tools--agent-wait-timeout 0) 0)))
+  (let ((magent-request-timeout 0))
+    (should (= (magent-tools--agent-wait-timeout) 300)))
+  (let ((magent-request-timeout nil))
+    (should (= (magent-tools--agent-wait-timeout) 300))))
 
 (ert-deftest magent-test-tools-all-registered ()
   "Test that all core tools are registered."
@@ -9009,7 +9064,7 @@
     (should (equal (magent-agent-loop-error failed-loop) "boom"))))
 
 (ert-deftest magent-test-agent-loop-completion-keeps-streamed-prefix ()
-  "Test completion keeps text streamed before a tool continuation."
+  "Test completion keeps text streamed within the current sample."
   (require 'magent-agent-loop)
   (let ((loop (magent-agent-loop-create)))
     (magent-agent-loop-apply-event
@@ -9018,6 +9073,49 @@
      loop (magent-llm-completed-event "Done."))
     (should (equal (magent-agent-loop-result loop)
                    "Checking buffers. Done."))))
+
+(ert-deftest magent-test-agent-loop-terminal-result-is-current-sample-only ()
+  "Test sample boundaries separate the terminal result from the transcript."
+  (require 'magent-agent-loop)
+  (let ((loop (magent-agent-loop-create)))
+    (magent-agent-loop-begin-sample loop)
+    (magent-agent-loop-apply-event
+     loop (magent-llm-text-delta-event "Investigating. "))
+    (magent-agent-loop-apply-event
+     loop (magent-llm-tool-call-event
+           "call-1" "read_file" '(:path "one.el")))
+    (magent-agent-loop-begin-sample loop)
+    (magent-agent-loop-apply-event
+     loop (magent-llm-text-delta-event "Verifying. "))
+    (magent-agent-loop-apply-event
+     loop (magent-llm-tool-call-event
+           "call-2" "read_file" '(:path "two.el")))
+    (magent-agent-loop-begin-sample loop)
+    (magent-agent-loop-apply-event
+     loop (magent-llm-text-delta-event "Fixed."))
+    (magent-agent-loop-apply-event
+     loop (magent-llm-completed-event "Fixed."))
+    (should (equal (magent-agent-loop-sample-text loop) "Fixed."))
+    (should (equal (magent-agent-loop-result loop) "Fixed."))
+    (should (equal (magent-agent-loop-text loop)
+                   "Investigating. Verifying. Fixed."))
+    (should (equal (magent-agent-loop-transcript loop)
+                   "Investigating. Verifying. Fixed."))))
+
+(ert-deftest magent-test-agent-loop-discards-only-current-textual-sample ()
+  "Test textual tool normalization preserves earlier sample transcript."
+  (require 'magent-agent-loop)
+  (let ((loop (magent-agent-loop-create)))
+    (magent-agent-loop-begin-sample loop)
+    (magent-agent-loop-apply-event
+     loop (magent-llm-text-delta-event "Keep this. "))
+    (magent-agent-loop-begin-sample loop)
+    (magent-agent-loop-apply-event
+     loop (magent-llm-text-delta-event "<tool>discard</tool>"))
+    (magent-agent-loop-discard-sample-text loop)
+    (should (equal (magent-agent-loop-text loop) "Keep this. "))
+    (should (equal (magent-agent-loop-sample-text loop) ""))
+    (should-not (magent-agent-loop-result loop))))
 
 (ert-deftest magent-test-agent-loop-completion-does-not-use-reasoning ()
   "Test empty final content does not leak reasoning as assistant text."

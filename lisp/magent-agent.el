@@ -56,12 +56,12 @@
 (defun magent-agent--completion-callback-text (loop event streaming-started)
   "Return assistant text that still needs a callback for EVENT.
 LOOP has already accumulated EVENT by the time this helper is called.
-When streaming has not started, the full loop result should be rendered.
+When streaming has not started, the current sample result should be rendered.
 When streaming has started, render only the completed event's text that
 was not already emitted as text deltas."
   (let ((result (magent-agent-loop-result loop))
         (event-text (magent-llm-event-text event))
-        (streamed (magent-agent-loop-text loop)))
+        (streamed (magent-agent-loop-sample-text loop)))
     (cond
      ((not streaming-started)
       result)
@@ -135,9 +135,11 @@ idempotent so higher-level runtime error handling may safely repeat it."
                           `((project-root . ,project-root)))))
 
 (defun magent-agent--compose-system-message
-    (base-system-message project-root memory-message skill-prompts
+    (global-system-message agent-role-message
+                           project-root memory-message skill-prompts
                          &optional project-instructions)
-  "Return system prompt from BASE-SYSTEM-MESSAGE and prompt context.
+  "Return system prompt from GLOBAL-SYSTEM-MESSAGE and prompt context.
+AGENT-ROLE-MESSAGE supplements the universal contract instead of replacing it.
 PROJECT-ROOT contributes workspace context, MEMORY-MESSAGE is a selected
 Emacs profile memory block, and SKILL-PROMPTS are active skill prompts.
 PROJECT-INSTRUCTIONS contains scoped repository instructions discovered by
@@ -155,7 +157,8 @@ receives the same instruction-provenance and permission invariants."
          (magent-prompt-read "internal/runtime-policy.org")))
     (mapconcat #'identity
                (delq nil
-                      (list base-system-message
+                      (list global-system-message
+                            agent-role-message
                             context-message
                             project-instructions
                             memory-message
@@ -254,8 +257,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                  (magent-request-context-turn-id request-state)))
            (prompt-list (magent-session-to-gptel-prompt-list
                          session current-turn-id))
-           (base-system-msg (or (magent-agent-info-prompt agent)
-                                magent-system-prompt))
+           (agent-role-msg (magent-agent-info-prompt agent))
            (request-project-root
             (magent-agent--request-project-root request-context request-state))
            (tools (mapcar #'magent-tool-runtime-to-plist
@@ -300,7 +302,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
              request-project-root request-context))
            (system-msg
             (magent-agent--compose-system-message
-             base-system-msg request-project-root memory-message skill-prompts
+             magent-system-prompt agent-role-msg
+             request-project-root memory-message skill-prompts
              project-instructions)))
       (when capability-resolution
         (magent-lifecycle-events-emit
@@ -387,7 +390,6 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                   (assistant-item nil)
                   (reasoning-item nil)
                   (sampling-count 0)
-                  (sample-text-chunk-count 0)
                   (sample-assistant-content-before nil)
                   loop)
              (cl-labels
@@ -464,7 +466,11 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                           (text (cond
                                  ((stringp response) response)
                                  ((null response) "")
-                                 (t (format "%S" response)))))
+                                 (t (format "%S" response))))
+                          (transcript
+                           (if (eq status 'completed)
+                               (magent-agent-loop-transcript loop)
+                             text)))
                      (if (and thread turn-id)
                          (let ((item (or assistant-item
                                          (magent-thread-ensure-message-item
@@ -472,17 +478,12 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                           (list :source 'terminal)))))
                            (pcase status
                              ('completed
-                              (let ((final-text
-                                     (if (string-empty-p text)
-                                         (or (magent-thread-item-content item)
-                                             "")
-                                       text)))
-                                (magent-thread-complete-item
-                                 thread item
-                                 :role 'assistant
-                                 :content final-text)
-                                (magent-thread-complete-turn
-                                 thread turn-id)))
+                              (magent-thread-complete-item
+                               thread item
+                               :role 'assistant
+                               :content transcript)
+                              (magent-thread-complete-turn
+                               thread turn-id))
                              (_
                               (let ((message
                                      (if (string-prefix-p "Error:" text)
@@ -505,7 +506,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                (error-message-string err)))))
                        (when (eq status 'completed)
                          (magent-session-add-message
-                          session 'assistant text)))))
+                          session 'assistant transcript)))))
                   (emit-request-start
                    ()
                    (magent-lifecycle-events-emit
@@ -527,12 +528,13 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                    (finish-reasoning-item))
                   (prepare-sample
                    ()
-                   (setq sample-text-chunk-count
-                         (length (magent-agent-loop-text-chunks loop))
-                         sample-assistant-content-before
+                   (setq sample-assistant-content-before
                          (and assistant-item
                               (copy-tree
-                               (magent-thread-item-content assistant-item)))))
+                               (magent-thread-item-content assistant-item)))
+                         streaming-started nil
+                         text-delta-seen nil)
+                   (magent-agent-loop-begin-sample loop))
                   (sample
                    ()
                    (prepare-sample)
@@ -555,14 +557,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                       :metadata (magent-llm-request-metadata request))))
                   (rollback-current-sample-text
                    ()
-                   (let* ((chunks (magent-agent-loop-text-chunks loop))
-                          (new-count
-                           (max 0 (- (length chunks)
-                                     sample-text-chunk-count))))
-                     (setf (magent-agent-loop-text-chunks loop)
-                           (nthcdr new-count chunks)
-                           (magent-agent-loop-result loop)
-                           (magent-agent-loop-text loop)))
+                   (magent-agent-loop-discard-sample-text loop)
                    (when assistant-item
                      (setf (magent-thread-item-content assistant-item)
                            (copy-tree sample-assistant-content-before))

@@ -25,6 +25,7 @@
    :description "Default agent for building and general coding tasks"
    :mode 'primary
    :native t
+   :prompt (magent-prompt-read "agents/build.org")
    :source-layer 'builtin
    :permission (magent-permission-defaults)))
 

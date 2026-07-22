@@ -120,6 +120,10 @@ If CONTROLLER is already aborted, run CLEANUP immediately."
   (make-hash-table :test #'eq :weakness 'key)
   "Provider continuation callbacks keyed by loop identity.")
 
+(defvar magent-agent-loop--sample-text-chunks
+  (make-hash-table :test #'eq :weakness 'key)
+  "Current provider sample text chunks keyed by loop identity.")
+
 (defun magent-agent-loop-tool-continuation (loop)
   "Return LOOP's pending provider continuation, if any."
   (gethash loop magent-agent-loop--tool-continuations))
@@ -180,6 +184,34 @@ SAMPLER is a function called with REQUEST by `magent-agent-loop-start'."
   (apply #'concat (nreverse (copy-sequence
                              (magent-agent-loop-text-chunks loop)))))
 
+(defun magent-agent-loop-sample-text (loop)
+  "Return assistant text accumulated for LOOP's current provider sample."
+  (apply #'concat
+         (nreverse
+          (copy-sequence
+           (gethash loop magent-agent-loop--sample-text-chunks)))))
+
+(defun magent-agent-loop-begin-sample (loop)
+  "Start a new provider sample for LOOP.
+Turn-wide text remains available through \`magent-agent-loop-text', while the
+terminal result is reset to the text produced by the new sample."
+  (remhash loop magent-agent-loop--sample-text-chunks)
+  (setf (magent-agent-loop-result loop) nil)
+  loop)
+
+(defun magent-agent-loop-discard-sample-text (loop)
+  "Discard LOOP's current sample text from its turn transcript.
+This is used when textual tool syntax was streamed as assistant text before
+being normalized into structured tool calls."
+  (let ((count (length
+                (gethash loop magent-agent-loop--sample-text-chunks))))
+    (when (> count 0)
+      (setf (magent-agent-loop-text-chunks loop)
+            (nthcdr count (magent-agent-loop-text-chunks loop)))))
+  (remhash loop magent-agent-loop--sample-text-chunks)
+  (setf (magent-agent-loop-result loop) nil)
+  loop)
+
 (defun magent-agent-loop-reasoning (loop)
   "Return accumulated reasoning text for LOOP."
   (apply #'concat (nreverse (copy-sequence
@@ -209,8 +241,12 @@ SAMPLER is a function called with REQUEST by `magent-agent-loop-start'."
     (error "Expected magent-llm-event, got: %S" event))
   (pcase (magent-llm-event-type event)
     ('text-delta
-     (push (or (magent-llm-event-text event) "")
-           (magent-agent-loop-text-chunks loop))
+     (let ((text (or (magent-llm-event-text event) "")))
+       (push text (magent-agent-loop-text-chunks loop))
+       (puthash loop
+                (cons text
+                      (gethash loop magent-agent-loop--sample-text-chunks))
+                magent-agent-loop--sample-text-chunks))
      (setf (magent-agent-loop-status loop) 'streaming))
     ('reasoning-delta
      (push (or (magent-llm-event-text event) "")
@@ -229,7 +265,7 @@ SAMPLER is a function called with REQUEST by `magent-agent-loop-start'."
      (setf (magent-agent-loop-status loop) 'completed
            (magent-agent-loop-result loop)
            (let ((result (magent-agent-loop--combined-result
-                          (magent-agent-loop-text loop)
+                          (magent-agent-loop-sample-text loop)
                           (magent-llm-event-text event))))
              result)
            (magent-agent-loop-usage loop)
@@ -244,6 +280,12 @@ SAMPLER is a function called with REQUEST by `magent-agent-loop-start'."
      (setf (magent-agent-loop-usage loop)
            (magent-llm-event-usage event))))
   loop)
+
+(defun magent-agent-loop-transcript (loop)
+  "Return LOOP's complete assistant transcript, including terminal text."
+  (magent-agent-loop--combined-result
+   (magent-agent-loop-text loop)
+   (magent-agent-loop-result loop)))
 
 (defun magent-agent-loop--tool-name (tool-spec raw-call)
   "Return tool name from TOOL-SPEC or RAW-CALL."

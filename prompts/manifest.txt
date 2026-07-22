@@ -1,4 +1,5 @@
 # Bundled prompt resources. Keep sorted within each directory.
+agents/build.org
 agents/compaction.org
 agents/explore.org
 agents/summary.org
