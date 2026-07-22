@@ -125,12 +125,12 @@ transitions to an error state.  Set to 0 to disable."
   :group 'magent)
 
 (defcustom magent-max-sampling-requests 0
-  "Compatibility safety guard for model sampling requests in one turn.
+  "Safety guard for model sampling requests in one turn.
 Magent normally follows Codex-style turn continuation and does not impose a
 per-turn sampling limit.  When this value is positive, the initial request
 counts as one and tool-output continuations count as additional requests; the
-limit replaces the next continuation with one provider-tools-disabled final
-request.  Set to 0 to disable."
+turn fails directly when the next continuation would exceed the limit.  No
+extra provider request is made.  Set to 0 to disable."
   :type 'integer
   :group 'magent)
 
@@ -333,8 +333,8 @@ cannot be resolved, bash tool calls fail without affecting other Magent tools."
   :type 'string
   :group 'magent)
 
-(defcustom magent-bash-timeout 30
-  "Default timeout in seconds for bash commands."
+(defcustom magent-bash-timeout 300
+  "Positive host-controlled timeout in seconds for Bash commands."
   :type 'integer
   :group 'magent)
 

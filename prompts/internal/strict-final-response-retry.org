@@ -1,1 +1,0 @@
-The previous final-response retry still produced no assistant text. Do not call tools or emit tool-call markup. Write the final answer now based only on the context already available.

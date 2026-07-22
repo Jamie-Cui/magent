@@ -520,6 +520,13 @@ The next load of SCOPE replaces its cached adapters from current skill data."
 
 (defun magent-command--claim-finish (invocation status result)
   "Claim terminal STATUS and RESULT for active INVOCATION."
+  (unless (memq status '(completed failed cancelled))
+    (error "Invalid Magent command completion status: %S" status))
+  (unless (magent-agent-result-p result)
+    (signal 'wrong-type-argument (list 'magent-agent-result-p result)))
+  (unless (eq status (magent-agent-result-status result))
+    (error "Command status %S disagrees with result status %S"
+           status (magent-agent-result-status result)))
   (when (eq (magent-command-invocation-status invocation) 'active)
     (setf (magent-command-invocation-status invocation) status
           (magent-command-invocation-result invocation) result)
@@ -567,15 +574,18 @@ The next load of SCOPE replaces its cached adapters from current skill data."
 
 (defun magent-command-finish (invocation status result)
   "Finish INVOCATION once with STATUS and RESULT.
-STATUS must be `completed', `failed', or `cancelled'."
-  (unless (memq status '(completed failed cancelled))
-    (error "Invalid Magent command completion status: %S" status))
+STATUS must be `completed', `failed', or `cancelled'.
+RESULT must be a `magent-agent-result'."
   (when (magent-command--claim-finish invocation status result)
     (magent-command--publish-finish invocation)))
 
 (defun magent-command-complete (invocation &optional result)
   "Complete INVOCATION successfully with RESULT."
-  (magent-command-finish invocation 'completed (or result "")))
+  (magent-command-finish
+   invocation 'completed
+   (if (magent-agent-result-p result)
+       result
+     (magent-agent-result-completed (or result "")))))
 
 (defun magent-command--failure-result (error)
   "Return normalized command failure result for ERROR."
@@ -628,16 +638,19 @@ terminal result."
    invocation 'failed (magent-command--failure-result error)))
 
 ;;;###autoload
-(defun magent-command-cancel (&optional invocation-or-session-id)
+(defun magent-command-cancel (&optional invocation-or-session-id reason)
   "Cancel an active command invocation or isolated command session.
-When called interactively, prompt for an active cancellable command session."
+When called interactively, prompt for an active cancellable command session.
+REASON may be a string or a `magent-agent-result' for direct invocations."
   (interactive)
   (cond
    ((magent-command-invocation-p invocation-or-session-id)
     (magent-command--finish-with-cleanup
      invocation-or-session-id 'cancelled
-     (magent-agent-result-failed
-      "Command cancelled" (list :status 'cancelled))
+     (if (magent-agent-result-p reason)
+         reason
+       (magent-agent-result-cancelled
+        (or reason "Command cancelled") (list :reason 'cancelled)))
      t))
    (t
     (require 'magent-command-session)

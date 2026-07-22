@@ -94,7 +94,7 @@ Orchestrates the tool-calling loop and LLM communication.
 - ~magent-llm.el~ — Provider-neutral request/event protocol
 - ~magent-llm-gptel.el~ — Thin ~gptel-request~ sampling adapter
 
-*What it does:* ~magent-agent-loop.el~ consumes normalized LLM events, records assistant/tool state into the session, dispatches tools through ~magent-tool-orchestrator~, and returns continuation outcomes after model-visible tool output is recorded. ~magent-agent-process~ decides whether to continue sampling, force a no-tool final response at the sampling budget, or retry once when a post-tool assistant completion is empty. Reasoning is kept separate from assistant text. ~magent-llm-gptel.el~ still calls ~gptel-request~; Magent does not rewrite provider transport.
+*What it does:* ~magent-agent-loop.el~ consumes normalized LLM events, records assistant/tool state into the session, dispatches tools through ~magent-tool-orchestrator~, and returns continuation outcomes after model-visible tool output is recorded. ~magent-agent-process~ continues only through provider-native tool continuation, completes empty responses explicitly, and fails directly at an optional sampling limit. Reasoning is kept separate from assistant text. ~magent-llm-gptel.el~ still calls ~gptel-request~; Magent does not rewrite provider transport.
 
 ** Layer 6: Supported Frontend
 

@@ -359,6 +359,69 @@ def test_config_driven_bench_runs_prepared_job_and_writes_report(
     )
 
 
+def test_bench_writes_partial_report_after_harbor_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config, profile, suite = _config(tmp_path)
+    config.path.write_text("# test config\n")
+    config = Config(
+        config.path,
+        config.profiles,
+        config.suites,
+        BenchmarkConfig(profile.name, "model-x", suite.name),
+    )
+    prepare_config(config, check_runtime=False)
+    monkeypatch.setattr(cli, "load_config", lambda _path: config)
+    monkeypatch.setattr(cli, "_check_local_runtime", lambda: None)
+    monkeypatch.setattr(cli, "_fresh_job_name", lambda _name: "partial-run")
+    monkeypatch.setattr(
+        cli.subprocess, "run", lambda _command, check=False: SimpleNamespace(returncode=7)
+    )
+
+    import magent_benchmark.report as report
+
+    monkeypatch.setattr(
+        report,
+        "write_reports",
+        lambda _job_dir, report_dir: [report_dir / "report.md"],
+    )
+
+    assert cli.cmd_bench(SimpleNamespace(config=config.path)) == 7
+    assert "Benchmark partial report:" in capsys.readouterr().out
+
+
+def test_bench_interrupt_without_results_is_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config, profile, suite = _config(tmp_path)
+    config.path.write_text("# test config\n")
+    config = Config(
+        config.path,
+        config.profiles,
+        config.suites,
+        BenchmarkConfig(profile.name, "model-x", suite.name),
+    )
+    prepare_config(config, check_runtime=False)
+    monkeypatch.setattr(cli, "load_config", lambda _path: config)
+    monkeypatch.setattr(cli, "_check_local_runtime", lambda: None)
+    monkeypatch.setattr(cli, "_fresh_job_name", lambda _name: "interrupted-run")
+
+    def interrupt(_command, check=False):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli.subprocess, "run", interrupt)
+
+    import magent_benchmark.report as report
+
+    def no_results(_job_dir: Path, _report_dir: Path):
+        raise ValueError("no Harbor results")
+
+    monkeypatch.setattr(report, "write_reports", no_results)
+
+    assert cli.cmd_bench(SimpleNamespace(config=config.path)) == 130
+    assert "Benchmark incomplete; inspect" in capsys.readouterr().err
+
+
 def test_custom_responses_proxy_fails_closed() -> None:
     profile = Profile(
         name="bad",

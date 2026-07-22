@@ -98,10 +98,7 @@
 (cl-defstruct (magent-agent-result
                (:constructor magent-agent-result-create)
                (:copier nil))
-  "Final status returned from an agent request.
-Successful requests may still use plain strings for compatibility.  This
-structure is used when callers need to distinguish failed requests from a
-normal assistant string."
+  "Final status returned from an agent request."
   status
   content
   error
@@ -109,25 +106,36 @@ normal assistant string."
 
 (defun magent-agent-result-success-p (result)
   "Return non-nil when RESULT represents a successful agent response."
-  (or (stringp result)
-      (and (magent-agent-result-p result)
-           (eq (magent-agent-result-status result) 'completed))))
+  (unless (magent-agent-result-p result)
+    (signal 'wrong-type-argument (list 'magent-agent-result-p result)))
+  (eq (magent-agent-result-status result) 'completed))
 
 (defun magent-agent-result-content-string (result)
   "Return user-visible content for RESULT."
-  (cond
-   ((stringp result) result)
-   ((magent-agent-result-p result)
-    (or (magent-agent-result-content result)
-        (magent-agent-result-error result)
-        ""))
-   ((null result) "")
-   (t (format "%s" result))))
+  (unless (magent-agent-result-p result)
+    (signal 'wrong-type-argument (list 'magent-agent-result-p result)))
+  (or (magent-agent-result-content result)
+      (magent-agent-result-error result)
+      ""))
+
+(defun magent-agent-result-completed (content &optional metadata)
+  "Return a completed `magent-agent-result' with CONTENT and METADATA."
+  (magent-agent-result-create
+   :status 'completed
+   :content (or content "")
+   :metadata metadata))
 
 (defun magent-agent-result-failed (error &optional metadata)
   "Return a failed `magent-agent-result' with ERROR and METADATA."
   (magent-agent-result-create
    :status 'failed
+   :error (if (stringp error) error (format "%s" error))
+   :metadata metadata))
+
+(defun magent-agent-result-cancelled (error &optional metadata)
+  "Return a cancelled `magent-agent-result' with ERROR and METADATA."
+  (magent-agent-result-create
+   :status 'cancelled
    :error (if (stringp error) error (format "%s" error))
    :metadata metadata))
 

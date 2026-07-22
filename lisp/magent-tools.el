@@ -585,7 +585,7 @@ EXIT-CODE is nil when no process exit status exists.  METADATA is optional."
           (executable-find magent-bash-program)))
     (error nil)))
 
-(defun magent-tools--bash (callback command &optional timeout)
+(defun magent-tools--bash (callback command)
   "Execute COMMAND asynchronously with Bash pipefail semantics.
 Pipefail is enabled and errexit is not.  CALLBACK receives a structured tool
 result containing combined stdout and stderr plus the process exit status."
@@ -594,6 +594,11 @@ result containing combined stdout and stderr plus the process exit status."
     (funcall callback
              (magent-tools--bash-failure
               "Error: 'command' must be a non-blank shell command string.")))
+   ((not (and (numberp magent-bash-timeout)
+              (> magent-bash-timeout 0)))
+    (funcall callback
+             (magent-tools--bash-failure
+              "Error: magent-bash-timeout must be a positive number.")))
    (t
     (let ((bash-program (magent-tools--bash-executable)))
       (if (not bash-program)
@@ -617,7 +622,7 @@ result containing combined stdout and stderr plus the process exit status."
                   (when (buffer-live-p buf)
                     (kill-buffer buf))))
           (condition-case err
-              (let ((timeout (or timeout magent-bash-timeout))
+              (let ((timeout magent-bash-timeout)
                     (default-directory (magent-tools--request-project-root)))
                 (setq buf (generate-new-buffer " *magent-bash*"))
                 (magent-tools--register-cancel-cleanup cleanup)
@@ -1032,8 +1037,6 @@ Return the child loop handle when startup succeeds."
                    (let* ((success (magent-agent-result-success-p response))
                           (text (magent-agent-result-content-string response))
                           (failed (not success)))
-                     (when (string-empty-p text)
-                       (setq text "Error: child-agent request failed"))
                      (magent-tools--agent-job-update-from-child
                       job child-session
                       (if failed 'failed 'completed)
@@ -1534,14 +1537,10 @@ See `magent-agent-loop-filter-display-args'.")
 (defvar magent-tools--bash-tool
   (gptel-make-tool
    :name "bash"
-   :description "Execute a command with Bash pipefail enabled and ordinary non-errexit command sequencing. Commands separated by ; continue after a nonzero status; use && or explicit set -e for fail-fast behavior. A failed pipeline stage makes the tool fail unless handled explicitly."
+   :description "Execute one synchronous command with Bash pipefail enabled and ordinary non-errexit command sequencing. Commands separated by ; continue after a nonzero status; use && or explicit set -e for fail-fast behavior. A failed pipeline stage makes the tool fail unless handled explicitly. Background jobs started with & do not survive the tool call. Do not hide long-running command progress behind tail."
    :args (list '(:name "command"
                        :type string
                        :description "Shell command to execute")
-               '(:name "timeout"
-                       :type integer
-                       :description "Timeout in seconds, defaults to 30"
-                       :optional t)
                magent-tools--reason-arg)
    :function #'magent-tools--bash
    :async t

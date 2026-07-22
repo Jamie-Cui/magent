@@ -100,7 +100,7 @@ Legacy ~messages~ remain as the projection used for gptel prompt reuse and migra
 9. Tool calls are accumulated until ~tool-call-batch-end~, then dispatched serially through the orchestrator.
 10. Tool results update the same ledger item that started with the tool call.
 11. If tool output should be shown to the model, ~magent-agent.el~ rebuilds the prompt from the ledger and starts the next sampling request.
-12. If that post-tool continuation completes with empty assistant text, ~magent-agent.el~ issues one no-tool final-response retry using the recorded tool results.
+12. If a provider completes with empty assistant text, ~magent-agent.el~ completes the turn with ~empty-completion~ metadata and does not issue another request.
 13. Completion, failure, abort, or queue drop transitions the turn to its terminal state and notifies the ACP observer.
 14. A plain prompt resolves the pending ACP request from the turn result. For command-owned work, the runtime callback first returns to the command invocation, whose terminal lifecycle then resolves the ACP request or reports the result to its interactive caller.
 

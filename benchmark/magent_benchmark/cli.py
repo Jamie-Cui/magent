@@ -265,19 +265,27 @@ def cmd_bench(args: argparse.Namespace) -> int:
         "--quiet",
         "--yes",
     ]
-    result = subprocess.run(command, check=False)
-    if result.returncode:
-        return result.returncode
+    job_dir = Path(job["jobs_dir"]) / run_name
+    report_dir = config.path.parent / "reports" / run_name
+    try:
+        returncode = subprocess.run(command, check=False).returncode
+    except KeyboardInterrupt:
+        returncode = 130
 
     from .report import write_reports
 
-    job_dir = Path(job["jobs_dir"]) / run_name
-    report_dir = config.path.parent / "reports" / run_name
-    paths = write_reports(job_dir, report_dir)
-    print("Benchmark complete:")
-    for path in paths:
-        print(path)
-    return 0
+    try:
+        paths = write_reports(job_dir, report_dir)
+    except ValueError:
+        paths = []
+
+    if paths:
+        print("Benchmark complete:" if returncode == 0 else "Benchmark partial report:")
+        for path in paths:
+            print(path)
+    else:
+        print(f"Benchmark incomplete; inspect {job_dir}", file=sys.stderr)
+    return returncode if returncode else (0 if paths else 1)
 
 
 def _read_candidate_ids(path: Path) -> list[str]:

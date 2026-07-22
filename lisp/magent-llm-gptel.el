@@ -539,12 +539,7 @@ assistant prose."
 Return a symbol describing completion, including whether the native provider
 context remains paused for Magent recovery."
   (let* ((metadata (magent-llm-gptel--metadata info))
-         (strict-final
-          (plist-get (magent-llm-request-metadata request)
-                     :strict-final-response-retry))
-         (events (unless strict-final
-                   (magent-llm-gptel--parse-dsml-tool-calls
-                    text metadata))))
+         (events (magent-llm-gptel--parse-dsml-tool-calls text metadata)))
     (if events
         (let ((continuation
                (magent-llm-gptel--prepare-textual-continuation
@@ -757,13 +752,11 @@ tool calls, executes them itself, and explicitly resumes the same context."
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))
       (push response (gethash :text-chunks state))
-      (unless (plist-get (magent-llm-request-metadata request)
-                         :final-response-retry)
-        (magent-llm-gptel--emit
-         request
-         (magent-llm-text-delta-event
-          response
-          (magent-llm-gptel--metadata info))))))
+      (magent-llm-gptel--emit
+       request
+       (magent-llm-text-delta-event
+        response
+        (magent-llm-gptel--metadata info)))))
    ((and (consp response) (eq (car response) 'reasoning))
     (if (eq (cdr response) t)
         (progn

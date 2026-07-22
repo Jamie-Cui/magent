@@ -744,7 +744,7 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
     (magent-doctor--abort-request state)
     (let ((context (magent-doctor-state-context state)))
       (when (eq (magent-command-invocation-status context) 'active)
-        (magent-command-finish context 'cancelled "Doctor cancelled")))
+        (magent-command-cancel context "Doctor cancelled")))
     t))
 
 (defun magent-doctor--request-callback (context state event)
@@ -760,8 +760,8 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
        (setf (magent-doctor-state-request-handle state) nil)
        (let ((text (or (magent-llm-event-text event) "")))
          (if (string-empty-p (string-trim text))
-             (magent-command-finish
-              context 'failed "Doctor analysis returned an empty response")
+             (magent-command-fail
+              context "Doctor analysis returned an empty response")
            (condition-case nil
                (let ((result
                       (magent-doctor--normalize-output text context state)))
@@ -770,22 +770,22 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
                  (magent-command-complete
                   context "Doctor diagnosis complete"))
              (magent-doctor-security-error
-              (magent-command-finish
-               context 'failed "Doctor response failed security validation"))))))
+              (magent-command-fail
+               context "Doctor response failed security validation"))))))
       ('error
        (magent-doctor--cancel-request-timer state)
        (setf (magent-doctor-state-request-handle state) nil)
        (condition-case nil
-           (magent-command-finish
-            context 'failed
+           (magent-command-fail
+            context
             (format "Doctor analysis failed: %s"
                     (magent-doctor--safe-error
                      (list 'error
                            (format "%s" (magent-llm-event-message event)))
                      state)))
          (magent-doctor-security-error
-          (magent-command-finish
-           context 'failed "Doctor analysis failed with a redacted error"))))))))
+          (magent-command-fail
+           context "Doctor analysis failed with a redacted error"))))))))
 
 (defun magent-doctor--start-analysis (context state results)
   "Start one tool-free provider analysis for CONTEXT over RESULTS."
@@ -827,8 +827,8 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
                                          context)
                                         'active)))
                      (magent-doctor--abort-request state)
-                     (magent-command-finish
-                      context 'failed "Doctor analysis timed out"))))))))))
+                     (magent-command-fail
+                      context "Doctor analysis timed out"))))))))))
 
 (defun magent-doctor--handler (context)
   "Run the safe probe-based Doctor pipeline for command CONTEXT."
@@ -848,7 +848,7 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
      'selected-probes
      (vconcat (mapcar #'magent-doctor-probe-id probes)))
     (if (not (magent-doctor--confirm context probes))
-        (magent-command-finish context 'cancelled "Doctor cancelled")
+        (magent-command-cancel context "Doctor cancelled")
       (setf (magent-doctor-state-deadline state)
             (and (> magent-doctor-total-timeout 0)
                  (+ (float-time) magent-doctor-total-timeout)))
@@ -857,11 +857,11 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
             (unless (magent-doctor-state-cancelled-p state)
               (magent-doctor--start-analysis context state results)))
         (magent-doctor-security-error
-         (magent-command-finish
-          context 'failed "Doctor diagnostics failed security validation"))
+         (magent-command-fail
+          context "Doctor diagnostics failed security validation"))
         (magent-doctor-probe-timeout
-         (magent-command-finish
-          context 'failed "Doctor local collection timed out"))))))
+         (magent-command-fail
+          context "Doctor local collection timed out"))))))
 
 (defun magent-doctor--register-builtins ()
   "Register built-in Magent doctor probes."

@@ -93,7 +93,7 @@ manifest 和 package data recipe。
 9. tool call 累积到 ~tool-call-batch-end~ 后，通过 orchestrator 串行执行。
 10. tool result 更新同一个 tool item，而不是创建一条独立的持久记录。
 11. 如果 tool output 需要返回给模型， ~magent-agent.el~ 从 ledger 重建 prompt 并开始下一次 sampling。
-12. 如果这次 post-tool continuation 返回空 assistant text， ~magent-agent.el~ 会基于已记录 tool results 发起一次 no-tool final-response retry。
+12. 如果 provider 返回空 assistant text 并明确完成， ~magent-agent.el~ 用 ~empty-completion~ metadata 完成本轮，不再发起请求。
 13. completion、failure、abort 或 queued drop 会把 turn 转到 terminal state，并通知 ACP observer。
 14. 普通 prompt 直接用 turn result 结束 pending ACP request。对于 command-owned work，runtime callback 会先返回 command invocation，再由其 terminal lifecycle 结束 ACP request，或向 interactive caller 报告结果。
 

@@ -100,7 +100,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 - ~magent-llm.el~ ：provider-neutral request/event protocol。
 - ~magent-llm-gptel.el~ ：薄的 ~gptel-request~ sampling adapter。
 
-*职责：* ~magent-agent-loop.el~ 消费 normalized LLM events，记录 assistant/tool state，经过 ~magent-tool-orchestrator~ 分发工具，并在 model-visible tool output 记录完成后返回 continuation outcome。 ~magent-agent-process~ 决定继续 sampling、在 sampling budget 用 no-tool final response 收尾，或在 post-tool assistant completion 为空时只重试一次。Reasoning 与 assistant text 分开保存。 ~magent-llm-gptel.el~ 仍然调用 ~gptel-request~ ；Magent 不重写 provider transport。
+*职责：* ~magent-agent-loop.el~ 消费 normalized LLM events，记录 assistant/tool state，经过 ~magent-tool-orchestrator~ 分发工具，并在 model-visible tool output 记录完成后返回 continuation outcome。 ~magent-agent-process~ 只通过 provider-native tool continuation 继续，显式完成空响应，并在可选 sampling limit 处直接失败。Reasoning 与 assistant text 分开保存。 ~magent-llm-gptel.el~ 仍然调用 ~gptel-request~ ；Magent 不重写 provider transport。
 
 ** 第 6 层：受支持的 Frontend
 

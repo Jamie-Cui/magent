@@ -793,7 +793,8 @@ return that path."
                      (lambda (session prompt &rest args)
                        (setq submitted (list session prompt args))
                        (funcall (plist-get args :on-complete)
-                                'completed "done")
+                                'completed
+                                (magent-agent-result-completed "done"))
                        "magent-live-submission")))
             (magent-command-invoke
              "live-buffer-context" runtime-session
@@ -813,7 +814,10 @@ return that path."
                            "Inspect the attached live buffer."))
             (should (string-match-p "snapshot before submission" snapshot))
             (should-not (string-match-p "changed after submission" snapshot))
-            (should (equal completion '(completed "done")))))))))
+            (should (eq (car completion) 'completed))
+            (should (equal
+                     (magent-agent-result-content-string (cadr completion))
+                     "done"))))))))
 
 (ert-deftest magent-live-test-real-simple-prompt ()
   "Send a real non-tool request through the configured gptel provider."
