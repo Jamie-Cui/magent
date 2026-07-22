@@ -18,6 +18,23 @@
                         magent-benchmark-test--root)
       nil t)
 
+(ert-deftest magent-benchmark-add-elpa-load-path-does-not-scan-package-data ()
+  (let* ((elpa (make-temp-file "magent-benchmark-elpa-" t))
+         (package (expand-file-name "example-1.0" elpa))
+         (data (expand-file-name "data" package))
+         (load-path (copy-sequence load-path)))
+    (unwind-protect
+        (progn
+          (make-directory data t)
+          (with-temp-file (expand-file-name "example-pkg.el" package)
+            (insert "(define-package \"example\" \"1.0\" \"Example\")\n"))
+          (cl-letf (((symbol-function
+                      'normal-top-level-add-subdirs-to-load-path)
+                     (lambda () (error "Package data must not be scanned"))))
+            (magent-benchmark--add-elpa-load-path elpa))
+          (should (member (file-name-as-directory package) load-path)))
+      (ignore-errors (delete-directory elpa t)))))
+
 (ert-deftest magent-benchmark-runner-writes-result-and-ledger ()
   (let* ((workspace (make-temp-file "magent-benchmark-workspace-" t))
          (logs (make-temp-file "magent-benchmark-logs-" t))
@@ -60,16 +77,21 @@
             (should (equal (magent-benchmark-run-from-environment) "Done.")))
           (should (file-exists-p (expand-file-name "magent-result.json" logs)))
           (should (file-exists-p (expand-file-name "magent-ledger.json" logs)))
+          (should (file-exists-p (expand-file-name "magent-progress.json" logs)))
           (let* ((json-object-type 'alist)
                  (json-array-type 'list)
                  (result (json-read-file
                           (expand-file-name "magent-result.json" logs)))
                  (ledger (json-read-file
-                          (expand-file-name "magent-ledger.json" logs))))
+                          (expand-file-name "magent-ledger.json" logs)))
+                 (progress (json-read-file
+                            (expand-file-name "magent-progress.json" logs))))
             (should (equal (alist-get 'status result) "completed"))
             (should (equal (alist-get 'output result) "Done."))
             (should (= (length (alist-get 'usage-samples result)) 1))
-            (should (= (length (alist-get 'turns ledger)) 1))))
+            (should (= (length (alist-get 'turns ledger)) 1))
+            (should (equal (alist-get 'event progress) "completed"))
+            (should (= (length (alist-get 'usage-samples progress)) 1))))
       (ignore-errors (delete-directory workspace t))
       (ignore-errors (delete-directory logs t)))))
 

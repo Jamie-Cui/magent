@@ -316,6 +316,7 @@ make test
 make test-unit
 make coverage
 make clean
+make purge
 #+end_src
 
 ~make test-live-smoke~ 需要 Emacs server，并使用 stubbed gptel transport。 ~make test-live~ 使用真实 provider，可能消耗 tokens，应在 isolated daemon 中运行。

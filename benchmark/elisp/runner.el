@@ -23,6 +23,9 @@
 (defvar magent-benchmark--usage-samples nil
   "Provider token usage captured once per Magent sampling request.")
 
+(defvar magent-benchmark--progress-path nil
+  "Path receiving live, token-only Magent benchmark progress.")
+
 (defun magent-benchmark--env (name &optional required)
   "Return environment variable NAME, signaling when REQUIRED and absent."
   (let ((value (getenv name)))
@@ -32,9 +35,11 @@
 
 (defun magent-benchmark--add-elpa-load-path (directory)
   "Add every installed package under DIRECTORY to `load-path'."
-  (let ((default-directory (file-name-as-directory directory)))
-    (add-to-list 'load-path default-directory)
-    (normal-top-level-add-subdirs-to-load-path)))
+  (dolist (entry (directory-files directory t
+                                  directory-files-no-dot-files-regexp t))
+    (when (and (file-directory-p entry)
+               (directory-files entry nil "-pkg\\.el\\'" t))
+      (add-to-list 'load-path (file-name-as-directory entry)))))
 
 (defun magent-benchmark--endpoint (base-url wire-api)
   "Return (PROTOCOL HOST ENDPOINT) for BASE-URL and WIRE-API."
@@ -90,7 +95,8 @@
                          (fboundp 'magent-llm-event-metadata)
                          (plist-get (magent-llm-event-metadata event) :tokens)))))
     (when (and usage (memq type '(completed tool-call-batch-end error)))
-      (push usage magent-benchmark--usage-samples))
+      (push usage magent-benchmark--usage-samples)
+      (magent-benchmark--write-progress type))
     (funcall original loop event)))
 
 (defun magent-benchmark--write-json (path value)
@@ -108,6 +114,16 @@
           (rename-file temporary path t))
       (when (file-exists-p temporary)
         (delete-file temporary)))))
+
+(defun magent-benchmark--write-progress (event)
+  "Write token usage and EVENT to the live benchmark progress file."
+  (when magent-benchmark--progress-path
+    (magent-benchmark--write-json
+     magent-benchmark--progress-path
+     `((updated-at . ,(float-time))
+       (event . ,(format "%s" event))
+       (usage-samples
+        . ,(vconcat (reverse magent-benchmark--usage-samples)))))))
 
 (defun magent-benchmark--result-alist (status result started finished)
   "Return a JSON-safe benchmark result for STATUS RESULT and timestamps."
@@ -142,6 +158,8 @@
          (default-directory workspace)
          (user-emacs-directory (expand-file-name "emacs.d/" logs))
          (magent-benchmark--usage-samples nil)
+         (magent-benchmark--progress-path
+          (expand-file-name "magent-progress.json" logs))
          done final-status final-result)
     (magent-benchmark--add-elpa-load-path elpa)
     (add-to-list 'load-path (expand-file-name "lisp" source))
@@ -170,6 +188,7 @@
                (started (float-time))
                (scope (magent-session-scope-from-directory workspace))
                (runtime-session (magent-runtime-session-new scope)))
+          (magent-benchmark--write-progress 'started)
           (magent-runtime-session-set-agent runtime-session "build")
           (magent-runtime-submit
            runtime-session instruction
@@ -185,6 +204,7 @@
                  (thread (magent-session-thread-ledger session))
                  (result-data (magent-benchmark--result-alist
                                final-status final-result started finished)))
+            (magent-benchmark--write-progress final-status)
             (magent-benchmark--write-json
              (expand-file-name "magent-ledger.json" logs)
              (magent-thread-snapshot-to-alist thread))

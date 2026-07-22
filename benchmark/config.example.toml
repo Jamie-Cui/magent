@@ -23,8 +23,11 @@ concurrency = 3
 
 approve_full = false
 
-# Optional proxy for the local Docker build of the Emacs bundle. It is not
-# injected into model requests or recorded in fingerprints.
+# Optional proxy for the local Emacs bundle build and Harbor trial containers,
+# including agent setup, tools, and model requests. Loopback hosts are exposed
+# to containers as host.docker.internal. The value is omitted from fingerprints
+# but is present in the private generated job config. Agent setup gets a 2x
+# timeout multiplier when this is set.
 proxy = ""
 
 # Optional cost reporting, in USD per million tokens. Full runs require input
@@ -33,10 +36,10 @@ proxy = ""
 # output_price_per_million = 0.0
 # cached_input_price_per_million = 0.0
 
-# `make` creates this frozen ELPA bundle from ~/.emacs.d/elpa when absent.
+# `make benchmark-prepare` creates this frozen ELPA bundle from ~/.emacs.d/elpa when absent.
 elpa_bundle = "runtime/elpa"
 
-# `make` builds this Ubuntu 22.04-compatible Emacs 29.4 bundle when absent.
+# `make benchmark-prepare` builds this Ubuntu 22.04-compatible Emacs 29.4 bundle when absent.
 emacs_bundle = "runtime/emacs"
 
 # Everything below fixes provider, agent, and dataset policy. Normal smoke and

@@ -18,7 +18,8 @@ make compile    # Byte-compile all Elisp files
 make test-unit  # Run ERT unit tests in batch mode
 make test       # Run unit tests plus deterministic live smoke tests
 make coverage   # Run ERT under testcover and write coverage/testcover-summary.tsv
-make clean      # Remove compiled .elc files
+make clean      # Remove build files and Harbor benchmark containers/networks
+make purge      # Also remove benchmark Docker images and Harbor task cache
 ```
 
 The Makefile auto-detects dependency paths (`gptel`, `acp`, `shell-maker`, `agent-shell`, `cond-let`, `compat`, `yaml`, `llama`, `with-editor`) by scanning `~/.emacs.d/elpa/`. Override any with e.g. `GPTEL_DIR=/path/to/gptel`.
