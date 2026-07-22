@@ -121,7 +121,8 @@ class BenchmarkConfig:
     def validate(self) -> None:
         if not self.model.strip():
             raise ConfigurationError(
-                "set benchmark.model in config.toml before running make"
+                "set benchmark.model in config.toml before running "
+                "make benchmark-prepare"
             )
         if self.stage not in STAGES:
             raise ConfigurationError(

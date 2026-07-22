@@ -33,7 +33,8 @@ make compile    # Byte-compile all files
 make test-unit  # Run batch ERT unit tests
 make test       # Run unit tests plus deterministic live smoke tests
 make coverage   # Run ERT under built-in testcover
-make clean      # Remove compiled files
+make clean      # 删除构建产物及 Harbor benchmark 容器/网络
+make purge      # 进一步删除 benchmark Docker 镜像及 Harbor task cache
 #+end_src
 
 Makefile 会自动探测 ~~/.emacs.d/elpa/~ 下的 ELPA dependency directories。若要使用非标准 checkout，可显式传入 ~GPTEL_DIR~ 、 ~COMPAT_DIR~ 或 ~YAML_DIR~ 等变量。

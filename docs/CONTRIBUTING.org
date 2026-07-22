@@ -32,7 +32,8 @@ make compile    # Byte-compile all files
 make test-unit  # Run batch ERT unit tests
 make test       # Run unit tests plus deterministic live smoke tests
 make coverage   # Run ERT under built-in testcover
-make clean      # Remove compiled files
+make clean      # Remove build files and Harbor benchmark containers/networks
+make purge      # Also remove benchmark Docker images and Harbor task cache
 #+end_src
 
 The Makefile auto-detects ELPA dependency directories under

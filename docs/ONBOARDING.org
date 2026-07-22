@@ -371,8 +371,11 @@ make test-unit
 # Run coverage and write coverage/testcover-summary.tsv
 make coverage
 
-# Clean compiled files
+# Clean build files and Harbor benchmark containers/networks
 make clean
+
+# Also remove benchmark Docker images and Harbor task cache
+make purge
 #+end_src
 
 ~make test-live-smoke~ requires an Emacs server and uses stubbed gptel

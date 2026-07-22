@@ -1,5 +1,10 @@
 from dataclasses import replace
+import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -8,7 +13,7 @@ import yaml
 
 from magent_benchmark import cli
 from magent_benchmark.cli import prepare_config, prepare_emacs_bundle
-from magent_benchmark.job import build_job
+from magent_benchmark.job import _container_proxy_url, build_job
 from magent_benchmark.profiles import (
     BenchmarkConfig,
     ConfigurationError,
@@ -152,6 +157,60 @@ def test_auto_effort_does_not_inherit_harbor_codex_high_default(
     assert job["agents"][0]["kwargs"]["reasoning_effort"] is None
 
 
+def test_job_proxy_covers_the_trial_environment_without_fingerprinting_secret(
+    tmp_path: Path,
+) -> None:
+    config, profile, suite = _config(tmp_path)
+    proxy = "http://127.0.0.1:10808"
+    job, fingerprint = build_job(
+        config, profile, suite, "model-x", "smoke", proxy=proxy
+    )
+
+    environment = job["environment"]
+    container_proxy = "http://host.docker.internal:10808"
+    assert environment["env"] == {
+        "MAGENT_BENCHMARK_CONTAINER_PROXY": container_proxy,
+    }
+    assert environment["extra_allowed_hosts"] == ["host.docker.internal"]
+    assert environment["extra_docker_compose"] == [
+        str(Path(__file__).resolve().parents[1] / "docker-compose.proxy.yaml")
+    ]
+    assert job["agent_setup_timeout_multiplier"] == 2
+    assert "AgentSetupTimeoutError" in job["retry"]["include_exceptions"]
+    assert proxy not in str(fingerprint)
+    assert JobConfig.model_validate(job).environment.env == {
+        "MAGENT_BENCHMARK_CONTAINER_PROXY": container_proxy,
+    }
+    overlay = yaml.safe_load(
+        Path(environment["extra_docker_compose"][0]).read_text()
+    )
+    assert overlay["services"]["main"]["environment"] == {
+        name: "${MAGENT_BENCHMARK_CONTAINER_PROXY}"
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+    }
+
+
+def test_non_loopback_proxy_uses_the_same_compose_overlay(tmp_path: Path) -> None:
+    config, profile, suite = _config(tmp_path)
+    proxy = "http://proxy.example:8080"
+    job, _ = build_job(config, profile, suite, "model-x", "smoke", proxy=proxy)
+
+    assert job["environment"]["env"]["MAGENT_BENCHMARK_CONTAINER_PROXY"] == proxy
+    assert job["environment"]["extra_allowed_hosts"] == ["proxy.example"]
+    assert job["environment"]["extra_docker_compose"] == [
+        str(Path(__file__).resolve().parents[1] / "docker-compose.proxy.yaml")
+    ]
+    assert job["agent_setup_timeout_multiplier"] == 2
+
+
+def test_proxy_url_validation_and_loopback_rewrite() -> None:
+    assert _container_proxy_url("http://localhost:10808") == (
+        "http://host.docker.internal:10808"
+    )
+    with pytest.raises(ValueError, match=r"benchmark\.proxy.*HTTP\(S\)"):
+        _container_proxy_url("socks5://127.0.0.1:10808")
+
+
 def test_full_stage_requires_explicit_prices(tmp_path: Path) -> None:
     config, profile, suite = _config(tmp_path)
     profile = replace(
@@ -243,6 +302,7 @@ def test_config_driven_prepare_writes_single_harbor_job(tmp_path: Path) -> None:
             suite=suite.name,
             stage="smoke",
             effort="medium",
+            proxy="http://127.0.0.1:10808",
         ),
     )
 
@@ -254,23 +314,327 @@ def test_config_driven_prepare_writes_single_harbor_job(tmp_path: Path) -> None:
     assert job["jobs_dir"] == str((tmp_path / "jobs").resolve())
     assert job["agents"][0]["model_name"] == "model-x"
     assert job["agents"][0]["env"]["OPENAI_API_KEY"] == "test-key"
+    assert job["environment"]["env"]["MAGENT_BENCHMARK_CONTAINER_PROXY"] == (
+        "http://host.docker.internal:10808"
+    )
     assert "test-key" not in fingerprint.read_text()
+    assert "127.0.0.1:10808" not in fingerprint.read_text()
     assert output.stat().st_mode & 0o777 == 0o600
 
 
 def test_shipped_config_and_makefile_are_the_normal_user_interface() -> None:
     path = Path(__file__).resolve().parents[1] / "config.example.toml"
     config = load_config(path)
-    makefile = (config.path.parent / "Makefile").read_text()
-    gitignore = (config.path.parent.parent / ".gitignore").read_text()
-    assert ".DEFAULT_GOAL := prepare" in makefile
-    assert "magent-bench prepare --config $(CONFIG)" in makefile
-    assert "magent-bench bench --config $(CONFIG)" in makefile
+    root = config.path.parent.parent
+    makefile = (root / "Makefile").read_text()
+    gitignore = (root / ".gitignore").read_text()
+    assert "benchmark:" in makefile
+    assert "benchmark-prepare:" in makefile
+    assert "benchmark-run:" in makefile
+    assert "\npurge: clean" in makefile
+    assert "$(MAKE) --no-print-directory benchmark-prepare" in makefile
+    assert 'magent-bench prepare --config "$(BENCHMARK_CONFIG)"' in makefile
+    assert 'magent-bench bench --config "$(BENCHMARK_CONFIG)"' in makefile
+    assert "docker system prune" not in makefile
+    assert "docker network prune" not in makefile
+    for removed_target in (
+        "benchmark-check",
+        "benchmark-prepare-emacs",
+        "benchmark-profiles",
+        "benchmark-sync",
+    ):
+        assert f"\n{removed_target}:" not in makefile
+    assert not (config.path.parent / "Makefile").exists()
     assert not (config.path.parent / "profiles.toml").exists()
     assert "/benchmark/config.toml" in gitignore
     text = config.path.read_text()
     assert ".model_names]" not in text
     assert ".agent_versions]" not in text
+
+
+def _make_fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    root = Path(__file__).resolve().parents[2]
+    project = tmp_path / "project with spaces"
+    benchmark = project / "benchmark"
+    tools = tmp_path / "tools"
+    project.mkdir()
+    benchmark.mkdir()
+    tools.mkdir()
+    shutil.copyfile(root / "Makefile", project / "Makefile")
+    (project / "source-files.txt").write_text("")
+    (benchmark / "config.toml").write_text("# test config\n")
+
+    log = tmp_path / "make.log"
+    fake_uv = tools / "uv"
+    fake_uv.write_text(
+        """#!/bin/sh
+printf 'uv %s\n' "$*" >> "$MAKE_TEST_LOG"
+case "$*" in
+  *"magent-bench prepare --config"*)
+    if [ "${MAKE_TEST_FAIL:-}" = prepare ]; then exit 9; fi
+    mkdir -p benchmark/generated
+    : > benchmark/generated/benchmark.yaml
+    ;;
+esac
+"""
+    )
+    fake_uv.chmod(0o755)
+    fake_emacs = tools / "emacs"
+    fake_emacs.write_text(
+        """#!/bin/sh
+printf 'emacs %s\n' "$*" >> "$MAKE_TEST_LOG"
+"""
+    )
+    fake_emacs.chmod(0o755)
+    return project, log, fake_uv, fake_emacs
+
+
+def _run_make_benchmark(
+    project: Path,
+    log: Path,
+    fake_uv: Path,
+    fake_emacs: Path,
+    *,
+    fail: str = "",
+) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "HOME": str(project / "empty home"),
+            "MAKE_TEST_FAIL": fail,
+            "MAKE_TEST_LOG": str(log),
+        }
+    )
+    return subprocess.run(
+        [
+            "make",
+            "--no-print-directory",
+            "benchmark",
+            f"UV={fake_uv}",
+            f"EMACS={fake_emacs}",
+        ],
+        cwd=project,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_make_benchmark_prepares_when_needed_then_runs(tmp_path: Path) -> None:
+    project, log, fake_uv, fake_emacs = _make_fixture(tmp_path)
+
+    result = _run_make_benchmark(project, log, fake_uv, fake_emacs)
+    assert result.returncode == 0, result.stderr
+    lines = log.read_text().splitlines()
+    assert lines[0].startswith("emacs ")
+    assert "--extra test pytest" in lines[1]
+    assert "magent-bench prepare-emacs" in lines[2]
+    assert "magent-bench prepare --config" in lines[3]
+    assert "magent-bench bench --config" in lines[4]
+
+    log.write_text("")
+    result = _run_make_benchmark(project, log, fake_uv, fake_emacs)
+    assert result.returncode == 0, result.stderr
+    lines = log.read_text().splitlines()
+    assert len(lines) == 1
+    assert "magent-bench bench --config" in lines[0]
+
+    prepared = project / "benchmark" / "generated" / "benchmark.yaml"
+    config = project / "benchmark" / "config.toml"
+    stale_time = prepared.stat().st_mtime_ns + 2_000_000_000
+    os.utime(config, ns=(stale_time, stale_time))
+    log.write_text("")
+    result = _run_make_benchmark(project, log, fake_uv, fake_emacs)
+    assert result.returncode == 0, result.stderr
+    lines = log.read_text().splitlines()
+    assert any("magent-bench prepare --config" in line for line in lines)
+    assert "magent-bench bench --config" in lines[-1]
+
+    prepared.unlink()
+    log.write_text("")
+    result = _run_make_benchmark(
+        project, log, fake_uv, fake_emacs, fail="prepare"
+    )
+    assert result.returncode != 0
+    lines = log.read_text().splitlines()
+    assert any("magent-bench prepare --config" in line for line in lines)
+    assert not any("magent-bench bench --config" in line for line in lines)
+
+
+def test_makefile_discovers_elpa_dependency_under_home_with_spaces(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    project = tmp_path / "project with spaces"
+    home = tmp_path / "home with spaces"
+    elpa = home / ".emacs.d" / "elpa"
+    project.mkdir()
+    (project / "source-files.txt").write_text("")
+    shutil.copyfile(root / "Makefile", project / "Makefile")
+    (elpa / "gptel-20260101.1").mkdir(parents=True)
+    latest = elpa / "gptel-20260202.2"
+    latest.mkdir()
+    with (project / "Makefile").open("a") as makefile:
+        makefile.write(
+            "\nprint-gptel:\n\t@printf '%s\\n' \"$(GPTEL_DIR)\"\n"
+        )
+
+    result = subprocess.run(
+        ["make", "--no-print-directory", "print-gptel", f"HOME={home}"],
+        cwd=project,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(latest)
+
+
+def _fake_docker(path: Path) -> Path:
+    docker = path / "docker"
+    docker.write_text(
+        """#!/bin/sh
+printf 'docker %s\n' "$*" >> "$MAKE_TEST_LOG"
+case "$1" in
+  info)
+    exit 0
+    ;;
+  ps)
+    printf '%s\n' \
+      'bench-container django__django-13033__trial__env-main-1' \
+      'other-container goods-wiki-api-1'
+    ;;
+  rm)
+    ;;
+  network)
+    case "$2" in
+      ls)
+        printf '%s\n' \
+          'bench-network django__django-13033__trial__env_default' \
+          'other-network goods-wiki_default'
+        ;;
+      rm)
+        ;;
+    esac
+    ;;
+  image)
+    case "$2" in
+      ls)
+        printf '%s\n' \
+          'env-image django__django-13033__trial__env-main' \
+          'base-image swebench/sweb.eval.x86_64.django-13033' \
+          'harbor-image hb__agent-cache' \
+          'other-image goods-wiki-api'
+        ;;
+      rm)
+        ;;
+    esac
+    ;;
+esac
+"""
+    )
+    docker.chmod(0o755)
+    return docker
+
+
+def _run_make_cleanup(
+    project: Path,
+    target: str,
+    docker: Path,
+    log: Path,
+    home: Path,
+) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment.update({"HOME": str(home), "MAKE_TEST_LOG": str(log)})
+    return subprocess.run(
+        [
+            "make",
+            "--no-print-directory",
+            target,
+            f"DOCKER={docker}",
+        ],
+        cwd=project,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_make_clean_and_purge_target_only_benchmark_docker_state(
+    tmp_path: Path,
+) -> None:
+    project, log, _fake_uv, _fake_emacs = _make_fixture(tmp_path)
+    docker = _fake_docker(tmp_path / "tools")
+    benchmark = project / "benchmark"
+    home = tmp_path / "home with spaces"
+    home.mkdir()
+    for path in (
+        benchmark / ".venv" / "marker",
+        benchmark / "generated" / "benchmark.yaml",
+        benchmark / "runtime" / "marker",
+        benchmark / "jobs" / "kept.json",
+        benchmark / "reports" / "kept.json",
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("test\n")
+
+    result = _run_make_cleanup(project, "clean", docker, log, home)
+    assert result.returncode == 0, result.stderr
+    calls = log.read_text().splitlines()
+    assert "docker rm -f bench-container" in calls
+    assert "docker network rm bench-network" in calls
+    assert not any("other-container" in call for call in calls)
+    assert not any("other-network" in call for call in calls)
+    assert not any(call.startswith("docker image ") for call in calls)
+    assert "Removing benchmark container django__django-13033__trial__env-main-1" in result.stdout
+    assert "Removing benchmark network django__django-13033__trial__env_default" in result.stdout
+    assert not (benchmark / ".venv").exists()
+    assert not (benchmark / "generated").exists()
+    assert not (benchmark / "runtime").exists()
+    assert (benchmark / "config.toml").is_file()
+    assert (benchmark / "jobs" / "kept.json").is_file()
+    assert (benchmark / "reports" / "kept.json").is_file()
+
+    harbor_cache = home / ".cache" / "harbor"
+    harbor_cache.mkdir(parents=True)
+    (harbor_cache / "cached-task").write_text("test\n")
+    log.write_text("")
+    result = _run_make_cleanup(project, "purge", docker, log, home)
+    assert result.returncode == 0, result.stderr
+    calls = log.read_text().splitlines()
+    assert "docker image rm -f env-image" in calls
+    assert "docker image rm -f base-image" in calls
+    assert "docker image rm -f harbor-image" in calls
+    assert "docker image rm -f other-image" not in calls
+    assert not harbor_cache.exists()
+    assert (benchmark / "config.toml").is_file()
+    assert (benchmark / "jobs" / "kept.json").is_file()
+    assert (benchmark / "reports" / "kept.json").is_file()
+
+
+def test_make_clean_skips_unavailable_docker_but_cleans_local_files(
+    tmp_path: Path,
+) -> None:
+    project, log, _fake_uv, _fake_emacs = _make_fixture(tmp_path)
+    marker = project / "benchmark" / "runtime" / "marker"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("test\n")
+    missing_docker = tmp_path / "tools" / "missing-docker"
+
+    result = _run_make_cleanup(
+        project,
+        "clean",
+        missing_docker,
+        log,
+        tmp_path / "home",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Docker unavailable; skipping" in result.stdout
+    assert not marker.parent.exists()
 
 
 def test_emacs_bundle_build_uses_config_proxy_without_leaking_it(
@@ -323,12 +687,17 @@ def test_config_driven_bench_runs_prepared_job_and_writes_report(
     monkeypatch.setattr(
         cli, "_fresh_job_name", lambda _name: "magent-bench-main-model-x-suite-smoke-run"
     )
+    monkeypatch.setenv("PYTHONWARNINGS", "default::DeprecationWarning")
+    monkeypatch.delenv("TTY_INTERACTIVE", raising=False)
 
-    def fake_run(command, check=False):
+    def fake_run(command, *, environment, job_dir, job):
         calls["command"] = command
-        return SimpleNamespace(returncode=0)
+        calls["env"] = environment
+        calls["runner_job_dir"] = job_dir
+        calls["job"] = job
+        return 0
 
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli, "_run_harbor_job", fake_run)
 
     import magent_benchmark.report as report
 
@@ -351,9 +720,15 @@ def test_config_driven_bench_runs_prepared_job_and_writes_report(
         "--quiet",
         "--yes",
     ]
+    assert calls["env"]["PYTHONWARNINGS"] == (
+        "default::DeprecationWarning,"
+        "ignore:Run-specific allowlist host:UserWarning"
+    )
+    assert "TTY_INTERACTIVE" not in calls["env"]
     assert calls["job_dir"] == tmp_path / "jobs" / (
         "magent-bench-main-model-x-suite-smoke-run"
     )
+    assert calls["runner_job_dir"] == calls["job_dir"]
     assert calls["report_dir"] == tmp_path / "reports" / (
         "magent-bench-main-model-x-suite-smoke-run"
     )
@@ -375,7 +750,9 @@ def test_bench_writes_partial_report_after_harbor_failure(
     monkeypatch.setattr(cli, "_check_local_runtime", lambda: None)
     monkeypatch.setattr(cli, "_fresh_job_name", lambda _name: "partial-run")
     monkeypatch.setattr(
-        cli.subprocess, "run", lambda _command, check=False: SimpleNamespace(returncode=7)
+        cli,
+        "_run_harbor_job",
+        lambda _command, *, environment, job_dir, job: 7,
     )
 
     import magent_benchmark.report as report
@@ -406,10 +783,11 @@ def test_bench_interrupt_without_results_is_incomplete(
     monkeypatch.setattr(cli, "_check_local_runtime", lambda: None)
     monkeypatch.setattr(cli, "_fresh_job_name", lambda _name: "interrupted-run")
 
-    def interrupt(_command, check=False):
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(cli.subprocess, "run", interrupt)
+    monkeypatch.setattr(
+        cli,
+        "_run_harbor_job",
+        lambda _command, *, environment, job_dir, job: 130,
+    )
 
     import magent_benchmark.report as report
 
@@ -420,6 +798,168 @@ def test_bench_interrupt_without_results_is_incomplete(
 
     assert cli.cmd_bench(SimpleNamespace(config=config.path)) == 130
     assert "Benchmark incomplete; inspect" in capsys.readouterr().err
+
+
+def test_agent_progress_groups_completed_running_and_errors(tmp_path: Path) -> None:
+    job = {
+        "n_attempts": 3,
+        "agents": [
+            {"name": "opencode"},
+            {"import_path": "magent_benchmark.harbor_agent:MagentHarborAgent"},
+        ],
+        "datasets": [{"task_names": ["one", "two"]}],
+    }
+    specs = cli._agent_progress_specs(job)
+    assert specs == [("opencode", "OpenCode", 6), ("magent", "Magent", 6)]
+
+    completed = tmp_path / "completed"
+    completed.mkdir()
+    (completed / "config.json").write_text(
+        json.dumps({"agent": {"name": "opencode"}})
+    )
+    (completed / "result.json").write_text(
+        json.dumps(
+            {
+                "exception_info": None,
+                "agent_result": {
+                    "n_input_tokens": 120,
+                    "n_cache_tokens": 80,
+                    "n_output_tokens": 30,
+                },
+            }
+        )
+    )
+
+    live_opencode = tmp_path / "live-opencode"
+    (live_opencode / "agent").mkdir(parents=True)
+    (live_opencode / "config.json").write_text(
+        json.dumps({"agent": {"name": "opencode"}})
+    )
+    (live_opencode / "agent" / "opencode.txt").write_text(
+        json.dumps(
+            {
+                "type": "step_finish",
+                "part": {
+                    "tokens": {
+                        "input": 10,
+                        "output": 2,
+                        "cache": {"read": 40},
+                    }
+                },
+            }
+        )
+        + "\n"
+    )
+
+    failed = tmp_path / "failed"
+    failed.mkdir()
+    magent_agent = {
+        "import_path": "magent_benchmark.harbor_agent:MagentHarborAgent"
+    }
+    (failed / "config.json").write_text(json.dumps({"agent": magent_agent}))
+    (failed / "result.json").write_text(
+        json.dumps(
+            {
+                "exception_info": {"exception_type": "AgentError"},
+                "agent_result": {
+                    "n_input_tokens": 7,
+                    "n_cache_tokens": 11,
+                    "n_output_tokens": 3,
+                },
+            }
+        )
+    )
+
+    running = tmp_path / "running"
+    (running / "agent").mkdir(parents=True)
+    (running / "config.json").write_text(json.dumps({"agent": magent_agent}))
+    (running / "agent" / "magent-progress.json").write_text(
+        json.dumps(
+            {
+                "usage-samples": [
+                    {"input": 4, "cached": 5, "output": 2},
+                ]
+            }
+        )
+    )
+
+    snapshot = cli._agent_progress_snapshot(tmp_path, specs)
+    assert snapshot["opencode"]["completed"] == 1
+    assert snapshot["opencode"]["running"] == 1
+    assert snapshot["opencode"]["errors"] == 0
+    assert snapshot["opencode"]["input_tokens"] == 170
+    assert snapshot["opencode"]["cache_tokens"] == 120
+    assert snapshot["opencode"]["output_tokens"] == 32
+    assert snapshot["opencode"]["last_activity"] is not None
+    assert snapshot["magent"]["completed"] == 1
+    assert snapshot["magent"]["running"] == 1
+    assert snapshot["magent"]["errors"] == 1
+    assert snapshot["magent"]["input_tokens"] == 11
+    assert snapshot["magent"]["cache_tokens"] == 16
+    assert snapshot["magent"]["output_tokens"] == 5
+    assert snapshot["magent"]["last_activity"] is not None
+
+
+def test_codex_live_usage_ignores_an_incomplete_json_line(tmp_path: Path) -> None:
+    log = tmp_path / "codex.txt"
+    log.write_text(
+        json.dumps(
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 100,
+                    "cached_input_tokens": 80,
+                    "output_tokens": 20,
+                },
+            }
+        )
+        + "\n{incomplete"
+    )
+
+    assert cli._codex_live_usage(log) == (100, 80, 20)
+
+
+def test_progress_state_shows_tokens_and_last_event() -> None:
+    state = cli._empty_agent_progress()
+    state.update(
+        {
+            "running": 2,
+            "errors": 1,
+            "input_tokens": 1_500,
+            "cache_tokens": 1_200,
+            "output_tokens": 25,
+            "last_activity": 90.0,
+        }
+    )
+
+    assert cli._progress_state_text(state, now=100.0) == (
+        "run2 err1 · tok i1.5K/c1.2K/o25 · seen10s"
+    )
+
+
+def test_harbor_runner_renders_overall_and_each_agent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    job = {
+        "agents": [
+            {"name": "opencode"},
+            {"import_path": "magent_benchmark.harbor_agent:MagentHarborAgent"},
+        ],
+        "datasets": [{"task_names": ["one"]}],
+    }
+
+    assert cli._run_harbor_job(
+        [sys.executable, "-c", "pass"],
+        environment={},
+        job_dir=tmp_path,
+        job=job,
+    ) == 0
+
+    output = capsys.readouterr().out
+    assert "Overall" in output
+    assert "OpenCode" in output
+    assert "Magent" in output
+    assert "tok i0/c0/o0" in output
 
 
 def test_custom_responses_proxy_fails_closed() -> None:

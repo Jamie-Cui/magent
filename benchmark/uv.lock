@@ -908,6 +908,7 @@ source = { editable = "." }
 dependencies = [
     { name = "harbor" },
     { name = "pyyaml" },
+    { name = "rich" },
 ]
 
 [package.optional-dependencies]
@@ -920,6 +921,7 @@ requires-dist = [
     { name = "harbor", specifier = "==0.20.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.3,<9" },
     { name = "pyyaml", specifier = ">=6.0.2,<7" },
+    { name = "rich", specifier = ">=13,<16" },
 ]
 provides-extras = ["test"]
 

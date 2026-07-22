@@ -21,6 +21,32 @@ from .profiles import (
 )
 
 
+_LOOPBACK_PROXY_HOSTS = {"127.0.0.1", "localhost", "::1"}
+_PROXY_COMPOSE = Path(__file__).resolve().parents[1] / "docker-compose.proxy.yaml"
+_PROXY_VALUE_ENV = "MAGENT_BENCHMARK_CONTAINER_PROXY"
+
+
+def _container_proxy_url(proxy: str) -> str:
+    """Return the proxy URL visible inside a trial container."""
+    parsed = urlparse(proxy)
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError("benchmark.proxy has an invalid port") from error
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("benchmark.proxy must be an absolute HTTP(S) URL")
+    if parsed.hostname not in _LOOPBACK_PROXY_HOSTS:
+        return proxy
+
+    userinfo = (
+        parsed.netloc.rsplit("@", 1)[0] + "@" if "@" in parsed.netloc else ""
+    )
+    netloc = f"{userinfo}host.docker.internal"
+    if port is not None:
+        netloc += f":{port}"
+    return parsed._replace(netloc=netloc).geturl()
+
+
 def _agent_config(
     profile: Profile, model: str, effort: str, agent: str
 ) -> dict[str, Any]:
@@ -94,6 +120,7 @@ def build_job(
     concurrency: int = 3,
     elpa_bundle: str | Path | None = None,
     emacs_bundle: str | Path | None = None,
+    proxy: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     task_count, attempts = stage_shape(stage, approved_full)
     prices = {
@@ -142,6 +169,7 @@ def build_job(
                 "ApiConnectionClosedError",
                 "ApiResponseStalledError",
                 "NetworkConnectionError",
+                "AgentSetupTimeoutError",
             ],
         },
         "agents": [
@@ -155,6 +183,19 @@ def build_job(
             }
         ],
     }
+    if proxy:
+        container_proxy = _container_proxy_url(proxy)
+        if not _PROXY_COMPOSE.is_file():
+            raise ValueError(f"proxy compose overlay is missing: {_PROXY_COMPOSE}")
+        job["environment"] = {
+            # Harbor also exposes environment.env to the host-side Compose
+            # process.  Keep the standard proxy names in the Compose overlay
+            # so Docker itself does not try to use a container-only address.
+            "env": {_PROXY_VALUE_ENV: container_proxy},
+            "extra_allowed_hosts": [urlparse(container_proxy).hostname],
+            "extra_docker_compose": [str(_PROXY_COMPOSE)],
+        }
+        job["agent_setup_timeout_multiplier"] = 2
     magent = next(agent for agent in job["agents"] if agent.get("import_path"))
     magent.setdefault("kwargs", {}).update(
         {key: value for key, value in prices.items() if value is not None}
