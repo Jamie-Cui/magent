@@ -17,8 +17,8 @@
     (let ((command (magent-command-get "test")))
       (should command)
       (should (eq (magent-command-spec-source-layer command) 'builtin))
-      (should (equal (magent-command-spec-required-tools command)
-                     '(read_file grep bash emacs_eval))))))
+      (should (functionp (magent-command-spec-workflow command)))
+      (should (eq (magent-command-spec-session-policy command) 'current)))))
 
 (provide 'magent-command-builtin-test)
 ;;; magent-command-builtin-test.el ends here

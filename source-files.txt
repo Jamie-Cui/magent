@@ -14,6 +14,7 @@ lisp/magent-agent-job.el
 lisp/magent-llm.el
 lisp/magent-llm-gptel.el
 lisp/magent-session.el
+lisp/magent-command-workflow.el
 lisp/magent-command.el
 lisp/magent-memory.el
 lisp/magent-agent-loop.el

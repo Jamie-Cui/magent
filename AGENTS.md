@@ -112,7 +112,8 @@ magent.el (package entry point and lazy runtime bootstrap)
   ├─ magent-runtime-queue.el     (UI-neutral global turn queue and session-scoped cancellation)
   ├─ magent-runtime-api.el       (UI/backend-facing runtime session and prompt API)
   ├─ magent-project-instructions.el (bounded scoped AGENTS.md discovery and prompt injection)
-  ├─ magent-command.el           (public layered command registry and invocation lifecycle)
+  ├─ magent-command-workflow.el  (generator Workflow DSL and managed Step runtime)
+  ├─ magent-command.el           (public layered command registry and Invocation lifecycle)
   ├─ magent-command-builtins.el  (built-in slash-command registration aggregator)
   ├─ magent-command-*.el         (built-in command handlers and prompt workflows)
   ├─ magent-command-session.el   (isolated command persistence, viewer, and cancellation)
@@ -146,7 +147,7 @@ magent.el (package entry point and lazy runtime bootstrap)
 
 2. **Runtime** (`magent-runtime.el`): Owns the ordered initialization pipeline for agents, skills, slash commands, and capabilities. Static bundled definitions load once; project-local overlays under `.magent/` are activated and unloaded as session scope changes.
 
-3. **Commands** (`magent-command.el`, `magent-command-builtins.el`, `magent-command-*.el`): Elisp-native commands are explicit user actions registered through `magent-command-register`. `:exposure` selects slash, interactive, or both entry surfaces; `:session-policy` selects the current conversation or an isolated durable command session. A registration owns exactly one native declarative `:turn` or one advanced `:handler`; advanced trusted extensions can own asynchronous, cancellable, multi-step lifecycles. Definitions resolve by `core > project > user > package > builtin`, and core names are reserved. ACP resolves slash discovery and dispatch against each runtime session's exact scope. Terminal results are claimed before cleanup so synchronous cancellation callbacks cannot overwrite handler failures.
+3. **Commands** (`magent-command-workflow.el`, `magent-command.el`, `magent-command-builtins.el`, `magent-command-*.el`): Elisp-native commands are explicit user actions registered through `magent-command-register`. `:exposure` selects slash, interactive, or both entry surfaces; `:session-policy` selects the current conversation or an isolated durable command session. A registration owns exactly one generator-backed `:workflow`. Trusted Elisp owns control flow while managed agent, Answer, argv process, and callback Steps provide asynchronous suspension, cancellation, and ledger activity. Elisp feature dependencies are declared with `:requires`; tool requirements are step-local, and commands have no project-workspace requirement. Definitions resolve by `core > project > user > package > builtin`, and core names are reserved. ACP resolves slash discovery and dispatch against each runtime session's exact scope. Terminal results are claimed before cleanup so synchronous cancellation callbacks cannot overwrite Step failures.
 
 4. **Isolated commands** (`magent-command-session.el`, `magent-memory.el`, `magent-doctor.el`): `/doctor` and `/memory-*` are unified command specs exposed through both agent-shell and `M-x magent-command-run-*`. They create isolated sessions under `magent-session-directory/commands`, preserve the current conversation, and can be inspected with `magent-command-list-sessions` or cancelled with `magent-command-cancel`. Memory commands respect `magent-bypass-permission`. Doctor uses trusted read-only probes, Magent-owned redaction, and one tool-free direct request outside the runtime queue. Custom probes are trusted Elisp, not sandboxed code. See `docs/DOCTOR.org`.
 
@@ -209,7 +210,7 @@ Tool-type skills can have companion `.el` files defining `magent-skill-<name>-in
 
 UI-neutral `defcustom` variables live in `magent-config.el` under `customize-group magent`. LLM provider/model/key settings are managed entirely by gptel.
 
-Key settings: `magent-default-agent` (`"build"`), `magent-enable-tools` (list of enabled tool symbols), `magent-org-roam-directory` (repository summary destination; nil falls back to `org-roam-directory`), `magent-include-reasoning` (`t`/`ignore`/`nil`), `magent-request-timeout` (120s), `magent-bash-timeout` (300s), `magent-emacs-eval-timeout` (10s), `magent-max-history` (100).
+Key settings: `magent-default-agent` (`"build"`), `magent-enable-tools` (list of enabled tool symbols), `magent-org-roam-directory` (repository summary destination; nil falls back to `org-roam-directory`), `magent-include-reasoning` (`t`/`ignore`/`nil`), `magent-request-timeout` (120s), `magent-bash-timeout` (300s), `magent-emacs-eval-timeout` (10s), `magent-command-process-timeout` (300s), `magent-command-step-output-max-chars` (24000), `magent-max-history` (100).
 
 ### Supported Frontend Commands
 

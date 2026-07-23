@@ -157,7 +157,7 @@ def test_auto_effort_does_not_inherit_harbor_codex_high_default(
     assert job["agents"][0]["kwargs"]["reasoning_effort"] is None
 
 
-def test_job_proxy_covers_the_trial_environment_without_fingerprinting_secret(
+def test_job_proxy_covers_trial_build_and_runtime_without_fingerprinting_secret(
     tmp_path: Path,
 ) -> None:
     config, profile, suite = _config(tmp_path)
@@ -184,10 +184,18 @@ def test_job_proxy_covers_the_trial_environment_without_fingerprinting_secret(
     overlay = yaml.safe_load(
         Path(environment["extra_docker_compose"][0]).read_text()
     )
-    assert overlay["services"]["main"]["environment"] == {
+    proxy_variables = {
         name: "${MAGENT_BENCHMARK_CONTAINER_PROXY}"
         for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
     }
+    assert overlay["services"]["main"]["build"]["args"] == proxy_variables
+    assert overlay["services"]["main"]["build"]["extra_hosts"] == [
+        "host.docker.internal:host-gateway"
+    ]
+    assert overlay["services"]["main"]["environment"] == proxy_variables
+    assert overlay["services"]["main"]["extra_hosts"] == [
+        "host.docker.internal:host-gateway"
+    ]
 
 
 def test_non_loopback_proxy_uses_the_same_compose_overlay(tmp_path: Path) -> None:

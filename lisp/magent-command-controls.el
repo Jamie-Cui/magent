@@ -8,19 +8,23 @@
 (require 'magent-command)
 (require 'magent-runtime-api)
 
-(defun magent-command-controls--compact (invocation)
+(magent-command-defworkflow magent-command-controls--compact (invocation)
   "Compact the session belonging to INVOCATION."
-  (magent-command-defer invocation)
-  (magent-runtime-session-compact
-   (magent-command-invocation-runtime-session invocation)
-   :instruction (magent-command-invocation-argument invocation)
-   :observer (magent-command-invocation-observer invocation)
-   :approval-provider
-   (magent-command-invocation-approval-provider invocation)
-   :turn-metadata (magent-command-turn-metadata invocation)
-   :on-complete
-   (lambda (status result)
-     (magent-command-finish invocation status result))))
+  (let ((result
+         (magent-command-callback
+             "Compact conversation"
+             (lambda (done)
+               (magent-runtime-session-compact
+                (magent-command-invocation-runtime-session invocation)
+                :instruction (magent-command-invocation-argument invocation)
+                :approval-provider
+                (magent-command-invocation-approval-provider invocation)
+                :turn-metadata (magent-command-turn-metadata invocation)
+                :on-complete done)
+               (lambda ()
+                 (magent-runtime-cancel
+                  (magent-command-invocation-runtime-session invocation)))))))
+    (magent-agent-result-content-string result)))
 
 (defun magent-command-controls-register ()
   "Register the reserved Magent session control command."
@@ -28,7 +32,8 @@
     (magent-command-register
      "compact"
      :description "Summarize and compact the current conversation context."
-     :handler #'magent-command-controls--compact
+     :session-policy 'current
+     :workflow #'magent-command-controls--compact
      :source-layer 'core)))
 
 (provide 'magent-command-controls)

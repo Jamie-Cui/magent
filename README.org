@@ -30,26 +30,26 @@ define the same thing:
 | Primary role           | An explicit Emacs or slash-command action                                        | Reusable instructions or a model-invokable operation                                               |
 | Definition             | Trusted Elisp registered with ~magent-command-register~                            | A ~SKILL.md~ file; a tool skill may also have a companion Elisp implementation                       |
 | Activation             | The user enters ~/name~ or runs ~M-x magent-agent-shell-run-command~                 | An instruction skill is selected or activated by a capability; a tool skill is called by the model |
-| Owns                   | Arguments, preflight, progress, cancellation, completion, and multi-step control | Model context and workflow guidance, or one named operation through ~skill_invoke~                   |
-| Project trust boundary | Native handlers are trusted installed Elisp                                      | Project instruction Markdown is data-only; companion Elisp runs only for explicitly trusted roots  |
+| Owns                   | Arguments, requirements, session policy, Steps, and multi-step control            | Model context and workflow guidance, or one named operation through ~skill_invoke~                   |
+| Project trust boundary | Command Workflows are trusted installed Elisp                                    | Project instruction Markdown is data-only; companion Elisp runs only for explicitly trusted roots  |
 
 Use ~magent-command~ when you want a stable, user-triggered entry point in
 Emacs.  Use a skill when you want reusable expertise or an operation that the
 agent can apply while handling requests.  Use both when an explicit command
-should activate reusable expertise: a command turn spec can select skills with
-~:skills~, while registration declares preflight requirements with
-~:required-tools~.
+should activate reusable expertise: an agent Step can select skills with
+~:skills~ and declare its tool preflight with ~:required-tools~.
 
 An instruction skill with ~default-prompt~ is projected into the command
 registry only as a compatibility adapter.  Invoking that adapter activates the
-original skill; it does not turn Markdown into a native command handler or give
-it trusted Elisp lifecycle authority.
+original skill; it does not turn Markdown into a Command Workflow or give it
+trusted Elisp execution authority.
 
 ~magent-command~ therefore makes slash commands first-class, explicit user
 actions.  Your init file or another trusted Elisp package can register a command
 through the public ~magent-command-register~ API without changing the agent-shell
-or ACP integration.  A standard command can submit one structured Magent turn,
-while advanced handlers can own cancellable, multi-step workflows.
+or ACP integration. Every command owns one generator-backed Elisp Workflow;
+managed agent, process, and callback Steps provide asynchronous suspension,
+cancellation, progress, and activity recording.
 
 Registered commands are advertised to agent-shell and can be invoked as slash
 input or selected with ~M-x magent-agent-shell-run-command~.  The complete
@@ -112,23 +112,33 @@ Magent directly from Git:
   (magent-agent-shell-ensure-config)
 
   ;; Register /ask-name as an Elisp-native Magent command.
+  (magent-command-defworkflow my-magent-ask-name (invocation)
+    (let ((topic
+           (string-trim
+            (or (magent-command-invocation-argument invocation) ""))))
+      (magent-command-answer
+          "Ask selected agent"
+          (if (string-empty-p topic)
+              "What is your name?"
+            (format "What is your name? Also discuss: %s" topic)))))
+
   (magent-command-register
    "ask-name"
    :description "Ask the selected Magent agent to introduce itself."
-   :turn
-   (magent-command-turn-spec-create
-    :prompt "What is your name?")
+   :session-policy 'current
+   :workflow #'my-magent-ask-name
    :source-layer 'user
-   :required-tools '(read_file grep bash emacs_eval)))
+   :requires 'subr-x))
 #+end_src
 
-The ~:required-tools~ list declares tools that must be available before the
-command can run; replace it with the command's actual requirements, or omit it
-for a tool-free command. Exactly one of ~:turn~ and ~:handler~ is required. A
-~user~ command can override an installed ~package~ or ~builtin~ command with
-the same name. Registering the same name, layer, and canonical scope again
-replaces that slot's previous definition. The core ~/compact~ name remains
-reserved.
+~:requires~ accepts one Emacs feature or a list of features. Magent calls
+~require~ during invocation preflight; it does not install packages or require
+a project workspace. Tool requirements belong to the agent Step that needs
+them. Every registration requires one ~:workflow~ and an explicit
+~:session-policy~. A ~user~ command can override an installed ~package~ or
+~builtin~ command with the same name. Registering the same name, layer, and
+canonical scope again replaces that slot's previous definition. The core
+~/compact~ name remains reserved.
 
 * Configuration
 

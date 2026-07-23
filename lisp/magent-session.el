@@ -1378,11 +1378,19 @@ Returns a condensed version of the conversation."
 
 (defun magent-session--turn-include-p (turn current-turn-id)
   "Return non-nil when TURN should be included in prompt generation."
-  (let ((status (magent-thread-turn-status turn)))
-    (or (eq status 'completed)
-        (and current-turn-id
-             (equal (magent-thread-turn-id turn) current-turn-id)
-             (memq status '(queued in-progress))))))
+  (let* ((status (magent-thread-turn-status turn))
+         (metadata (magent-thread-turn-metadata turn))
+         (workflow-control
+          (magent-session--metadata-value metadata :workflow-control))
+         (workflow-activity
+          (magent-session--metadata-value metadata :workflow-activity))
+         (current-p
+          (and current-turn-id
+               (equal (magent-thread-turn-id turn) current-turn-id))))
+    (and (not workflow-control)
+         (or (not workflow-activity) current-p)
+         (or (eq status 'completed)
+             (and current-p (memq status '(queued in-progress)))))))
 
 (defun magent-session--compaction-turn-p (turn)
   "Return non-nil when TURN is a reusable completed compaction boundary."

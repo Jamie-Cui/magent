@@ -130,39 +130,50 @@ org-roam capture 约定 ~YYYY-MM-DDtHHMM.org~。后续运行通过 file-level
   (with-current-buffer buffer
     (derived-mode-p 'diff-mode)))
 
+(magent-command-defworkflow my-magent-review (invocation)
+  "Review INVOCATION 对应的 staged changes。"
+  (let ((changed-files
+         (magent-command-process
+             "List staged files"
+             '("git" "diff" "--cached" "--name-only"))))
+    (magent-command-answer
+        "Review staged changes"
+        (format
+         "Review the staged changes in these files:\n%s"
+         changed-files)
+      :buffers
+      '(agent-shell-mode
+        (magit-status-mode :required-p nil)
+        ("^\\*Warnings\\*" :regexp t
+         :required-p nil :project-only-p nil)
+        (my-magent-review-buffer-p :predicate t :required-p nil))
+      :skills '("code-review")
+      :agent 'build
+      :append-argument-p t
+      :required-tools '(read_file grep bash))))
+
 (magent-command-register
  "my-review"
  :description "运行包自定义的 review workflow。"
  :title "包自定义 review"
  :exposure '(slash)
  :session-policy 'current
- :turn
- (lambda (_invocation)
-   (magent-command-turn-spec-create
-    :prompt "Review the attached Emacs buffers using my package policy."
-    :buffers
-    '(agent-shell-mode
-      (magit-status-mode :required-p nil)
-      ("^\\*Warnings\\*" :regexp t
-       :required-p nil :project-only-p nil)
-      (my-magent-review-buffer-p :predicate t :required-p nil))
-    :skills '("code-review")
-    :agent 'build
-    :append-argument-p t))
+ :workflow #'my-magent-review
  :source-layer 'project
  :source-scope "/path/to/project"
- :requires-project t
- :required-tools '(read_file grep bash))
+ :requires 'diff-mode)
 #+end_src
 
-每个 registration 必须且只能提供 ~:turn~ 和 ~:handler~ 之一。~:turn~ 可以是静态
-~magent-command-turn-spec~，也可以是接收 invocation 并返回 turn spec 的 builder。
-上例使用了可与 ~:turn~ 搭配的 registration 字段：~:description~、~:title~、
-~:exposure~、~:session-policy~、
-~:source-layer~、~:source-scope~、~:requires-project~ 和
-~:required-tools~；也使用了 turn spec 的全部字段：~:prompt~、~:buffers~、
-~:skills~、~:agent~ 和 ~:append-argument-p~。只有受信任 Elisp 需要自主管理
-生命周期时才改用 ~:handler~，它不能和 ~:turn~ 同时出现。
+每个 registration 必须提供且只提供一个 ~:workflow~ function，并显式指定
+~:session-policy~。Workflow 是由 ~magent-command-defworkflow~ 定义的 Elisp
+generator。分支、循环、局部状态、校验以及对 Emacs 的普通调用都直接使用 Elisp；
+只有真正需要等待异步结果的地方才使用由 Magent 管理的 Step。
+
+~:requires~ 接收一个 Emacs feature symbol 或 feature symbol list。Magent 在
+Invocation preflight 中逐个调用 ~require~。缺少 feature 时 command 仍可被发现，但
+会在创建 isolated session 之前失败。这个选项不会安装 package、检查 executable，
+也不会要求调用者位于 project workspace。已经移除的 ~:requires-project~ 不再有
+Command 对应项。
 
 ~(NAME, SOURCE-LAYER, canonical SOURCE-SCOPE)~ 这个三元组对应唯一的 registry
 slot。再次注册同一 slot 会替换旧定义，并使旧 registration token 失效；撤销新
@@ -198,33 +209,47 @@ turn 持久化并用于后续 ledger replay；之后修改 live buffer 不会改
 resource metadata header。
 
 模型可见 user content 的顺序是：展开后的 command prompt、command buffer
-snapshots、frontend attachments。~append-argument-p~ 默认非 nil，会把 slash command
-后的文本追加成 Additional instruction block；builder 已经消费 argument 时应设为
-nil。项目 scope、frontend facts 和附件路径仍属于 command invocation，并自动继承。
+snapshots、frontend attachments。Agent Step 的 ~append-argument-p~ 默认为 nil；
+设为非 nil 时会把 slash command 后的文本追加成 Additional instruction block。
+Workflow 已经读取 ~magent-command-invocation-argument~ 时应保持 nil。项目 scope、
+frontend facts 和附件路径仍属于 Command Invocation，并自动继承。
 
 Request context 是 runtime metadata，不是额外的模型输入。已识别字段可以影响项目
 instructions 查找、capability resolution 或 runtime routing，但该 plist 不会原样发送
-给模型。高级 handler 确实需要 step-local runtime hints 时，可以给
-~magent-command-submit~ 或 ~magent-command-submit-step~ 传
-~:request-context~；也可以传模型可见的 ~:resource-blocks~，以及仅供自身 ledger
-使用的 ~:turn-metadata~。标准 declarative turn 刻意不暴露通用 ~:context~ 或公开
-~:turn-metadata~，canonical command metadata 由 Magent 管理。模型需要直接看到的
-指令和数据应放入 prompt、~:buffers~ 或附件 resource。
+给模型。Agent 和 Answer Step 可以设置 step-local ~:request-context~ 与模型可见的
+~:resource-blocks~。Canonical command metadata 由 Magent 管理；其他需要让模型看到
+的指令和数据应放入 prompt、~:buffers~ 或附件 resource。
 
-高级 handler 可以调用 ~magent-command-progress~ 和 ~magent-command-submit-step~，
-返回前用 ~magent-command-defer~ 声明异步所有权，之后通过
-~magent-command-complete~、~magent-command-fail~ 或 ~magent-command-finish~
-结束。取消清理由 ~magent-command-set-cancel-function~ 注册。Handler 属于受信任的
-已安装 Elisp；项目本地 Markdown 不会获得该执行权限。
+由 Magent 管理的 Step forms 包括：
 
-如果 handler 或 step callback 在提交 runtime 工作后抛错，Magent 会先锁定 invocation
-最终的 ~failed~ 结果，再执行已注册 cleanup 并取消它拥有的所有 runtime submission，
-最后才发布完成通知。因此，同步触发的取消 callback 不会覆盖原始失败，也不会遗留
-继续 streaming 或写 ledger 的后台任务。
+- ~magent-command-agent~ 执行中间 model turn，默认返回文本。它支持 ~:agent~、
+  ~:skills~、~:buffers~、~:append-argument-p~、~:required-tools~、
+  ~:request-context~、~:resource-blocks~ 和 ~:result~。
+- ~magent-command-answer~ 支持相同的 model 选项，但它是 terminal Step：流式输出
+  最终回答并结束 Invocation，之后的 forms 不会继续执行。
+- ~magent-command-process~ 只运行由非空 string 组成的 argv list。它会捕获调用点
+  的 directory 和 process environment，并支持 ~:directory~、~:environment~
+  override alist、~:timeout~、~:check~、~:result~、~:record-command~ 与
+  ~:record-output~。默认结果是完整 stdout；~:result 'full~ 返回包含 stderr、
+  exit status、duration 和 timeout state 的 ~magent-command-process-result~。
+- ~magent-command-callback~ 用来适配已有的异步 Elisp API。Start function 接收
+  ~DONE~，必须用 ~completed~、~failed~ 或 ~cancelled~ 调用
+  ~(DONE STATUS VALUE)~ 一次，并可返回一个无参数 cancel function。
 
-Step callback 执行时仍持有已完成 runtime turn 的 FIFO lease，因此可以直接提交
-下一步，期间不会插入其他 backend turn。每个提交的 turn 会在 ledger 中同时保存
-展开后的模型 prompt，以及原始 slash input、command name、argument 和 invocation id。
+~magent-command-process-timeout~ 是 process 的默认 deadline（300 秒）。
+~magent-command-step-output-max-chars~ 限制持久化到 activity ledger 的 process
+与格式化 callback output（默认 24000 characters）；返回给 Workflow Elisp 的值
+不会被截断。
+
+Workflow 正常走到结尾时只能返回用户可见 string 或 nil。Process、agent 和 callback
+Step 失败时会在 generator 内抛出对应的 typed ~magent-command-*-error~，因此可用普通
+~condition-case~ 恢复。取消是 terminal 状态，不会恢复 Workflow。
+~magent-command-progress~ 仍可发送仅通知用途的进度；每个 Step 的开始和结束会自动
+写入 activity ledger。
+
+Agent 和 Answer Step 使用 runtime FIFO。Process 和 callback Step 仍由 Invocation
+拥有并可取消，但不占用全局 agent execution slot，因此不同 Invocation 的外部等待
+可以重叠。项目本地 Markdown 不会获得受信任 Workflow 的执行权限。
 
 ~M-x magent-agent-shell-run-skill-command~ 可以通过受支持的 agent-shell frontend
 经兼容 adapter 选择并运行任意 command-like instruction skill。

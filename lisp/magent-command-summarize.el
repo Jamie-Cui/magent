@@ -8,17 +8,22 @@
 (require 'magent-command)
 (require 'magent-prompt)
 
+(magent-command-defworkflow magent-command-summarize--workflow (_invocation)
+  "Run the bundled repository summary Workflow."
+  (magent-command-answer
+      "Summarize repository"
+      (magent-prompt-read "commands/summarize.org")
+    :append-argument-p t
+    :required-tools '(read_file grep glob bash write_repo_summary)))
+
 (defun magent-command-summarize-register ()
   "Register the bundled /summarize command."
   (magent-command-register
    "summarize"
    :description "Summarize the current Git project into one canonical Org note."
-   :turn (lambda (_invocation)
-           (magent-command-turn-spec-create
-            :prompt (magent-prompt-read "commands/summarize.org")))
-   :source-layer 'builtin
-   :requires-project t
-   :required-tools '(read_file grep glob bash write_repo_summary)))
+   :session-policy 'current
+   :workflow #'magent-command-summarize--workflow
+   :source-layer 'builtin))
 
 (provide 'magent-command-summarize)
 ;;; magent-command-summarize.el ends here

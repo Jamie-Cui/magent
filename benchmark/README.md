@@ -44,8 +44,8 @@ agents = [
 proxy = "http://127.0.0.1:10808"
 ```
 
-该代理同时用于本地构建 Emacs bundle 和 Harbor trial 容器，包括 agent 安装、
-工具联网和模型请求。loopback 地址会在容器中改写为
+该代理同时用于本地构建 Emacs bundle、Harbor task environment 的 Docker build
+和 trial 容器运行期，包括 agent 安装、工具联网和模型请求。loopback 地址会在容器中改写为
 `host.docker.internal`；宿主机代理必须监听 Docker 可访问的接口。代理值不会写入
 fingerprint，但会和 API key 一样出现在权限为 `0600` 的私有 generated job 中。
 启用代理时，agent 安装超时会从 Harbor 默认的 6 分钟放宽为 12 分钟。
