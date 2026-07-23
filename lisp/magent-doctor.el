@@ -77,6 +77,7 @@
   current-process
   request-handle
   request-timer
+  done
   cancelled-p)
 
 (defvar magent-doctor--registry (make-hash-table :test #'equal)
@@ -636,25 +637,16 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
                (result `((id . ,id)
                          (status . "completed")
                          (data . ,safe))))
-          (magent-command-record-tool
-           context "doctor_probe" (list :probe id) safe
-           (list :doctor-detail t :probe-id id :probe-status 'completed))
           result)
       (magent-doctor-security-error (signal (car err) (cdr err)))
       (magent-redaction-unsafe-value
        (signal 'magent-doctor-security-error '("Probe output rejected")))
       (magent-doctor-probe-timeout
        (let ((message "Probe timed out"))
-         (magent-command-record-tool
-          context "doctor_probe" (list :probe id) message
-          (list :doctor-detail t :probe-id id :probe-status 'failed))
          `((id . ,id) (status . "failed") (error . ,message))))
       (quit (signal 'quit nil))
       (error
        (let ((message (magent-doctor--safe-error err state)))
-         (magent-command-record-tool
-          context "doctor_probe" (list :probe id) message
-          (list :doctor-detail t :probe-id id :probe-status 'failed))
          `((id . ,id) (status . "failed") (error . ,message)))))))
 
 (defun magent-doctor--collect (probes context state)
@@ -742,10 +734,13 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
         (delete-process process)))
     (magent-doctor--cancel-request-timer state)
     (magent-doctor--abort-request state)
-    (let ((context (magent-doctor-state-context state)))
-      (when (eq (magent-command-invocation-status context) 'active)
-        (magent-command-cancel context "Doctor cancelled")))
     t))
+
+(defun magent-doctor--done (state status value)
+  "Complete Doctor STATE once with STATUS and VALUE."
+  (when-let* ((done (magent-doctor-state-done state)))
+    (setf (magent-doctor-state-done state) nil)
+    (funcall done status value)))
 
 (defun magent-doctor--request-callback (context state event)
   "Handle one tool-free doctor EVENT for CONTEXT and STATE."
@@ -760,32 +755,31 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
        (setf (magent-doctor-state-request-handle state) nil)
        (let ((text (or (magent-llm-event-text event) "")))
          (if (string-empty-p (string-trim text))
-             (magent-command-fail
-              context "Doctor analysis returned an empty response")
+             (magent-doctor--done
+              state 'failed "Doctor analysis returned an empty response")
            (condition-case nil
                (let ((result
                       (magent-doctor--normalize-output text context state)))
-                 (magent-command-respond
-                  context result (list :source 'magent-doctor-final))
-                 (magent-command-complete
-                  context "Doctor diagnosis complete"))
+                 (magent-doctor--done state 'completed result))
              (magent-doctor-security-error
-              (magent-command-fail
-               context "Doctor response failed security validation"))))))
+              (magent-doctor--done
+               state 'failed
+               "Doctor response failed security validation"))))))
       ('error
        (magent-doctor--cancel-request-timer state)
        (setf (magent-doctor-state-request-handle state) nil)
        (condition-case nil
-           (magent-command-fail
-            context
+           (magent-doctor--done
+            state 'failed
             (format "Doctor analysis failed: %s"
                     (magent-doctor--safe-error
                      (list 'error
                            (format "%s" (magent-llm-event-message event)))
                      state)))
          (magent-doctor-security-error
-          (magent-command-fail
-           context "Doctor analysis failed with a redacted error"))))))))
+          (magent-doctor--done
+           state 'failed
+           "Doctor analysis failed with a redacted error"))))))))
 
 (defun magent-doctor--start-analysis (context state results)
   "Start one tool-free provider analysis for CONTEXT over RESULTS."
@@ -827,28 +821,26 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
                                          context)
                                         'active)))
                      (magent-doctor--abort-request state)
-                     (magent-command-fail
-                      context "Doctor analysis timed out"))))))))))
+                     (magent-doctor--done
+                      state 'failed "Doctor analysis timed out"))))))))))
 
-(defun magent-doctor--handler (context)
-  "Run the safe probe-based Doctor pipeline for command CONTEXT."
+(defun magent-doctor--start (context done)
+  "Start the safe Doctor pipeline for CONTEXT, completing through DONE."
   (unless (member (magent-command-invocation-argument context)
                   '("" "select"))
     (user-error "Usage: /doctor [select]"))
-  (magent-command-defer context)
   (let* ((probes (magent-doctor--select-probes context))
          (state
           (magent-doctor-state-create
            :context context
+           :done done
            :project-root (magent-doctor--project-root context))))
-    (magent-command-set-cancel-function
-     context (lambda () (magent-doctor--cancel state)))
     (magent-session-set-metadata-value
      (magent-command-invocation-session context)
      'selected-probes
      (vconcat (mapcar #'magent-doctor-probe-id probes)))
     (if (not (magent-doctor--confirm context probes))
-        (magent-command-cancel context "Doctor cancelled")
+        (magent-doctor--done state 'cancelled "Doctor cancelled")
       (setf (magent-doctor-state-deadline state)
             (and (> magent-doctor-total-timeout 0)
                  (+ (float-time) magent-doctor-total-timeout)))
@@ -857,11 +849,18 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
             (unless (magent-doctor-state-cancelled-p state)
               (magent-doctor--start-analysis context state results)))
         (magent-doctor-security-error
-         (magent-command-fail
-          context "Doctor diagnostics failed security validation"))
+         (magent-doctor--done
+          state 'failed "Doctor diagnostics failed security validation"))
         (magent-doctor-probe-timeout
-         (magent-command-fail
-          context "Doctor local collection timed out"))))))
+         (magent-doctor--done
+          state 'failed "Doctor local collection timed out"))))
+    (lambda () (magent-doctor--cancel state))))
+
+(magent-command-defworkflow magent-doctor--workflow (context)
+  "Run Doctor as one cancellable callback Step."
+  (magent-command-callback
+      "Diagnose Magent"
+      (lambda (done) (magent-doctor--start context done))))
 
 (defun magent-doctor--register-builtins ()
   "Register built-in Magent doctor probes."
@@ -933,7 +932,7 @@ With prefix argument SELECT-PROBES, review probe selection in the minibuffer."
    :title "Run Magent Doctor"
    :exposure '(slash interactive)
    :session-policy 'isolated
-   :handler #'magent-doctor--handler
+   :workflow #'magent-doctor--workflow
    :source-layer 'core))
 
 (provide 'magent-doctor)

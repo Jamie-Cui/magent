@@ -96,7 +96,7 @@ Legacy ~messages~ remain as the projection used for gptel prompt reuse and migra
 
 1. A user prompt enters through agent-shell as an ACP ~session/prompt~ request.
 2. ACP resolves a registered slash command against the runtime session's exact scope. Unknown slash input remains an ordinary prompt.
-3. A registered command enters ~magent-command.el~ for argument handling, preflight, and session-policy setup. A plain prompt goes directly to ~magent-runtime-api.el~; a native command turn or advanced workflow step reaches the same API through ~magent-command-submit~. A direct handler that submits no agent turn stays outside the rest of this sequence.
+3. A registered command enters ~magent-command.el~ for argument handling, feature preflight, and session-policy setup, then starts its generator-backed Workflow. Process and callback Steps run outside the agent queue. Agent and terminal Answer Steps enter ~magent-runtime-api.el~ through the command runtime adapter; a plain prompt enters the same API directly.
 4. ~magent-runtime-api.el~ records a queued turn and a completed user item.
 5. ~magent-runtime-queue.el~ starts the turn when the global execution slot is free.
 6. ~magent-agent.el~ chooses the session agent, active skills, capability instructions, and allowed tools.
@@ -131,21 +131,24 @@ Magent has three file-backed extension layers:
 Commands are a separate Elisp-native extension layer. Definitions in
 ~magent-command.el~ are explicit user actions with layered registration,
 slash/interactive exposure, current/isolated session policy, argument handling,
-project/tool preflight, progress, cancellation, and completion. A registration owns exactly one native declarative turn or one
-advanced handler. The native path delegates one turn to
-~magent-runtime-submit~; its turn spec separates prompt text, model-visible
-popwin-style buffer snapshots, and agent/skill selection while inheriting
-frontend request context from the invocation. Content blocks and canonical
-command metadata are persisted internally. Advanced trusted packages may own a
-longer async invocation without receiving ACP or queue internals. The bundled
+feature/tool preflight, progress, cancellation, and completion. Every
+registration owns one generator-backed Elisp Workflow. Ordinary Elisp provides
+control flow; managed agent, terminal Answer, argv process, and callback Steps
+provide asynchronous suspension and activity recording. Agent Steps separate
+prompt text, model-visible popwin-style buffer snapshots, tool requirements,
+and agent/skill selection while inheriting frontend request context from the
+Invocation. Content blocks and canonical command metadata are persisted
+internally. Trusted packages may own a longer asynchronous Invocation without
+receiving ACP or queue internals. The bundled
 ~/explain~, ~/fix~, ~/init~, ~/review~, ~/summarize~, and ~/test~ commands use
 this API and own their Org prompt resources rather than same-name skills.
-An invocation claims its terminal result before cleanup, so a handler failure
-cancels owned submissions without allowing synchronous cancellation callbacks
-to overwrite the failure or continue work after ACP completes.
+An Invocation claims its terminal result before cleanup, so a Step failure
+cancels owned work without allowing synchronous cancellation callbacks to
+overwrite the failure or continue work after ACP completes.
 
 For compatibility, an instruction ~SKILL.md~ with ~default-prompt~ is projected
-into the command registry. Its native turn still activates the original skill.
+into the command registry. Its generated terminal Workflow still activates the
+original skill.
 Project and user adapters override package/bundled definitions by layer, while
 the core control is reserved. Project adapters remain keyed by canonical project
 scope; ACP resolves both command discovery and dispatch against each runtime

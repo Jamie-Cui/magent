@@ -8,16 +8,22 @@
 (require 'magent-command)
 (require 'magent-prompt)
 
+(magent-command-defworkflow magent-command-fix--workflow (_invocation)
+  "Run the bundled fix Workflow."
+  (magent-command-answer
+      "Fix"
+      (magent-prompt-read "commands/fix.org")
+    :append-argument-p t
+    :required-tools '(read_file write_file edit_file grep bash emacs_eval)))
+
 (defun magent-command-fix-register ()
   "Register the bundled /fix command."
   (magent-command-register
    "fix"
    :description "Diagnose and fix the current bug, failure, or regression."
-   :turn (lambda (_invocation)
-           (magent-command-turn-spec-create
-            :prompt (magent-prompt-read "commands/fix.org")))
-   :source-layer 'builtin
-   :required-tools '(read_file write_file edit_file grep bash emacs_eval)))
+   :session-policy 'current
+   :workflow #'magent-command-fix--workflow
+   :source-layer 'builtin))
 
 (provide 'magent-command-fix)
 ;;; magent-command-fix.el ends here

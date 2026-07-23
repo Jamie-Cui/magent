@@ -126,6 +126,19 @@
   '("doctor" "memory-clear" "memory-init" "memory-refresh")
   "Magent-owned isolated workflows exposed as slash commands.")
 
+(magent-command-defworkflow magent-test--empty-command-workflow (_invocation)
+  "Return immediately for registry and frontend discovery tests."
+  nil)
+
+(defmacro magent-test--without-command-step-ledger (&rest body)
+  "Run BODY while replacing durable command Step recording with stubs."
+  (declare (indent 0))
+  `(cl-letf (((symbol-function 'magent-command--workflow-step-start)
+              (lambda (&rest _) "workflow-step-test"))
+             ((symbol-function 'magent-command--workflow-step-finish)
+              #'ignore))
+     ,@body))
+
 (defun magent-test--load-builtin-skills-only ()
   "Load bundled skill files into the caller's test skill registry."
   (require 'magent-skills)
@@ -2129,8 +2142,7 @@
                                 "memory init progress")
                        (funcall (plist-get args :on-complete)
                                 'completed
-                                (magent-agent-result-completed
-                                 "memory init complete")))))
+                                "memory init complete"))))
             (magent-command-run-memory-init))
           (let* ((files (magent-session-list-command-files "memory-init"))
                  (meta (magent-session--read-file-metadata-cached (car files)))
@@ -2157,7 +2169,7 @@
                 :title "Initialize memory"
                 :exposure '(interactive)
                 :session-policy 'isolated
-                :handler #'ignore))
+                :workflow #'magent-test--empty-command-workflow))
          (invocation (magent-command-invocation-create
                       :id "invocation-memory"
                       :spec spec
@@ -2171,19 +2183,7 @@
                        (error "interactive confirmation must be bypassed"))))
             (funcall (magent-memory--command-confirm-provider invocation 'init)
                      nil (lambda (value) (setq approved value))))
-          (let* ((session (magent-command-invocation-session invocation))
-                 (thread (magent-session-thread-ledger session))
-                 (items (apply #'append
-                               (mapcar #'magent-thread-turn-items
-                                       (magent-thread-turns thread))))
-                 (approval (cl-find "memory_approval" items
-                                    :key #'magent-thread-item-name
-                                    :test #'equal)))
-            (should approved)
-            (should approval)
-            (should (string-match-p
-                     "magent-bypass-permission"
-                     (or (magent-thread-item-output approval) "")))))
+          (should approved))
       (delete-directory magent-session-directory t))))
 
 (ert-deftest magent-test-isolated-command-completion-preserves-current-session ()
@@ -2197,7 +2197,7 @@
          (magent-session--scoped-sessions (make-hash-table :test #'equal))
          (parent (magent-session-create :id "session-parent"))
          (new-current (magent-session-create :id "session-new"))
-         captured)
+         captured finish)
     (unwind-protect
         (progn
           (magent-session-install 'global parent)
@@ -2206,9 +2206,14 @@
            :title "Async test"
            :exposure '(interactive)
            :session-policy 'isolated
-           :handler (lambda (invocation)
-                      (setq captured invocation)
-                      (magent-command-defer invocation)))
+           :workflow
+           (iter-lambda (invocation)
+             (setq captured invocation)
+             (magent-command-callback
+                 "Wait"
+                 (lambda (done)
+                   (setq finish done)
+                   #'ignore))))
           (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
                      #'ignore)
                     ((symbol-function 'magent-runtime-command-scope)
@@ -2219,7 +2224,7 @@
                      #'ignore))
             (magent-command-run "async-test")
             (magent-session-install "/tmp/magent-other-project" new-current)
-            (magent-command-complete captured "Async test complete"))
+            (funcall finish 'completed "Async test complete"))
           (should (eq magent--current-session new-current))
           (should (equal magent-session--current-scope
                          "/tmp/magent-other-project"))
@@ -2235,7 +2240,7 @@
          (spec (magent-command-spec-create
                 :name "viewer-test" :title "Viewer test"
                 :exposure '(interactive) :session-policy 'isolated
-                :handler #'ignore))
+                :workflow #'magent-test--empty-command-workflow))
          (invocation (magent-command-invocation-create
                       :id "invocation-viewer" :spec spec
                       :origin-scope 'global))
@@ -2243,12 +2248,19 @@
     (unwind-protect
         (progn
           (magent-command-session-initialize invocation)
-          (magent-command-record-tool
-           invocation "doctor_probe" '(:probe "core") "bounded detail")
-          (magent-command-respond
+          (let* ((step (magent-command--make-callback-step
+                        "Collect diagnostics" #'ignore
+                        :activity-input '(:probe "core")
+                        :activity-formatter
+                        (lambda (_status value) value)))
+                 (item-id
+                  (magent-command-session-start-step invocation step)))
+            (magent-command-session-finish-step
+             invocation step item-id 'completed "bounded detail"))
+          (magent-command--respond
            invocation "* Diagnosis\n** Summary\nVisible result"
            (list :source 'magent-doctor-final))
-          (magent-command-complete invocation "Viewer complete")
+          (magent-command--finish-completed invocation nil)
           (let ((file (car (magent-session-list-command-files "viewer-test"))))
             (cl-letf (((symbol-function 'display-buffer)
                        (lambda (value &rest _) value)))
@@ -3219,32 +3231,30 @@
       (let ((command (magent-command-get name)))
         (should command)
         (should (eq (magent-command-spec-source-layer command) 'builtin))
-        (should (functionp (magent-command-spec-turn command)))
-        (should-not (magent-command-spec-handler command))
+        (should (functionp (magent-command-spec-workflow command)))
         (should-not (magent-skills-get name))))))
 
-(ert-deftest magent-test-command-register-requires-turn-handler-xor ()
-  "Test command registration requires exactly one execution strategy."
+(ert-deftest magent-test-command-register-requires-workflow-and-policy ()
+  "Test command registration requires one Workflow and explicit policy."
   (require 'magent-command)
-  (let ((magent-command--registry nil)
-        (turn (magent-command-turn-spec-create :prompt "Demo")))
+  (let ((magent-command--registry nil))
     (should-error (magent-command-register "missing"))
     (should-error
-     (magent-command-register
-      "ambiguous" :turn turn :handler #'ignore))
-    (should (magent-command-register "turn" :turn turn))
-    (should
-     (magent-command-register "handler" :handler #'ignore))
+     (magent-command-register "missing-policy"
+                              :workflow #'magent-test--empty-command-workflow))
+    (should (magent-command-register
+             "workflow" :session-policy 'current
+             :workflow #'magent-test--empty-command-workflow))
     (should-error
      (magent-command-register
-      "retired-owner" :handler #'ignore :owner 'retired))))
+      "retired-owner" :session-policy 'current :workflow #'magent-test--empty-command-workflow :owner 'retired))))
 
 (ert-deftest magent-test-command-register-validates-exposure-and-session-policy ()
   "Command exposure is orthogonal to registry identity and defaults to slash."
   (let ((magent-command--registry nil))
-    (let ((slash (magent-command-register "slash" :handler #'ignore))
+    (let ((slash (magent-command-register "slash" :session-policy 'current :workflow #'magent-test--empty-command-workflow))
           (both (magent-command-register
-                 "both" :handler #'ignore
+                 "both" :workflow #'magent-test--empty-command-workflow
                  :exposure '(slash interactive slash)
                  :session-policy 'isolated)))
       (should (equal (magent-command-spec-exposure slash) '(slash)))
@@ -3255,10 +3265,10 @@
       (should (eq (magent-command-get "both") both))
       (should-not (magent-command-get "slash" nil 'interactive)))
     (should-error
-     (magent-command-register "bad-exposure" :handler #'ignore
+     (magent-command-register "bad-exposure" :session-policy 'current :workflow #'magent-test--empty-command-workflow
                               :exposure '(menu)))
     (should-error
-     (magent-command-register "bad-policy" :handler #'ignore
+     (magent-command-register "bad-policy" :workflow #'magent-test--empty-command-workflow
                               :session-policy 'temporary))))
 
 (ert-deftest magent-test-command-registry-resolves-layered-overrides ()
@@ -3267,16 +3277,16 @@
   (let ((magent-command--registry nil)
         (magent-command--sequence 0))
     (let ((builtin (magent-command-register
-                    "demo" :description "builtin" :handler #'ignore
+                    "demo" :description "builtin" :session-policy 'current :workflow #'magent-test--empty-command-workflow
                     :source-layer 'builtin))
           (package (magent-command-register
-                    "demo" :description "package" :handler #'ignore
+                    "demo" :description "package" :session-policy 'current :workflow #'magent-test--empty-command-workflow
                     :source-layer 'package))
           (user (magent-command-register
-                 "demo" :description "user" :handler #'ignore
+                 "demo" :description "user" :session-policy 'current :workflow #'magent-test--empty-command-workflow
                  :source-layer 'user))
           (project (magent-command-register
-                    "demo" :description "project" :handler #'ignore
+                    "demo" :description "project" :session-policy 'current :workflow #'magent-test--empty-command-workflow
                     :source-layer 'project)))
       (should (eq (magent-command-get "demo") project))
       (should (magent-command-unregister project))
@@ -3292,16 +3302,16 @@
   (let ((magent-command--registry nil)
         (magent-command--sequence 0))
     (let ((old (magent-command-register
-                "demo" :description "old" :handler #'ignore
+                "demo" :description "old" :session-policy 'current :workflow #'magent-test--empty-command-workflow
                 :source-layer 'project :source-scope "/tmp/project-a"))
           new other-scope)
       (setq new
             (magent-command-register
-             "demo" :description "new" :handler #'ignore
+             "demo" :description "new" :session-policy 'current :workflow #'magent-test--empty-command-workflow
              :source-layer 'project :source-scope "/tmp/project-a"))
       (setq other-scope
             (magent-command-register
-             "demo" :description "other" :handler #'ignore
+             "demo" :description "other" :session-policy 'current :workflow #'magent-test--empty-command-workflow
              :source-layer 'project :source-scope "/tmp/project-b"))
       (should (= (length magent-command--registry) 2))
       (should (eq (magent-command-get "demo" "/tmp/project-a") new))
@@ -3315,13 +3325,13 @@
   (require 'magent-command)
   (let ((magent-command--registry nil))
     (let ((global (magent-command-register
-                   "global" :handler #'ignore :source-layer 'user))
+                   "global" :session-policy 'current :workflow #'magent-test--empty-command-workflow :source-layer 'user))
           (project-b
            (magent-command-register
-            "project-b" :handler #'ignore :source-layer 'project
+            "project-b" :session-policy 'current :workflow #'magent-test--empty-command-workflow :source-layer 'project
             :source-scope "/tmp/project-b")))
       (magent-command-register
-       "project-a" :handler #'ignore :source-layer 'project
+       "project-a" :session-policy 'current :workflow #'magent-test--empty-command-workflow :source-layer 'project
        :source-scope "/tmp/project-a")
       (should (= (magent-command-remove-source
                   'project "/tmp/project-a")
@@ -3344,7 +3354,7 @@
     (add-hook 'magent-command-registry-changed-hook
               (lambda () (cl-incf changes)))
     (let ((registration
-           (magent-command-register "demo" :handler #'ignore)))
+           (magent-command-register "demo" :session-policy 'current :workflow #'magent-test--empty-command-workflow)))
       (should (= changes 1))
       (should (magent-command-unregister registration))
       (should (= changes 2)))))
@@ -3355,14 +3365,14 @@
   (let ((magent-command--registry nil))
     (let ((core (let ((magent-command--allow-core-registration t))
                   (magent-command-register
-                   "compact" :handler #'ignore
+                   "compact" :session-policy 'current :workflow #'magent-test--empty-command-workflow
                    :source-layer 'core))))
       (magent-command-register
-       "compact" :handler #'ignore :source-layer 'project)
+       "compact" :session-policy 'current :workflow #'magent-test--empty-command-workflow :source-layer 'project)
       (should (eq (magent-command-get "compact") core))
       (should-error
        (magent-command-register
-        "reserved" :handler #'ignore :source-layer 'core)
+        "reserved" :session-policy 'current :workflow #'magent-test--empty-command-workflow :source-layer 'core)
        :type 'error)
       (should-error (magent-command-unregister core) :type 'error)
       (should-error (magent-command-remove-source 'core) :type 'error))))
@@ -3376,7 +3386,7 @@
          (make-hash-table :test #'equal))
         (magent-skills--registry nil))
     (let ((builtin (magent-command-register
-                    "fix" :handler #'ignore
+                    "fix" :session-policy 'current :workflow #'magent-test--empty-command-workflow
                     :source-layer 'builtin)))
       (magent-skills-register
        (magent-skill-create
@@ -3463,7 +3473,7 @@
         (magent-skills--registry nil))
     (let ((native
            (magent-command-register
-            "native" :handler #'ignore :source-layer 'user)))
+            "native" :session-policy 'current :workflow #'magent-test--empty-command-workflow :source-layer 'user)))
       (magent-skills-register
        (magent-skill-create
         :name "adapter" :type 'instruction :default-prompt "Run it"
@@ -3501,18 +3511,20 @@
               (magent-command-invocation-create
                :id name :spec spec :runtime-session runtime-session))
              submitted-skills)
-        (cl-letf (((symbol-function 'magent-runtime-submit)
-                   (lambda (_session _prompt &rest args)
-                     (setq submitted-skills (plist-get args :skills))
-                     (funcall (plist-get args :on-complete)
-                              'completed
-                              (magent-agent-result-completed "done"))
-                     "submission-1")))
-          (magent-command--run-turn invocation))
+        (magent-test--without-command-step-ledger
+          (cl-letf (((symbol-function 'magent-runtime-submit)
+                     (lambda (_session _prompt &rest args)
+                       (setq submitted-skills (plist-get args :skills))
+                       (funcall (plist-get args :on-complete)
+                                'completed
+                                (magent-agent-result-completed "done"))
+                       "submission-1")))
+            (magent-command-workflow-start
+             invocation (magent-command-spec-workflow spec))))
         (should (equal submitted-skills (list name)))))))
 
-(ert-deftest magent-test-command-native-turn-submits-structured-turn ()
-  "Test native declarative turns own one structured runtime submission."
+(ert-deftest magent-test-command-answer-submits-structured-turn ()
+  "Test terminal Answer Steps own one structured runtime submission."
   (require 'magent-command)
   (let* ((magent-command--registry nil)
          (magent-command--active-invocations (make-hash-table :test #'eq))
@@ -3523,12 +3535,14 @@
          submitted completion preflight-agent)
     (magent-command-register
      "demo" :description "Demo"
-     :turn
-     (lambda (_invocation)
-       (magent-command-turn-spec-create
-        :prompt "Base prompt"
-        :skills '("review")
-        :agent 'review-agent))
+     :session-policy 'current
+     :workflow
+     (iter-lambda (_invocation)
+       (magent-command-answer
+           "Answer" "Base prompt"
+         :skills '("review")
+         :agent 'review-agent
+         :append-argument-p t))
      :source-layer 'package)
     (cl-letf (((symbol-function 'magent-runtime-session-available-tool-names)
                (lambda (_session &optional agent)
@@ -3568,8 +3582,8 @@
     (should (equal (magent-agent-result-content-string (cadr completion))
                    "done"))))
 
-(ert-deftest magent-test-command-turn-builder-may-consume-argument ()
-  "Test a turn builder can own argument expansion without duplicate text."
+(ert-deftest magent-test-command-workflow-may-consume-argument ()
+  "Test a Workflow can own argument expansion without duplicate text."
   (require 'magent-command)
   (let* ((magent-command--registry nil)
          (magent-command--active-invocations (make-hash-table :test #'eq))
@@ -3580,12 +3594,13 @@
          submitted-prompt)
     (magent-command-register
      "demo" :description "Demo"
-     :turn
-     (lambda (invocation)
-       (magent-command-turn-spec-create
-        :prompt (format "Review target: %s"
-                        (magent-command-invocation-argument invocation))
-        :append-argument-p nil))
+     :session-policy 'current
+     :workflow
+     (iter-lambda (invocation)
+       (magent-command-answer
+           "Answer"
+           (format "Review target: %s"
+                   (magent-command-invocation-argument invocation))))
      :source-layer 'package)
     (cl-letf (((symbol-function 'magent-runtime-submit)
                (lambda (_session prompt &rest args)
@@ -3596,8 +3611,193 @@
       (magent-command-invoke "demo" runtime-session :argument "lisp/"))
     (should (equal submitted-prompt "Review target: lisp/"))))
 
-(ert-deftest magent-test-command-turn-rejects-invalid-builder-result ()
-  "Test an invalid turn builder fails before runtime submission."
+(ert-deftest magent-test-command-process-step-returns-full-result ()
+  "Test an argv process Step resumes with its complete result."
+  (require 'magent-command)
+  (let ((program (executable-find "printf")))
+    (skip-unless program)
+    (let ((magent-command--registry nil)
+          (magent-command--active-invocations (make-hash-table :test #'eq))
+          (runtime-session (magent-runtime-session-create :id "session-1"))
+          captured
+          completion)
+      (magent-command-register
+       "process"
+       :session-policy 'current
+       :workflow
+       (iter-lambda (_invocation)
+         (setq captured
+               (magent-command-process
+                   "Print value" (list program "%s" "hello")
+                 :result 'full))
+         "process completed"))
+      (magent-test--without-command-step-ledger
+        (magent-command-invoke
+         "process" runtime-session
+         :on-complete
+         (lambda (status result) (setq completion (list status result))))
+        (let ((deadline (+ (float-time) 3)))
+          (while (and (null completion) (< (float-time) deadline))
+            (accept-process-output nil 0.02))))
+      (should (eq (car completion) 'completed))
+      (should (magent-command-process-result-p captured))
+      (should (equal (magent-command-process-result-command captured)
+                     (list program "%s" "hello")))
+      (should (zerop (magent-command-process-result-exit-status captured)))
+      (should (equal (magent-command-process-result-stdout captured) "hello"))
+      (should (string-empty-p
+               (magent-command-process-result-stderr captured)))
+      (should-not (magent-command-process-result-timed-out-p captured)))))
+
+(ert-deftest magent-test-command-process-step-failure-is-recoverable ()
+  "Test a failed process Step signals its typed condition in the Workflow."
+  (require 'magent-command)
+  (let ((program (executable-find "false")))
+    (skip-unless program)
+    (let ((magent-command--registry nil)
+          (magent-command--active-invocations (make-hash-table :test #'eq))
+          (runtime-session (magent-runtime-session-create :id "session-1"))
+          condition
+          completion)
+      (magent-command-register
+       "process-failure"
+       :session-policy 'current
+       :workflow
+       (iter-lambda (_invocation)
+         (condition-case err
+             (magent-command-process
+                 "Expected failure" (list program))
+           (magent-command-process-error
+            (setq condition err)
+            "failure recovered"))))
+      (magent-test--without-command-step-ledger
+        (magent-command-invoke
+         "process-failure" runtime-session
+         :on-complete
+         (lambda (status result) (setq completion (list status result))))
+        (let ((deadline (+ (float-time) 3)))
+          (while (and (null completion) (< (float-time) deadline))
+            (accept-process-output nil 0.02))))
+      (should (eq (car completion) 'completed))
+      (should (eq (car condition) 'magent-command-process-error))
+      (should (magent-command-process-result-p (nth 2 condition)))
+      (should (= (magent-command-process-result-exit-status
+                  (nth 2 condition))
+                 1))
+      (should (equal
+               (magent-agent-result-content-string (cadr completion))
+               "failure recovered")))))
+
+(ert-deftest magent-test-command-process-step-start-error-is-typed ()
+  "Test a process startup error remains useful and recoverable."
+  (require 'magent-command)
+  (let ((magent-command--registry nil)
+        (magent-command--active-invocations (make-hash-table :test #'eq))
+        (runtime-session (magent-runtime-session-create :id "session-1"))
+        condition
+        completion)
+    (magent-command-register
+     "process-start-error"
+     :session-policy 'current
+     :workflow
+     (iter-lambda (_invocation)
+       (condition-case err
+           (magent-command-process
+               "Missing executable"
+               '("magent-test-executable-that-does-not-exist"))
+         (magent-command-process-error
+          (setq condition err)
+          "start error recovered"))))
+    (magent-test--without-command-step-ledger
+      (magent-command-invoke
+       "process-start-error" runtime-session
+       :on-complete
+       (lambda (status result) (setq completion (list status result)))))
+    (should (eq (car completion) 'completed))
+    (should (eq (car condition) 'magent-command-process-error))
+    (should (eq (car (nth 2 condition)) 'file-missing))
+    (should (string-match-p
+             "magent-test-executable-that-does-not-exist"
+             (error-message-string condition)))
+    (should (equal
+             (magent-agent-result-content-string (cadr completion))
+             "start error recovered"))))
+
+(ert-deftest magent-test-command-process-step-timeout-is-typed ()
+  "Test process timeout kills the child and remains recoverable."
+  (require 'magent-command)
+  (let ((program (executable-find "sleep")))
+    (skip-unless program)
+    (let ((magent-command--registry nil)
+          (magent-command--active-invocations (make-hash-table :test #'eq))
+          (runtime-session (magent-runtime-session-create :id "session-1"))
+          process-result
+          completion)
+      (magent-command-register
+       "process-timeout"
+       :session-policy 'current
+       :workflow
+       (iter-lambda (_invocation)
+         (condition-case err
+             (magent-command-process
+                 "Expected timeout" (list program "1")
+               :timeout 0.01)
+           (magent-command-process-error
+            (setq process-result (nth 2 err))
+            "timeout recovered"))))
+      (magent-test--without-command-step-ledger
+        (magent-command-invoke
+         "process-timeout" runtime-session
+         :on-complete
+         (lambda (status result) (setq completion (list status result))))
+        (let ((deadline (+ (float-time) 3)))
+          (while (and (null completion) (< (float-time) deadline))
+            (accept-process-output nil 0.02))))
+      (should (eq (car completion) 'completed))
+      (should (magent-command-process-result-p process-result))
+      (should (magent-command-process-result-timed-out-p process-result))
+      (should (= (magent-command-process-result-exit-status process-result)
+                 124))
+      (should (equal
+               (magent-agent-result-content-string (cadr completion))
+               "timeout recovered")))))
+
+(ert-deftest magent-test-command-callback-step-failure-is-typed ()
+  "Test a callback failure resumes as its typed Workflow condition."
+  (require 'magent-command)
+  (let ((magent-command--registry nil)
+        (magent-command--active-invocations (make-hash-table :test #'eq))
+        (runtime-session (magent-runtime-session-create :id "session-1"))
+        condition
+        completion)
+    (magent-command-register
+     "callback-failure"
+     :session-policy 'current
+     :workflow
+     (iter-lambda (_invocation)
+       (condition-case err
+           (magent-command-callback
+               "Fail callback"
+               (lambda (_done) (error "callback exploded")))
+         (magent-command-callback-error
+          (setq condition err)
+          "callback recovered"))))
+    (magent-test--without-command-step-ledger
+      (magent-command-invoke
+       "callback-failure" runtime-session
+       :on-complete
+       (lambda (status result) (setq completion (list status result)))))
+    (should (eq (car completion) 'completed))
+    (should (eq (car condition) 'magent-command-callback-error))
+    (should (eq (car (nth 2 condition)) 'error))
+    (should (string-match-p "callback exploded"
+                            (error-message-string condition)))
+    (should (equal
+             (magent-agent-result-content-string (cadr completion))
+             "callback recovered"))))
+
+(ert-deftest magent-test-command-workflow-rejects-non-iterator-result ()
+  "Test an invalid Workflow result fails before runtime submission."
   (require 'magent-command)
   (let* ((magent-command--registry nil)
          (magent-command--active-invocations (make-hash-table :test #'eq))
@@ -3608,7 +3808,8 @@
          submitted completion)
     (magent-command-register
      "demo" :description "Demo"
-     :turn (lambda (_invocation) "invalid")
+     :session-policy 'current
+     :workflow (lambda (_invocation) "invalid")
      :source-layer 'package)
     (cl-letf (((symbol-function 'magent-runtime-submit)
                (lambda (&rest _args) (setq submitted t))))
@@ -3619,34 +3820,32 @@
     (should-not submitted)
     (should (eq (car completion) 'failed))
     (should (string-match-p
-             "Expected Magent command turn spec"
+             "did not return an iterator"
              (magent-agent-result-content-string (cadr completion))))))
 
-(ert-deftest magent-test-command-turn-validates-structured-fields ()
-  "Test malformed structured turn fields fail before submission ownership."
+(ert-deftest magent-test-command-agent-step-validates-structured-fields ()
+  "Test malformed structured Step fields fail before submission ownership."
   (require 'magent-command)
   (let ((valid-buffer (generate-new-buffer " *magent-turn-validation*")))
     (unwind-protect
         (progn
           (should-error
-           (apply #'magent-command-turn-spec-create
-                  '(:prompt "Demo" :context
-                    (:file-path "/tmp/example.el"))))
-          (should-error
-           (apply #'magent-command-turn-spec-create
-                  '(:prompt "Demo" :turn-metadata (:workflow review))))
-          (dolist (turn
-                   (list
-                    (magent-command-turn-spec-create
-                     :prompt "Demo" :skills "review")
-                    (magent-command-turn-spec-create
-                     :prompt "Demo" :append-argument-p 'yes)
-                    (magent-command-turn-spec-create
-                     :prompt "Demo" :buffers '(("[" :regexp t)))
-                    (magent-command-turn-spec-create
-                     :prompt "Demo"
-                     :buffers (list (list valid-buffer :unknown t)))))
-            (should-error (magent-command--validate-turn-spec turn))))
+           (apply #'magent-command--make-agent-step
+                  '("Demo" "Prompt" :context (:file-path "/tmp/example.el"))))
+          (dolist (buffers
+                   (list '(("[" :regexp t))
+                         (list (list valid-buffer :unknown t))))
+            (let* ((step (magent-command--make-agent-step
+                          "Demo" "Prompt" :buffers buffers))
+                   (invocation
+                    (magent-command-invocation-create
+                     :id "validation"
+                     :spec (magent-command-spec-create :name "validation")
+                     :runtime-session
+                     (magent-runtime-session-create
+                      :id "validation" :scope 'global))))
+              (should-error
+               (magent-command--resolve-step-buffers step invocation)))))
       (kill-buffer valid-buffer))))
 
 (ert-deftest magent-test-command-buffer-patterns-use-popwin-semantics ()
@@ -3675,15 +3874,15 @@
           (cl-letf (((symbol-function 'magent-test-context-buffer-p)
                      (lambda (buffer)
                        (string-match-p "two" (buffer-name buffer)))))
-            (let* ((turn
-                    (magent-command-turn-spec-create
-                     :prompt "Inspect"
+            (let* ((step
+                    (magent-command--make-agent-step
+                     "Inspect" "Inspect"
                      :buffers
                      '(magent-test-context-mode
                        ("^ \\*magent-pattern-" :regexp t)
                        (magent-test-context-buffer-p :predicate t))))
                    (matches
-                    (magent-command--resolve-turn-buffers turn invocation)))
+                    (magent-command--resolve-step-buffers step invocation)))
               (should (= (length matches) 2))
               (should (memq buffer-a matches))
               (should (memq buffer-b matches))
@@ -3717,18 +3916,18 @@
            :id "invocation-1" :spec spec :runtime-session runtime-session))
          logged)
     (should-error
-     (magent-command--resolve-turn-buffers
-      (magent-command-turn-spec-create
-       :prompt "Inspect" :buffers '("*magent-missing-required*"))
+     (magent-command--resolve-step-buffers
+      (magent-command--make-agent-step
+       "Inspect" "Inspect" :buffers '("*magent-missing-required*"))
       invocation)
      :type 'user-error)
     (cl-letf (((symbol-function 'magent-log)
                (lambda (format-string &rest args)
                  (setq logged (apply #'format format-string args)))))
       (should-not
-       (magent-command--resolve-turn-buffers
-        (magent-command-turn-spec-create
-         :prompt "Inspect"
+       (magent-command--resolve-step-buffers
+        (magent-command--make-agent-step
+         "Inspect" "Inspect"
          :buffers '(("*magent-missing-optional*" :required-p nil)))
         invocation)))
     (should (string-match-p "optional buffer pattern" logged))))
@@ -3793,80 +3992,83 @@
               (when (buffer-live-p buffer) (kill-buffer buffer)))
             (list first second)))))
 
-(ert-deftest magent-test-command-advanced-handler-defers-progresses-and-completes ()
-  "Test an asynchronous third-party handler owns invocation completion."
+(ert-deftest magent-test-command-callback-progresses-and-completes ()
+  "Test an asynchronous callback Step owns invocation completion."
   (require 'magent-command)
   (let* ((magent-command--registry nil)
          (magent-command--active-invocations (make-hash-table :test #'eq))
          (runtime-session (magent-runtime-session-create :id "session-1"))
-         invocation events completion)
+         invocation done events completion)
     (magent-command-register
      "async"
-     :handler (lambda (value)
-                (setq invocation value)
-                (magent-command-progress value "phase one")
-                (magent-command-defer value)))
-    (magent-command-invoke
-     "async" runtime-session
-     :observer (lambda (event) (push event events))
-     :on-complete
-     (lambda (status result) (setq completion (list status result))))
-    (should (eq (magent-command-invocation-status invocation) 'active))
-    (should (cl-find 'command-progress events :key (lambda (e) (plist-get e :type))))
-    (should (magent-command-complete invocation "finished"))
+     :session-policy 'current
+     :workflow
+     (iter-lambda (value)
+       (setq invocation value)
+       (magent-command-progress value "phase one")
+       (magent-command-callback
+           "Wait" (lambda (callback) (setq done callback) #'ignore))))
+    (magent-test--without-command-step-ledger
+      (magent-command-invoke
+       "async" runtime-session
+       :observer (lambda (event) (push event events))
+       :on-complete
+       (lambda (status result) (setq completion (list status result))))
+      (should (eq (magent-command-invocation-status invocation) 'active))
+      (should (cl-find 'command-progress events
+                       :key (lambda (e) (plist-get e :type))))
+      (funcall done 'completed "finished"))
     (should (eq (car completion) 'completed))
     (should (equal (magent-agent-result-content-string (cadr completion))
                    "finished"))
-    (should-not (magent-command-complete invocation "again"))))
+    (funcall done 'completed "again")
+    (should (equal (magent-agent-result-content-string (cadr completion))
+                   "finished"))))
 
-(ert-deftest magent-test-command-finish-rejects-legacy-string-results ()
-  "Command terminal callbacks require one structured result contract."
+(ert-deftest magent-test-command-workflow-rejects-non-string-return ()
+  "A Workflow may return only a string or nil."
   (require 'magent-command)
-  (let ((invocation
-         (magent-command-invocation-create
-          :id "strict-result"
-          :spec (magent-command-spec-create :name "strict-result")
-          :status 'active)))
-    (should-error
-     (magent-command-finish invocation 'completed "legacy string")
-     :type 'wrong-type-argument)
-    (should (eq (magent-command-invocation-status invocation) 'active))))
+  (let* ((spec (magent-command-spec-create :name "strict-result"))
+         (invocation
+          (magent-command-invocation-create :id "strict-result" :spec spec))
+         completion)
+    (setf (magent-command-invocation-completion-function invocation)
+          (lambda (status result) (setq completion (list status result))))
+    (magent-command-workflow-start invocation (iter-lambda (_value) 42))
+    (should (eq (car completion) 'failed))
+    (should (string-match-p
+             "invalid result: 42"
+             (magent-agent-result-content-string (cadr completion))))))
 
-(ert-deftest magent-test-command-submit-step-supports-sequential-workflows ()
-  "Test advanced handlers can submit a following step from completion."
+(ert-deftest magent-test-command-agent-steps-support-sequential-workflows ()
+  "Test a Workflow resumes into its following agent Step."
   (require 'magent-command)
   (let* ((magent-command--registry nil)
          (magent-command--active-invocations (make-hash-table :test #'eq))
          (runtime-session (magent-runtime-session-create :id "session-1"))
-         invocation
          submitted)
     (magent-command-register
      "workflow"
-     :handler (lambda (value)
-                (setq invocation value)
-                (magent-command-defer value)))
-    (magent-command-invoke "workflow" runtime-session)
-    (cl-letf (((symbol-function 'magent-runtime-submit)
-               (lambda (_session prompt &rest args)
-                 (push prompt submitted)
-                 (when (equal prompt "first")
-                   (funcall (plist-get args :on-complete)
-                            'completed
-                            (magent-agent-result-completed "first result")))
-                 prompt)))
-      (magent-command-submit-step
-       invocation "first"
-       (lambda (status _result)
-         (should (eq status 'completed))
-         (magent-command-submit-step
-          invocation "second"
-          (lambda (_next-status _next-result)
-            (magent-command-complete invocation "done"))))))
+     :session-policy 'current
+     :workflow
+     (iter-lambda (_invocation)
+       (magent-command-agent "First" "first")
+       (magent-command-answer "Second" "second")))
+    (magent-test--without-command-step-ledger
+      (cl-letf (((symbol-function 'magent-runtime-submit)
+                 (lambda (_session prompt &rest args)
+                   (push prompt submitted)
+                   (when (equal prompt "first")
+                     (funcall (plist-get args :on-complete)
+                              'completed
+                              (magent-agent-result-completed "first result")))
+                   prompt)))
+        (magent-command-invoke "workflow" runtime-session)))
     (should (equal (nreverse submitted) '("first" "second")))
-    (should (eq (magent-command-invocation-status invocation) 'active))))
+    (should (gethash runtime-session magent-command--active-invocations))))
 
-(ert-deftest magent-test-command-submit-merges-explicit-request-context ()
-  "Test advanced submissions name and merge request-only runtime hints."
+(ert-deftest magent-test-command-agent-step-merges-explicit-request-context ()
+  "Test agent Steps merge request-only runtime hints."
   (require 'magent-command)
   (let* ((runtime-session (magent-runtime-session-create :id "session-1"))
          (invocation
@@ -3881,42 +4083,41 @@
                (lambda (_session _prompt &rest args)
                  (setq submitted-context (plist-get args :context))
                  "submission-1")))
-      (magent-command-submit
-       invocation "step"
-       :request-context '(:features (workflow) :workflow-step review)))
+      (magent-command--start-agent-step
+       invocation
+       (magent-command--make-agent-step
+        "Step" "step"
+        :request-context '(:features (workflow) :workflow-step review))
+       #'ignore))
     (should (equal (plist-get submitted-context :features) '(workflow)))
     (should (eq (plist-get submitted-context :workflow-step) 'review))
     (should (equal (plist-get submitted-context :file-path)
                    "/tmp/frontend.el"))
     (should-error
-     (magent-command-submit
-      invocation "step" :context '(:features (ambiguous))))))
+     (magent-command--make-agent-step
+      "Step" "step" :context '(:features (ambiguous))))))
 
-(ert-deftest magent-test-command-submit-step-fails-closed-on-callback-error ()
-  "Test a broken advanced step callback cannot strand its invocation."
+(ert-deftest magent-test-command-workflow-fails-closed-after-callback-error ()
+  "Test Workflow code that fails after a callback cannot strand invocation."
   (require 'magent-command)
   (let* ((magent-command--registry nil)
          (magent-command--active-invocations (make-hash-table :test #'eq))
          (runtime-session (magent-runtime-session-create :id "session-1"))
-         invocation
          completion)
     (magent-command-register
      "workflow"
-     :handler (lambda (value)
-                (setq invocation value)
-                (magent-command-defer value)))
-    (magent-command-invoke
-     "workflow" runtime-session
-     :on-complete (lambda (status result)
-                    (setq completion (list status result))))
-    (cl-letf (((symbol-function 'magent-runtime-submit)
-               (lambda (_session _prompt &rest args)
-                 (funcall (plist-get args :on-complete)
-                          'completed (magent-agent-result-completed "done"))
-                 "submission-1")))
-      (magent-command-submit-step
-       invocation "step" (lambda (&rest _args) (error "broken step"))))
-    (should (eq (magent-command-invocation-status invocation) 'failed))
+     :session-policy 'current
+     :workflow
+     (iter-lambda (_invocation)
+       (magent-command-callback
+           "Callback"
+           (lambda (done) (funcall done 'completed "done") nil))
+       (error "broken step")))
+    (magent-test--without-command-step-ledger
+      (magent-command-invoke
+       "workflow" runtime-session
+       :on-complete (lambda (status result)
+                      (setq completion (list status result)))))
     (should (eq (car completion) 'failed))
     (should (string-match-p
              "broken step"
@@ -3933,176 +4134,158 @@
          (current (magent-command-invocation-create
                    :id "new" :spec spec :runtime-session runtime-session)))
     (puthash runtime-session current magent-command--active-invocations)
-    (should (magent-command-complete stale "late"))
+    (should (magent-command--finish-completed stale nil))
     (should (eq (gethash runtime-session magent-command--active-invocations)
                 current))))
 
-(ert-deftest magent-test-command-handler-must-complete-or-defer ()
-  "Test a forgotten async lifecycle fails closed."
+(ert-deftest magent-test-command-workflow-nil-return-completes ()
+  "Test an empty Workflow completes without an assistant response."
   (require 'magent-command)
   (let ((magent-command--registry nil)
         (magent-command--active-invocations (make-hash-table :test #'eq))
-        (runtime-session (magent-runtime-session-create :id "session-1"))
+        (runtime-session
+         (magent-runtime-session-create
+          :id "session-1" :scope 'global
+          :magent-session (magent-session-create)))
         completion)
-    (magent-command-register "broken" :handler #'ignore)
+    (magent-command-register "broken" :session-policy 'current :workflow #'magent-test--empty-command-workflow)
     (magent-command-invoke
      "broken" runtime-session
      :on-complete (lambda (status result)
                     (setq completion (list status result))))
-    (should (eq (car completion) 'failed))
-    (should (string-match-p
-             "without completing or deferring"
+    (should (eq (car completion) 'completed))
+    (should (string-empty-p
              (magent-agent-result-content-string (cadr completion))))))
 
-(ert-deftest magent-test-command-handler-error-cancels-owned-submission ()
-  "Test a handler error cleans up submitted work before reporting failure."
+(ert-deftest magent-test-command-callback-start-error-fails-invocation ()
+  "Test a callback starter error fails and releases its invocation."
   (require 'magent-command)
   (let ((magent-command--registry nil)
         (magent-command--active-invocations (make-hash-table :test #'eq))
         (runtime-session (magent-runtime-session-create :id "session-1"))
-        invocation
-        submission-callback
-        runtime-cancelled
         completion
         (completion-count 0)
-        (cleanup-count 0)
         order)
     (magent-command-register
-     "broken-submit"
-     :handler
-     (lambda (value)
-       (setq invocation value)
-       (magent-command-set-cancel-function
-        value
-        (lambda ()
-          (cl-incf cleanup-count)
-          (push 'custom-cleanup order)))
-       (magent-command-defer value)
-       (magent-command-submit
-       value "queued work"
-       :on-complete
-        (lambda (status result)
-          (magent-command-finish value status result)))
-       (error "handler exploded")))
-    (cl-letf (((symbol-function 'magent-runtime-submit)
-               (lambda (_session _prompt &rest args)
-                 (setq submission-callback (plist-get args :on-complete))
-                 "submission-1"))
-              ((symbol-function 'magent-runtime-cancel)
-               (lambda (session)
-                 (setq runtime-cancelled session)
-                 (push 'runtime-cancel order)
-                 (funcall submission-callback 'cancelled "runtime cancelled"))))
+     "broken-callback"
+     :session-policy 'current
+     :workflow
+     (iter-lambda (_invocation)
+       (magent-command-callback
+           "Broken" (lambda (_done) (error "starter exploded")))))
+    (magent-test--without-command-step-ledger
       (magent-command-invoke
-       "broken-submit" runtime-session
+       "broken-callback" runtime-session
        :on-complete
        (lambda (status result)
          (cl-incf completion-count)
          (setq completion (list status result))
          (push 'completion order))))
-    (should (= cleanup-count 1))
-    (should (eq runtime-cancelled runtime-session))
     (should (= completion-count 1))
     (should (eq (car completion) 'failed))
     (should (string-match-p
-             "handler exploded"
+             "starter exploded"
              (magent-agent-result-content-string (cadr completion))))
-    (should (eq (magent-command-invocation-status invocation) 'failed))
-    (should-not (magent-command-invocation-submission-ids invocation))
     (should-not (gethash runtime-session
                          magent-command--active-invocations))
-    (should (equal (nreverse order)
-                   '(custom-cleanup runtime-cancel completion)))))
+    (should (equal order '(completion)))))
 
-(ert-deftest magent-test-command-validates-project-and-tool-requirements ()
-  "Test command constraints fail before trusted handler execution."
+(ert-deftest magent-test-command-validates-elisp-and-step-tool-requirements ()
+  "Test Elisp requirements and Step tools fail before model work."
   (require 'magent-command)
   (let ((magent-command--registry nil)
         (magent-command--active-invocations (make-hash-table :test #'eq))
-        (global-session
-         (magent-runtime-session-create :id "global" :scope 'global))
+        (global-session (magent-runtime-session-create :id "global" :scope 'global))
         (project-session
          (magent-runtime-session-create :id "project" :scope "/tmp/project"))
-        handler-ran
+        workflow-ran
         global-completion
         tool-completion)
     (magent-command-register
-     "project-only"
-     :handler (lambda (_invocation) (setq handler-ran t))
-     :requires-project t)
+     "missing-feature"
+     :session-policy 'current
+     :workflow (iter-lambda (_invocation) (setq workflow-ran t))
+     :requires 'magent-test-feature-that-does-not-exist)
     (magent-command-invoke
-     "project-only" global-session
+     "missing-feature" global-session
      :on-complete (lambda (status result)
                     (setq global-completion (list status result))))
-    (should-not handler-ran)
+    (should-not workflow-ran)
     (should (eq (car global-completion) 'failed))
     (should (string-match-p
-             "requires a project workspace"
+             "requires unavailable feature"
              (magent-agent-result-content-string (cadr global-completion))))
     (magent-command-register
      "needs-tools"
-     :handler (lambda (_invocation) (setq handler-ran t))
-     :required-tools '(read_file bash))
-    (cl-letf (((symbol-function
-                'magent-runtime-session-available-tool-names)
-               (lambda (_session &optional _agent) '(read_file))))
-      (magent-command-invoke
-       "needs-tools" project-session
-       :on-complete (lambda (status result)
-                      (setq tool-completion (list status result)))))
-    (should-not handler-ran)
+     :session-policy 'current
+     :workflow
+     (iter-lambda (_invocation)
+       (magent-command-agent
+           "Needs tools" "Use tools"
+         :required-tools '(read_file bash))))
+    (magent-test--without-command-step-ledger
+      (cl-letf (((symbol-function
+                  'magent-runtime-session-available-tool-names)
+                 (lambda (_session &optional _agent) '(read_file))))
+        (magent-command-invoke
+         "needs-tools" project-session
+         :on-complete (lambda (status result)
+                        (setq tool-completion (list status result))))))
     (should (eq (car tool-completion) 'failed))
     (should (string-match-p
              "unavailable tools: bash"
              (magent-agent-result-content-string (cadr tool-completion))))))
 
-(ert-deftest magent-test-command-cancel-cleans-up-once ()
-  "Test session cancellation invokes command and runtime cleanup."
+(ert-deftest magent-test-command-cancel-cleans-up-current-step-once ()
+  "Test session cancellation invokes current Step cleanup once."
   (require 'magent-command)
   (let ((magent-command--registry nil)
         (magent-command--active-invocations (make-hash-table :test #'eq))
         (runtime-session (magent-runtime-session-create :id "session-1"))
-        invocation (cleanup 0) runtime-cancel completion)
+        invocation (cleanup 0) completion)
     (magent-command-register
      "wait"
-     :handler
-     (lambda (value)
+     :session-policy 'current
+     :workflow
+     (iter-lambda (value)
        (setq invocation value)
-       (magent-command-set-cancel-function
-        value (lambda () (cl-incf cleanup)))
-       (magent-command-defer value)))
-    (cl-letf (((symbol-function 'magent-runtime-cancel)
-               (lambda (session) (setq runtime-cancel session))))
+       (magent-command-callback
+           "Wait" (lambda (_done) (lambda () (cl-incf cleanup))))))
+    (magent-test--without-command-step-ledger
       (magent-command-invoke
        "wait" runtime-session
        :on-complete (lambda (status _result) (setq completion status)))
       (should (magent-command-cancel-session runtime-session))
       (should-not (magent-command-cancel-session runtime-session)))
     (should (= cleanup 1))
-    (should (eq runtime-cancel runtime-session))
     (should (eq completion 'cancelled))
     (should (eq (magent-command-invocation-status invocation) 'cancelled))))
 
-(ert-deftest magent-test-command-cancel-survives-reentrant-runtime-completion ()
-  "Test synchronous runtime completion still reports command cancellation."
+(ert-deftest magent-test-command-cancel-survives-reentrant-step-completion ()
+  "Test synchronous Step completion still reports command cancellation."
   (require 'magent-command)
   (let ((magent-command--registry nil)
         (magent-command--active-invocations (make-hash-table :test #'eq))
         (runtime-session (magent-runtime-session-create :id "session-1"))
-        invocation
-        (runtime-cancels 0))
+        invocation done
+        (cleanups 0))
     (magent-command-register
      "wait"
-     :handler (lambda (value)
-                (setq invocation value)
-                (magent-command-defer value)))
-    (magent-command-invoke "wait" runtime-session)
-    (cl-letf (((symbol-function 'magent-runtime-cancel)
-               (lambda (_session)
-                 (cl-incf runtime-cancels)
-                 (magent-command-finish invocation 'cancelled "runtime"))))
+     :session-policy 'current
+     :workflow
+     (iter-lambda (value)
+       (setq invocation value)
+       (magent-command-callback
+           "Wait"
+           (lambda (callback)
+             (setq done callback)
+             (lambda ()
+               (cl-incf cleanups)
+               (funcall done 'cancelled "reentrant"))))))
+    (magent-test--without-command-step-ledger
+      (magent-command-invoke "wait" runtime-session)
       (should (magent-command-cancel-session runtime-session)))
-    (should (= runtime-cancels 1))
+    (should (= cleanups 1))
     (should (eq (magent-command-invocation-status invocation) 'cancelled))))
 
 (ert-deftest magent-test-skill-reload-restores-builtin-skill ()
@@ -4692,15 +4875,26 @@
       (delete-directory tmpdir t))))
 
 (ert-deftest magent-test-bundled-summarize-command-keeps-constraints ()
-  "Test /summarize remains project-bound and tool-backed."
+  "Test /summarize is global-capable and keeps Step-local tools."
   (require 'magent-command)
   (let ((magent-command--registry nil))
     (magent-test--register-builtin-commands-only)
     (let ((command (magent-command-get "summarize")))
       (should command)
-      (should (magent-command-spec-requires-project command))
-      (should (memq 'write_repo_summary
-                    (magent-command-spec-required-tools command))))))
+      (should (eq (magent-command-spec-session-policy command) 'current))
+      (let* ((invocation
+              (magent-command-invocation-create
+               :id "summarize" :spec command :argument ""))
+             (iterator
+              (funcall (magent-command-spec-workflow command) invocation))
+             (step (iter-next iterator)))
+        (unwind-protect
+            (progn
+              (should (eq (magent-command-step-type step) 'answer))
+              (should (memq
+                       'write_repo_summary
+                       (magent-command--step-option step :required-tools))))
+          (iter-close iterator))))))
 
 (ert-deftest magent-test-skills-load-all-includes-emacs-runtime-inspection ()
   "Test builtin skill loading includes the Emacs runtime inspection workflow."
@@ -10322,11 +10516,11 @@
                     :id "session-b" :scope "/tmp/project-b")))
     (let ((command-a
            (magent-command-register
-            "project-command" :handler #'ignore
+            "project-command" :session-policy 'current :workflow #'magent-test--empty-command-workflow
             :source-layer 'project :source-scope "/tmp/project-a"))
           (command-b
            (magent-command-register
-            "project-command" :handler #'ignore
+            "project-command" :session-policy 'current :workflow #'magent-test--empty-command-workflow
             :source-layer 'project :source-scope "/tmp/project-b")))
       (should (eq (plist-get (magent-acp--slash-command
                               "/project-command" project-a)
@@ -10343,7 +10537,7 @@
   (let ((magent-command--registry nil))
     (let ((magent-command--allow-core-registration t))
       (magent-command-register
-       "clear" :handler #'ignore
+       "clear" :session-policy 'current :workflow #'magent-test--empty-command-workflow
        :source-layer 'core))
     (magent-test--register-builtin-commands-only)
     (let ((compact (magent-acp--slash-command
@@ -10415,12 +10609,12 @@
            :id "session-b" :scope "/tmp/project-b"))
          notifications)
     (magent-command-register
-     "global-command" :handler #'ignore)
+     "global-command" :session-policy 'current :workflow #'magent-test--empty-command-workflow)
     (magent-command-register
-     "project-a-command" :handler #'ignore
+     "project-a-command" :session-policy 'current :workflow #'magent-test--empty-command-workflow
      :source-layer 'project :source-scope "/tmp/project-a")
     (magent-command-register
-     "project-b-command" :handler #'ignore
+     "project-b-command" :session-policy 'current :workflow #'magent-test--empty-command-workflow
      :source-layer 'project :source-scope "/tmp/project-b")
     (puthash "session-a" "/tmp/project-a" bindings)
     (puthash "session-b" "/tmp/project-b" bindings)
@@ -10632,7 +10826,8 @@
                  (setq submitted (list session prompt args))
                  (setf (magent-runtime-session-pending-skills session) nil)
                  (funcall (plist-get args :on-complete)
-                          'completed (magent-agent-result-completed "ok")))))
+                          'completed (magent-agent-result-completed "ok"))
+                 "submission-1")))
       (magent-acp--handle-request
        '((:notification-handlers . nil)
          (:request-handlers . nil))
@@ -10650,8 +10845,8 @@
     (should-not (magent-runtime-session-pending-skills runtime-session))
     (should (equal (map-elt response 'stopReason) "end_turn"))))
 
-(ert-deftest magent-test-acp-command-turn-preserves-resource-context ()
-  "Test a structured command turn retains ACP resources and request context."
+(ert-deftest magent-test-acp-command-answer-preserves-resource-context ()
+  "Test a terminal Answer retains ACP resources and request context."
   (require 'magent-acp)
   (let ((magent-command--registry nil)
         (magent-command--active-invocations (make-hash-table :test #'eq))
@@ -10663,9 +10858,12 @@
         submitted response failure)
     (magent-command-register
      "review" :description "Review"
-     :turn
-     (magent-command-turn-spec-create
-      :prompt "Review the attached context.")
+     :session-policy 'current
+     :workflow
+     (iter-lambda (_invocation)
+       (magent-command-answer
+           "Review" "Review the attached context."
+         :append-argument-p t))
      :source-layer 'package)
     (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
                (lambda (session-id)
@@ -10712,8 +10910,8 @@
       (should (equal (map-elt resource 'text) "resource body")))
     (should (equal (map-elt response 'stopReason) "end_turn"))))
 
-(ert-deftest magent-test-acp-command-turn-prepends-buffer-snapshots ()
-  "Test turn buffers precede frontend resources and remain immutable snapshots."
+(ert-deftest magent-test-acp-command-answer-prepends-buffer-snapshots ()
+  "Test Answer buffers precede frontend resources and stay immutable."
   (require 'magent-acp)
   (let ((magent-command--registry nil)
         (magent-command--active-invocations (make-hash-table :test #'eq))
@@ -10728,10 +10926,12 @@
       (let ((context-buffer (current-buffer)))
         (magent-command-register
          "inspect" :description "Inspect"
-         :turn
-         (magent-command-turn-spec-create
-          :prompt "Inspect resources."
-          :buffers (list context-buffer)))
+         :session-policy 'current
+         :workflow
+         (iter-lambda (_invocation)
+           (magent-command-answer
+               "Inspect" "Inspect resources."
+             :buffers (list context-buffer))))
         (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
                    (lambda (_session-id) runtime-session))
                   ((symbol-function 'magent-runtime-submit)
@@ -10798,7 +10998,8 @@
                      (setq submitted (list session prompt args))
                      (setf (magent-runtime-session-pending-skills session) nil)
                      (funcall (plist-get args :on-complete)
-                              'completed (magent-agent-result-completed "ok"))))
+                              'completed (magent-agent-result-completed "ok"))
+                     "submission-1"))
                   ((symbol-function
                     'magent-runtime-session-available-tool-names)
                    (lambda (&rest _)
@@ -10859,9 +11060,13 @@
 (ert-deftest magent-test-acp-session-prompt-compacts-through-runtime ()
   "Test /compact invokes runtime compaction and forwards its completion."
   (require 'magent-acp)
+  (require 'magent-command-controls)
   (let ((magent-command--registry nil)
         (magent-command--active-invocations (make-hash-table :test #'eq))
-        (runtime-session (magent-runtime-session-create :id "session-1"))
+        (runtime-session
+         (magent-runtime-session-create
+          :id "session-1" :scope 'global
+          :magent-session (magent-session-create)))
         compact-args response failure)
     (magent-command-controls-register)
     (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
@@ -11605,7 +11810,7 @@
   (require 'magent-agent-shell)
   (let ((magent-command--registry nil)
         sent)
-    (magent-command-register "demo" :handler #'ignore)
+    (magent-command-register "demo" :session-policy 'current :workflow #'magent-test--empty-command-workflow)
     (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
               ((symbol-function 'magent-agent-shell--prepare-skill-context)
                #'ignore)
@@ -11628,10 +11833,10 @@
           :id "session-a" :scope "/tmp/project-a"))
         offered sent)
     (magent-command-register
-     "project-a-command" :handler #'ignore
+     "project-a-command" :session-policy 'current :workflow #'magent-test--empty-command-workflow
      :source-layer 'project :source-scope "/tmp/project-a")
     (magent-command-register
-     "project-b-command" :handler #'ignore
+     "project-b-command" :session-policy 'current :workflow #'magent-test--empty-command-workflow
      :source-layer 'project :source-scope "/tmp/project-b")
     (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
               ((symbol-function 'magent-runtime-ensure-initialized) #'ignore)
@@ -13274,8 +13479,7 @@
                               (setq called t)
                               '((ok . t)))))
          (state (magent-doctor-state-create :deadline nil)))
-    (cl-letf (((symbol-function 'magent-command-progress) #'ignore)
-              ((symbol-function 'magent-command-record-tool) #'ignore))
+    (cl-letf (((symbol-function 'magent-command-progress) #'ignore))
       (let ((result (magent-doctor--run-probe probe nil state)))
         (should called)
         (should (equal (cdr (assq 'status result)) "completed"))))))

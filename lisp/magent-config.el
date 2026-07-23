@@ -369,6 +369,22 @@ Magent-owned truncation for command buffer context."
                  natnum)
   :group 'magent)
 
+(defcustom magent-command-process-timeout 300
+  "Default timeout in seconds for command Workflow process Steps.
+Nil disables the default timeout.  Individual Steps may override this value."
+  :type '(choice (const :tag "No timeout" nil)
+                 number)
+  :group 'magent)
+
+(defcustom magent-command-step-output-max-chars 24000
+  "Maximum process output characters persisted for one Workflow Step.
+The Workflow receives the complete process result.  Only the durable activity
+copy is bounded, retaining the tail with a truncation marker.  Nil disables
+this persistence limit."
+  :type '(choice (const :tag "Do not truncate Step output" nil)
+                 natnum)
+  :group 'magent)
+
 (defcustom magent-session-save-idle-delay 0.25
   "Idle delay in seconds before UI-triggered session saves run.
 Explicit calls to `magent-session-save' remain synchronous."

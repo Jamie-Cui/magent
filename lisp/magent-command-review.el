@@ -8,16 +8,22 @@
 (require 'magent-command)
 (require 'magent-prompt)
 
+(magent-command-defworkflow magent-command-review--workflow (_invocation)
+  "Run the bundled review Workflow."
+  (magent-command-answer
+      "Review"
+      (magent-prompt-read "commands/review.org")
+    :append-argument-p t
+    :required-tools '(read_file grep bash)))
+
 (defun magent-command-review-register ()
   "Register the bundled /review command."
   (magent-command-register
    "review"
    :description "Review the current changes for defects, risks, and missing tests."
-   :turn (lambda (_invocation)
-           (magent-command-turn-spec-create
-            :prompt (magent-prompt-read "commands/review.org")))
-   :source-layer 'builtin
-   :required-tools '(read_file grep bash)))
+   :session-policy 'current
+   :workflow #'magent-command-review--workflow
+   :source-layer 'builtin))
 
 (provide 'magent-command-review)
 ;;; magent-command-review.el ends here

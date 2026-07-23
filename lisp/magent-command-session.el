@@ -123,6 +123,18 @@
                    (magent-thread-item-error item)
                    "")
                "\n\n"))
+    ('workflow-step
+       (insert (format "%s Workflow Step: %s [%s]\n"
+                       prefix
+                       (or (magent-thread-item-name item) "step")
+                       (magent-command-session--format-value
+                        (magent-thread-item-status item))))
+       (when-let* ((input (magent-thread-item-input item)))
+         (insert "Input: " (magent-command-session--format-value input) "\n"))
+       (when-let* ((output (or (magent-thread-item-output item)
+                               (magent-thread-item-error item))))
+         (insert output "\n"))
+       (insert "\n"))
     (_
        (insert (format "%s %s [%s]\n%s\n\n"
                        prefix
@@ -290,18 +302,108 @@
                              (magent-command-spec-name
                               (magent-command-invocation-spec invocation))
                              :command-invocation-id
-                             (magent-command-invocation-id invocation)))))
+                             (magent-command-invocation-id invocation)
+                             :workflow-control t))))
            (magent-thread-start-turn thread (magent-thread-turn-id turn))
-           (magent-thread-record-user-message-if-needed
-            thread (magent-thread-turn-id turn) input nil
-            (list :source 'magent-command
-                  :command-invocation-id
-                  (magent-command-invocation-id invocation)))
            (setf (magent-command-invocation-turn-id invocation)
                  (magent-thread-turn-id turn))
            (magent-session-refresh-projections session)
            (magent-command-session--save invocation)
            (magent-thread-turn-id turn))))))
+
+(defun magent-command-session-start-step (invocation step)
+  "Record STEP start for INVOCATION and return its item id."
+  (magent-command-session--with-current-session
+   invocation
+   (lambda ()
+     (let* ((session (magent-command-invocation-session invocation))
+            (thread (magent-session-thread-ledger session))
+            (turn-id
+             (magent-command-session--ensure-turn
+              invocation
+              (magent-command-spec-title
+               (magent-command-invocation-spec invocation))))
+            (item
+             (magent-thread-start-item
+              thread turn-id 'workflow-step
+              :name (magent-command-step-name step)
+              :input (magent-command-workflow-step-activity-input step)
+              :metadata
+              (list :source 'magent-command
+                    :command-invocation-id
+                    (magent-command-invocation-id invocation)
+                    :step-type (magent-command-step-type step)))))
+       (magent-session-refresh-projections session)
+       (magent-command-session--save invocation)
+       (magent-thread-item-id item)))))
+
+(defun magent-command-session--step-error-string (value)
+  "Return durable error text for failed Step VALUE."
+  (cond
+   ((magent-agent-result-p value)
+    (magent-agent-result-content-string value))
+   ((and (consp value) (symbolp (car value)))
+    (error-message-string value))
+   (t (format "%s" value))))
+
+(defun magent-command-session-finish-step
+    (invocation step item-id status value)
+  "Record STEP ITEM-ID terminal STATUS and VALUE for INVOCATION."
+  (when item-id
+    (magent-command-session--with-current-session
+     invocation
+     (lambda ()
+       (let* ((session (magent-command-invocation-session invocation))
+              (thread (magent-session-thread-ledger session))
+              (item
+               (cl-find item-id (magent-thread-all-items thread)
+                        :key #'magent-thread-item-id :test #'equal))
+              (output
+               (magent-command-workflow-step-activity-output
+                step status value))
+              (metadata
+               (and item
+                    (append
+                     (magent-thread-item-metadata item)
+                     (when-let* ((submission-id
+                                  (magent-command-invocation-current-submission-id
+                                   invocation)))
+                       (list :submission-id submission-id))))))
+         (when item
+           (pcase status
+             ('completed
+              (magent-thread-complete-item
+               thread item :output output :metadata metadata))
+             ('cancelled
+              (magent-thread-cancel-item
+               thread item (magent-command-session--step-error-string value)))
+             (_
+              (magent-thread-fail-item
+               thread item (magent-command-session--step-error-string value)
+               :output output :metadata metadata)))
+           (setf (magent-command-invocation-current-submission-id invocation)
+                 nil)
+           (magent-session-refresh-projections session)
+           (magent-command-session--save invocation)))))))
+
+(defun magent-command-session-finalize-workflow-turn
+    (invocation status result)
+  "Finalize INVOCATION's control turn with STATUS and RESULT."
+  (when-let* ((turn-id (magent-command-invocation-turn-id invocation)))
+    (magent-command-session--with-current-session
+     invocation
+     (lambda ()
+       (let* ((session (magent-command-invocation-session invocation))
+              (thread (magent-session-thread-ledger session))
+              (turn (magent-thread-find-turn thread turn-id))
+              (message (magent-agent-result-content-string result)))
+         (unless (or (null turn) (magent-thread-terminal-turn-p turn))
+           (pcase status
+             ('completed (magent-thread-complete-turn thread turn-id))
+             ('cancelled (magent-thread-interrupt-turn thread turn-id message))
+             (_ (magent-thread-fail-turn thread turn-id message)))
+           (magent-session-refresh-projections session)
+           (magent-command-session--save invocation)))))))
 
 (defun magent-command-session-record-tool
     (invocation name args result &optional metadata)
@@ -389,8 +491,7 @@ When CANCELLABLE-ONLY is non-nil, omit invocations without owned work."
      (lambda (_id invocation)
        (when (and (eq (magent-command-invocation-status invocation) 'active)
                   (or (not cancellable-only)
-                      (magent-command-invocation-cancel-function invocation)
-                      (magent-command-invocation-submission-ids invocation)))
+                      (magent-command-invocation-current-step invocation)))
          (push invocation invocations)))
      magent-command-session--active-invocations)
     (sort invocations

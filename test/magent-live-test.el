@@ -762,8 +762,8 @@ return that path."
           (should (string-match-p "\\`[0-9]+\\'"
                                   (plist-get tool-content :result))))))))
 
-(ert-deftest magent-live-test-command-turn-snapshots-live-buffer ()
-  "Run a native command turn with one immutable live-buffer resource."
+(ert-deftest magent-live-test-command-answer-snapshots-live-buffer ()
+  "Run a terminal Answer Step with one immutable live-buffer resource."
   :tags '(:magent-live-smoke)
   (require 'magent)
   (magent-live-test--with-isolated-runtime
@@ -784,11 +784,14 @@ return that path."
         (let ((context-buffer (current-buffer)))
           (magent-command-register
            "live-buffer-context"
-           :description "Exercise native command buffer context."
-           :turn
-           (magent-command-turn-spec-create
-            :prompt "Inspect the attached live buffer."
-            :buffers (list context-buffer)))
+           :description "Exercise command Answer buffer context."
+           :session-policy 'current
+           :workflow
+           (iter-lambda (_invocation)
+             (magent-command-answer
+                 "Inspect live buffer"
+                 "Inspect the attached live buffer."
+               :buffers (list context-buffer))))
           (cl-letf (((symbol-function 'magent-runtime-submit)
                      (lambda (session prompt &rest args)
                        (setq submitted (list session prompt args))

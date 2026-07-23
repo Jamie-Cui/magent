@@ -1096,65 +1096,38 @@ with a plan and continuation for scan-based operations."
 
 (defun magent-memory--command-confirm-provider (context operation)
   "Return confirmation function for memory OPERATION in command CONTEXT."
+  (ignore context operation)
   (lambda (plan continue)
-    (magent-command-record-tool
-     context "memory_scan_plan"
-     (if plan
-         (magent-memory-scan-plan-approval-input plan)
-       (list :operation operation))
-     (if plan
-         (magent-memory-scan-plan-details plan)
-       (concat "Deactivate and clear managed Magent Emacs profile memory. "
-               "User notes and a snapshot are kept."))
-     (list :operation operation))
     (if magent-bypass-permission
-        (progn
-          (magent-command-record-tool
-           context "memory_approval"
-           (list :operation operation)
-           "approved by magent-bypass-permission"
-           (list :operation operation
-                 :approved t
-                 :bypass t))
-          (funcall continue t))
+        (funcall continue t)
       (magent-memory--interactive-confirm
        plan
        (lambda (approved)
-         (magent-command-record-tool
-          context "memory_approval"
-          (list :operation operation)
-          (if approved "approved" "cancelled")
-          (list :operation operation
-                :approved approved))
          (funcall continue approved))))))
 
 (defun magent-memory--command-runner (operation)
-  "Return a command runner for memory OPERATION."
-  (lambda (context)
+  "Return a command Workflow for memory OPERATION."
+  (iter-lambda (context)
     (unless (string-empty-p (magent-command-invocation-argument context))
       (user-error "Command /memory-%s does not accept arguments" operation))
-    (magent-command-defer context)
-    (let ((state
-           (magent-memory-run
-            operation
-            :confirm-fn
-            (magent-memory--command-confirm-provider context operation)
-            :notify-fn (lambda (message)
-                         (message "%s" message)
-                         (magent-command-progress context message))
-            :on-complete
-            (lambda (status message)
-              (pcase status
-                ('completed (magent-command-complete context message))
-                ('cancelled (magent-command-cancel context message))
-                (_ (magent-command-fail context message))))
-            :open-after-write (memq operation '(init refresh)))))
-      (magent-command-set-cancel-function
-       context
-       (lambda ()
-         (magent-memory-cancel-operation
-          state "Magent memory command cancelled.")))
-      state)))
+    (magent-command-callback
+        (format "%s memory" (capitalize (symbol-name operation)))
+        (lambda (done)
+          (let ((state
+                 (magent-memory-run
+                  operation
+                  :confirm-fn
+                  (magent-memory--command-confirm-provider context operation)
+                  :notify-fn
+                  (lambda (message)
+                    (message "%s" message)
+                    (magent-command-progress context message))
+                  :on-complete done
+                  :open-after-write (memq operation '(init refresh)))))
+            (lambda ()
+              (magent-memory-cancel-operation
+               state "Magent memory command cancelled."))))
+      :activity-input (list :operation operation))))
 
 (defun magent-memory--load-text ()
   "Return active memory file text, or nil."
@@ -1356,7 +1329,7 @@ with a plan and continuation for scan-based operations."
      :title (nth 2 definition)
      :exposure '(slash interactive)
      :session-policy 'isolated
-     :handler (nth 3 definition)
+     :workflow (nth 3 definition)
      :source-layer 'core)))
 
 (provide 'magent-memory)

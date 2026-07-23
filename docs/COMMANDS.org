@@ -141,41 +141,52 @@ the same public API available to third-party packages:
   (with-current-buffer buffer
     (derived-mode-p 'diff-mode)))
 
+(magent-command-defworkflow my-magent-review (invocation)
+  "Review the current staged changes for INVOCATION."
+  (let ((changed-files
+         (magent-command-process
+             "List staged files"
+             '("git" "diff" "--cached" "--name-only"))))
+    (magent-command-answer
+        "Review staged changes"
+        (format
+         "Review the staged changes in these files:\n%s"
+         changed-files)
+      :buffers
+      '(agent-shell-mode
+        (magit-status-mode :required-p nil)
+        ("^\\*Warnings\\*" :regexp t
+         :required-p nil :project-only-p nil)
+        (my-magent-review-buffer-p :predicate t :required-p nil))
+      :skills '("code-review")
+      :agent 'build
+      :append-argument-p t
+      :required-tools '(read_file grep bash))))
+
 (magent-command-register
  "my-review"
  :description "Run my package-specific review workflow."
  :title "My package review"
  :exposure '(slash)
  :session-policy 'current
- :turn
- (lambda (_invocation)
-   (magent-command-turn-spec-create
-    :prompt "Review the attached Emacs buffers using my package policy."
-    :buffers
-    '(agent-shell-mode
-      (magit-status-mode :required-p nil)
-      ("^\\*Warnings\\*" :regexp t
-       :required-p nil :project-only-p nil)
-      (my-magent-review-buffer-p :predicate t :required-p nil))
-    :skills '("code-review")
-    :agent 'build
-    :append-argument-p t))
+ :workflow #'my-magent-review
  :source-layer 'project
  :source-scope "/path/to/project"
- :requires-project t
- :required-tools '(read_file grep bash))
+ :requires 'diff-mode)
 #+end_src
 
-Every registration must provide exactly one of ~:turn~ and ~:handler~. A
-~:turn~ value is either one static ~magent-command-turn-spec~ or a builder
-function that receives the invocation and returns one. The example uses every
-registration field that can accompany ~:turn~: ~:description~, ~:title~,
-~:exposure~, ~:session-policy~,
-~:source-layer~, ~:source-scope~, ~:requires-project~, and
-~:required-tools~. The turn spec uses all of its fields: ~:prompt~,
-~:buffers~, ~:skills~, ~:agent~, and ~:append-argument-p~. Use ~:handler~
-instead only when trusted Elisp must own a custom lifecycle; it cannot be
-combined with ~:turn~.
+Every registration provides exactly one ~:workflow~ function and an explicit
+~:session-policy~. The Workflow is an Elisp generator defined with
+~magent-command-defworkflow~. Ordinary Elisp owns branching, loops, local
+state, validation, and calls into Emacs; managed Steps are used only where the
+Workflow must suspend for asynchronous work.
+
+~:requires~ accepts one Emacs feature symbol or a list of feature symbols.
+Magent calls ~require~ for each feature during invocation preflight. A missing
+feature leaves the command discoverable but makes invocation fail before an
+isolated session is created. This option does not install a package, check for
+executables, or require a project workspace. The removed ~:requires-project~
+option has no Command equivalent.
 
 The tuple ~(NAME, SOURCE-LAYER, canonical SOURCE-SCOPE)~ is one registry
 slot. Registering that slot again replaces its previous definition and makes
@@ -218,41 +229,57 @@ content, not the resource metadata header.
 
 The model-visible user content order is the expanded command prompt, command
 buffer snapshots, then frontend attachments. ~append-argument-p~ defaults to
-non-nil and appends trailing slash text as an Additional instruction block;
-set it to nil when the builder has already consumed the argument. Project
-scope, frontend facts, and attached resource paths still belong to the command
-invocation and are inherited automatically.
+nil for an agent Step. Set it to non-nil to append trailing slash text as an
+Additional instruction block; leave it nil when the Workflow has already
+consumed ~magent-command-invocation-argument~. Project scope, frontend facts,
+and attached resource paths still belong to the Command Invocation and are
+inherited automatically.
 
 Request context is runtime metadata, not extra model input. Recognized fields
 may affect project instruction discovery, capability resolution, or runtime
-routing, but the plist is not serialized verbatim for the model. An advanced
-handler that genuinely needs step-local runtime hints may pass
-~:request-context~ to ~magent-command-submit~ or
-~magent-command-submit-step~. It may also pass model-visible
-~:resource-blocks~ and private ~:turn-metadata~ for its own ledger data.
-Standard declarative turns deliberately expose neither a generic ~:context~
-nor public ~:turn-metadata~; Magent owns their canonical command metadata. Put
+routing, but the plist is not serialized verbatim for the model. Agent and
+Answer Steps may set step-local ~:request-context~ and model-visible
+~:resource-blocks~. Magent owns canonical command metadata. Put other
 model-visible instructions and data in the prompt, ~:buffers~, or an attached
-resource instead.
+resource.
 
-An advanced handler may call ~magent-command-progress~ and
-~magent-command-submit-step~, then use ~magent-command-defer~ before returning and
-finish later with ~magent-command-complete~, ~magent-command-fail~, or
-~magent-command-finish~. Cancellation cleanup is registered with
-~magent-command-set-cancel-function~. Handlers are trusted installed Elisp;
-project-local Markdown never receives this execution authority.
+The managed Step forms are:
 
-If a handler or step callback signals after submitting runtime work, Magent
-first claims the invocation's final ~failed~ result, then runs its registered
-cleanup and cancels every owned runtime submission before publishing
-completion. A synchronous cancellation callback therefore cannot replace the
-original failure or leave background streaming and ledger writes alive.
+- ~magent-command-agent~ runs an intermediate model turn and returns its text
+  by default. It accepts ~:agent~, ~:skills~, ~:buffers~,
+  ~:append-argument-p~, ~:required-tools~, ~:request-context~,
+  ~:resource-blocks~, and ~:result~.
+- ~magent-command-answer~ accepts the same model options but is terminal. It
+  streams the final answer, ends the Invocation, and does not resume forms
+  after the Step.
+- ~magent-command-process~ runs only a non-empty argv list of strings. It
+  captures the call-site directory and process environment, and accepts
+  ~:directory~, an ~:environment~ override alist, ~:timeout~, ~:check~,
+  ~:result~, ~:record-command~, and ~:record-output~. The default result is
+  complete stdout; ~:result 'full~ returns a
+  ~magent-command-process-result~ including stderr, exit status, duration, and
+  timeout state.
+- ~magent-command-callback~ adapts an existing asynchronous Elisp API. Its
+  start function receives ~DONE~, calls ~(DONE STATUS VALUE)~ exactly once with
+  ~completed~, ~failed~, or ~cancelled~, and may return a zero-argument
+  cancellation function.
 
-A step callback still owns the completed runtime turn's FIFO lease. It can
-submit the next step immediately; no unrelated backend turn can advance in
-between. Each submitted turn records both the expanded model prompt and the
-original slash input, command name, argument, and invocation id in ledger
-metadata.
+~magent-command-process-timeout~ is the default process deadline (300 seconds).
+~magent-command-step-output-max-chars~ bounds process and formatted callback
+output persisted in the activity ledger (24000 characters); the value returned
+to Workflow Elisp remains untruncated.
+
+A Workflow that reaches its end returns either a user-visible string or nil.
+Failed process, agent, and callback Steps signal typed
+~magent-command-*-error~ conditions inside the generator, so ordinary
+~condition-case~ can recover. Cancellation is terminal and does not resume the
+Workflow. ~magent-command-progress~ remains available for notification-only
+updates; Step start/finish activity is recorded automatically.
+
+Agent and Answer Steps use the runtime FIFO. Process and callback Steps are
+owned and cancellable by their Invocation but do not consume the global agent
+execution slot, so different Invocations may overlap those external waits.
+Project-local Markdown never receives trusted Workflow execution authority.
 
 ~M-x magent-agent-shell-run-skill-command~ selects and runs any command-like
 instruction skill through the compatibility adapter.

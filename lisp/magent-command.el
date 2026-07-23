@@ -17,6 +17,7 @@
 (require 'subr-x)
 (require 'url-util)
 (require 'magent-config)
+(require 'magent-command-workflow)
 (require 'magent-log)
 (require 'magent-prompt)
 (require 'magent-protocol)
@@ -25,11 +26,14 @@
 (declare-function magent-command-builtins-register "magent-command-builtins")
 (declare-function magent-command-session-cancel "magent-command-session")
 (declare-function magent-command-session-finalize "magent-command-session")
+(declare-function magent-command-session-finalize-workflow-turn
+                  "magent-command-session")
 (declare-function magent-command-session-initialize "magent-command-session")
 (declare-function magent-command-session-read-active-id "magent-command-session")
 (declare-function magent-command-session-record-message "magent-command-session")
-(declare-function magent-command-session-record-tool "magent-command-session")
+(declare-function magent-command-session-finish-step "magent-command-session")
 (declare-function magent-command-session-untrack "magent-command-session")
+(declare-function magent-command-session-start-step "magent-command-session")
 (declare-function magent-runtime-active-project-scope "magent-runtime")
 (declare-function magent-runtime-command-scope "magent-runtime")
 (declare-function magent-runtime-ensure-initialized "magent-runtime")
@@ -44,7 +48,6 @@
 (declare-function magent-runtime-session-scope "magent-runtime-api" t t)
 (declare-function magent-runtime-submit "magent-runtime-api")
 (declare-function magent-skill-description "magent-skills" t t)
-(declare-function magent-skill-requires-project "magent-skills" t t)
 (declare-function magent-skill-source-layer "magent-skills" t t)
 (declare-function magent-skill-source-scope "magent-skills" t t)
 (declare-function magent-skill-tools "magent-skills" t t)
@@ -62,63 +65,12 @@
   title
   exposure
   session-policy
-  turn
-  handler
+  workflow
   source-layer
   source-scope
-  requires-project
-  required-tools
+  requires
   registration-id
   sequence)
-
-(cl-defstruct (magent-command-turn-spec
-               (:constructor magent-command-turn-spec-create)
-               (:copier nil))
-  "Declarative model input and options for one standard command turn.
-PROMPT is user-role model input.  BUFFERS is a popwin-style list of buffer
-patterns whose invocation-time snapshots are attached as model-visible user
-resources.  The invocation owns frontend request context, including project
-scope and attached resource paths.  SKILLS and AGENT select runtime behavior,
-and APPEND-ARGUMENT-P controls slash argument expansion."
-  prompt
-  buffers
-  skills
-  agent
-  (append-argument-p t))
-
-(cl-defstruct (magent-command-invocation
-               (:constructor magent-command-invocation-create)
-               (:copier nil))
-  "Runtime state for one Magent command invocation."
-  id
-  spec
-  control-session
-  runtime-session
-  session
-  scope
-  origin-buffer
-  origin-directory
-  origin-scope
-  parent-session
-  parent-scope
-  parent-session-id
-  options
-  turn-id
-  response-recorded-p
-  interactive-p
-  raw-input
-  argument
-  request-context
-  resource-blocks
-  observer
-  approval-provider
-  completion-function
-  submission-adapter
-  cancel-function
-  submission-ids
-  (status 'active)
-  deferred-p
-  result)
 
 (defvar magent-command--registry nil
   "Layered list of registered `magent-command-spec' objects.")
@@ -222,34 +174,31 @@ When SCOPE is nil, use the currently active project overlay."
     (delete-dups (copy-sequence value))))
 
 (cl-defun magent-command-register
-    (name &key description title exposure (session-policy 'current)
-          turn handler (source-layer 'package) source-scope requires-project
-          required-tools)
+    (name &key description title exposure session-policy workflow
+          (source-layer 'package) source-scope requires)
   "Register Magent command NAME and return its registration token.
 
-Exactly one of TURN and HANDLER must be provided.  TURN is a
-`magent-command-turn-spec' or a function receiving one
-`magent-command-invocation' and returning a turn spec.  HANDLER receives the
-invocation directly and must complete it synchronously or call
-`magent-command-defer' before returning.  SOURCE-LAYER is one of `builtin',
-`package', `user', `project', or reserved `core'.  NAME, SOURCE-LAYER, and
-SOURCE-SCOPE identify one replaceable registration slot.  REQUIRES-PROJECT and
-REQUIRED-TOOLS are checked before model work or HANDLER execution.  EXPOSURE
-is a non-empty list containing `slash', `interactive', or both.
-SESSION-POLICY is `current' or `isolated'."
-  (unless (xor turn handler)
-    (error "Magent command %S requires exactly one of :turn or :handler" name))
-  (when (and turn
-             (not (or (magent-command-turn-spec-p turn)
-                      (functionp turn))))
-    (error "Expected Magent command turn spec or builder, got: %S" turn))
-  (when (magent-command-turn-spec-p turn)
-    (magent-command--validate-turn-spec turn))
-  (when (and handler (not (functionp handler)))
-    (error "Expected Magent command handler function, got: %S" handler))
+WORKFLOW must be a generator Workflow function receiving one
+`magent-command-invocation'.  SOURCE-LAYER is one of `builtin', `package',
+`user', `project', or reserved `core'.  NAME, SOURCE-LAYER, and SOURCE-SCOPE
+identify one replaceable registration slot.  REQUIRES is a feature symbol or
+list of feature symbols loaded with `require' before the Workflow or an
+isolated session starts.  EXPOSURE is a non-empty list containing `slash',
+`interactive', or both.  SESSION-POLICY must be explicitly `current' or
+`isolated'."
+  (unless (functionp workflow)
+    (error "Magent command %S requires a :workflow function" name))
   (unless (memq session-policy magent-command--session-policies)
     (error "Invalid Magent command session policy: %S" session-policy))
-  (let* ((key (magent-command--normalize-name name))
+  (let* ((normalized-requires
+          (cond
+           ((null requires) nil)
+           ((symbolp requires) (list requires))
+           ((and (proper-list-p requires) (cl-every #'symbolp requires))
+            (delete-dups (copy-sequence requires)))
+           (t (error "Expected :requires feature symbol or list, got: %S"
+                     requires))))
+         (key (magent-command--normalize-name name))
          (layer (or source-layer 'package))
          (_rank (magent-command--layer-rank layer))
          (registration-scope
@@ -260,15 +209,10 @@ SESSION-POLICY is `current' or `isolated'."
                 :title (or title (and (stringp description) description) key)
                 :exposure (magent-command--normalize-exposure exposure)
                 :session-policy session-policy
-                :turn turn
-                :handler handler
+                :workflow workflow
                 :source-layer layer
                 :source-scope registration-scope
-                :requires-project requires-project
-                :required-tools
-                (mapcar (lambda (tool)
-                          (if (symbolp tool) tool (intern tool)))
-                        required-tools)
+                :requires normalized-requires
                 :registration-id (magent-protocol-generate-id "command")
                 :sequence (cl-incf magent-command--sequence))))
     (when (and (eq layer 'core)
@@ -375,6 +319,21 @@ currently active project overlay."
     ('user 'user)
     (_ 'package)))
 
+(defun magent-command--make-skill-workflow (skill-name prompt required-tools)
+  "Return a terminal Workflow adapter for SKILL-NAME and PROMPT."
+  (iter-lambda (invocation)
+    (magent-command-answer
+        "Answer"
+        prompt
+      :skills
+      (magent-skills-dedupe-names
+       (append
+        (magent-runtime-session-pending-skills
+         (magent-command-invocation-runtime-session invocation))
+        (list skill-name)))
+      :required-tools required-tools
+      :append-argument-p t)))
+
 (defun magent-command-refresh-skill-adapters (&optional scope)
   "Rebuild compatibility commands for effective skills in SCOPE.
 Global adapters and each visited project scope are cached independently so
@@ -389,7 +348,6 @@ live sessions can resolve commands without switching the active overlay."
       (magent-command-unregister registration))
     (remhash target-scope magent-command--skill-adapter-registrations)
     (dolist (name (magent-skills-command-names))
-      ;; Give every generated turn builder its own lexical skill-name binding.
       (let ((skill-name name))
         (when-let* ((skill (magent-skills-get skill-name))
                     (prompt (magent-skills-default-prompt skill-name))
@@ -402,20 +360,12 @@ live sessions can resolve commands without switching the active overlay."
                (magent-command-register
                 skill-name
                 :description (magent-skill-description skill)
-                :turn
-                (lambda (invocation)
-                  (magent-command-turn-spec-create
-                   :prompt prompt
-                   :skills
-                   (magent-skills-dedupe-names
-                    (append
-                     (magent-runtime-session-pending-skills
-                      (magent-command-invocation-runtime-session invocation))
-                     (list skill-name)))))
+                :session-policy 'current
+                :workflow
+                (magent-command--make-skill-workflow
+                 skill-name prompt (magent-skill-tools skill))
                 :source-layer (magent-command--skill-source-layer skill)
-                :source-scope (magent-skill-source-scope skill)
-                :requires-project (magent-skill-requires-project skill)
-                :required-tools (magent-skill-tools skill))
+                :source-scope (magent-skill-source-scope skill))
                registrations)
             (error
              (magent-log "WARN skipped skill command adapter %S: %s"
@@ -468,23 +418,10 @@ The next load of SCOPE replaces its cached adapters from current skill data."
   "Report progress MESSAGE for active command INVOCATION."
   (unless (eq (magent-command-invocation-status invocation) 'active)
     (error "Magent command invocation is no longer active"))
-  (when (eq (magent-command-spec-session-policy
-             (magent-command-invocation-spec invocation))
-            'isolated)
-    (magent-command-record-tool
-     invocation "progress" nil message (list :progress t)))
   (magent-command--notify invocation 'command-progress :text message)
   invocation)
 
-(defun magent-command-record-tool
-    (invocation name args result &optional metadata)
-  "Record a tool-like workflow step in INVOCATION's command session."
-  (unless (magent-command-invocation-session invocation)
-    (error "Magent command invocation has no session"))
-  (require 'magent-command-session)
-  (magent-command-session-record-tool invocation name args result metadata))
-
-(defun magent-command-record-message
+(defun magent-command--record-message
     (invocation role content &optional phase metadata)
   "Record ROLE message CONTENT in INVOCATION's command session."
   (unless (magent-command-invocation-session invocation)
@@ -493,29 +430,16 @@ The next load of SCOPE replaces its cached adapters from current skill data."
   (magent-command-session-record-message
    invocation role content phase metadata))
 
-(defun magent-command-respond (invocation content &optional metadata)
+(defun magent-command--respond (invocation content &optional metadata)
   "Record assistant CONTENT and send it to INVOCATION's frontend observer."
   (unless (eq (magent-command-invocation-status invocation) 'active)
     (error "Magent command invocation is no longer active"))
-  (magent-command-record-message
-   invocation 'assistant content nil
-   (append metadata (list :source 'magent-command-final)))
+  (when (magent-command-invocation-session invocation)
+    (magent-command--record-message
+     invocation 'assistant content nil
+     (append metadata (list :source 'magent-command-final))))
   (setf (magent-command-invocation-response-recorded-p invocation) t)
   (magent-command--notify invocation 'assistant-delta :text content)
-  invocation)
-
-(defun magent-command-set-cancel-function (invocation function)
-  "Set additional cancellation FUNCTION for INVOCATION."
-  (unless (or (null function) (functionp function))
-    (error "Expected a cancellation function, got: %S" function))
-  (setf (magent-command-invocation-cancel-function invocation) function)
-  invocation)
-
-(defun magent-command-defer (invocation)
-  "Mark INVOCATION as asynchronously owned by its handler."
-  (unless (eq (magent-command-invocation-status invocation) 'active)
-    (error "Cannot defer a completed Magent command invocation"))
-  (setf (magent-command-invocation-deferred-p invocation) t)
   invocation)
 
 (defun magent-command--claim-finish (invocation status result)
@@ -552,6 +476,17 @@ The next load of SCOPE replaces its cached adapters from current skill data."
            (magent-command-session-untrack invocation))
          (magent-log "ERROR command session finalization failed: %s"
                      (error-message-string err)))))
+    (unless (eq (magent-command-spec-session-policy
+                 (magent-command-invocation-spec invocation))
+                'isolated)
+      (condition-case err
+          (progn
+            (require 'magent-command-session)
+            (magent-command-session-finalize-workflow-turn
+             invocation status result))
+        (error
+         (magent-log "ERROR command Workflow turn finalization failed: %s"
+                     (error-message-string err)))))
     ;; A stale callback must not clear a newer invocation installed for the
     ;; same control session after live reload or extension-managed recovery.
     (when (and control-session
@@ -572,70 +507,63 @@ The next load of SCOPE replaces its cached adapters from current skill data."
                      (error-message-string err)))))
     t))
 
-(defun magent-command-finish (invocation status result)
-  "Finish INVOCATION once with STATUS and RESULT.
-STATUS must be `completed', `failed', or `cancelled'.
-RESULT must be a `magent-agent-result'."
-  (when (magent-command--claim-finish invocation status result)
-    (magent-command--publish-finish invocation)))
-
-(defun magent-command-complete (invocation &optional result)
-  "Complete INVOCATION successfully with RESULT."
-  (magent-command-finish
-   invocation 'completed
-   (if (magent-agent-result-p result)
-       result
-     (magent-agent-result-completed (or result "")))))
-
 (defun magent-command--failure-result (error)
   "Return normalized command failure result for ERROR."
   (if (magent-agent-result-p error)
       error
-    (magent-agent-result-failed error (list :status 'command-error))))
+    (magent-agent-result-failed
+     (if (and (consp error) (symbolp (car error)))
+         (error-message-string error)
+       error)
+     (list :status 'command-error))))
 
-(defun magent-command-fail (invocation error)
-  "Fail INVOCATION with ERROR."
-  (magent-command-finish
-   invocation 'failed (magent-command--failure-result error)))
+(defun magent-command--finish-completed (invocation value)
+  "Complete INVOCATION with Workflow return VALUE."
+  (let ((content (or value "")))
+    (when (and (stringp value) (not (string-empty-p value)))
+      (magent-command--respond invocation value))
+    (when (magent-command--claim-finish
+           invocation 'completed (magent-agent-result-completed content))
+      (magent-command--publish-finish invocation))))
 
-(defun magent-command--cleanup-owned-work (invocation &optional force-runtime)
-  "Cancel work owned by INVOCATION without publishing terminal state.
-Run runtime cancellation when FORCE-RUNTIME is non-nil or the invocation has
-recorded submissions.  Cleanup errors are logged and never hide the original
-terminal result."
-  (let ((cancel (magent-command-invocation-cancel-function invocation))
-        (submission-ids
-         (magent-command-invocation-submission-ids invocation)))
-    ;; Clear ownership first so synchronous cancellation callbacks cannot run
-    ;; either cleanup path more than once.
-    (setf (magent-command-invocation-cancel-function invocation) nil
-          (magent-command-invocation-submission-ids invocation) nil)
-    (when cancel
-      (condition-case err
-          (funcall cancel)
-        ((error quit)
-         (magent-log "ERROR command cancellation cleanup failed: %s"
-                     (error-message-string err)))))
-    (when (or force-runtime submission-ids)
-      (condition-case err
-          (magent-runtime-cancel
-           (magent-command-invocation-runtime-session invocation))
-        ((error quit)
-         (magent-log "ERROR command runtime cancellation failed: %s"
-                     (error-message-string err))))))
-  invocation)
-
-(defun magent-command--finish-with-cleanup
-    (invocation status result &optional force-runtime)
-  "Claim INVOCATION STATUS, clean up owned work, then publish RESULT."
-  (when (magent-command--claim-finish invocation status result)
-    (magent-command--cleanup-owned-work invocation force-runtime)
+(defun magent-command--finish-answer (invocation result)
+  "Finish terminal Answer Step for INVOCATION with agent RESULT."
+  (unless (magent-agent-result-p result)
+    (setq result (magent-agent-result-completed (format "%s" result))))
+  (when (magent-command--claim-finish
+         invocation (magent-agent-result-status result) result)
     (magent-command--publish-finish invocation)))
 
-(defun magent-command--fail-with-cleanup (invocation error)
-  "Fail INVOCATION with ERROR after cancelling work it already submitted."
-  (magent-command--finish-with-cleanup
-   invocation 'failed (magent-command--failure-result error)))
+(defun magent-command--finish-failed (invocation error)
+  "Fail INVOCATION once with ERROR and cancel remaining Workflow state."
+  (let ((result (magent-command--failure-result error)))
+    (when (magent-command--claim-finish invocation 'failed result)
+      (magent-command-workflow-cleanup invocation result)
+      (magent-command--publish-finish invocation))))
+
+(defun magent-command--finish-cancelled (invocation reason)
+  "Cancel INVOCATION once with REASON."
+  (let ((result
+         (if (and (magent-agent-result-p reason)
+                  (eq (magent-agent-result-status reason) 'cancelled))
+             reason
+           (magent-agent-result-cancelled
+            (or reason "Command cancelled") (list :reason 'cancelled)))))
+    (when (magent-command--claim-finish invocation 'cancelled result)
+      (magent-command-workflow-cleanup invocation result)
+      (magent-command--publish-finish invocation))))
+
+(defun magent-command--workflow-step-start (invocation step)
+  "Record STEP start for INVOCATION and return its ledger item id."
+  (require 'magent-command-session)
+  (magent-command-session-start-step invocation step))
+
+(defun magent-command--workflow-step-finish
+    (invocation step item-id status value)
+  "Record STEP terminal STATUS and VALUE for INVOCATION ITEM-ID."
+  (require 'magent-command-session)
+  (magent-command-session-finish-step
+   invocation step item-id status value))
 
 ;;;###autoload
 (defun magent-command-cancel (&optional invocation-or-session-id reason)
@@ -645,13 +573,7 @@ REASON may be a string or a `magent-agent-result' for direct invocations."
   (interactive)
   (cond
    ((magent-command-invocation-p invocation-or-session-id)
-    (magent-command--finish-with-cleanup
-     invocation-or-session-id 'cancelled
-     (if (magent-agent-result-p reason)
-         reason
-       (magent-agent-result-cancelled
-        (or reason "Command cancelled") (list :reason 'cancelled)))
-     t))
+    (magent-command--finish-cancelled invocation-or-session-id reason))
    (t
     (require 'magent-command-session)
     (let ((session-id (or invocation-or-session-id
@@ -672,26 +594,38 @@ REASON may be a string or a `magent-agent-result' for direct invocations."
                 always (keywordp key))))
 
 (defun magent-command--validate-invocation (invocation)
-  "Validate request context and project requirements for INVOCATION."
-  (let* ((spec (magent-command-invocation-spec invocation))
-         (origin (magent-command-invocation-origin-scope invocation)))
-    (unless (magent-command--plist-p
-             (magent-command-invocation-request-context invocation))
-      (error "Expected Magent command invocation request context plist, got: %S"
-             (magent-command-invocation-request-context invocation)))
-    (unless (magent-command--plist-p
-             (magent-command-invocation-options invocation))
-      (error "Expected Magent command invocation options plist, got: %S"
-             (magent-command-invocation-options invocation)))
-    (when (and (magent-command-spec-requires-project spec)
-               (not (stringp origin)))
-      (user-error "Command /%s requires a project workspace"
-                  (magent-command-spec-name spec)))))
+  "Validate request data carried by INVOCATION."
+  (unless (magent-command--plist-p
+           (magent-command-invocation-request-context invocation))
+    (error "Expected Magent command invocation request context plist, got: %S"
+           (magent-command-invocation-request-context invocation)))
+  (unless (magent-command--plist-p
+           (magent-command-invocation-options invocation))
+    (error "Expected Magent command invocation options plist, got: %S"
+           (magent-command-invocation-options invocation))))
 
-(defun magent-command--validate-required-tools (invocation &optional agent)
-  "Validate INVOCATION's required tools for optional turn AGENT."
+(defun magent-command--load-requirements (spec)
+  "Load Elisp feature requirements declared by command SPEC."
+  (dolist (feature (magent-command-spec-requires spec))
+    (let ((loaded
+           (condition-case err
+               (require feature nil t)
+             (error
+              (error "Command /%s failed to require `%s': %s"
+                     (magent-command-spec-name spec) feature
+                     (error-message-string err))))))
+      (unless loaded
+        (user-error "Command /%s requires unavailable feature `%s'"
+                    (magent-command-spec-name spec) feature)))))
+
+(defun magent-command--validate-agent-step-tools (invocation step)
+  "Validate tool requirements of agent STEP for INVOCATION."
   (let* ((spec (magent-command-invocation-spec invocation))
-         (required (magent-command-spec-required-tools spec))
+         (required
+          (mapcar (lambda (tool)
+                    (if (symbolp tool) tool (intern tool)))
+                  (or (magent-command--step-option step :required-tools) nil)))
+         (agent (magent-command--step-option step :agent))
          (runtime-session
           (magent-command-invocation-runtime-session invocation))
          (available
@@ -701,12 +635,13 @@ REASON may be a string or a `magent-agent-result' for direct invocations."
          (missing (and required
                        (cl-set-difference required available))))
     (when missing
-      (user-error "Command /%s requires unavailable tools: %s"
+      (user-error "Command /%s Step %S requires unavailable tools: %s"
                   (magent-command-spec-name spec)
+                  (magent-command-step-name step)
                   (mapconcat #'symbol-name missing ", ")))))
 
-(defun magent-command-turn-metadata (invocation)
-  "Return canonical ledger metadata for command INVOCATION."
+(defun magent-command-turn-metadata (invocation &optional step)
+  "Return canonical ledger metadata for command INVOCATION and STEP."
   (list :source 'magent-command
         :command
         (magent-command-spec-name
@@ -716,26 +651,40 @@ REASON may be a string or a `magent-agent-result' for direct invocations."
         :command-argument
         (magent-command-invocation-argument invocation)
         :command-input
-        (magent-command-invocation-raw-input invocation)))
+        (magent-command-invocation-raw-input invocation)
+        :workflow-step-id
+        (and step (magent-command-invocation-current-step-id invocation))
+        :workflow-step-name
+        (and step (magent-command-step-name step))
+        :workflow-step-type
+        (and step (magent-command-step-type step))))
 
-(cl-defun magent-command-submit
-    (invocation prompt &key skills agent request-context turn-metadata
-                resource-blocks on-complete)
-  "Submit one agent PROMPT owned by command INVOCATION.
-REQUEST-CONTEXT supplies optional request-only runtime hints for an advanced
-handler.  It is not serialized as model input and takes precedence over the
-frontend context captured by INVOCATION.  Standard declarative turns inherit
-the invocation context without adding command-local hints.  RESOURCE-BLOCKS
-are additional model-visible user resources inserted before frontend
-attachments.  TURN-METADATA remains available to advanced handlers only.
-ON-COMPLETE receives the normal runtime STATUS and RESULT."
+(defun magent-command--forward-answer-event (invocation event)
+  "Forward terminal Answer EVENT and track visible response state."
+  (when (eq (plist-get event :type) 'assistant-delta)
+    (setf (magent-command-invocation-response-recorded-p invocation) t))
+  (when-let* ((observer (magent-command-invocation-observer invocation)))
+    (funcall observer event)))
+
+(defun magent-command--start-agent-step (invocation step done)
+  "Start agent STEP for INVOCATION and call DONE on completion."
   (unless (eq (magent-command-invocation-status invocation) 'active)
-    (error "Cannot submit from a completed Magent command invocation"))
-  (unless (magent-command--plist-p request-context)
-    (error "Expected Magent command request context plist, got: %S"
-           request-context))
-  (let* ((adapter (magent-command-invocation-submission-adapter invocation))
-         (additional-resources (append resource-blocks nil))
+    (error "Cannot start a Step for a completed command invocation"))
+  (magent-command--validate-agent-step-tools invocation step)
+  (let* ((prompt (magent-command--step-prompt step invocation))
+         (agent (magent-command--step-option step :agent))
+         (skills (magent-command--step-option step :skills))
+         (request-context
+          (magent-command--step-option step :request-context))
+         (_context-valid
+          (unless (magent-command--plist-p request-context)
+            (error "Expected Magent command request context plist, got: %S"
+                   request-context)))
+         (buffers (magent-command--resolve-step-buffers step invocation))
+         (additional-resources
+          (append (magent-command--buffer-resource-blocks buffers)
+                  (magent-command--step-option step :resource-blocks)
+                  nil))
          (frontend-resources
           (append (magent-command-invocation-resource-blocks invocation) nil))
          (default-blocks
@@ -743,62 +692,45 @@ ON-COMPLETE receives the normal runtime STATUS and RESULT."
                (vconcat
                 (cons `((type . "text") (text . ,prompt))
                       (append additional-resources frontend-resources)))))
+         (adapter (magent-command-invocation-submission-adapter invocation))
          (adapted
           (if adapter
               (funcall adapter prompt additional-resources)
             (list :prompt prompt :content-blocks default-blocks)))
          (effective-prompt (or (plist-get adapted :prompt) prompt))
          (content-blocks (plist-get adapted :content-blocks))
-         (effective-request-context
-          (append request-context
-                  (magent-command-invocation-request-context invocation)))
+         (terminal-p (eq (magent-command-step-type step) 'answer))
          (metadata
           (append
-           (magent-command-turn-metadata invocation)
-           turn-metadata
+           (magent-command-turn-metadata invocation step)
+           (unless terminal-p (list :workflow-activity t))
            (and content-blocks (list :content-blocks content-blocks))))
-         (submission-id
+         submission-id)
+    (setq submission-id
           (magent-runtime-submit
            (magent-command-invocation-runtime-session invocation)
            effective-prompt
            :skills skills
            :agent agent
-           :context effective-request-context
+           :context
+           (append request-context
+                   (magent-command-invocation-request-context invocation))
            :turn-metadata metadata
-           :observer (magent-command-invocation-observer invocation)
+           :observer
+           (and terminal-p
+                (lambda (event)
+                  (magent-command--forward-answer-event invocation event)))
            :approval-provider
            (magent-command-invocation-approval-provider invocation)
-           :on-complete (or on-complete #'ignore))))
-    (push submission-id
-          (magent-command-invocation-submission-ids invocation))
-    submission-id))
-
-(cl-defun magent-command-submit-step
-    (invocation prompt callback &key skills agent request-context turn-metadata
-                resource-blocks)
-  "Submit one workflow PROMPT step for INVOCATION, then call CALLBACK.
-CALLBACK receives runtime STATUS and RESULT while the completed step still
-owns the global FIFO lease.  It may therefore call this function again to
-queue the next step without another backend advancing between the two steps.
-REQUEST-CONTEXT has the same request-only semantics as in
-`magent-command-submit'.  RESOURCE-BLOCKS has the same model-visible
-semantics."
-  (unless (functionp callback)
-    (error "Expected a Magent command step callback, got: %S" callback))
-  (magent-command-submit
-   invocation prompt
-   :skills skills
-   :agent agent
-   :request-context request-context
-   :turn-metadata turn-metadata
-   :resource-blocks resource-blocks
-   :on-complete
-   (lambda (status result)
-     (condition-case err
-         (funcall callback status result)
-       (error
-        (magent-command--fail-with-cleanup
-         invocation (error-message-string err)))))))
+           :on-complete done))
+    (when (and (eq (magent-command-invocation-status invocation) 'active)
+               (eq step (magent-command-invocation-current-step invocation)))
+      (setf (magent-command-invocation-current-submission-id invocation)
+            submission-id))
+    (lambda ()
+      (when (magent-command-invocation-runtime-session invocation)
+        (magent-runtime-cancel
+         (magent-command-invocation-runtime-session invocation))))))
 
 (defun magent-command--normalize-buffer-config (entry)
   "Return normalized popwin-style command buffer configuration ENTRY."
@@ -864,40 +796,6 @@ semantics."
             :required-p required-p
             :project-only-p project-only-p))))
 
-(defun magent-command--validate-turn-spec (turn)
-  "Validate declarative command TURN and return it."
-  (unless (magent-command-turn-spec-p turn)
-    (error "Expected Magent command turn spec, got: %S" turn))
-  (unless (and (stringp (magent-command-turn-spec-prompt turn))
-               (not (string-blank-p
-                     (magent-command-turn-spec-prompt turn))))
-    (error "Magent command turn prompt is empty"))
-  (unless (proper-list-p (magent-command-turn-spec-buffers turn))
-    (error "Expected Magent command buffer configuration list, got: %S"
-           (magent-command-turn-spec-buffers turn)))
-  (mapc #'magent-command--normalize-buffer-config
-        (magent-command-turn-spec-buffers turn))
-  (unless (or (null (magent-command-turn-spec-skills turn))
-              (proper-list-p (magent-command-turn-spec-skills turn)))
-    (error "Expected Magent command skill list, got: %S"
-           (magent-command-turn-spec-skills turn)))
-  (unless (or (null (magent-command-turn-spec-agent turn))
-              (stringp (magent-command-turn-spec-agent turn))
-              (symbolp (magent-command-turn-spec-agent turn)))
-    (error "Expected Magent command agent name, got: %S"
-           (magent-command-turn-spec-agent turn)))
-  (unless (memq (magent-command-turn-spec-append-argument-p turn) '(nil t))
-    (error "Expected Magent command append-argument-p boolean, got: %S"
-           (magent-command-turn-spec-append-argument-p turn)))
-  turn)
-
-(defun magent-command--resolve-turn-spec (turn-or-builder invocation)
-  "Resolve TURN-OR-BUILDER for INVOCATION to a validated turn spec."
-  (magent-command--validate-turn-spec
-   (if (functionp turn-or-builder)
-       (funcall turn-or-builder invocation)
-     turn-or-builder)))
-
 (defun magent-command--path-in-project-p (path root base-directory)
   "Return non-nil when PATH under BASE-DIRECTORY belongs to ROOT."
   (when (and (stringp path) (stringp root))
@@ -958,11 +856,14 @@ semantics."
          candidates)
       candidates)))
 
-(defun magent-command--resolve-turn-buffers (turn invocation)
-  "Resolve and deduplicate TURN buffer patterns for INVOCATION."
-  (let ((seen (make-hash-table :test #'eq))
+(defun magent-command--resolve-step-buffers (step invocation)
+  "Resolve and deduplicate STEP buffer patterns for INVOCATION."
+  (let ((entries (magent-command--step-option step :buffers))
+        (seen (make-hash-table :test #'eq))
         buffers)
-    (dolist (entry (magent-command-turn-spec-buffers turn))
+    (unless (or (null entries) (proper-list-p entries))
+      (error "Expected Step buffer configuration list, got: %S" entries))
+    (dolist (entry entries)
       (let* ((config (magent-command--normalize-buffer-config entry))
              (matches (magent-command--matching-buffers config invocation)))
         (when (null matches)
@@ -1067,11 +968,13 @@ SOURCE-START is the absolute position corresponding to the start of TEXT."
           (setq remaining (max 0 (- remaining used))))))
     (nreverse blocks)))
 
-(defun magent-command--turn-prompt (turn invocation)
-  "Return TURN's prompt expanded for INVOCATION."
-  (let ((base (magent-command-turn-spec-prompt turn))
+(defun magent-command--step-prompt (step invocation)
+  "Return STEP prompt expanded for INVOCATION."
+  (let ((base (magent-command--step-option step :prompt))
         (argument (magent-command-invocation-argument invocation)))
-    (if (or (not (magent-command-turn-spec-append-argument-p turn))
+    (when (string-blank-p base)
+      (error "Magent command agent Step prompt is empty"))
+    (if (or (not (magent-command--step-option step :append-argument-p))
             (string-empty-p argument))
         base
       (concat
@@ -1079,29 +982,6 @@ SOURCE-START is the absolute position corresponding to the start of TEXT."
        (magent-prompt-render
         "internal/additional-instruction.org"
         `((instruction . ,argument)))))))
-
-(defun magent-command--run-turn (invocation)
-  "Run the standard declarative turn owned by INVOCATION."
-  (let* ((spec (magent-command-invocation-spec invocation))
-         (turn (magent-command--resolve-turn-spec
-                (magent-command-spec-turn spec) invocation))
-         (agent (magent-command-turn-spec-agent turn))
-         (prompt (magent-command--turn-prompt turn invocation)))
-    (magent-command--validate-required-tools invocation agent)
-    (let* ((buffers (magent-command--resolve-turn-buffers turn invocation))
-           (resource-blocks
-            (magent-command--buffer-resource-blocks buffers)))
-      (magent-command-defer invocation)
-      (magent-command-submit
-       invocation prompt
-       :skills (magent-command-turn-spec-skills turn)
-       :agent agent
-       :resource-blocks resource-blocks
-       :on-complete
-       (lambda (status result)
-         (if (eq status 'completed)
-             (magent-command-complete invocation result)
-           (magent-command-finish invocation status result)))))))
 
 (defun magent-command--execute (invocation)
   "Validate and execute INVOCATION, returning it immediately."
@@ -1112,6 +992,9 @@ SOURCE-START is the absolute position corresponding to the start of TEXT."
       (user-error "A Magent command is already active in this session"))
     (condition-case err
         (progn
+          (magent-command--validate-invocation invocation)
+          (magent-command--load-requirements
+           (magent-command-invocation-spec invocation))
           (when (eq (magent-command-spec-session-policy
                      (magent-command-invocation-spec invocation))
                     'isolated)
@@ -1120,24 +1003,14 @@ SOURCE-START is the absolute position corresponding to the start of TEXT."
           (when control-session
             (puthash control-session invocation
                      magent-command--active-invocations))
-          (magent-command--validate-invocation invocation)
-          (if-let* ((handler
-                     (magent-command-spec-handler
-                      (magent-command-invocation-spec invocation))))
-              (progn
-                (magent-command--validate-required-tools invocation)
-                (funcall handler invocation))
-            (magent-command--run-turn invocation))
-          (when (and (eq (magent-command-invocation-status invocation) 'active)
-                     (not (magent-command-invocation-deferred-p invocation)))
-            (magent-command-fail
-             invocation
-             "Command handler returned without completing or deferring")))
+          (magent-command-workflow-start
+           invocation
+           (magent-command-spec-workflow
+            (magent-command-invocation-spec invocation))))
       (quit
-       (magent-command-cancel invocation))
+       (magent-command--finish-cancelled invocation "Command cancelled"))
       (error
-       (magent-command--fail-with-cleanup
-        invocation (error-message-string err))))
+       (magent-command--finish-failed invocation err)))
     invocation))
 
 (cl-defun magent-command--make-invocation

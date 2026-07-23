@@ -89,7 +89,7 @@ manifest 和 package data recipe。
 
 1. 用户 prompt 通过 agent-shell 进入 ACP ~session/prompt~ request。
 2. ACP 按 runtime session 的精确 scope 解析已注册 slash command；未知 slash input 仍作为普通 prompt。
-3. 已注册 command 进入 ~magent-command.el~ ，执行参数处理、preflight 和 session-policy 设置。普通 prompt 直接进入 ~magent-runtime-api.el~ ；native command turn 或高级 workflow step 通过 ~magent-command-submit~ 到达同一 API。不提交 agent turn 的 direct handler 不进入后续时序。
+3. 已注册 command 进入 ~magent-command.el~，执行参数处理、feature preflight 和 session-policy 设置，然后启动 generator-backed Workflow。Process 和 callback Step 不进入 agent queue；agent 与 terminal Answer Step 通过 command runtime adapter 进入 ~magent-runtime-api.el~，普通 prompt 则直接进入同一 API。
 4. ~magent-runtime-api.el~ 记录 queued turn 和 completed user item。
 5. ~magent-runtime-queue.el~ 在全局执行槽空闲时启动 turn。
 6. ~magent-agent.el~ 选择 session agent、active skills、capability instructions 和允许的工具。
@@ -123,19 +123,20 @@ Magent 有三层 file-backed 扩展：
 
 Command 是另一层 Elisp-native 扩展。 ~magent-command.el~ 中的定义表示显式
 用户动作，提供分层注册、slash/interactive exposure、current/isolated session
-policy、参数处理、project/tool preflight、progress、取消和完成
-生命周期。每个注册只能拥有一个 native declarative turn 或一个高级 handler。Native
-路径把一次 turn 交给 ~magent-runtime-submit~ ；turn spec 分离 prompt 文本、模型可见的
-popwin 风格 buffer 快照和 agent/skill 选择，并从 invocation 继承 frontend request
+policy、参数处理、feature/tool preflight、progress、取消和完成生命周期。每个
+registration 只拥有一个 generator-backed Elisp Workflow。普通 Elisp 负责控制流；
+由 Magent 管理的 agent、terminal Answer、argv process 和 callback Step 提供异步
+等待与 activity 记录。Agent Step 分离 prompt 文本、模型可见的 popwin 风格 buffer
+快照、tool requirements 和 agent/skill 选择，并从 Invocation 继承 frontend request
 context。Content blocks 和 canonical command metadata 由内部持久化。
-高级受信任 package 可以拥有更长的异步 invocation，但不会接触 ACP 或 queue
+高级受信任 package 可以拥有更长的异步 Invocation，但不会接触 ACP 或 queue
 internals。内置 ~/explain~ 、 ~/fix~ 、 ~/init~ 、 ~/review~ 、 ~/summarize~ 和 ~/test~ 都只使用该公开
 API，并拥有各自的 Org prompt resource，而不是同名 skill。
-Invocation 会先锁定 terminal result 再执行 cleanup，因此 handler 失败时会取消其
-拥有的 submission，同时避免同步取消 callback 覆盖原始失败，或在 ACP 完成后继续工作。
+Invocation 会先锁定 terminal result 再执行 cleanup，因此 Step 失败时会取消其
+拥有的工作，同时避免同步取消 callback 覆盖原始失败，或在 ACP 完成后继续工作。
 
 为保持兼容，带 ~default-prompt~ 的 instruction ~SKILL.md~ 会被投影进 command
-registry，其 native turn 调用时仍激活原 skill。Project/user adapter 按 layer 覆盖 package/bundled
+registry，其生成的 terminal Workflow 调用时仍激活原 skill。Project/user adapter 按 layer 覆盖 package/bundled
 定义；core controls 的名称保留。Project adapter 以 canonical project scope 为键
 保留；ACP 的命令发现和分派都按每个 runtime session 的精确 scope 解析，因此多个
 project session 可以安全共存。
