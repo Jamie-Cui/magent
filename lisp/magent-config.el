@@ -353,9 +353,10 @@ failure status headers are always retained outside this limit."
   :group 'magent)
 
 (defcustom magent-tool-result-model-preview-length 10000
-  "Body prefix characters retained when a tool result is truncated.
-The final record also includes a compact truncation notice with the original
-body length.  Structured failure status headers are not part of this budget."
+  "Body characters retained when a tool result is truncated.
+Successful results keep a prefix.  Failed results keep a short prefix and a
+longer diagnostic suffix.  The final record also includes a compact truncation
+notice; structured failure status headers are not part of this budget."
   :type 'integer
   :group 'magent)
 

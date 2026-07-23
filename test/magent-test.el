@@ -5726,6 +5726,48 @@
     (should (string-match-p "failure-output"
                             (magent-tool-result-output-string result)))))
 
+(ert-deftest magent-test-tools-bash-bounds-failure-output-by-lines ()
+  "Test Bash keeps failure context and the final diagnostic lines."
+  (require 'magent-tools)
+  (skip-unless (executable-find "bash"))
+  (let* ((default-directory temporary-file-directory)
+         (magent-bash-program "bash")
+         (result
+          (magent-test--run-bash
+           "for ((i=1; i<=305; i++)); do printf 'line-%03d\\n' \"$i\"; done; exit 7"))
+         (output (magent-tool-result-output-string result)))
+    (should-not (magent-tool-result-success-p result))
+    (should (= (magent-tool-result-exit-code result) 7))
+    (should (string-prefix-p "line-001\n" output))
+    (should (string-match-p
+             (regexp-quote
+              "[Bash failure output truncated: omitted 5 lines; kept first 1 and final 299.]")
+             output))
+    (should-not (string-match-p "^line-002$" output))
+    (should-not (string-match-p "^line-006$" output))
+    (should (string-match-p "^line-007$" output))
+    (should (string-suffix-p "line-305" output))
+    (should (= 300
+               (length
+                (seq-filter
+                 (lambda (line) (string-prefix-p "line-" line))
+                 (split-string output "\n" t)))))))
+
+(ert-deftest magent-test-tools-bash-keeps-long-success-output ()
+  "Test the Bash execution layer does not compact successful output."
+  (require 'magent-tools)
+  (skip-unless (executable-find "bash"))
+  (let* ((default-directory temporary-file-directory)
+         (magent-bash-program "bash")
+         (result
+          (magent-test--run-bash
+           "for ((i=1; i<=305; i++)); do printf 'line-%03d\\n' \"$i\"; done"))
+         (output (magent-tool-result-output-string result)))
+    (should (magent-tool-result-success-p result))
+    (should (string-prefix-p "line-001\n" output))
+    (should (string-suffix-p "line-305" output))
+    (should-not (string-match-p "Bash failure output truncated" output))))
+
 (ert-deftest magent-test-tools-bash-enforces-pipefail-without-errexit ()
   "Test Bash exposes pipeline failures without forcing errexit."
   (require 'magent-tools)
@@ -5808,7 +5850,17 @@
     (let ((result (magent-test--run-bash "sleep 1" 0.02)))
       (should-not (magent-tool-result-success-p result))
       (should-not (magent-tool-result-exit-code result))
-      (should (plist-get (magent-tool-result-metadata result) :timeout)))))
+      (should (plist-get (magent-tool-result-metadata result) :timeout)))
+    (let* ((result
+            (magent-test--run-bash
+             "for ((i=1; i<=305; i++)); do printf 'line-%03d\\n' \"$i\"; done; sleep 1"
+             0.05))
+           (output (magent-tool-result-output-string result)))
+      (should-not (magent-tool-result-success-p result))
+      (should (plist-get (magent-tool-result-metadata result) :timeout))
+      (should (string-prefix-p "Command timed out. Partial output:\n" output))
+      (should (string-match-p "Bash failure output truncated" output))
+      (should (string-suffix-p "line-305" output)))))
 
 (ert-deftest magent-test-tools-bash-ignores-host-bash-env ()
   "Test host BASH_ENV cannot disable the tool's pipefail execution."
@@ -12736,28 +12788,31 @@
       (should (equal (plist-get prompt-tool :result) result)))))
 
 (ert-deftest magent-test-session-keeps-failure-header-outside-body-budget ()
-  "Test failure status remains intact with a very small body preview."
+  "Test failure status and diagnostic tail survive a small body preview."
   (require 'magent-session)
   (let* ((magent-tool-result-model-max-length 8)
-         (magent-tool-result-model-preview-length 4)
+         (magent-tool-result-model-preview-length 8)
          (thread (magent-thread-create :id "thread-truncated-failure"))
          (turn (magent-thread-create-turn thread "Run failing tool"))
          (result (magent-tool-result-create
                   :status 'failed
                   :success nil
                   :exit-code 23
-                  :output (make-string 20 ?x)))
+                  :output "ab0123456789uvwxyz"))
          (item (magent-thread-record-tool-result
                 thread (magent-thread-turn-id turn) "call-23" "bash" nil
                 result))
          (visible (magent-thread-item-output item)))
     (should (string-prefix-p
-             "[Tool result: status=failed; exit-code=23]\nxxxx\n\n"
+             "[Tool result: status=failed; exit-code=23]\nab\n\n"
              visible))
     (should (string-match-p
-             "original 20 characters, kept first 4, omitted 16"
+             "original 18 characters; kept first 2 and last 6; omitted 10"
              visible))
-    (should-not (string-match-p "xxxxx" visible))))
+    (should (string-suffix-p "uvwxyz" visible))
+    (should-not (string-match-p "0123456789" visible))
+    (should (equal "ab0123456789uvwxyz"
+                   (magent-tool-result-output result)))))
 
 (ert-deftest magent-test-thread-ledger-turn-and-item-state-machine ()
   "Test explicit thread/turn/item state transitions."
