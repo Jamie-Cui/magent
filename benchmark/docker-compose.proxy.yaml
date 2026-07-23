@@ -1,5 +1,13 @@
 services:
   main:
+    build:
+      args:
+        HTTP_PROXY: "${MAGENT_BENCHMARK_CONTAINER_PROXY}"
+        HTTPS_PROXY: "${MAGENT_BENCHMARK_CONTAINER_PROXY}"
+        http_proxy: "${MAGENT_BENCHMARK_CONTAINER_PROXY}"
+        https_proxy: "${MAGENT_BENCHMARK_CONTAINER_PROXY}"
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
     environment:
       HTTP_PROXY: "${MAGENT_BENCHMARK_CONTAINER_PROXY}"
       HTTPS_PROXY: "${MAGENT_BENCHMARK_CONTAINER_PROXY}"
