@@ -1115,6 +1115,40 @@ number of lifecycle objects changed."
   (magent-thread--legacy-tool-value
    (magent-thread--alist-to-keyword-plist input)))
 
+(defun magent-thread--truncate-model-visible-tool-result-body
+    (body failed-p max-length)
+  "Return BODY truncated to MAX-LENGTH characters of retained content.
+When FAILED-P is non-nil, preserve a short prefix and a longer diagnostic
+suffix.  Successful output keeps its prefix as before."
+  (let* ((preview-length
+          (min (max 0
+                    (or magent-tool-result-model-preview-length max-length))
+               max-length
+               (length body)))
+         (omitted (- (length body) preview-length)))
+    (if failed-p
+        (let* ((head-length
+                (if (> preview-length 1)
+                    (max 1 (/ preview-length 4))
+                  preview-length))
+               (tail-length (- preview-length head-length))
+               (head (substring body 0 head-length))
+               (tail (and (> tail-length 0)
+                          (substring body (- tail-length)))))
+          (if tail
+              (format
+               "%s\n\n[Tool result truncated: original %d characters; kept first %d and last %d; omitted %d.]\n\n%s"
+               head (length body) head-length tail-length omitted tail)
+            (format
+             "%s\n\n[Tool result truncated: original %d characters; kept first %d; omitted %d.]"
+             head (length body) head-length omitted)))
+      (format
+       "%s\n\n[Tool result truncated: original %d characters, kept first %d, omitted %d. Narrow the command, read a smaller range, or refine the query for more detail.]"
+       (substring body 0 preview-length)
+       (length body)
+       preview-length
+       omitted))))
+
 (defun magent-thread--model-visible-tool-result (result)
   "Return RESULT bounded for model-visible tool history."
   (let* ((structured-p (magent-tool-result-p result))
@@ -1142,18 +1176,8 @@ number of lifecycle objects changed."
           (if (and (numberp max-length)
                    (> max-length 0)
                    (> (length body) max-length))
-              (let* ((preview-length
-                      (min (max 0
-                                (or magent-tool-result-model-preview-length
-                                    max-length))
-                           max-length
-                           (length body)))
-                     (truncated (- (length body) preview-length)))
-                (format "%s\n\n[Tool result truncated: original %d characters, kept first %d, omitted %d. Narrow the command, read a smaller range, or refine the query for more detail.]"
-                        (substring body 0 preview-length)
-                        (length body)
-                        preview-length
-                        truncated))
+              (magent-thread--truncate-model-visible-tool-result-body
+               body failed-p max-length)
             (if failed-p body safe-result))))
     (if failed-p
         (concat header bounded-body)

@@ -70,6 +70,9 @@ whole so a subsequent line-based request always makes progress.")
 (defconst magent-tools--agent-wait-fallback-timeout 300
   "Fallback wait timeout in seconds when the host request timeout is disabled.")
 
+(defconst magent-tools--bash-failure-max-lines 300
+  "Maximum Bash failure output lines retained before model-side bounding.")
+
 (defun magent-tools--agent-wait-timeout (&optional timeout)
   "Return explicit child-agent TIMEOUT or the host's finite default."
   (cond
@@ -573,16 +576,38 @@ Evaluation runs in the user's context buffer when known
                 (format "Error evaluating sexp: %s"
                         (error-message-string err)))))))
 
+(defun magent-tools--bound-bash-failure-output (message)
+  "Return MESSAGE with long Bash failure output compacted by line count.
+Keep the first line for failure context and the final diagnostic lines."
+  (let* ((trimmed (string-trim-right message))
+         (lines (split-string trimmed "\n" nil))
+         (line-count (length lines))
+         (tail-count (1- magent-tools--bash-failure-max-lines)))
+    (if (<= line-count magent-tools--bash-failure-max-lines)
+        trimmed
+      (let ((omitted (- line-count 1 tail-count)))
+        (string-join
+         (append
+          (list
+           (car lines)
+           (format
+            "[Bash failure output truncated: omitted %d lines; kept first 1 and final %d.]"
+            omitted tail-count))
+          (last lines tail-count))
+         "\n")))))
+
 (defun magent-tools--bash-failure (message &optional exit-code metadata)
   "Return a structured bash failure for MESSAGE.
 EXIT-CODE is nil when no process exit status exists.  METADATA is optional."
-  (magent-tool-result-create
-   :status 'failed
-   :success nil
-   :exit-code exit-code
-   :error message
-   :output message
-   :metadata metadata))
+  (let ((bounded-message
+         (magent-tools--bound-bash-failure-output message)))
+    (magent-tool-result-create
+     :status 'failed
+     :success nil
+     :exit-code exit-code
+     :error bounded-message
+     :output bounded-message
+     :metadata metadata)))
 
 (defun magent-tools--bash-executable ()
   "Return the configured Bash executable, or nil when unavailable."
