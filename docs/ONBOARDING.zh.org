@@ -118,9 +118,11 @@ command lifecycle，而不是另一套 UI。
 - ~magent-file-loader.el~ ：agent/skill/capability 共享 frontmatter parser。
 
 *职责：* Prompt 走 agent-shell 和进程内 ACP adapter。ACP 把 registered slash
-command 交给 ~magent-command.el~ ，普通 prompt 则直接提交 ~magent-runtime-api.el~ 。
-Prompt request 会保持 pending，直到对应普通 turn 或 command invocation 进入 terminal
-state。修改该层前先读 ~docs/UI_BACKENDS.org~ 中的 frontend 开发边界。
+command 交给 ~magent-command.el~，把 scope-aware instruction skill descriptor
+投影为 ~/$name~，并把该 skill selection 或普通 prompt 直接提交
+~magent-runtime-api.el~。Prompt request 会保持 pending，直到对应普通 turn 或 command
+invocation 进入 terminal state。修改该层前先读 ~docs/UI_BACKENDS.org~ 中的 frontend
+开发边界。
 
 ** 第 7 层：Events
 
@@ -169,10 +171,12 @@ Skill 有两类：
 
 Instruction skills 可以作为下一次请求的一次性上下文。Agent-shell frontend 提供
 ~magent-agent-shell-toggle-skill-for-next-request~ 和
-~magent-agent-shell-run-skill-command~ 等命令。带 ~default-prompt~ 的 skills 也可作为
-兼容 command-like action 运行。Elisp-native slash command 通过
-~magent-command-register~ 单独注册，并可用 ~magent-agent-shell-run-command~ 选择。
-内置 ~/init~ 命令用于初始化或刷新项目根目录 ~AGENTS.md~。
+~magent-agent-shell-run-skill-command~ 等命令。ACP 还会把每个可见 instruction skill
+发布成 ~/$name~；这会在一次普通 turn 中显式选择 skill，不要求 ~default-prompt~。
+带 ~default-prompt~ 的 skill 额外保留 legacy ~/name~ 兼容 action。Elisp-native
+slash command 通过 ~magent-command-register~ 单独注册，并可用
+~magent-agent-shell-run-command~ 选择。~/skills~ 不请求 provider，直接列出相同的
+descriptors。内置 ~/init~ 命令用于初始化或刷新项目根目录 ~AGENTS.md~。
 
 每个 turn 都从 selected agent 的 base prompt 开始，随后加入 project context、从项目
 根到请求相关本地文件逐层适用的 ~AGENTS.md~、相关的 profile memory，以及显式选择或
@@ -189,7 +193,8 @@ Skills 加载来源：内置 ~skills/~、存在时兼容的 legacy 用户目录 
 
 - 显式 slash action 需要 Elisp 入口时，用 ~command~ 。
 - 需要可复用 instruction 或 tool-type operation，并且可以被显式或自动选择时，
-  用 ~skill~ ； ~default-prompt~ 只承担兼容作用。
+  用 ~skill~；~/$name~ 是 ACP projection，~default-prompt~ 只额外提供 legacy
+  ~/name~ 兼容。
 - 需要根据 live context 或 prompt text 自动选择某个 skill 时，用 ~capability~ 。
 - 如果 capability 只是为了激活同一个 skill，就把 metadata 和说明共址在
   ~SKILL.md~ 。只有当触发 metadata 不属于单个 skill，或属于 project overlay 时，
@@ -232,7 +237,8 @@ API。
 按顺序跟踪一次请求：
 
 1. ~magent-agent-shell.el~ / ~magent-acp.el~ ：接收 ~session/prompt~ 并规范化 frontend input。
-2. ~magent-command.el~ ：按需解析和调用 registered slash command。
+2. ~magent-command.el~ / ~magent-skills.el~ ：解析 registered slash command 或
+   scope-aware ~/$skill~ descriptor。
 3. ~magent-runtime-api.el~ / ~magent-runtime-queue.el~ / ~magent-ledger.el~ ：记录、排队并启动普通或 command-owned turn。
 4. ~magent-agent.el~ ：构造 prompt，选择 agent、skills、capabilities 和 tools。
 5. ~magent-llm-gptel.el~ / ~magent-agent-loop.el~ ：通过 gptel sampling，并负责 normalized continuation outcomes。

@@ -60,7 +60,8 @@ wins; when all functions return nil, scope is derived from
      :unload-project magent-agent-registry-remove-project-scope
      :project-enabled magent-load-custom-agents)
     (:name skills
-     :state-variable magent-skills--registry
+     :state-variables (magent-skills--registry
+                       magent-skills--scope-catalog)
      :static-feature magent-skills
      :static magent-skills-initialize-static
      :load-project-feature magent-skills
@@ -281,12 +282,18 @@ Nil means only static definitions are loaded.")
 
 (defun magent-runtime--snapshot-overlay-state ()
   "Capture the registry state owned by every project overlay spec."
-  (cl-loop for spec in magent-runtime--overlay-specs
-           for variable = (plist-get spec :state-variable)
-           when (and variable (boundp variable))
-           collect (cons variable
-                         (magent-runtime--copy-overlay-state
-                          (symbol-value variable)))))
+  (cl-loop
+   for spec in magent-runtime--overlay-specs
+   append
+   (cl-loop
+    for variable in
+    (or (plist-get spec :state-variables)
+        (when-let* ((single (plist-get spec :state-variable)))
+          (list single)))
+    when (and variable (boundp variable))
+    collect (cons variable
+                  (magent-runtime--copy-overlay-state
+                   (symbol-value variable))))))
 
 (defun magent-runtime--restore-overlay-state (snapshot)
   "Restore project overlay registries from SNAPSHOT."

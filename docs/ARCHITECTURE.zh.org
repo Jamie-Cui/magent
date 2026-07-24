@@ -135,11 +135,17 @@ API，并拥有各自的 Org prompt resource，而不是同名 skill。
 Invocation 会先锁定 terminal result 再执行 cleanup，因此 Step 失败时会取消其
 拥有的工作，同时避免同步取消 callback 覆盖原始失败，或在 ACP 完成后继续工作。
 
-为保持兼容，带 ~default-prompt~ 的 instruction ~SKILL.md~ 会被投影进 command
-registry，其生成的 terminal Workflow 调用时仍激活原 skill。Project/user adapter 按 layer 覆盖 package/bundled
-定义；core controls 的名称保留。Project adapter 以 canonical project scope 为键
-保留；ACP 的命令发现和分派都按每个 runtime session 的精确 scope 解析，因此多个
-project session 可以安全共存。
+~magent-skills.el~ 还拥有 frontend-neutral、scope-aware 的 skill descriptors。ACP
+会把每个 instruction descriptor 投影成 ~$name~，agent-shell 将其显示为
+~/$name~，分派时则作为带显式 skill selection 的普通 runtime turn。该路径不要求
+~default-prompt~，也不进入 Command Invocation lifecycle。为保持兼容，带
+~default-prompt~ 的 instruction ~SKILL.md~ 还会额外投影进 command registry，提供
+legacy ~/name~ adapter；其生成的 terminal Workflow 调用时仍激活原 skill。
+Project/user adapter 按 layer 覆盖 package/bundled 定义；core controls 的名称保留。
+Project command adapter 与 skill catalog snapshot 都以 canonical project scope
+为键保留；ACP 的发现和分派按每个 runtime session 的精确 scope 解析，因此多个
+project session 可以安全共存。未来 frontend 可以消费同一 descriptor API，同时把
+commands 和 skills 展示为两个独立入口。
 
 ~magent-command-session.el~ 为 ~:session-policy 'isolated~ 的 spec 提供持久化、
 ledger 记录、viewer 和取消，但不再拥有第二套 registry 或 context 类型。
@@ -164,8 +170,9 @@ Instruction skill 会注入 system prompt。Tool skill 通过 ~skill_invoke~ 调
 
 - ~command~ 是由受信任 Elisp 实现、可暴露为 slash、interactive 或两者的显式 invocation。Prompt command 通常拥有
   一个 agent turn；高级 handler 可以拥有多个异步步骤。
-- ~skill~ 是可复用的模型说明或 tool-type operation。Legacy ~default-prompt~ 会投影
-  一个兼容 command，但 Markdown 不再是 Magent 原生命令入口。
+- ~skill~ 是可复用的模型说明或 tool-type operation。ACP 的 ~/$name~ 是普通 turn
+  的显式 skill selection；legacy ~default-prompt~ 只额外投影一个兼容 command，
+  Markdown 不会因此获得 trusted Workflow 权限。
 - ~capability~ 是自动激活规则：由 ~modes~ 、~features~ 、~files~ 、~keywords~ 、~disclosure~ 和 ~risk~ 等 resolver metadata 描述什么时候为当前 turn 选择一个或多个 skills。只有 context 的匹配会作为可检查的 suggestion；active disclosure 还要求当前 user prompt 命中有词边界的 keyword。
 - skill-backed capability 是 contextual capability 的常见形态：某个 ~SKILL.md~ 声明
   ~capability: true~ 后，resolver 会在当前 context 与 prompt intent 同时匹配且所需

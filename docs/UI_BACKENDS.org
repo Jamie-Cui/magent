@@ -63,6 +63,15 @@ Keep frontend-neutral behavior in ~magent-runtime-api.el~, ACP conversion in
 ~magent-acp.el~, and supported frontend behavior in ~magent-agent-shell.el~.
 Do not introduce a second interactive frontend inside the core runtime.
 
+Skill discovery is also frontend-neutral. ~magent-skills-list-descriptors~ and
+~magent-skills-resolve-descriptor~ return metadata for an exact session scope
+without exposing prompt bodies or executable handlers. ACP flattens instruction
+skills into its command list as ~$name~ because agent-shell has one slash-menu
+surface, then dispatches ~/$name~ as an ordinary
+~magent-runtime-submit :skills~ turn. A future frontend may instead present
+registered commands and skill descriptors as two separate entry surfaces; it
+must not infer skills from the command registry or require ~default-prompt~.
+
 * Current Limitations
 
 - ~agent-shell~ and ~acp~ are hard dependencies of the supported frontend.
@@ -70,8 +79,8 @@ Do not introduce a second interactive frontend inside the core runtime.
 - Cancellation is session-scoped: cancelling one ACP session cancels that
   session's active and queued submissions without removing other sessions'
   queued work.
-- Per-request instruction skill overrides, Elisp-native slash commands, and
-  compatibility skill commands are supported.
+- Per-request instruction skill overrides, scope-aware ~/$skill~ projection,
+  Elisp-native slash commands, and compatibility skill commands are supported.
   Per-request agent overrides are not currently exposed by the supported
   frontend.
 - ACP session config exposes ~Automatic capabilities~. Disabling it suppresses

@@ -11,7 +11,7 @@ Magent 使用同一个 command registry 提供两类用户入口：
 - *Interactive commands* 是选择了 interactive exposure 的 command spec 对应的
   ~M-x~ wrapper。
 
-当前内置包提供 11 个 slash commands。Doctor 和三个 Memory command 还提供
+当前内置包提供 12 个 slash commands。Doctor 和三个 Memory command 还提供
 ~M-x magent-command-run-*~ wrapper，并使用独立 durable session。
 
 * Slash Commands
@@ -23,11 +23,14 @@ Magent 使用同一个 command registry 提供两类用户入口：
 /summarize src/session 的持久化与 replay
 /fix 重点检查失败的 session persistence test
 /compact 保留准确的文件名和未解决的失败
+/skills
+/$code-review 重点检查 queue
 #+end_example
 
 Prompt command 或 ~/compact~ 后的文本会作为命令参数。六个内置 prompt command
 复用当前 session 和 agent，但不会激活同名 instruction skill。未知 slash command
-不会在本地执行，而是作为普通 prompt text 提交。
+不会在本地执行，而是作为普通 prompt text 提交。~/$name~ 形式专门用于显式选择
+instruction skill；skill 不存在或在当前 scope 不可用时，会在提交 provider 前失败。
 
 | 命令       | 用途                              | 预期效果 |
 |------------+-----------------------------------+----------|
@@ -38,6 +41,7 @@ Prompt command 或 ~/compact~ 后的文本会作为命令参数。六个内置 p
 | ~/summarize~ | 把项目总结到 org-roam            | 创建或更新一个 canonical Org note |
 | ~/test~    | 运行并解释相关测试                  | 运行聚焦测试；适当时可修复范围内失败 |
 | ~/compact~ | 总结当前对话                        | 用续接摘要替换较早的模型上下文 |
+| ~/skills~ | 列出当前 session scope 的 instruction skills | 本地发现，不请求 provider |
 | ~/doctor~ | 诊断 Magent 和当前 runtime | 使用有界 probes 和一次脱敏、无工具请求 |
 | ~/memory-init~ | 建立 Emacs profile memory | 在独立 command session 中确认并执行 |
 | ~/memory-refresh~ | 刷新 managed profile memory | 在独立 command session 中保留 user notes |
@@ -251,17 +255,25 @@ Agent 和 Answer Step 使用 runtime FIFO。Process 和 callback Step 仍由 Inv
 拥有并可取消，但不占用全局 agent execution slot，因此不同 Invocation 的外部等待
 可以重叠。项目本地 Markdown 不会获得受信任 Workflow 的执行权限。
 
+ACP 会把当前 runtime session 精确 scope 内可见的每个 instruction skill 发布成
+~$name~，agent-shell 将其显示为 ~/$name~。提交 ~/$name 可选说明~ 时，原始文本仍
+作为普通 user turn 保存，同时该 skill 会被显式选择到本次 turn；它不会创建 Command
+Invocation，也不要求 ~default-prompt~。Tool-type skill 不会投影。~/skills~ 使用
+相同的 scope-aware descriptor 在本地列出 instruction skills，不联系 provider。
+
 ~M-x magent-agent-shell-run-skill-command~ 可以通过受支持的 agent-shell frontend
 经兼容 adapter 选择并运行任意 command-like instruction skill。
 
 现有带 ~default-prompt~ 的 instruction skill 保持兼容：Magent 会把它投影到同一
-command registry，并在调用时激活原 skill。Project/user adapter 可以按名称覆盖
-installed 或 bundled command；~/compact~ 这个 core 名称保留。
+command registry，额外提供 legacy ~/name~ adapter；调用时展开预定义 prompt 并激活
+原 skill。Project/user adapter 可以按名称覆盖 installed 或 bundled command；
+~/compact~ 和 ~/skills~ 这两个 core 名称保留。
 
 Project command adapter 会按 canonical project scope 保留。~magent-command-get~、
 ~magent-command-list~ 和 ~magent-command-parse~ 接受可选 scope；ACP 在发布菜单和
-分派命令时都会传入对应 runtime session 的 scope。因此多个项目 session 可以同时
-使用同名覆盖，而不会把一个项目的命令泄漏到另一个项目的菜单。
+分派命令时都会传入对应 runtime session 的 scope。Skill descriptor catalog 遵循
+相同规则，并保留 inactive project snapshot。因此多个项目 session 可以同时使用
+同名 command 或 skill 覆盖，而不会把一个项目的条目泄漏到另一个项目的菜单。
 
 * 用户级 Skill 管理
 

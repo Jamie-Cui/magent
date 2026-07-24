@@ -11,7 +11,7 @@ Magent has one command registry with two user-facing entry surfaces:
 - *Interactive commands* are ~M-x~ wrappers over specs that opt into
   interactive exposure.
 
-The bundled package provides eleven slash commands. Doctor and the three Memory
+The bundled package provides twelve slash commands. Doctor and the three Memory
 commands also expose ~M-x magent-command-run-*~ wrappers and use isolated
 durable sessions.
 
@@ -24,12 +24,16 @@ Type a slash command as the prompt in the Magent agent-shell buffer:
 /summarize src/session persistence and replay
 /fix focus on the failing session persistence test
 /compact preserve exact filenames and remaining failures
+/skills
+/$code-review focus on the queue
 #+end_example
 
 Text following a prompt command or ~/compact~ is passed as its argument. The
 six bundled prompt commands reuse the current session and agent without
 activating a same-name skill. An unknown slash command is submitted as ordinary
-prompt text rather than executed locally.
+prompt text rather than executed locally. The ~/$name~ form is reserved for an
+explicit instruction skill; an unknown or unavailable skill name fails before
+provider submission.
 
 | Command    | Purpose                                | Expected effect |
 |------------+----------------------------------------+-----------------|
@@ -40,6 +44,7 @@ prompt text rather than executed locally.
 | ~/summarize~ | Summarize the project into org-roam   | Creates or updates one canonical Org note |
 | ~/test~    | Run and interpret relevant tests        | Runs focused tests; may fix an in-scope failure when appropriate |
 | ~/compact~ | Summarize the current conversation      | Replaces older model context with a continuation summary |
+| ~/skills~  | List instruction skills in this session scope | Local, provider-free discovery |
 | ~/doctor~  | Diagnose Magent and current runtime state | Uses bounded probes and one sanitized tool-free request |
 | ~/memory-init~ | Build Emacs profile memory | Uses an isolated command session and confirmation |
 | ~/memory-refresh~ | Refresh managed profile memory | Preserves user notes in an isolated command session |
@@ -281,19 +286,30 @@ owned and cancellable by their Invocation but do not consume the global agent
 execution slot, so different Invocations may overlap those external waits.
 Project-local Markdown never receives trusted Workflow execution authority.
 
+Every instruction skill visible in the exact runtime session scope is
+advertised through ACP as ~$name~, which agent-shell renders as ~/$name~.
+Submitting ~/$name optional instruction~ preserves that text as the ordinary
+user turn and explicitly selects the skill for that turn. It does not create a
+Command Invocation and does not require ~default-prompt~. Tool-type skills are
+not projected. ~/skills~ lists the same scope-aware instruction descriptors
+locally without contacting the provider.
+
 ~M-x magent-agent-shell-run-skill-command~ selects and runs any command-like
 instruction skill through the compatibility adapter.
 
 Existing instruction skills with a ~default-prompt~ remain compatible: Magent
-projects them into the same command registry and activates the original skill
-when invoked. Project and user adapters can override installed or bundled
-commands by name; the ~/compact~ core name remains reserved.
+additionally projects them into the command registry as legacy ~/name~
+adapters, expands the predefined prompt, and activates the original skill when
+invoked. Project and user adapters can override installed or bundled commands
+by name; the ~/compact~ and ~/skills~ core names remain reserved.
 
 Project command adapters are retained under their canonical project scope.
 ~magent-command-get~, ~magent-command-list~, and ~magent-command-parse~ accept an
 optional scope, and ACP always supplies the runtime session's scope for both
-advertisement and dispatch. Concurrent sessions for different projects can
-therefore expose same-name overrides without leaking commands between menus.
+advertisement and dispatch. The skill descriptor catalog follows the same
+scope rule and retains inactive project snapshots. Concurrent sessions for
+different projects can therefore expose same-name command or skill overrides
+without leaking entries between menus.
 
 * User Skill Management
 

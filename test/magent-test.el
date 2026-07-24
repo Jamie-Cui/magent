@@ -119,7 +119,7 @@
   "Bundled Elisp-native prompt commands.")
 
 (defconst magent-test--builtin-control-command-names
-  '("compact")
+  '("compact" "skills")
   "Magent-owned session control exposed as a slash command.")
 
 (defconst magent-test--builtin-maintenance-command-names
@@ -2977,6 +2977,94 @@
     (should (= (length (magent-skills-list-by-type 'instruction)) 2))
     (should (= (length (magent-skills-list-by-type 'tool)) 1))))
 
+(ert-deftest magent-test-skills-descriptors-are-frontend-neutral ()
+  "Descriptors expose instruction skills without requiring a default prompt."
+  (require 'magent-skills)
+  (let ((magent-skills--registry nil)
+        (magent-skills--scope-catalog (make-hash-table :test #'equal))
+        (magent-runtime--active-project-scope nil)
+        (project-root (make-temp-file "magent-skill-project-" t)))
+    (unwind-protect
+        (progn
+          (magent-skills-register
+           (magent-skill-create
+            :name "reviewer"
+            :description "Review code."
+            :type 'instruction))
+          (magent-skills-register
+           (magent-skill-create
+            :name "project-only"
+            :description "Needs a project."
+            :type 'instruction
+            :requires-project t))
+          (magent-skills-register
+           (magent-skill-create
+            :name "operations"
+            :description "Tool operations."
+            :type 'tool))
+          (let ((global
+                 (magent-skills-list-descriptors 'global 'instruction))
+                (project
+                 (magent-skills-list-descriptors project-root 'instruction)))
+            (should (equal (mapcar #'magent-skill-descriptor-name global)
+                           '("reviewer")))
+            (should
+             (equal (mapcar #'magent-skill-descriptor-name project)
+                    '("project-only" "reviewer")))
+            (should-not
+             (magent-skill-descriptor-command-like-p (car global)))
+            (should (equal
+                     (magent-skill-descriptor-description (car global))
+                     "Review code."))))
+      (delete-directory project-root t))))
+
+(ert-deftest magent-test-skills-descriptors-retain-inactive-project-scopes ()
+  "Project skill catalogs remain exact while another scope is active."
+  (require 'magent-skills)
+  (let* ((magent-skills--registry nil)
+         (magent-skills--scope-catalog (make-hash-table :test #'equal))
+         (magent-runtime--active-project-scope nil)
+         (project-a (file-truename
+                     (directory-file-name
+                      (make-temp-file "magent-skill-project-a-" t))))
+         (project-b (file-truename
+                     (directory-file-name
+                      (make-temp-file "magent-skill-project-b-" t)))))
+    (unwind-protect
+        (progn
+          (magent-skills-register
+           (magent-skill-create
+            :name "policy" :description "Global policy."
+            :type 'instruction :source-layer 'user))
+          (magent-skills-register
+           (magent-skill-create
+            :name "policy" :description "Project A policy."
+            :type 'instruction :source-layer 'project
+            :source-scope project-a))
+          (magent-skills-remove-project-scope project-a)
+          (magent-skills-register
+           (magent-skill-create
+            :name "policy" :description "Project B policy."
+            :type 'instruction :source-layer 'project
+            :source-scope project-b))
+          (should
+           (equal
+            (magent-skill-descriptor-description
+             (magent-skills-resolve-descriptor "policy" project-a))
+            "Project A policy."))
+          (should
+           (equal
+            (magent-skill-descriptor-description
+             (magent-skills-resolve-descriptor "policy" project-b))
+            "Project B policy."))
+          (should
+           (equal
+            (magent-skill-descriptor-description
+             (magent-skills-resolve-descriptor "policy" 'global))
+            "Global policy.")))
+      (delete-directory project-a t)
+      (delete-directory project-b t))))
+
 (ert-deftest magent-test-skills-clear ()
   "Test clearing all skills."
   (require 'magent-skills)
@@ -3233,6 +3321,46 @@
         (should (eq (magent-command-spec-source-layer command) 'builtin))
         (should (functionp (magent-command-spec-workflow command)))
         (should-not (magent-skills-get name))))))
+
+(ert-deftest magent-test-command-skills-lists-scope-without-provider ()
+  "The core /skills workflow lists descriptors without submitting a turn."
+  (require 'magent-command-skills)
+  (let ((magent-command--registry nil)
+        (magent-command--active-invocations (make-hash-table :test #'eq))
+        (magent-skills--registry nil)
+        (magent-skills--scope-catalog (make-hash-table :test #'equal))
+        (runtime-session
+         (magent-runtime-session-create
+          :id "session-1"
+          :scope 'global
+          :magent-session (magent-session-create)))
+        completion)
+    (magent-skills-register
+     (magent-skill-create
+      :name "reviewer"
+      :description "Review code."
+      :type 'instruction))
+    (magent-skills-register
+     (magent-skill-create
+      :name "operations"
+      :description "Tool operations."
+      :type 'tool))
+    (let ((magent-command--allow-core-registration t))
+      (magent-command-skills-register))
+    (cl-letf (((symbol-function 'magent-runtime-submit)
+               (lambda (&rest _)
+                 (error "/skills must not submit a provider turn"))))
+      (magent-test--without-command-step-ledger
+        (magent-command-invoke
+         "skills" runtime-session
+         :on-complete
+         (lambda (status result)
+           (setq completion (list status result))))))
+    (should (eq (car completion) 'completed))
+    (should
+     (equal
+      (magent-agent-result-content-string (cadr completion))
+      "Available skills:\n- reviewer: Review code."))))
 
 (ert-deftest magent-test-command-register-requires-workflow-and-policy ()
   "Test command registration requires one Workflow and explicit policy."
@@ -10486,10 +10614,11 @@
                    magent-default-agent))))
 
 (ert-deftest magent-test-acp-available-commands-list-command-skills ()
-  "Test ACP exposes SKILL.md default prompts through command adapters."
+  "ACP exposes every instruction skill plus legacy default-prompt adapters."
   (require 'magent-acp)
   (require 'magent-command-controls)
   (let ((magent-skills--registry nil)
+        (magent-skills--scope-catalog (make-hash-table :test #'equal))
         (magent-command--registry nil)
         (magent-command--skill-adapter-registrations
          (make-hash-table :test #'equal)))
@@ -10511,21 +10640,26 @@
            (names (mapcar (lambda (command)
                             (map-elt command 'name))
                           (append commands nil)))
-           (command (cl-find-if (lambda (entry)
-                                  (equal (map-elt entry 'name) "init"))
-                                (append commands nil))))
-      (should (equal names
-                     (sort (copy-sequence
-                            '("compact" "init"))
-                           #'string<)))
-      (should command)
-      (should (equal (map-elt command 'description)
+           (legacy-command
+            (cl-find-if (lambda (entry)
+                          (equal (map-elt entry 'name) "init"))
+                        (append commands nil)))
+           (skill-command
+            (cl-find-if (lambda (entry)
+                          (equal (map-elt entry 'name) "$init"))
+                        (append commands nil))))
+      (should (equal names '("compact" "init" "$init" "$note")))
+      (should legacy-command)
+      (should skill-command)
+      (should (equal (map-elt skill-command 'description)
                      "Initialize project instructions, similar to Codex /init.")))))
 
 (ert-deftest magent-test-acp-available-commands-lists-all-bundled-slash-commands ()
   "Test ACP available commands expose every bundled Elisp command."
   (require 'magent-acp)
-  (let ((magent-command--registry nil))
+  (let ((magent-command--registry nil)
+        (magent-skills--registry nil)
+        (magent-skills--scope-catalog (make-hash-table :test #'equal)))
     (magent-test--register-builtin-commands-only)
     (let* ((commands (append (magent-acp--available-commands) nil))
            (names (mapcar (lambda (command)
@@ -10544,6 +10678,88 @@
           (should-not (string-empty-p (map-elt command 'description)))
           (should (equal (map-elt command 'description)
                          (magent-command-spec-description spec))))))))
+
+(ert-deftest magent-test-acp-available-skill-commands-use-session-scope ()
+  "ACP skill projection remains exact for concurrently retained projects."
+  (require 'magent-acp)
+  (let* ((magent-command--registry nil)
+         (magent-skills--registry nil)
+         (magent-skills--scope-catalog (make-hash-table :test #'equal))
+         (magent-runtime--active-project-scope nil)
+         (project-a (file-truename
+                     (directory-file-name
+                      (make-temp-file "magent-acp-project-a-" t))))
+         (project-b (file-truename
+                     (directory-file-name
+                      (make-temp-file "magent-acp-project-b-" t))))
+         (session-a
+          (magent-runtime-session-create :id "session-a" :scope project-a))
+         (session-b
+          (magent-runtime-session-create :id "session-b" :scope project-b)))
+    (unwind-protect
+        (progn
+          (magent-skills-register
+           (magent-skill-create
+            :name "global-skill" :type 'instruction
+            :description "Global."))
+          (magent-skills-register
+           (magent-skill-create
+            :name "project-a" :type 'instruction
+            :description "Project A."
+            :source-layer 'project :source-scope project-a))
+          (magent-skills-remove-project-scope project-a)
+          (magent-skills-register
+           (magent-skill-create
+            :name "project-b" :type 'instruction
+            :description "Project B."
+            :source-layer 'project :source-scope project-b))
+          (let ((names-a
+                 (mapcar
+                  (lambda (entry) (map-elt entry 'name))
+                  (append (magent-acp--available-commands session-a) nil)))
+                (names-b
+                 (mapcar
+                  (lambda (entry) (map-elt entry 'name))
+                  (append (magent-acp--available-commands session-b) nil))))
+            (should (equal names-a '("$global-skill" "$project-a")))
+            (should (equal names-b '("$global-skill" "$project-b")))))
+      (delete-directory project-a t)
+      (delete-directory project-b t))))
+
+(ert-deftest magent-test-acp-skill-command-resolves-without-default-prompt ()
+  "ACP `/$skill' syntax resolves against instruction skill descriptors."
+  (require 'magent-acp)
+  (let ((magent-skills--registry nil)
+        (magent-skills--scope-catalog (make-hash-table :test #'equal))
+        (project-root (make-temp-file "magent-acp-skill-project-" t)))
+    (unwind-protect
+        (progn
+          (magent-skills-register
+           (magent-skill-create
+            :name "reviewer"
+            :description "Review code."
+            :type 'instruction))
+          (magent-skills-register
+           (magent-skill-create
+            :name "project-only"
+            :description "Project policy."
+            :type 'instruction
+            :requires-project t))
+          (let ((parsed
+                 (magent-acp--skill-command
+                  "/$reviewer focus on tests" 'global)))
+            (should (eq (plist-get parsed :kind) 'skill))
+            (should (equal (plist-get parsed :name) "reviewer"))
+            (should (equal (plist-get parsed :argument) "focus on tests")))
+          (should-error
+           (magent-acp--skill-command "/$missing" 'global)
+           :type 'user-error)
+          (should-error
+           (magent-acp--skill-command "/$project-only" 'global)
+           :type 'user-error)
+          (should
+           (magent-acp--skill-command "/$project-only" project-root)))
+      (delete-directory project-root t))))
 
 (ert-deftest magent-test-acp-slash-command-resolves-all-bundled-commands ()
   "Test every bundled slash command resolves to its Elisp command spec."
@@ -10846,6 +11062,90 @@
                                     :content-blocks))
                  2)))
     (should (equal (map-elt response 'stopReason) "end_turn"))))
+
+(ert-deftest magent-test-acp-session-prompt-selects-skill-as-normal-turn ()
+  "ACP `/$skill' keeps raw input while explicitly selecting the skill."
+  (require 'magent-acp)
+  (let ((magent-skills--registry nil)
+        (magent-skills--scope-catalog (make-hash-table :test #'equal))
+        (runtime-session
+         (magent-runtime-session-create
+          :id "session-1"
+          :scope 'global
+          :pending-skills '("existing-skill")))
+        submitted response failure)
+    (magent-skills-register
+     (magent-skill-create
+      :name "reviewer"
+      :description "Review code."
+      :type 'instruction))
+    (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
+               (lambda (session-id)
+                 (and (equal session-id "session-1") runtime-session)))
+              ((symbol-function 'magent-runtime-submit)
+               (lambda (session prompt &rest args)
+                 (setq submitted (list session prompt args))
+                 (setf (magent-runtime-session-pending-skills session) nil)
+                 (funcall (plist-get args :on-complete)
+                          'completed (magent-agent-result-completed "ok"))
+                 "submission-1")))
+      (magent-acp--handle-request
+       '((:notification-handlers . nil) (:request-handlers . nil))
+       '((:method . "session/prompt")
+         (:params . ((sessionId . "session-1")
+                     (prompt
+                      . [((type . "text")
+                          (text . "/$reviewer focus on tests"))
+                         ((type . "resource")
+                          (resource
+                           . ((uri . "file:///tmp/example.txt")
+                              (text . "body"))))]))))
+       (lambda (value) (setq response value))
+       (lambda (err &optional _raw) (setq failure err))))
+    (should-not failure)
+    (should (eq (car submitted) runtime-session))
+    (should
+     (equal (cadr submitted)
+            (concat "/$reviewer focus on tests\n"
+                    "[Attached: file:///tmp/example.txt]")))
+    (let* ((args (nth 2 submitted))
+           (metadata (plist-get args :turn-metadata))
+           (blocks (plist-get metadata :content-blocks)))
+      (should (equal (plist-get args :skills)
+                     '("existing-skill" "reviewer")))
+      (should (equal (plist-get metadata :explicit-skill) "reviewer"))
+      (should (eq (plist-get metadata :skill-invocation) 'acp-command))
+      (should (= (length blocks) 2))
+      (should (equal (map-elt (aref blocks 0) 'text)
+                     "/$reviewer focus on tests")))
+    (should-not (magent-runtime-session-pending-skills runtime-session))
+    (should (equal (map-elt response 'stopReason) "end_turn"))))
+
+(ert-deftest magent-test-acp-session-prompt-rejects-unknown-skill-command ()
+  "Unknown `/$skill' input fails before an ordinary model submission."
+  (require 'magent-acp)
+  (let ((magent-skills--registry nil)
+        (magent-skills--scope-catalog (make-hash-table :test #'equal))
+        (runtime-session
+         (magent-runtime-session-create :id "session-1" :scope 'global))
+        submitted response failure)
+    (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
+               (lambda (_session-id) runtime-session))
+              ((symbol-function 'magent-runtime-submit)
+               (lambda (&rest _args) (setq submitted t))))
+      (magent-acp--handle-request
+       '((:notification-handlers . nil) (:request-handlers . nil))
+       '((:method . "session/prompt")
+         (:params . ((sessionId . "session-1")
+                     (prompt . [((type . "text")
+                                 (text . "/$missing"))]))))
+       (lambda (value) (setq response value))
+       (lambda (err &optional _raw) (setq failure err))))
+    (should-not submitted)
+    (should-not response)
+    (should failure)
+    (should (string-match-p "unknown or unavailable instruction skill"
+                            (map-elt failure 'message)))))
 
 (ert-deftest magent-test-acp-session-prompt-expands-slash-command ()
   "Test ACP dispatches a legacy command-like skill through its adapter."

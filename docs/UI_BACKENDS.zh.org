@@ -56,14 +56,22 @@ Frontend-neutral 行为放在 ~magent-runtime-api.el~ ，ACP conversion 放在
 ~magent-acp.el~ ，受支持的 frontend 行为放在 ~magent-agent-shell.el~ 。不要在 core
 runtime 内引入第二套交互 frontend。
 
+Skill discovery 同样保持 frontend-neutral。
+~magent-skills-list-descriptors~ 和 ~magent-skills-resolve-descriptor~ 会针对精确
+session scope 返回 metadata，但不暴露 prompt body 或 executable handler。因为
+agent-shell 只有一套 slash menu，ACP 会把 instruction skill 展平为 ~$name~，再把
+~/$name~ 作为普通 ~magent-runtime-submit :skills~ turn 分派。未来 frontend 可以把
+registered commands 与 skill descriptors 展示为两个独立入口；它不应从 command
+registry 反推 skills，也不应要求 ~default-prompt~。
+
 * 当前限制
 
 - 受支持的 frontend 硬依赖 ~agent-shell~ 和 ~acp~ 。
 - runtime execution 使用全局单执行队列。
 - cancellation 是 session-scoped：取消一个 ACP session 会取消该 session 的 active
   和 queued submissions，但不会移除其他 session 的 queued work。
-- 受支持的 frontend 已支持 per-request instruction skill overrides、Elisp-native
-  slash commands 和 compatibility skill commands；目前不暴露 per-request agent
-  overrides。
+- 受支持的 frontend 已支持 per-request instruction skill overrides、scope-aware
+  ~/$skill~ projection、Elisp-native slash commands 和 compatibility skill commands；
+  目前不暴露 per-request agent overrides。
 - ACP session config 暴露 ~Automatic capabilities~ ；关闭后，该 session 后续 turn 不再
   自动解析 contextual capabilities，但显式选择的 instruction skills 仍然生效。

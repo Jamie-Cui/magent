@@ -29,7 +29,7 @@ define the same thing:
 |------------------------+----------------------------------------------------------------------------------+----------------------------------------------------------------------------------------------------|
 | Primary role           | An explicit Emacs or slash-command action                                        | Reusable instructions or a model-invokable operation                                               |
 | Definition             | Trusted Elisp registered with ~magent-command-register~                            | A ~SKILL.md~ file; a tool skill may also have a companion Elisp implementation                       |
-| Activation             | The user enters ~/name~ or runs ~M-x magent-agent-shell-run-command~                 | An instruction skill is selected or activated by a capability; a tool skill is called by the model |
+| Activation             | The user enters ~/name~ or runs ~M-x magent-agent-shell-run-command~                 | The user enters ~/$name~, selects it for the next turn, or a capability activates it; a tool skill is called by the model |
 | Owns                   | Arguments, requirements, session policy, Steps, and multi-step control            | Model context and workflow guidance, or one named operation through ~skill_invoke~                   |
 | Project trust boundary | Command Workflows are trusted installed Elisp                                    | Project instruction Markdown is data-only; companion Elisp runs only for explicitly trusted roots  |
 
@@ -39,10 +39,12 @@ agent can apply while handling requests.  Use both when an explicit command
 should activate reusable expertise: an agent Step can select skills with
 ~:skills~ and declare its tool preflight with ~:required-tools~.
 
-An instruction skill with ~default-prompt~ is projected into the command
-registry only as a compatibility adapter.  Invoking that adapter activates the
-original skill; it does not turn Markdown into a Command Workflow or give it
-trusted Elisp execution authority.
+ACP advertises every visible instruction skill as ~/$name~ in agent-shell,
+without requiring ~default-prompt~. An instruction skill with ~default-prompt~
+is additionally projected into the command registry as a legacy ~/name~
+compatibility adapter. Invoking either surface activates the original skill; it
+does not turn Markdown into a Command Workflow or give it trusted Elisp
+execution authority.
 
 ~magent-command~ therefore makes slash commands first-class, explicit user
 actions.  Your init file or another trusted Elisp package can register a command
@@ -138,7 +140,7 @@ them. Every registration requires one ~:workflow~ and an explicit
 ~:session-policy~. A ~user~ command can override an installed ~package~ or
 ~builtin~ command with the same name. Registering the same name, layer, and
 canonical scope again replaces that slot's previous definition. The core
-~/compact~ name remains reserved.
+~/compact~ and ~/skills~ names remain reserved.
 
 * Configuration
 
@@ -269,19 +271,23 @@ and are consumed by the next prompt.
 
 Elisp-native slash commands are registered through the public
 ~magent-command-register~ API and can be selected with
-~M-x magent-agent-shell-run-command~. Agent-shell advertises seven bundled
+~M-x magent-agent-shell-run-command~. Agent-shell advertises twelve bundled
 commands: ~/explain~, ~/fix~, ~/init~, ~/review~, ~/summarize~, ~/test~,
-and ~/compact~. The six prompt commands own package Org resources and
+~/compact~, ~/skills~, ~/doctor~, ~/memory-init~, ~/memory-refresh~, and
+~/memory-clear~. The six prompt commands own package Org resources and
 do not activate same-name skills. ~/summarize~ writes one canonical Org note
 for the current Git project and accepts an optional path or semantic scope.
 
-Skills with ~default-prompt~ remain compatible and are projected into the same
-registry; use ~M-x magent-agent-shell-run-skill-command~ to select one directly.
-Project and user skill adapters may override package commands, while the core
-~/compact~ session control is reserved. See [[file:docs/COMMANDS.org][docs/COMMANDS.org]]
-for command behavior, the third-party Elisp API, and compatibility details.
-Project adapters are retained by canonical project scope, and agent-shell uses
-the exact session scope for both command menus and dispatch.
+Every instruction skill in the exact session scope is advertised as ~/$name~.
+~/skills~ lists those descriptors locally. Skills with ~default-prompt~ retain
+the additional legacy ~/name~ adapter; use
+~M-x magent-agent-shell-run-skill-command~ to select one directly. Project and
+user skill adapters may override package commands, while the core ~/compact~
+and ~/skills~ controls are reserved. See
+[[file:docs/COMMANDS.org][docs/COMMANDS.org]] for command behavior, the
+third-party Elisp API, and compatibility details. Project adapters and skill
+descriptors are retained by canonical project scope, and agent-shell uses the
+exact session scope for both menus and dispatch.
 
 Project-local instruction skills are data-only and load normally.  A
 tool-type project skill may also contain executable companion Elisp; Magent
