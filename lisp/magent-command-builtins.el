@@ -12,6 +12,7 @@
 (require 'magent-command-fix)
 (require 'magent-command-init)
 (require 'magent-command-review)
+(require 'magent-command-skills)
 (require 'magent-command-summarize)
 (require 'magent-command-test)
 
@@ -27,6 +28,7 @@
     (magent-command-fix-register)
     (magent-command-init-register)
     (magent-command-review-register)
+    (magent-command-skills-register)
     (magent-command-summarize-register)
     (magent-command-test-register))
   (magent-command--registry-changed))

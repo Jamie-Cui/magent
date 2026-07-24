@@ -146,13 +146,19 @@ An Invocation claims its terminal result before cleanup, so a Step failure
 cancels owned work without allowing synchronous cancellation callbacks to
 overwrite the failure or continue work after ACP completes.
 
-For compatibility, an instruction ~SKILL.md~ with ~default-prompt~ is projected
-into the command registry. Its generated terminal Workflow still activates the
-original skill.
-Project and user adapters override package/bundled definitions by layer, while
-the core control is reserved. Project adapters remain keyed by canonical project
-scope; ACP resolves both command discovery and dispatch against each runtime
-session's exact scope, allowing multiple project sessions to coexist safely.
+~magent-skills.el~ also owns frontend-neutral, scope-aware skill descriptors.
+ACP projects every instruction descriptor as ~$name~, which agent-shell renders
+as ~/$name~, and dispatches it as an ordinary runtime turn with an explicit
+skill selection. This path does not require ~default-prompt~ or enter the
+Command Invocation lifecycle. For compatibility, an instruction ~SKILL.md~
+with ~default-prompt~ is additionally projected into the command registry as a
+legacy ~/name~ adapter; its generated terminal Workflow still activates the
+original skill. Project and user adapters override package/bundled definitions
+by layer, while core controls are reserved. Project command adapters and skill
+catalog snapshots remain keyed by canonical project scope; ACP resolves
+discovery and dispatch against each runtime session's exact scope, allowing
+multiple project sessions to coexist safely. A future frontend may consume the
+same descriptor API while presenting commands and skills as separate surfaces.
 
 ~magent-command-session.el~ supplies persistence, ledger recording, inspection,
 and cancellation for specs using ~:session-policy 'isolated~. It does not own a

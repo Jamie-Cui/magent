@@ -27,6 +27,7 @@
 (require 'magent-session)
 (require 'magent-ledger)
 (require 'magent-command)
+(require 'magent-skills)
 
 (defvar gptel-model)
 
@@ -134,14 +135,36 @@
     (description . ,(magent-acp--metadata-string
                      (magent-command-spec-description command)))))
 
+(defun magent-acp--skill-command-name-p (name)
+  "Return non-nil when NAME can be projected as an ACP skill command."
+  (and (stringp name)
+       (string-match-p "\\`[[:alnum:]_-]+\\'" name)))
+
+(defun magent-acp--skill-command-entry (descriptor)
+  "Return ACP available command entry for skill DESCRIPTOR, or nil."
+  (let ((name (magent-skill-descriptor-name descriptor)))
+    (if (magent-acp--skill-command-name-p name)
+        `((name . ,(concat "$" name))
+          (description . ,(magent-acp--metadata-string
+                           (magent-skill-descriptor-description descriptor))))
+      (magent-log "WARN skipped ACP skill command with invalid name: %S" name)
+      nil)))
+
 (defun magent-acp--available-commands (&optional runtime-session-or-scope)
-  "Return ACP slash commands for RUNTIME-SESSION-OR-SCOPE."
+  "Return ACP slash commands and skills for RUNTIME-SESSION-OR-SCOPE.
+Instruction skills are projected as `$NAME' entries.  The ACP frontend adds
+the leading slash, so agent-shell displays them as `/$NAME'."
   (let ((scope
          (if (magent-runtime-session-p runtime-session-or-scope)
              (magent-runtime-session-scope runtime-session-or-scope)
            runtime-session-or-scope)))
     (vconcat
-     (mapcar #'magent-acp--command-entry (magent-command-list scope)))))
+     (append
+      (mapcar #'magent-acp--command-entry (magent-command-list scope))
+      (delq nil
+            (mapcar
+             #'magent-acp--skill-command-entry
+             (magent-skills-list-descriptors scope 'instruction)))))))
 
 (defun magent-acp--session-response (runtime-session)
   "Return common ACP session response for RUNTIME-SESSION."
@@ -399,6 +422,38 @@ RESOURCES-BEFORE appear before the frontend resources already stored in INPUT."
             :spec (car parsed)
             :name (magent-command-spec-name (car parsed))
             :argument (cdr parsed)))))
+
+(defun magent-acp--skill-command (prompt &optional runtime-session-or-scope)
+  "Return explicit skill invocation parsed from PROMPT for session scope.
+The accepted wire form is `/$NAME' followed by an optional instruction.
+Unknown or unavailable instruction skills fail here instead of reaching the
+model as ambiguous prompt text."
+  (let* ((scope
+          (if (magent-runtime-session-p runtime-session-or-scope)
+              (magent-runtime-session-scope runtime-session-or-scope)
+            runtime-session-or-scope))
+         (trimmed (string-trim (or prompt ""))))
+    (when (string-match
+           "\\`/\\$\\([[:alnum:]_-]+\\)\\(?:[[:space:]]+\\(.*\\)\\)?\\'"
+           trimmed)
+      (let* ((name (match-string 1 trimmed))
+             (descriptor (magent-skills-resolve-descriptor name scope)))
+        (unless (and descriptor
+                     (eq (magent-skill-descriptor-type descriptor)
+                         'instruction))
+          (user-error
+           "Magent: unknown or unavailable instruction skill '$%s' in this session"
+           name))
+        (list :kind 'skill
+              :name name
+              :argument (string-trim (or (match-string 2 trimmed) ""))
+              :descriptor descriptor)))))
+
+(defun magent-acp--skill-selection (runtime-session skill-name)
+  "Return pending skills plus explicit SKILL-NAME for RUNTIME-SESSION."
+  (magent-skills-dedupe-names
+   (append (magent-runtime-session-pending-skills runtime-session)
+           (list skill-name))))
 
 (defun magent-acp--command-submission-adapter (input)
   "Return a command submission adapter preserving structured ACP INPUT."
@@ -1024,29 +1079,59 @@ switching semantics."
                    (and runtime-session
                         (magent-acp--slash-command
                          instruction-text runtime-session)))
+                  (skill-command
+                   (and runtime-session
+                        (not command)
+                        (magent-acp--skill-command
+                         instruction-text runtime-session)))
                   (resources (plist-get input :resource-blocks)))
              (unless runtime-session
                (error "Unknown session: %s" session-id))
-             (if command
-                 (magent-command-invoke
-                  (plist-get command :spec) runtime-session
-                  :raw-input instruction-text
-                  :argument (plist-get command :argument)
-                  :request-context
-                  (append (plist-get input :context)
-                          (list :capabilities-enabled
-                                (magent-runtime-session-capabilities-enabled-p
-                                 runtime-session)))
-                  :resource-blocks resources
+             (cond
+              (command
+               (magent-command-invoke
+                (plist-get command :spec) runtime-session
+                :raw-input instruction-text
+                :argument (plist-get command :argument)
+                :request-context
+                (append (plist-get input :context)
+                        (list :capabilities-enabled
+                              (magent-runtime-session-capabilities-enabled-p
+                               runtime-session)))
+                :resource-blocks resources
+                :observer (magent-acp--observer client session-id)
+                :approval-provider
+                (magent-acp--approval-provider client session-id)
+                :submission-adapter
+                (magent-acp--command-submission-adapter input)
+                :on-complete
+                (lambda (status result)
+                  (magent-acp--complete-prompt-request
+                   on-success status result))))
+              (skill-command
+               (let ((skill-name (plist-get skill-command :name)))
+                 (magent-runtime-submit
+                  runtime-session (plist-get input :display-text)
+                  :context
+                  (append
+                   (plist-get input :context)
+                   (list :capabilities-enabled
+                         (magent-runtime-session-capabilities-enabled-p
+                          runtime-session)))
+                  :skills
+                  (magent-acp--skill-selection runtime-session skill-name)
+                  :turn-metadata
+                  (list :content-blocks (plist-get input :content-blocks)
+                        :explicit-skill skill-name
+                        :skill-invocation 'acp-command)
                   :observer (magent-acp--observer client session-id)
                   :approval-provider
                   (magent-acp--approval-provider client session-id)
-                  :submission-adapter
-                  (magent-acp--command-submission-adapter input)
                   :on-complete
                   (lambda (status result)
                     (magent-acp--complete-prompt-request
-                     on-success status result)))
+                     on-success status result)))))
+              (t
                (magent-runtime-submit
                 runtime-session (plist-get input :display-text)
                 :context
@@ -1062,7 +1147,7 @@ switching semantics."
                 :on-complete
                 (lambda (status result)
                   (magent-acp--complete-prompt-request
-                   on-success status result))))))
+                   on-success status result)))))))
           (_
            (error "Unsupported ACP method: %s" method))))
     (error

@@ -112,10 +112,12 @@ command wrappers use the adjacent command lifecycle rather than another UI.
 
 *What it does:* Prompts route through
 ~magent-agent-shell.el~ and the in-process ACP adapter. ACP sends registered
-slash commands through ~magent-command.el~ and ordinary prompts directly to
-~magent-runtime-api.el~. A prompt request remains pending until its ordinary
-turn or command invocation reaches a terminal state. See ~docs/UI_BACKENDS.org~
-for the frontend development boundary before changing this layer.
+slash commands through ~magent-command.el~, projects scope-aware instruction
+skill descriptors as ~/$name~, and submits those skill selections plus ordinary
+prompts directly to ~magent-runtime-api.el~. A prompt request remains pending
+until its ordinary turn or command invocation reaches a terminal state. See
+~docs/UI_BACKENDS.org~ for the frontend development boundary before changing
+this layer.
 
 ** Layer 7: Events
 
@@ -161,11 +163,15 @@ Two skill types:
 Instruction skills can be selected as one-shot context for the next request.
 The agent-shell frontend exposes native commands such as
 ~magent-agent-shell-toggle-skill-for-next-request~ and
-~magent-agent-shell-run-skill-command~. Skills that define ~default-prompt~ can
-also be run as compatibility command-like actions. Elisp-native slash commands
-are registered separately through ~magent-command-register~ and can be selected
-with ~magent-agent-shell-run-command~. The bundled ~/init~ command initializes
-or refreshes the project root ~AGENTS.md~ and accepts optional extra text.
+~magent-agent-shell-run-skill-command~. ACP also advertises every visible
+instruction skill as ~/$name~; this explicitly selects the skill for an
+ordinary turn and does not require ~default-prompt~. Skills that define
+~default-prompt~ additionally retain the legacy ~/name~ compatibility action.
+Elisp-native slash commands are registered separately through
+~magent-command-register~ and can be selected with
+~magent-agent-shell-run-command~. ~/skills~ lists the same descriptors without
+a provider request. The bundled ~/init~ command initializes or refreshes the
+project root ~AGENTS.md~ and accepts optional extra text.
 
 For each turn, Magent starts with the selected agent's base prompt, then adds
 project context, applicable ~AGENTS.md~ files from the project root toward
@@ -185,7 +191,8 @@ Keep the terms separate when adding or reviewing defaults:
 
 - Use a ~command~ for an explicit slash action with an Elisp entry point.
 - Use a ~skill~ for reusable instructions or tool-type operations that can be
-  selected explicitly or automatically. ~default-prompt~ is compatibility.
+  selected explicitly or automatically. ~/$name~ is the ACP projection;
+  ~default-prompt~ only adds legacy ~/name~ compatibility.
 - Use a ~capability~ when the skill should be selected automatically from live
   context or prompt text.
 - Co-locate the capability metadata in ~SKILL.md~ when the capability only
@@ -228,7 +235,7 @@ invocation lifecycle, and shared runtime behavior remains in the runtime API.
 
 Trace a request through these files in order:
 1. ~magent-agent-shell.el~ / ~magent-acp.el~ — Receive ~session/prompt~ and normalize frontend input
-2. ~magent-command.el~ — Conditionally resolve and invoke registered slash commands
+2. ~magent-command.el~ / ~magent-skills.el~ — Resolve registered slash commands or scope-aware ~/$skill~ descriptors
 3. ~magent-runtime-api.el~ / ~magent-runtime-queue.el~ / ~magent-ledger.el~ — Record, queue, and start ordinary or command-owned turns
 4. ~magent-agent.el~ — Build the prompt and select agent, skills, capabilities, and tools
 5. ~magent-llm-gptel.el~ / ~magent-agent-loop.el~ — Sample through gptel and own normalized continuation outcomes
