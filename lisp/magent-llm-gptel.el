@@ -38,6 +38,7 @@
 (defvar gptel-confirm-tool-calls)
 (defvar gptel-include-reasoning)
 (defvar gptel-temperature)
+(defvar gptel-proxy)
 (defvar gptel--request-params)
 (defvar magent-include-reasoning)
 
@@ -188,6 +189,17 @@ requests, so Magent normalizes this boundary before curl serializes it."
     (magent-llm-gptel--sanitize-info info))
   (apply orig-fn info args))
 
+(defun magent-llm-gptel--suppress-connect-headers-a
+    (orig-fn info &rest args)
+  "Suppress proxy CONNECT headers for Magent-managed curl requests."
+  (let ((curl-args (apply orig-fn info args)))
+    (if (and (magent-llm-gptel--managed-info-p info)
+             (stringp gptel-proxy)
+             (not (string-empty-p gptel-proxy))
+             (not (member "--suppress-connect-headers" curl-args)))
+        (append curl-args '("--suppress-connect-headers"))
+      curl-args)))
+
 (defun magent-llm-gptel--sanitize-after-parse-response-a
     (orig-fn backend response info)
   "Sanitize Magent-managed INFO after gptel parses a response."
@@ -212,6 +224,11 @@ requests, so Magent normalizes this boundary before curl serializes it."
                            'gptel-curl--get-args)
     (advice-add 'gptel-curl--get-args
                 :around #'magent-llm-gptel--sanitize-before-curl-a))
+  (unless (advice-member-p #'magent-llm-gptel--suppress-connect-headers-a
+                           'gptel-curl--get-config-args)
+    (advice-add 'gptel-curl--get-config-args
+                :around
+                #'magent-llm-gptel--suppress-connect-headers-a))
   (unless (advice-member-p #'magent-llm-gptel--sanitize-after-parse-response-a
                            'gptel--parse-response)
     (advice-add 'gptel--parse-response
