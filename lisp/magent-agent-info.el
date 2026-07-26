@@ -93,6 +93,8 @@ The agent's TEMPERATURE field, if non-nil, overrides `gptel-temperature'."
                        ((and (consp model-field)
                              (symbolp (cdr model-field)))
                         (cdr model-field))
+                       ((null model-field)
+                        (default-value 'gptel-model))
                        ((symbolp model-field) model-field)
                        ((stringp model-field) (intern model-field))
                        (t (default-value 'gptel-model))))

@@ -1638,7 +1638,8 @@
       (magent-agent-info-apply-gptel-overrides
        agent
        (lambda ()
-         (should (= gptel-temperature 1.0)))))))
+         (should (= gptel-temperature 1.0))
+         (should (eq gptel-model 'default-model)))))))
 
 (ert-deftest magent-test-agent-process-records-runtime-inheritance ()
   "Test request context records inherited runtime sampling settings."
@@ -2542,6 +2543,76 @@
         :callback #'ignore)))
     (should (= (plist-get captured-params :top_p) 0.37))
     (should (= (plist-get captured-params :seed) 7))))
+
+(ert-deftest magent-test-llm-gptel-suppresses-connect-headers-for-managed-proxy ()
+  "Managed proxied requests suppress proxy CONNECT response headers."
+  (require 'magent-llm-gptel)
+  (let ((gptel-proxy "http://127.0.0.1:10808"))
+    (should
+     (equal
+      (magent-llm-gptel--suppress-connect-headers-a
+       (lambda (_info) '("--base"))
+       '(:magent-llm-gptel t))
+      '("--base" "--suppress-connect-headers")))))
+
+(ert-deftest magent-test-llm-gptel-does-not-duplicate-connect-header-argument ()
+  "Managed proxy suppression is inserted at most once."
+  (require 'magent-llm-gptel)
+  (let ((gptel-proxy "http://127.0.0.1:10808"))
+    (should
+     (equal
+      (magent-llm-gptel--suppress-connect-headers-a
+       (lambda (_info) '("--base" "--suppress-connect-headers"))
+       '(:magent-llm-gptel t))
+      '("--base" "--suppress-connect-headers")))))
+
+(ert-deftest magent-test-llm-gptel-leaves-unproxied-managed-curl-args-unchanged ()
+  "Managed requests without a proxy keep gptel's curl arguments."
+  (require 'magent-llm-gptel)
+  (let ((gptel-proxy ""))
+    (should
+     (equal
+      (magent-llm-gptel--suppress-connect-headers-a
+       (lambda (_info) '("--base"))
+       '(:magent-llm-gptel t))
+      '("--base")))))
+
+(ert-deftest magent-test-llm-gptel-leaves-unmanaged-proxy-curl-args-unchanged ()
+  "Unmanaged gptel requests keep their original curl arguments."
+  (require 'magent-llm-gptel)
+  (let ((gptel-proxy "http://127.0.0.1:10808"))
+    (should
+     (equal
+      (magent-llm-gptel--suppress-connect-headers-a
+       (lambda (_info) '("--base"))
+       '(:other-client t))
+      '("--base")))))
+
+(ert-deftest magent-test-llm-gptel-installs-connect-header-advice-once ()
+  "Repeated boundary initialization installs proxy advice once."
+  (require 'magent-llm-gptel)
+  (let (installed
+        (add-count 0))
+    (cl-letf
+        (((symbol-function 'advice-member-p)
+          (lambda (function symbol)
+            (if (and
+                 (eq function
+                     #'magent-llm-gptel--suppress-connect-headers-a)
+                 (eq symbol 'gptel-curl--get-config-args))
+                installed
+              t)))
+         ((symbol-function 'advice-add)
+          (lambda (symbol _where function &optional _props)
+            (when (and
+                   (eq function
+                       #'magent-llm-gptel--suppress-connect-headers-a)
+                   (eq symbol 'gptel-curl--get-config-args))
+              (setq installed t)
+              (cl-incf add-count)))))
+      (magent-llm-gptel--install-boundary-advice)
+      (magent-llm-gptel--install-boundary-advice))
+    (should (= add-count 1))))
 
 (ert-deftest magent-test-llm-gptel-merges-top-p-into-gemini-data ()
   "Test Gemini top-p preserves gptel's generated sampling config."
