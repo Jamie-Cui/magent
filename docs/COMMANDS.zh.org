@@ -154,7 +154,7 @@ org-roam capture 约定 ~YYYY-MM-DDtHHMM.org~。后续运行通过 file-level
       :skills '("code-review")
       :agent 'build
       :append-argument-p t
-      :required-tools '(read_file grep bash))))
+      :tools '(read_file read_buffer grep bash))))
 
 (magent-command-register
  "my-review"
@@ -227,10 +227,13 @@ instructions 查找、capability resolution 或 runtime routing，但该 plist �
 由 Magent 管理的 Step forms 包括：
 
 - ~magent-command-agent~ 执行中间 model turn，默认返回文本。它支持 ~:agent~、
-  ~:skills~、~:buffers~、~:append-argument-p~、~:required-tools~、
+  ~:skills~、~:buffers~、~:append-argument-p~、~:tools~、
   ~:request-context~、~:resource-blocks~ 和 ~:result~。
 - ~magent-command-answer~ 支持相同的 model 选项，但它是 terminal Step：流式输出
   最终回答并结束 Invocation，之后的 forms 不会继续执行。
+
+~:tools~ 是该 Step 暴露给 provider 的 exact allowlist，不只是 preflight
+requirement；未知或不可用的名字会在提交前失败。
 - ~magent-command-process~ 只运行由非空 string 组成的 argv list。它会捕获调用点
   的 directory 和 process environment，并支持 ~:directory~、~:environment~
   override alist、~:timeout~、~:check~、~:result~、~:record-command~ 与

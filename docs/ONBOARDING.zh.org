@@ -82,13 +82,15 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 *关键文件：*
 
 - ~magent-repo-summary.el~ ：确定性更新单个 org-roam repository note。
-- ~magent-tools.el~ ：15 个 ~gptel-tool~ structs，包括 file I/O、repository summary writer、grep/glob、bash、emacs_eval、child-agent coordination、skill_invoke 和 web_search。
+- ~magent-tools.el~ ：单一 canonical catalog 中的 15 个 ~gptel-tool~ structs，包括 disk/live-buffer read、file write、repository summary writer、grep/glob、bash、emacs_eval、child-agent coordination 和 web_search。
 - ~magent-skills.el~ ：skill registry、built-in skills、file loading 和 inspection commands。
 - ~magent-skill-manager.el~ ：用户级 skills.sh finder、安全复制安装与永久删除。
 - ~magent-capability.el~ ：capability definitions、resolution 和 file-backed loading。
 - ~magent-approval.el~ ：敏感操作的 user approval prompts。
 
-*职责：* Tools 提供具体动作；skills 扩展 agent 行为；capability resolver 根据上下文自动激活少量 instruction skills；approval system gate dangerous operations。
+*职责：* Tools 提供具体动作；skills 只提供 data-only instructions；可执行扩展使用
+trusted command 或 canonical catalog 中的一等 tool；capability resolver 根据上下文
+自动激活少量 instruction skills；approval system gate dangerous operations。
 
 ** 第 5 层：Agent Loop 与 LLM Integration
 
@@ -164,10 +166,7 @@ Agent modes：
 
 ** Skill System
 
-Skill 有两类：
-
-- *instruction* ：Markdown 注入 system prompt。
-- *tool* ：通过 ~skill_invoke~ tool 调用。
+Skill 只支持注入 system prompt 的 instruction Markdown，不加载 companion Elisp。
 
 Instruction skills 可以作为下一次请求的一次性上下文。Agent-shell frontend 提供
 ~magent-agent-shell-toggle-skill-for-next-request~ 和
@@ -192,8 +191,8 @@ Skills 加载来源：内置 ~skills/~、存在时兼容的 legacy 用户目录 
 新增或 review 默认能力时保持这些概念分开：
 
 - 显式 slash action 需要 Elisp 入口时，用 ~command~ 。
-- 需要可复用 instruction 或 tool-type operation，并且可以被显式或自动选择时，
-  用 ~skill~；~/$name~ 是 ACP projection，~default-prompt~ 只额外提供 legacy
+- 需要可复用 instruction，并且可以被显式或自动选择时，用 ~skill~；
+  ~/$name~ 是 ACP projection，~default-prompt~ 只额外提供 legacy
   ~/name~ 兼容。
 - 需要根据 live context 或 prompt text 自动选择某个 skill 时，用 ~capability~ 。
 - 如果 capability 只是为了激活同一个 skill，就把 metadata 和说明共址在
@@ -302,7 +301,7 @@ API。
 
 ** 5. ~magent-tools.el~
 
-*复杂原因：* 15 个 tool implementation 各自有 side effects、timeout、child-agent runtime state 和 error handling。 ~emacs_eval~ 要在正确 buffer context 中执行。
+*复杂原因：* 15 个 tool implementation 各自有 side effects、timeout、child-agent runtime state 和 error handling。 ~read_file~ 与 ~read_buffer~ 必须保持 disk/live-buffer 语义分离， ~emacs_eval~ 要在正确 buffer context 中执行。
 
 *修改建议：* timeout handling 必须可靠； ~emacs_eval~ context capture、child-agent status persistence 和 parent/child request-context inheritance 都很关键。
 

@@ -419,8 +419,15 @@ REQUEST-PROJECT-ROOT is explicit; this helper never consults ambient scope."
                            (file-truename
                             (expand-file-name request-project-root))
                          (error (expand-file-name request-project-root)))))
+                 (canonical-value
+                  (if (file-name-absolute-p value)
+                      (condition-case nil
+                          (file-truename (expand-file-name value))
+                        (error (expand-file-name value)))
+                    value))
                  (normalized
-                  (magent-redaction-normalize-paths value project-root))
+                  (magent-redaction-normalize-paths
+                   canonical-value project-root))
                  (redacted (magent-redaction-string normalized t)))
             (cond
              ((string-prefix-p "/" redacted)
@@ -496,7 +503,7 @@ PROJECT-ROOT is the captured request root used to normalize path prefixes."
         (cons 'include_closed
               (magent-audit--safe-true-boolean
                (plist-get args :include_closed)))))
-      ("read_file"
+      ((or "read_file" "read_buffer")
        (magent-audit--compact-alist
         (cons 'path (magent-audit--path-preview
                      (plist-get args :path) project-root))))

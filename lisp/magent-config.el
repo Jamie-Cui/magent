@@ -78,10 +78,10 @@ The default value is read from prompts/system.org in the package."
   :type 'natnum
   :group 'magent)
 
-(defcustom magent-enable-tools '(read write edit grep glob bash emacs_eval agent skill web_search)
+(defcustom magent-enable-tools '(read write edit grep glob bash emacs_eval agent web_search)
   "List of enabled tools.
 Available tools: read, write, edit, grep, glob, bash, emacs_eval,
-agent, skill, web_search."
+agent, web_search."
   :type '(set (const :tag "Read files" read)
               (const :tag "Write files" write)
               (const :tag "Edit files" edit)
@@ -90,7 +90,6 @@ agent, skill, web_search."
               (const :tag "Run shell commands" bash)
               (const :tag "Evaluate Emacs Lisp" emacs_eval)
               (const :tag "Coordinate child agents" agent)
-              (const :tag "Invoke Claude Code skills" skill)
               (const :tag "Search the web" web_search))
   :group 'magent)
 
@@ -246,16 +245,6 @@ when Magent should use agent-shell's session selection flow."
   :type 'boolean
   :group 'magent)
 
-(defcustom magent-trusted-project-skill-companion-roots nil
-  "Project roots allowed to load tool-skill companion Elisp files.
-
-Project-local `.magent/skills/*/*.el' files are executable Emacs Lisp and are
-not loaded unless their normalized project root appears in this list.
-Instruction-only project skills do not require trust.  Built-in and user-level
-tool skills retain their existing loading behavior."
-  :type '(repeat directory)
-  :group 'magent)
-
 (defcustom magent-agent-directory ".magent/agent"
   "Relative path (from project root) to the custom agent directory."
   :type 'string
@@ -323,6 +312,21 @@ If rg is not found, grep tool calls will fail with an informative error."
 
 (defcustom magent-grep-max-matches 100
   "Maximum number of matches to return from grep searches."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-glob-max-results 500
+  "Maximum number of matching paths returned by one glob call."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-glob-max-files-scanned 50000
+  "Maximum number of filesystem entries inspected by one glob call."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-glob-batch-size 500
+  "Maximum filesystem entries processed per glob event-loop slice."
   :type 'integer
   :group 'magent)
 

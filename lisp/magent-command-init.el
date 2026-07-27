@@ -14,7 +14,7 @@
       "Initialize project instructions"
       (magent-prompt-read "commands/init.org")
     :append-argument-p t
-    :required-tools '(read_file write_file edit_file grep glob bash)))
+    :tools '(read_file read_buffer write_file edit_file grep glob bash)))
 
 (defun magent-command-init-register ()
   "Register the bundled /init command."

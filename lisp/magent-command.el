@@ -319,7 +319,7 @@ currently active project overlay."
     ('user 'user)
     (_ 'package)))
 
-(defun magent-command--make-skill-workflow (skill-name prompt required-tools)
+(defun magent-command--make-skill-workflow (skill-name prompt tools)
   "Return a terminal Workflow adapter for SKILL-NAME and PROMPT."
   (iter-lambda (invocation)
     (magent-command-answer
@@ -331,7 +331,7 @@ currently active project overlay."
         (magent-runtime-session-pending-skills
          (magent-command-invocation-runtime-session invocation))
         (list skill-name)))
-      :required-tools required-tools
+      :tools tools
       :append-argument-p t)))
 
 (defun magent-command-refresh-skill-adapters (&optional scope)
@@ -619,21 +619,21 @@ REASON may be a string or a `magent-agent-result' for direct invocations."
                     (magent-command-spec-name spec) feature)))))
 
 (defun magent-command--validate-agent-step-tools (invocation step)
-  "Validate tool requirements of agent STEP for INVOCATION."
+  "Validate the exact tool set of agent STEP for INVOCATION."
   (let* ((spec (magent-command-invocation-spec invocation))
-         (required
+         (selected
           (mapcar (lambda (tool)
                     (if (symbolp tool) tool (intern tool)))
-                  (or (magent-command--step-option step :required-tools) nil)))
+                  (or (magent-command--step-option step :tools) nil)))
          (agent (magent-command--step-option step :agent))
          (runtime-session
           (magent-command-invocation-runtime-session invocation))
          (available
-          (when (or agent required)
+          (when (or agent selected)
             (magent-runtime-session-available-tool-names
              runtime-session agent)))
-         (missing (and required
-                       (cl-set-difference required available))))
+         (missing (and selected
+                       (cl-set-difference selected available))))
     (when missing
       (user-error "Command /%s Step %S requires unavailable tools: %s"
                   (magent-command-spec-name spec)
@@ -710,7 +710,8 @@ REASON may be a string or a `magent-agent-result' for direct invocations."
           (magent-runtime-submit
            (magent-command-invocation-runtime-session invocation)
            effective-prompt
-           :skills skills
+      :skills skills
+           :tools (magent-command--step-option step :tools)
            :agent agent
            :context
            (append request-context

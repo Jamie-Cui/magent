@@ -30,14 +30,11 @@
 (require 'magent-runtime)
 (require 'magent-session)
 
-(declare-function magent-skills-invoke "magent-skills")
 (declare-function magent-agent-process "magent-agent")
 (declare-function magent-agent-loop-abort "magent-agent-loop")
 (declare-function magent-agent-loop-p "magent-agent-loop" t t)
 
-(defvar magent--current-session)
 (defvar magent-lifecycle-events--subagent-audit-context)
-(defvar magent-session--current-scope)
 
 ;;; Tool implementations
 
@@ -53,12 +50,6 @@
 (defvar magent-tools--register-cancel nil
   "Dynamically bound function used to register request abort cleanups.")
 
-(defvar magent-tools--agent-job-runtimes (make-hash-table :test #'equal)
-  "Runtime state for active child-agent jobs keyed by job id.
-This table intentionally stores non-persistent values such as child sessions,
-request contexts, and live loop handles.  Durable job metadata lives in the
-parent `magent-session' under `agent-jobs'.")
-
 (defconst magent-tools--read-file-default-line-count 200
   "Default maximum number of lines returned by `read_file'.")
 
@@ -72,6 +63,34 @@ whole so a subsequent line-based request always makes progress.")
 
 (defconst magent-tools--bash-failure-max-lines 300
   "Maximum Bash failure output lines retained before model-side bounding.")
+
+(defun magent-tools--completed (output &optional exit-code metadata)
+  "Return a completed structured tool result."
+  (magent-tool-result-create
+   :status 'completed
+   :success t
+   :output output
+   :exit-code exit-code
+   :metadata metadata))
+
+(defun magent-tools--failed (message &optional exit-code metadata)
+  "Return a failed structured tool result for MESSAGE."
+  (let ((text (if (stringp message) message (format "%s" message))))
+    (magent-tool-result-create
+     :status 'failed
+     :success nil
+     :output text
+     :error text
+     :exit-code exit-code
+     :metadata metadata)))
+
+(defun magent-tools--complete (callback output &optional exit-code metadata)
+  "Call CALLBACK with a completed structured tool result."
+  (funcall callback (magent-tools--completed output exit-code metadata)))
+
+(defun magent-tools--fail (callback message &optional exit-code metadata)
+  "Call CALLBACK with a failed structured tool result."
+  (funcall callback (magent-tools--failed message exit-code metadata)))
 
 (defun magent-tools--agent-wait-timeout (&optional timeout)
   "Return explicit child-agent TIMEOUT or the host's finite default."
@@ -134,12 +153,27 @@ absolute versus project-relative spellings of the same resource."
   "Resolve PATH for tool operations."
   (magent-tools-canonical-resource-path path))
 
-(defun magent-tools--read-file-buffer-page
-    (start-line line-count source modified)
+(defun magent-tools--read-range (start-line line-count)
+  "Validate and normalize optional START-LINE and LINE-COUNT."
+  (when (eq start-line :null)
+    (setq start-line nil))
+  (when (eq line-count :null)
+    (setq line-count nil))
+  (unless (or (null start-line)
+              (and (integerp start-line) (> start-line 0)))
+    (error "start_line must be a positive integer (got %S)" start-line))
+  (unless (or (null line-count)
+              (and (integerp line-count) (> line-count 0)))
+    (error "line_count must be a positive integer (got %S)" line-count))
+  (cons (or start-line 1)
+        (or line-count magent-tools--read-file-default-line-count)))
+
+(defun magent-tools--buffer-page
+    (tool-name start-line line-count metadata)
   "Return a self-describing page from the current buffer.
-START-LINE is one-based and LINE-COUNT is the requested maximum number of
-lines.  SOURCE identifies how the buffer was obtained and MODIFIED reports
-whether a live visiting buffer has unsaved changes."
+TOOL-NAME identifies the calling tool.  START-LINE is one-based and LINE-COUNT
+is the requested maximum number of lines.  METADATA is the source description
+included in the result header."
   (save-excursion
     (save-restriction
       (widen)
@@ -167,9 +201,9 @@ whether a live visiting buffer has unsaved changes."
                                    (format "%d-%d" start-line end-line)
                                  "none"))
                    (header
-                    (format "[read_file: source=%s; modified=%s; lines=%s; total_lines=%d; has_more=%s%s]\n"
-                     source
-                     (if modified "true" "false")
+                    (format "[%s: %s; lines=%s; total_lines=%d; has_more=%s%s]\n"
+                     tool-name
+                     metadata
                      line-range
                      total-lines
                      (if has-more "true" "false")
@@ -180,45 +214,120 @@ whether a live visiting buffer has unsaved changes."
                       (buffer-substring-no-properties begin end)))))))))
 
 (defun magent-tools--read-file (callback path &optional start-line line-count)
-  "Read contents of file at PATH asynchronously.
-When PATH has a visiting buffer, read its live contents.  Otherwise read the
-file through a temporary buffer.  START-LINE is an optional one-based starting
-line.  LINE-COUNT defaults to `magent-tools--read-file-default-line-count'.
-The result includes pagination metadata before the requested file contents.
-CALLBACK is called with the file contents or error message."
+  "Read the on-disk contents of file at PATH asynchronously.
+START-LINE is an optional one-based starting line.  LINE-COUNT defaults to
+`magent-tools--read-file-default-line-count'.  The result includes pagination
+metadata before the requested file contents.  CALLBACK is called with the file
+contents or error message."
   (condition-case err
       (progn
         (unless (stringp path)
           (error "Missing required argument 'path' (got %S)" path))
-        (when (eq start-line :null)
-          (setq start-line nil))
-        (when (eq line-count :null)
-          (setq line-count nil))
-        (unless (or (null start-line)
-                    (and (integerp start-line) (> start-line 0)))
-          (error "start_line must be a positive integer (got %S)" start-line))
-        (unless (or (null line-count)
-                    (and (integerp line-count) (> line-count 0)))
-          (error "line_count must be a positive integer (got %S)" line-count))
         (let* ((path (magent-tools--resolve-path path))
-               (first-line (or start-line 1))
-               (maximum-lines
-                (or line-count magent-tools--read-file-default-line-count)))
-          (funcall
-           callback
-           (if-let* ((buffer (find-buffer-visiting path)))
-               (with-current-buffer buffer
-                 (magent-tools--read-file-buffer-page
-                  first-line maximum-lines "live-buffer" (buffer-modified-p)))
-             (with-temp-buffer
-               (insert-file-contents path)
-               (magent-tools--read-file-buffer-page
-                first-line maximum-lines "temporary-buffer" nil))))))
-    (error (funcall callback (format "Error reading file: %s" (error-message-string err))))))
+               (range (magent-tools--read-range start-line line-count)))
+          (with-temp-buffer
+            (insert-file-contents path)
+            (magent-tools--complete
+             callback
+             (magent-tools--buffer-page
+              "read_file" (car range) (cdr range)
+              "source=disk; modified=false")))))
+    (error
+     (magent-tools--fail
+      callback (format "Error reading file: %s" (error-message-string err))))))
+
+(defun magent-tools--read-buffer
+    (callback path &optional start-line line-count)
+  "Read live contents of the file-visiting buffer for PATH asynchronously.
+The buffer must already exist; this function never opens PATH or falls back to
+disk.  START-LINE is an optional one-based starting line.  LINE-COUNT defaults
+to `magent-tools--read-file-default-line-count'.  CALLBACK is called with the
+buffer contents and state metadata or an error message."
+  (condition-case err
+      (progn
+        (unless (stringp path)
+          (error "Missing required argument 'path' (got %S)" path))
+        (let* ((path (magent-tools--resolve-path path))
+               (range (magent-tools--read-range start-line line-count))
+               (buffer (find-buffer-visiting path)))
+          (unless (buffer-live-p buffer)
+            (error "buffer_not_found: no live buffer is visiting %s" path))
+          (with-current-buffer buffer
+            (let ((metadata
+                   (format
+                    "source=live-buffer; buffer=%S; modified=%s; narrowed=%s"
+                    (buffer-name buffer)
+                    (if (buffer-modified-p) "true" "false")
+                    (if (buffer-narrowed-p) "true" "false"))))
+              (magent-tools--complete
+               callback
+               (magent-tools--buffer-page
+                "read_buffer" (car range) (cdr range) metadata))))))
+    (error
+     (magent-tools--fail
+      callback
+      (format "Error reading buffer: %s"
+              (error-message-string err))))))
+
+(defun magent-tools--clean-visiting-buffer (path)
+  "Return the clean file-visiting buffer for PATH, or nil.
+Signal a conflict when the visiting buffer is modified or its file changed on
+disk since it was visited."
+  (when-let* ((buffer (find-buffer-visiting path)))
+    (with-current-buffer buffer
+      (when (buffer-modified-p)
+        (error "buffer_conflict: visiting buffer %S has unsaved changes"
+               (buffer-name buffer)))
+      (unless (verify-visited-file-modtime buffer)
+        (error "disk_conflict: %s changed on disk since buffer %S visited it"
+               path (buffer-name buffer))))
+    buffer))
+
+(defun magent-tools--atomic-write-string (path content &optional coding-system)
+  "Atomically replace PATH with CONTENT using CODING-SYSTEM when non-nil."
+  (let* ((directory (file-name-directory path))
+         (existing-mode (and (file-exists-p path) (file-modes path)))
+         (temporary-file
+          (make-temp-file (expand-file-name ".magent-write-" directory))))
+    (unwind-protect
+        (progn
+          (with-temp-buffer
+            (insert content)
+            (let ((coding-system-for-write coding-system))
+              (write-region
+               (point-min) (point-max) temporary-file nil 0)))
+          (set-file-modes
+           temporary-file
+           (or existing-mode
+               (logand (default-file-modes) #o666)))
+          (rename-file temporary-file path t)
+          (setq temporary-file nil))
+      (when (and temporary-file (file-exists-p temporary-file))
+        (delete-file temporary-file)))))
+
+(defun magent-tools--replace-unique-buffer-text (path old-text new-text)
+  "Replace the unique OLD-TEXT with NEW-TEXT in the current buffer.
+Signal a descriptive error mentioning PATH when the match is not unique."
+  (save-restriction
+    (widen)
+    (let ((count 0))
+      (save-excursion
+        (goto-char (point-min))
+        (while (search-forward old-text nil t)
+          (cl-incf count)))
+      (cond
+       ((= count 0)
+        (error "old_text not found in %s" path))
+       ((> count 1)
+        (error "old_text found %d times in %s (must be unique)" count path)))
+      (goto-char (point-min))
+      (search-forward old-text)
+      (replace-match new-text t t))))
 
 (defun magent-tools--write-file (callback path content)
   "Write CONTENT to file at PATH asynchronously.
-Creates parent directories if needed.
+Creates parent directories if needed.  Rejects a modified visiting buffer;
+updates and saves a clean visiting buffer so Emacs and disk remain synchronized.
 CALLBACK is called with success message or error."
   (condition-case err
       (progn
@@ -230,11 +339,22 @@ CALLBACK is called with success message or error."
           (let ((dir (file-name-directory path)))
             (when (and dir (not (file-exists-p dir)))
               (make-directory dir t)))
-          (with-temp-buffer
-            (insert content)
-            (write-region (point-min) (point-max) path nil 0))
-          (funcall callback (format "Successfully wrote %s" path))))
-    (error (funcall callback (format "Error writing file: %s" (error-message-string err))))))
+          (if-let* ((buffer (magent-tools--clean-visiting-buffer path)))
+              (with-current-buffer buffer
+                (save-excursion
+                  (save-restriction
+                    (widen)
+                    (atomic-change-group
+                      (erase-buffer)
+                      (insert content)
+                      (let ((file-precious-flag t))
+                        (save-buffer))))))
+            (magent-tools--atomic-write-string path content))
+          (magent-tools--complete
+           callback (format "Successfully wrote %s" path))))
+    (error
+     (magent-tools--fail
+      callback (format "Error writing file: %s" (error-message-string err))))))
 
 (defun magent-tools--write-repo-summary
     (callback mode content &optional scope scope-files)
@@ -244,7 +364,7 @@ SCOPE and SCOPE-FILES describe a scoped summary."
       (let* ((root (magent-tools--request-project-root))
              (result (magent-repo-summary-write
                       root mode content scope scope-files)))
-        (funcall
+        (magent-tools--complete
          callback
          (format "Successfully %s repository summary: %s%s"
                  (if (plist-get result :created) "created" "updated")
@@ -253,9 +373,10 @@ SCOPE and SCOPE-FILES describe a scoped summary."
                      (format " (scope %s)" scope-id)
                    ""))))
     (error
-     (funcall callback
-              (format "Error writing repository summary: %s"
-                      (error-message-string err))))))
+     (magent-tools--fail
+      callback
+      (format "Error writing repository summary: %s"
+              (error-message-string err))))))
 
 (defun magent-tools--grep (callback pattern path &optional case-sensitive)
   "Search for PATTERN in files under PATH using ripgrep asynchronously.
@@ -408,36 +529,123 @@ CALLBACK is called with matching lines or error message."
 
 (defun magent-tools--glob (callback pattern path)
   "Find files matching PATTERN under PATH asynchronously.
-Supports * and ** wildcards.
-CALLBACK is called with list of matching file paths."
+Supports * and ** wildcards.  Traversal is sliced across the Emacs event loop
+and bounded by `magent-glob-max-results' and
+`magent-glob-max-files-scanned'."
   (condition-case err
-      (let* ((resolved (magent-tools--resolve-path path))
+      (progn
+        (unless (and (stringp pattern) (not (string-empty-p pattern)))
+          (error "pattern must be a non-empty string"))
+        (unless (stringp path)
+          (error "path must be a string"))
+        (dolist (setting
+                 `((magent-glob-max-results . ,magent-glob-max-results)
+                   (magent-glob-max-files-scanned
+                    . ,magent-glob-max-files-scanned)
+                   (magent-glob-batch-size . ,magent-glob-batch-size)))
+          (unless (and (integerp (cdr setting)) (> (cdr setting) 0))
+            (error "%s must be a positive integer" (car setting))))
+        (let* ((resolved (magent-tools--resolve-path path))
              (search-root (if (file-directory-p resolved)
                               resolved
                             (or (file-name-directory resolved)
                                 (magent-tools--request-project-root))))
              (normalized-pattern
               (string-remove-prefix "./" (subst-char-in-string ?\\ ?/ pattern)))
-             (matches
-              (if (string-match-p "\\*\\*" pattern)
-                  (let ((regexp (magent-tools--glob-to-regexp
-                                 normalized-pattern)))
-                    (cl-remove-if-not
-                     (lambda (file)
-                       (let ((relative
-                              (subst-char-in-string
-                               ?\\ ?/ (file-relative-name file search-root))))
-                         (string-match-p regexp relative)))
-                     (directory-files-recursively search-root ".")))
-                ;; Single * uses file-expand-wildcards
-                (file-expand-wildcards
-                 (expand-file-name normalized-pattern search-root) t))))
-        (funcall callback (mapconcat #'identity (sort matches #'string<) "\n")))
-    (error (funcall callback (format "Error during glob: %s" (error-message-string err))))))
+             (regexp (magent-tools--glob-to-regexp normalized-pattern))
+             (pending (list search-root))
+             matches
+             (scanned 0)
+             timer
+             done)
+          (cl-labels
+              ((finish
+                (truncated reason)
+                (unless done
+                  (setq done t)
+                  (when timer
+                    (cancel-timer timer)
+                    (setq timer nil))
+                  (let* ((sorted (sort matches #'string<))
+                         (body
+                          (if sorted
+                              (mapconcat #'identity sorted "\n")
+                            "No files matched"))
+                         (output
+                          (if truncated
+                              (format
+                               "%s\n[glob truncated: %s; matched=%d; scanned=%d]"
+                               body reason (length sorted) scanned)
+                            body)))
+                    (magent-tools--complete
+                     callback output nil
+                     (list :truncated truncated
+                           :reason reason
+                           :matched (length sorted)
+                           :scanned scanned)))))
+               (schedule
+                ()
+                (setq timer (run-at-time 0 nil #'step)))
+               (step
+                ()
+                (setq timer nil)
+                (condition-case step-error
+                    (let ((remaining magent-glob-batch-size))
+                      (while (and pending
+                                  (> remaining 0)
+                                  (< scanned magent-glob-max-files-scanned)
+                                  (< (length matches)
+                                     magent-glob-max-results))
+                        (let ((entry (pop pending)))
+                          (unless (equal entry search-root)
+                            (cl-incf scanned)
+                            (cl-decf remaining))
+                          (if (and (file-directory-p entry)
+                                   (not (file-symlink-p entry)))
+                              (setq pending
+                                    (append
+                                     (directory-files
+                                      entry t
+                                      directory-files-no-dot-files-regexp)
+                                     pending))
+                            (when (and (file-regular-p entry)
+                                       (string-match-p
+                                        regexp
+                                        (subst-char-in-string
+                                         ?\\ ?/
+                                         (file-relative-name
+                                          entry search-root))))
+                              (push entry matches)))))
+                      (cond
+                       ((>= (length matches) magent-glob-max-results)
+                        (finish t "result limit reached"))
+                       ((>= scanned magent-glob-max-files-scanned)
+                        (finish t "scan limit reached"))
+                       (pending (schedule))
+                       (t (finish nil nil))))
+                  (error
+                   (setq done t)
+                   (magent-tools--fail
+                    callback
+                    (format "Error during glob: %s"
+                            (error-message-string step-error)))))))
+            (magent-tools--register-cancel-cleanup
+             (lambda ()
+               (setq done t)
+               (when timer
+                 (cancel-timer timer)
+                 (setq timer nil))))
+            (schedule))))
+    (error
+     (magent-tools--fail
+      callback
+      (format "Error during glob: %s" (error-message-string err))))))
 
 (defun magent-tools--edit-file (callback path old-text new-text)
   "Edit file at PATH by replacing OLD-TEXT with NEW-TEXT asynchronously.
-OLD-TEXT must match exactly once in the file.
+OLD-TEXT must match exactly once in the file.  Rejects a modified visiting
+buffer; updates and saves a clean visiting buffer so Emacs and disk remain
+synchronized.
 CALLBACK is called with success message or error."
   (condition-case err
       (progn
@@ -446,28 +654,27 @@ CALLBACK is called with success message or error."
         (unless (stringp new-text)
           (error "new_text must be a string"))
         (let ((path (magent-tools--resolve-path path)))
-        (let* ((content (with-temp-buffer
-                          (insert-file-contents path)
-                          (buffer-string)))
-               (count (let ((start 0) (n 0))
-                        (while (setq start (string-search old-text content start))
-                          (cl-incf n)
-                          (setq start (+ start (length old-text))))
-                        n)))
-          (cond
-           ((= count 0)
-            (funcall callback (format "Error: old_text not found in %s" path)))
-           ((> count 1)
-            (funcall callback (format "Error: old_text found %d times in %s (must be unique)" count path)))
-           (t
-            (let ((new-content (string-replace old-text new-text content)))
-              (with-temp-buffer
-                (insert new-content)
-                (write-region (point-min) (point-max) path nil 0))
-              (funcall callback (format "Successfully edited %s" path))))))))
+          (if-let* ((buffer (magent-tools--clean-visiting-buffer path)))
+              (with-current-buffer buffer
+                (save-excursion
+                  (atomic-change-group
+                    (magent-tools--replace-unique-buffer-text
+                     path old-text new-text)
+                    (let ((file-precious-flag t))
+                      (save-buffer)))))
+            (with-temp-buffer
+              (insert-file-contents path)
+              (let ((coding-system buffer-file-coding-system))
+                (magent-tools--replace-unique-buffer-text
+                 path old-text new-text)
+                (magent-tools--atomic-write-string
+                 path (buffer-string) coding-system))))
+          (magent-tools--complete
+           callback (format "Successfully edited %s" path))))
     (error
-     (funcall callback (format "Error editing file: %s"
-                               (error-message-string err))))))
+     (magent-tools--fail
+      callback (format "Error editing file: %s"
+                       (error-message-string err))))))
 
 (defun magent-tools--emacs-eval (callback sexp &optional timeout)
   "Evaluate SEXP string as Emacs Lisp with optional TIMEOUT in seconds.
@@ -479,7 +686,11 @@ Evaluation runs in the user's context buffer when known
         (debug-on-signal nil))
     (condition-case err
       (let* ((timeout (or timeout magent-emacs-eval-timeout))
-             (form (car (read-from-string sexp)))
+             (parsed (read-from-string sexp))
+             (form (car parsed))
+             (_single-form
+              (unless (string-blank-p (substring sexp (cdr parsed)))
+                (error "emacs_eval accepts exactly one Lisp form")))
              (cancelled nil)
              (completed nil)
              timer
@@ -519,19 +730,26 @@ Evaluation runs in the user's context buffer when known
                                       (eval form t))))
                                (run-at-time 0 nil
                                             (lambda ()
-                                              (finish (prin1-to-string result)))))
+                                              (finish
+                                               (magent-tools--completed
+                                                (prin1-to-string result))))))
                            (quit
                             (run-at-time 0 nil
                                          (lambda ()
                                            (unless (or completed cancelled)
-                                             (finish "Error: Evaluation interrupted")))))
+                                             (finish
+                                              (magent-tools--failed
+                                               "Error: Evaluation interrupted"))))))
                            (error
                             (run-at-time 0 nil
                                          (lambda ()
                                            (unless (or completed cancelled)
                                              (finish
-                                              (format "Error evaluating sexp: %s"
-                                                      (error-message-string worker-err))))))))))
+                                              (magent-tools--failed
+                                               (format
+                                                "Error evaluating sexp: %s"
+                                                (error-message-string
+                                                 worker-err)))))))))))
                      "magent-emacs-eval")
                   (progn
                     (run-at-time
@@ -546,15 +764,21 @@ Evaluation runs in the user's context buffer when known
                                         (with-current-buffer ctx-buffer
                                           (eval form t))
                                       (eval form t))))
-                               (finish (prin1-to-string result)))
+                               (finish
+                                (magent-tools--completed
+                                 (prin1-to-string result))))
                            (quit
                             (unless (or completed cancelled)
-                              (finish "Error: Evaluation interrupted")))
+                              (finish
+                               (magent-tools--failed
+                                "Error: Evaluation interrupted"))))
                            (error
                             (unless (or completed cancelled)
                               (finish
-                               (format "Error evaluating sexp: %s"
-                                       (error-message-string sync-err)))))))))
+                               (magent-tools--failed
+                                (format "Error evaluating sexp: %s"
+                                        (error-message-string
+                                         sync-err))))))))))
                     nil)))
           (when (and timeout (> timeout 0))
             (setq timer
@@ -563,7 +787,9 @@ Evaluation runs in the user's context buffer when known
                    (lambda ()
                      (unless (or completed cancelled)
                        (interrupt-worker)
-                       (finish "Error: Evaluation timed out"))))))
+                       (finish
+                        (magent-tools--failed
+                         "Error: Evaluation timed out")))))))
           (magent-tools--register-cancel-cleanup
            (lambda ()
              (setq cancelled t)
@@ -572,9 +798,10 @@ Evaluation runs in the user's context buffer when known
                (setq timer nil))
              (interrupt-worker)))))
       (error
-       (funcall callback
-                (format "Error evaluating sexp: %s"
-                        (error-message-string err)))))))
+       (magent-tools--fail
+        callback
+        (format "Error evaluating sexp: %s"
+                (error-message-string err)))))))
 
 (defun magent-tools--bound-bash-failure-output (message)
   "Return MESSAGE with long Bash failure output compacted by line count.
@@ -776,19 +1003,12 @@ result containing combined stdout and stderr plus the process exit status."
         (funcall emit))))
 
 (defun magent-tools--persist-parent-session (&optional session scope)
-  "Persist SESSION for SCOPE after child-agent job state changes."
+  "Schedule persistence of SESSION for SCOPE after job state changes."
   (when (and session
-             (magent-session-get-messages session))
-    (let ((previous-scope magent-session--current-scope)
-          (previous-session magent--current-session)
-          (target-scope (or scope (magent-tools--parent-scope))))
-      (unwind-protect
-          (progn
-            (setq magent-session--current-scope target-scope
-                  magent--current-session session)
-            (magent-session-save))
-        (setq magent-session--current-scope previous-scope
-              magent--current-session previous-session)))))
+             (or (magent-session-get-messages session)
+                 (magent-session-agent-jobs session)))
+    (magent-session-save-deferred-for-session
+     session (or scope (magent-tools--parent-scope)))))
 
 (defun magent-tools--agent-depth (&optional context)
   "Return child-agent depth recorded in CONTEXT."
@@ -943,19 +1163,6 @@ When INCLUDE-PROMPT is non-nil, include a prompt preview."
   (let ((json-encoding-pretty-print nil))
     (json-encode payload)))
 
-(defun magent-tools--agent-job-runtime (job-id)
-  "Return runtime state for child-agent JOB-ID."
-  (gethash job-id magent-tools--agent-job-runtimes))
-
-(defun magent-tools--agent-job-put-runtime (job-id runtime)
-  "Store RUNTIME for child-agent JOB-ID."
-  (puthash job-id runtime magent-tools--agent-job-runtimes)
-  runtime)
-
-(defun magent-tools--agent-job-clear-runtime (job-id)
-  "Remove runtime state for child-agent JOB-ID."
-  (remhash job-id magent-tools--agent-job-runtimes))
-
 (defun magent-tools--agent-job-ids (job-id job-ids)
   "Normalize JOB-ID and JOB-IDS arguments into a list of ids."
   (let (ids)
@@ -1057,7 +1264,7 @@ Return the child loop handle when startup succeeds."
     (magent-tools--render-agent-job-event
      'started job prompt parent-context parent-scope t)
     (magent-tools--persist-parent-session parent-session parent-scope)
-    (magent-tools--agent-job-put-runtime
+    (magent-agent-job-put-runtime
      (magent-agent-job-id job)
      (list :session child-session
            :agent agent
@@ -1092,7 +1299,7 @@ Return the child loop handle when startup succeeds."
                  nil
                  nil
                  child-request-context))
-          (magent-tools--agent-job-put-runtime
+          (magent-agent-job-put-runtime
            (magent-agent-job-id job)
            (list :session child-session
                  :agent agent
@@ -1115,7 +1322,7 @@ Return the child loop handle when startup succeeds."
                           (fboundp 'magent-agent-loop-p)
                           (magent-agent-loop-p child-loop))
                  (magent-agent-loop-abort child-loop))
-               (magent-tools--agent-job-clear-runtime
+               (magent-agent-job-clear-runtime
                 (magent-agent-job-id job)))))
           child-loop)
       (error
@@ -1128,7 +1335,7 @@ Return the child loop handle when startup succeeds."
         'failed job (magent-agent-job-error job)
         parent-context parent-scope nil)
        (magent-tools--persist-parent-session parent-session parent-scope)
-       (magent-tools--agent-job-clear-runtime (magent-agent-job-id job))
+       (magent-agent-job-clear-runtime (magent-agent-job-id job))
        nil))))
 
 (defun magent-tools--spawn-agent (callback agent-name prompt &optional task-name)
@@ -1136,11 +1343,13 @@ Return the child loop handle when startup succeeds."
   (let ((agent (magent-agent-registry-get agent-name)))
     (cond
      ((null agent)
-      (funcall callback (format "Error: agent '%s' not found" agent-name)))
+      (magent-tools--fail
+       callback (format "Error: agent '%s' not found" agent-name)))
      ((not (magent-agent-info-mode-p agent 'subagent))
-      (funcall callback (format "Error: agent '%s' is not a subagent" agent-name)))
+      (magent-tools--fail
+       callback (format "Error: agent '%s' is not a subagent" agent-name)))
      ((not (and (stringp prompt) (not (string-empty-p prompt))))
-      (funcall callback "Error: prompt is required"))
+      (magent-tools--fail callback "Error: prompt is required"))
      (t
       (let* ((parent-context magent-tools--request-context)
              (parent-session (magent-tools--parent-session))
@@ -1182,7 +1391,7 @@ Return the child loop handle when startup succeeds."
           (let ((child-loop
                  (magent-tools--agent-job-start
                   job agent prompt child-session parent-context parent-session)))
-            (when-let* ((runtime (magent-tools--agent-job-runtime
+            (when-let* ((runtime (magent-agent-job-runtime
                                  (magent-agent-job-id job))))
               (setf (magent-agent-job-metadata job)
                     (magent-tools--agent-inheritance-metadata
@@ -1193,19 +1402,21 @@ Return the child loop handle when startup succeeds."
               (magent-tools--persist-parent-session
                parent-session parent-scope))
             child-loop))
-        (funcall
-         callback
-         (magent-tools--agent-job-result-json
-          (append
-           `((status . ,(if (eq (magent-agent-job-status job) 'failed)
-                            "failed"
-                          "spawned"))
-             (job . ,(magent-tools--agent-job-summary job t)))
-           (unless (eq (magent-agent-job-status job) 'failed)
-             `((next_action
-                . ((tool . "wait_agent")
-                   (arguments
-                    . ((job_id . ,(magent-agent-job-id job))))))))))))))))
+        (let ((output
+               (magent-tools--agent-job-result-json
+                (append
+                 `((status . ,(if (eq (magent-agent-job-status job) 'failed)
+                                  "failed"
+                                "spawned"))
+                   (job . ,(magent-tools--agent-job-summary job t)))
+                 (unless (eq (magent-agent-job-status job) 'failed)
+                   `((next_action
+                      . ((tool . "wait_agent")
+                         (arguments
+                          . ((job_id . ,(magent-agent-job-id job))))))))))))
+          (if (eq (magent-agent-job-status job) 'failed)
+              (magent-tools--fail callback output)
+            (magent-tools--complete callback output))))))))
 
 (defun magent-tools--send-agent-message (callback job-id message)
   "Send follow-up MESSAGE to child-agent JOB-ID."
@@ -1215,31 +1426,37 @@ Return the child loop handle when startup succeeds."
          (job (and parent-session
                    (magent-session-agent-job parent-session job-id)))
          (runtime (and job
-                       (magent-tools--agent-job-runtime job-id))))
+                       (magent-agent-job-runtime job-id))))
     (cond
      ((null job)
-      (funcall callback (format "Error: agent job '%s' not found" job-id)))
+      (magent-tools--fail
+       callback (format "Error: agent job '%s' not found" job-id)))
      ((memq (magent-agent-job-status job) '(running queued))
-      (funcall callback
-               (format "Error: agent job '%s' is already running; wait before sending another message"
-                       job-id)))
+      (magent-tools--fail
+       callback
+       (format
+        "Error: agent job '%s' is already running; wait before sending another message"
+        job-id)))
      ((memq (magent-agent-job-status job) '(closed cancelled))
-      (funcall callback
-               (format "Error: agent job '%s' is %s"
-                       job-id (magent-tools--agent-job-status-string job))))
+      (magent-tools--fail
+       callback
+       (format "Error: agent job '%s' is %s"
+               job-id (magent-tools--agent-job-status-string job))))
      ((not runtime)
-      (funcall callback
-               (format "Error: agent job '%s' has no live runtime; resume support is not available yet"
-                       job-id)))
+      (magent-tools--fail
+       callback
+       (format
+        "Error: agent job '%s' has no live runtime; resume support is not available yet"
+        job-id)))
      ((not (and (stringp message) (not (string-empty-p message))))
-      (funcall callback "Error: message is required"))
+      (magent-tools--fail callback "Error: message is required"))
      (t
       (let ((agent (plist-get runtime :agent))
             (child-session (plist-get runtime :session)))
         (magent-tools--agent-job-start
          job agent message child-session
          parent-context parent-session)
-        (when-let* ((runtime (magent-tools--agent-job-runtime job-id)))
+        (when-let* ((runtime (magent-agent-job-runtime job-id)))
           (setf (magent-agent-job-metadata job)
                 (magent-tools--agent-inheritance-metadata
                  parent-context
@@ -1247,7 +1464,7 @@ Return the child loop handle when startup succeeds."
                  agent
                  child-session))
           (magent-tools--persist-parent-session parent-session parent-scope))
-        (funcall
+        (magent-tools--complete
          callback
          (magent-tools--agent-job-result-json
           `((status . "sent")
@@ -1265,7 +1482,7 @@ When INCLUDE-CLOSED is non-nil, include terminal closed/cancelled jobs."
                        (memq (magent-agent-job-status job)
                              '(closed cancelled)))
                      jobs))))
-    (funcall
+    (magent-tools--complete
      callback
      (magent-tools--agent-job-result-json
       `((status . "ok")
@@ -1283,16 +1500,22 @@ When INCLUDE-CLOSED is non-nil, include terminal closed/cancelled jobs."
          (timeout (magent-tools--agent-wait-timeout timeout)))
     (condition-case err
         (let* ((jobs (magent-tools--agent-jobs-for-ids session ids))
-               (deadline (+ (float-time) (max 0 timeout)))
                timer
+               observer-tokens
                done)
           (cl-labels
-              ((finish
+              ((cleanup
+                ()
+                (when timer
+                  (cancel-timer timer)
+                  (setq timer nil))
+                (mapc #'magent-agent-job-remove-observer observer-tokens)
+                (setq observer-tokens nil))
+               (finish
                 (status)
                 (unless done
                   (setq done t)
-                  (when timer
-                    (cancel-timer timer))
+                  (cleanup)
                   (dolist (job jobs)
                     (magent-tools--render-agent-job-event
                      (if (magent-tools--agent-job-terminal-p job)
@@ -1300,7 +1523,7 @@ When INCLUDE-CLOSED is non-nil, include terminal closed/cancelled jobs."
                        'waiting)
                      job status parent-context parent-scope t))
                   (magent-tools--persist-parent-session session parent-scope)
-                  (funcall
+                  (magent-tools--complete
                    callback
                    (magent-tools--agent-job-result-json
                     `((status . ,status)
@@ -1311,22 +1534,25 @@ When INCLUDE-CLOSED is non-nil, include terminal closed/cancelled jobs."
                (ready-p
                 ()
                 (cl-every #'magent-tools--agent-job-terminal-p jobs))
-               (poll
-                ()
-                (cond
-                 ((ready-p) (finish "completed"))
-                 ((>= (float-time) deadline) (finish "timeout")))))
+               (observe
+                (_job)
+                (when (ready-p)
+                  (finish "completed"))))
             (if (or (ready-p) (<= timeout 0))
                 (finish (if (ready-p) "completed" "timeout"))
-              (setq timer (run-at-time 0.1 0.1 #'poll))
+              (setq observer-tokens
+                    (mapcar
+                     (lambda (job)
+                       (magent-agent-job-add-observer job #'observe))
+                     jobs))
+              (setq timer (run-at-time timeout nil #'finish "timeout"))
               (magent-tools--register-cancel-cleanup
-               (lambda ()
-                 (when timer
-                   (cancel-timer timer)))))))
+               #'cleanup))))
       (error
-       (funcall callback
-                (format "Error: wait_agent failed: %s"
-                        (error-message-string err)))))))
+       (magent-tools--fail
+        callback
+        (format "Error: wait_agent failed: %s"
+                (error-message-string err)))))))
 
 (defun magent-tools--close-agent (callback job-id &optional close-reason)
   "Close child-agent JOB-ID and abort its live loop when present."
@@ -1336,12 +1562,13 @@ When INCLUDE-CLOSED is non-nil, include terminal closed/cancelled jobs."
          (job (and session
                    (magent-session-agent-job session job-id)))
          (runtime (and job
-                       (magent-tools--agent-job-runtime job-id))))
+                       (magent-agent-job-runtime job-id))))
     (cond
      ((null job)
-      (funcall callback (format "Error: agent job '%s' not found" job-id)))
+      (magent-tools--fail
+       callback (format "Error: agent job '%s' not found" job-id)))
      ((eq (magent-agent-job-status job) 'closed)
-      (funcall
+      (magent-tools--complete
        callback
        (magent-tools--agent-job-result-json
         `((status . "already_closed")
@@ -1356,11 +1583,11 @@ When INCLUDE-CLOSED is non-nil, include terminal closed/cancelled jobs."
       (magent-agent-job-set-status
        job 'closed (magent-agent-job-result job)
        (or close-reason (magent-agent-job-error job)))
-      (magent-tools--agent-job-clear-runtime job-id)
+      (magent-agent-job-clear-runtime job-id)
       (magent-tools--render-agent-job-event
        'closed job (or close-reason "closed") parent-context parent-scope t)
       (magent-tools--persist-parent-session session parent-scope)
-      (funcall
+      (magent-tools--complete
        callback
        (magent-tools--agent-job-result-json
         `((status . "closed")
@@ -1391,7 +1618,11 @@ MAX-RESULTS is the maximum number of results to return (default 5)."
                (delete-process proc))
              (when (buffer-live-p request-buffer)
                (kill-buffer request-buffer)))))
-      (error (funcall callback (format "Error initiating search: %s" (error-message-string err)))))))
+      (error
+       (magent-tools--fail
+        callback
+        (format "Error initiating search: %s"
+                (error-message-string err)))))))
 
 (defun magent-tools--web-search-callback (status callback query max-results)
   "Handle HTTP response for web search.
@@ -1404,15 +1635,24 @@ MAX-RESULTS is the maximum number of results."
         (condition-case err
             (let ((error-status (plist-get status :error)))
               (if error-status
-                  (funcall callback (format "HTTP error: %s" error-status))
+                  (magent-tools--fail
+                   callback (format "HTTP error: %s" error-status))
                 (goto-char (point-min))
                 (when (re-search-forward "\r?\n\r?\n" nil t)
                   (let* ((html (libxml-parse-html-region (point) (point-max)))
                          (results (magent-tools--parse-ddg-results html max-results)))
                     (if results
-                        (funcall callback (magent-tools--format-search-results query results))
-                      (funcall callback (format "No results found for: %s" query)))))))
-          (error (funcall callback (format "Error parsing results: %s" (error-message-string err)))))
+                        (magent-tools--complete
+                         callback
+                         (magent-tools--format-search-results query results))
+                      (magent-tools--complete
+                       callback
+                       (format "No results found for: %s" query)))))))
+          (error
+           (magent-tools--fail
+            callback
+            (format "Error parsing results: %s"
+                    (error-message-string err)))))
       (when (buffer-live-p url-buffer)
         (kill-buffer url-buffer)))))
 
@@ -1458,7 +1698,7 @@ See `magent-agent-loop-filter-display-args'.")
 (defvar magent-tools--read-file-tool
   (gptel-make-tool
    :name "read_file"
-   :description "Read a bounded page of file contents. If Emacs already has a visiting buffer, returns its live contents including unsaved edits; otherwise reads from disk without leaving a file buffer. Every result reports source, modified state, actual line range, total_lines, has_more, and next_start_line. Continue with next_start_line when has_more is true; do not use shell commands such as wc or sed to determine file size or pagination."
+   :description "Read a bounded page of a file's saved contents from disk. This tool never reads unsaved Emacs buffer edits; use read_buffer when live editor state is required. Every result reports source, actual line range, total_lines, has_more, and next_start_line. Continue with next_start_line when has_more is true; do not use shell commands such as wc or sed to determine file size or pagination."
    :args (list '(:name "path"
                        :type string
                        :description "Absolute or relative path to the file")
@@ -1476,10 +1716,31 @@ See `magent-agent-loop-filter-display-args'.")
    :category "magent")
   "gptel-tool struct for read_file.")
 
+(defvar magent-tools--read-buffer-tool
+  (gptel-make-tool
+   :name "read_buffer"
+   :description "Read a bounded page from an existing Emacs file-visiting buffer, including unsaved edits. The path must already have a visiting buffer; this tool never opens files or falls back to disk. Every result reports the buffer name, modified and narrowed state, actual line range, total_lines, has_more, and next_start_line. Use read_file for saved disk contents."
+   :args (list '(:name "path"
+                       :type string
+                       :description "Absolute or relative path whose live file-visiting buffer should be read")
+               '(:name "start_line"
+                       :type integer
+                       :description "One-based line at which to start reading; defaults to 1"
+                       :optional t)
+               '(:name "line_count"
+                       :type integer
+                       :description "Requested maximum number of lines; defaults to a bounded 200-line page and may return fewer to stay within the result budget"
+                       :optional t)
+               magent-tools--reason-arg)
+   :function #'magent-tools--read-buffer
+   :async t
+   :category "magent")
+  "gptel-tool struct for read_buffer.")
+
 (defvar magent-tools--write-file-tool
   (gptel-make-tool
    :name "write_file"
-   :description "Write content to a file. Creates parent directories if they don't exist."
+   :description "Write full content to a file using atomic disk replacement. Creates missing parent directories. If Emacs has a clean visiting buffer, updates and saves that buffer; fails with buffer_conflict instead of overwriting unsaved buffer edits."
    :args (list '(:name "path"
                        :type string
                        :description "Absolute or relative path to the file")
@@ -1523,7 +1784,7 @@ See `magent-agent-loop-filter-display-args'.")
 (defvar magent-tools--edit-file-tool
   (gptel-make-tool
    :name "edit_file"
-   :description "Edit a file by replacing an exact text match. The old_text must appear exactly once in the file. Use this for precise, surgical edits instead of rewriting entire files."
+   :description "Edit a file by replacing an exact text match using atomic disk replacement. The old_text must appear exactly once. If Emacs has a clean visiting buffer, updates and saves that buffer; fails with buffer_conflict instead of overwriting unsaved buffer edits. Use this for precise, surgical edits instead of rewriting entire files."
    :args (list '(:name "path"
                        :type string
                        :description "Absolute or relative path to the file")
@@ -1698,35 +1959,6 @@ See `magent-agent-loop-filter-display-args'.")
    :category "magent")
   "gptel-tool struct for close_agent.")
 
-(defun magent-tools--skill-invoke (callback skill-name operation &rest args)
-  "Invoke OPERATION from SKILL-NAME with ARGS asynchronously.
-CALLBACK is called with the result.
-Only works for tool-type skills.  Instruction-type skills are
-injected separately only when explicitly selected or activated by the
-capability resolver."
-  (require 'magent-skills)
-  (magent-skills-invoke skill-name operation args callback))
-
-(defvar magent-tools--skill-invoke-tool
-  (gptel-make-tool
-   :name "skill_invoke"
-   :description "Invoke a tool-type skill operation. Instruction-type skills cannot be invoked by this tool; they enter the system prompt only when explicitly selected or activated by the capability resolver. Use only a known tool-type skill and operation."
-   :args (list '(:name "skill_name"
-                       :type string
-                       :description "Name of the skill to invoke")
-               '(:name "operation"
-                       :type string
-                       :description "Operation to perform (varies by skill)")
-               '(:name "args"
-                       :type array
-                       :description "Arguments for the operation (varies by operation)"
-                       :optional t)
-               magent-tools--reason-arg)
-   :function #'magent-tools--skill-invoke
-   :async t
-   :category "magent")
-  "gptel-tool struct for skill_invoke.")
-
 (defvar magent-tools--web-search-tool
   (gptel-make-tool
    :name "web_search"
@@ -1744,64 +1976,74 @@ capability resolver."
    :category "magent")
   "gptel-tool struct for web_search.")
 
-;;; Tool filtering by agent permissions
+;;; Canonical tool catalog
 
-(defvar magent-tools--name-to-permission-key
-  '(("read_file"    . read)
-    ("write_file"   . write)
-    ("write_repo_summary" . write)
-    ("edit_file"    . edit)
-    ("grep"         . grep)
-    ("glob"         . glob)
-    ("bash"         . bash)
-    ("emacs_eval"   . emacs_eval)
-    ("spawn_agent"  . agent)
-    ("send_agent_message" . agent)
-    ("wait_agent"   . agent)
-    ("list_agents"  . agent)
-    ("close_agent"  . agent)
-    ("skill_invoke" . skill)
-    ("web_search"   . web_search))
-  "Maps gptel tool names to magent permission key symbols.")
+(defconst magent-tools-catalog
+  `((:name "read_file" :tool ,magent-tools--read-file-tool
+     :permission read)
+    (:name "read_buffer" :tool ,magent-tools--read-buffer-tool
+     :permission read)
+    (:name "write_file" :tool ,magent-tools--write-file-tool
+     :permission write)
+    (:name "write_repo_summary" :tool ,magent-tools--write-repo-summary-tool
+     :permission write)
+    (:name "edit_file" :tool ,magent-tools--edit-file-tool
+     :permission edit)
+    (:name "grep" :tool ,magent-tools--grep-tool :permission grep)
+    (:name "glob" :tool ,magent-tools--glob-tool :permission glob)
+    (:name "bash" :tool ,magent-tools--bash-tool :permission bash)
+    (:name "emacs_eval" :tool ,magent-tools--emacs-eval-tool
+     :permission emacs_eval)
+    (:name "spawn_agent" :tool ,magent-tools--spawn-agent-tool
+     :permission agent)
+    (:name "send_agent_message" :tool ,magent-tools--send-agent-message-tool
+     :permission agent)
+    (:name "wait_agent" :tool ,magent-tools--wait-agent-tool
+     :permission agent)
+    (:name "list_agents" :tool ,magent-tools--list-agents-tool
+     :permission agent)
+    (:name "close_agent" :tool ,magent-tools--close-agent-tool
+     :permission agent)
+    (:name "web_search" :tool ,magent-tools--web-search-tool
+     :permission web_search))
+  "Canonical data catalog for Magent tools.")
 
-(defun magent-tools-permission-key (tool-name)
-  "Return the permission key symbol for TOOL-NAME, or nil if unknown."
+(defun magent-tools-catalog-entry (tool-name)
+  "Return the catalog entry for TOOL-NAME, or nil."
   (let ((name (if (symbolp tool-name)
                   (symbol-name tool-name)
                 tool-name)))
-    (cdr (assoc name magent-tools--name-to-permission-key))))
+    (cl-find name magent-tools-catalog
+             :key (lambda (entry) (plist-get entry :name))
+             :test #'equal)))
 
-(defvar magent-tools--all-gptel-tools
-  (list magent-tools--read-file-tool
-        magent-tools--write-file-tool
-        magent-tools--write-repo-summary-tool
-        magent-tools--edit-file-tool
-        magent-tools--grep-tool
-        magent-tools--glob-tool
-        magent-tools--bash-tool
-        magent-tools--emacs-eval-tool
-        magent-tools--spawn-agent-tool
-        magent-tools--send-agent-message-tool
-        magent-tools--wait-agent-tool
-        magent-tools--list-agents-tool
-        magent-tools--close-agent-tool
-        magent-tools--skill-invoke-tool
-        magent-tools--web-search-tool)
-  "All magent tools as gptel-tool structs.")
+(defun magent-tools-permission-key (tool-name)
+  "Return the permission key symbol for TOOL-NAME, or nil if unknown."
+  (plist-get (magent-tools-catalog-entry tool-name) :permission))
 
-(defun magent-tools-get-gptel-tools-for-permission (permission)
-  "Return gptel tools exposed by explicit PERMISSION profile.
+(defun magent-tools-get-gptel-tools-for-permission
+    (permission &optional tool-names)
+  "Return tools exposed by PERMISSION and exact TOOL-NAMES.
+TOOL-NAMES is `:all' or a list of string or symbol names.  Nil is an empty
+exact set.  Unknown names fail immediately.
 Global `magent-enable-tools' filtering still applies.  Tools whose effective
 decision is \\='ask remain exposed so the orchestrator can request approval."
-  (cl-remove-if-not
-   (lambda (tool)
-     (let* ((tool-name (gptel-tool-name tool))
-            (perm-key (magent-tools-permission-key tool-name)))
-       (and
-        (or (null perm-key) (memq perm-key magent-enable-tools))
-        (or (null permission)
-            (magent-permission-tool-available-p permission perm-key)))))
-   magent-tools--all-gptel-tools))
+  (let ((entries
+         (if (eq tool-names :all)
+             magent-tools-catalog
+           (mapcar
+            (lambda (name)
+              (or (magent-tools-catalog-entry name)
+                  (error "Unknown Magent tool: %s" name)))
+            tool-names))))
+    (cl-loop
+     for entry in entries
+     for permission-key = (plist-get entry :permission)
+     when (and (memq permission-key magent-enable-tools)
+               (or (null permission)
+                   (magent-permission-tool-available-p
+                    permission permission-key)))
+     collect (plist-get entry :tool))))
 
 (provide 'magent-tools)
 ;;; magent-tools.el ends here

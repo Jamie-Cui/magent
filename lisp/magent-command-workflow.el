@@ -166,7 +166,7 @@
      (magent-command--make-process-step ,name ,command ,@options))))
 
 (cl-defun magent-command--make-agent-step
-    (name prompt &key agent skills buffers append-argument-p required-tools
+    (name prompt &key agent skills buffers append-argument-p tools
           (result 'value) request-context resource-blocks terminal-p)
   "Create an agent or terminal Answer Step named NAME for PROMPT."
   (magent-command--normalize-step-name name)
@@ -182,8 +182,8 @@
   (unless (memq append-argument-p '(nil t))
     (error "Expected append-argument-p boolean, got: %S"
            append-argument-p))
-  (unless (or (null required-tools) (proper-list-p required-tools))
-    (error "Expected required tool list, got: %S" required-tools))
+  (unless (proper-list-p tools)
+    (error "Expected exact tool list, got: %S" tools))
   (magent-command--validate-result-mode result)
   (magent-command-step-create
    :type (if terminal-p 'answer 'agent)
@@ -195,7 +195,7 @@
          :skills skills
          :buffers buffers
          :append-argument-p (and append-argument-p t)
-         :required-tools required-tools
+         :tools tools
          :result (if terminal-p 'full result)
          :request-context request-context
          :resource-blocks resource-blocks)))

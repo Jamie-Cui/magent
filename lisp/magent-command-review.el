@@ -14,7 +14,7 @@
       "Review"
       (magent-prompt-read "commands/review.org")
     :append-argument-p t
-    :required-tools '(read_file grep bash)))
+    :tools '(read_file read_buffer grep bash)))
 
 (defun magent-command-review-register ()
   "Register the bundled /review command."

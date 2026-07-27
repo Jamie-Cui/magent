@@ -25,7 +25,6 @@
 (require 'magent-protocol)
 (require 'magent-runtime)
 (require 'magent-tools)
-(require 'magent-tool-runtime)
 (require 'magent-session)
 (require 'magent-ledger)
 (require 'magent-agent-registry)
@@ -260,13 +259,14 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
            (agent-role-msg (magent-agent-info-prompt agent))
            (request-project-root
             (magent-agent--request-project-root request-context request-state))
-           (tools (mapcar #'magent-tool-runtime-to-plist
-                          (magent-tool-runtime-for-permission
-                           effective-permission)))
+           (tools
+            (magent-tools-get-gptel-tools-for-permission
+             effective-permission
+             (if request-state
+                 (magent-request-context-tool-names request-state)
+               :all)))
            (available-tool-names
-            (mapcar (lambda (tool)
-                      (intern (plist-get tool :name)))
-                    tools))
+            (mapcar (lambda (tool) (intern (gptel-tool-name tool))) tools))
            (explicit-skill-names
             (magent-skills-dedupe-names
              (append skill-names
@@ -372,14 +372,15 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                        (magent-agent-info-name agent)
                        (gptel-backend-name backend)
                        model
-                       (mapconcat (lambda (tool) (plist-get tool :name)) tools ", "))
+                       (mapconcat #'gptel-tool-name tools ", "))
            (when resolved-skill-names
              (magent-log "INFO active skills=[%s]"
                          (mapconcat #'identity resolved-skill-names ", ")))
            (let* ((gptel-backend backend)
                   (gptel-model model)
                   (gptel-temperature temperature)
-                  (request-tools (magent-agent-loop-tools-to-gptel tools))
+                  (request-tools
+                   (magent-agent-loop-tools-for-provider tools))
                   (gptel-tools request-tools)
                   (live-p (or request-live-p
                               (and request-state

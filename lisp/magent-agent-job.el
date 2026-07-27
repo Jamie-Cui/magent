@@ -29,6 +29,12 @@
 (defvar magent-agent-job--last-id-seq 0
   "Sequence number used when multiple agent jobs are created in one second.")
 
+(defvar magent-agent-job--runtimes (make-hash-table :test #'equal)
+  "Non-persistent live runtime state keyed by child-agent job id.")
+
+(defvar magent-agent-job--observers (make-hash-table :test #'equal)
+  "Status observers keyed by child-agent job id.")
+
 (cl-defstruct (magent-agent-job
                (:constructor magent-agent-job--create)
                (:copier nil))
@@ -108,7 +114,51 @@ Return JOB."
     (setf (magent-agent-job-result job) result))
   (when error
     (setf (magent-agent-job-error job) error))
+  (dolist (entry (copy-sequence
+                  (gethash (magent-agent-job-id job)
+                           magent-agent-job--observers)))
+    (condition-case observer-error
+        (funcall (cdr entry) job)
+      (error
+       (message "Magent child-agent observer error: %s"
+                (error-message-string observer-error)))))
   job)
+
+(defun magent-agent-job-runtime (job-id)
+  "Return live runtime state for child-agent JOB-ID."
+  (gethash job-id magent-agent-job--runtimes))
+
+(defun magent-agent-job-put-runtime (job-id runtime)
+  "Store live RUNTIME for child-agent JOB-ID."
+  (puthash job-id runtime magent-agent-job--runtimes)
+  runtime)
+
+(defun magent-agent-job-clear-runtime (job-id)
+  "Remove live runtime state for child-agent JOB-ID."
+  (remhash job-id magent-agent-job--runtimes))
+
+(defun magent-agent-job-add-observer (job observer)
+  "Observe JOB status changes with OBSERVER and return an opaque token."
+  (let* ((job-id (magent-agent-job-id job))
+         (token (cons job-id (gensym "magent-agent-job-observer-"))))
+    (puthash job-id
+             (cons (cons token observer)
+                   (gethash job-id magent-agent-job--observers))
+             magent-agent-job--observers)
+    token))
+
+(defun magent-agent-job-remove-observer (token)
+  "Remove the child-agent status observer identified by TOKEN."
+  (when (consp token)
+    (let* ((job-id (car token))
+           (remaining
+            (cl-remove token
+                       (gethash job-id magent-agent-job--observers)
+                       :key #'car :test #'eq)))
+      (if remaining
+          (puthash job-id remaining magent-agent-job--observers)
+        (remhash job-id magent-agent-job--observers))))
+  nil)
 
 (defun magent-agent-job-reconcile-after-restart (job &optional detail)
   "Cancel non-durable JOB state after an Emacs restart.

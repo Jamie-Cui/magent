@@ -77,13 +77,16 @@ Multi-agent architecture with specialized agents for different tasks.
 The action layer that executes operations requested by agents.
 
 *Key Files:*
-- ~magent-tools.el~ — 15 ~gptel-tool~ structs: read_file, write_file, write_repo_summary, edit_file, grep, glob, bash, emacs_eval, spawn_agent, send_agent_message, wait_agent, list_agents, close_agent, skill_invoke, web_search
+- ~magent-tools.el~ — canonical catalog of 15 ~gptel-tool~ structs: read_file, read_buffer, write_file, write_repo_summary, edit_file, grep, glob, bash, emacs_eval, spawn_agent, send_agent_message, wait_agent, list_agents, close_agent, web_search
 - ~magent-skills.el~ — Skill registry, built-in skills, file loading, inspection commands
 - ~magent-skill-manager.el~ — User-level skills.sh finder, safe copy installer, and permanent deletion
 - ~magent-capability.el~ — Capability definitions, resolution, and file-backed loading
 - ~magent-approval.el~ — User approval prompts for sensitive operations
 
-*What it does:* Tools provide concrete actions (file I/O, shell commands, web search) and child-agent coordination (~spawn_agent~, ~send_agent_message~, ~wait_agent~, ~list_agents~, ~close_agent~). Skills extend agent behavior (instruction-type injected into prompts, tool-type invoked via skill_invoke). Approval system gates dangerous operations.
+*What it does:* Tools provide concrete actions and child-agent coordination.
+Skills are data-only instructions injected into prompts. Executable extensions
+belong in trusted commands or first-class catalog tools. Approval gates
+dangerous operations.
 
 ** Layer 5: Agent Loop & LLM Integration
 
@@ -156,9 +159,8 @@ Resolution order: exact tool match → file-pattern rules → wildcard (~*~) →
 
 ** Skill System
 
-Two skill types:
-- *instruction* — Markdown injected into system prompt
-- *tool* — Invoked via ~skill_invoke~ tool
+Skills are instruction-only Markdown injected into the system prompt.
+Companion Elisp is not loaded.
 
 Instruction skills can be selected as one-shot context for the next request.
 The agent-shell frontend exposes native commands such as
@@ -190,8 +192,8 @@ Skills load from: (1) built-in ~skills/~, (2) legacy user ~~/.emacs.d/magent-ski
 Keep the terms separate when adding or reviewing defaults:
 
 - Use a ~command~ for an explicit slash action with an Elisp entry point.
-- Use a ~skill~ for reusable instructions or tool-type operations that can be
-  selected explicitly or automatically. ~/$name~ is the ACP projection;
+- Use a ~skill~ for reusable instructions that can be selected explicitly or
+  automatically. ~/$name~ is the ACP projection;
   ~default-prompt~ only adds legacy ~/name~ compatibility.
 - Use a ~capability~ when the skill should be selected automatically from live
   context or prompt text.
@@ -290,7 +292,7 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 
 ** Tools & Skills
 - *magent-repo-summary.el* — deterministic org-roam repository-note upserts
-- *magent-tools.el* — 15 tool implementations as gptel-tool structs
+- *magent-tools.el* — canonical catalog of 15 gptel-tool implementations
 - *magent-skills.el* — Skill registry, built-in skills, file loading, commands
 - *magent-capability.el* — Capability definitions, resolution, and file-backed loading
 - *magent-approval.el* — User approval prompts for sensitive operations

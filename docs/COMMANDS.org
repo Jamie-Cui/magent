@@ -166,7 +166,7 @@ the same public API available to third-party packages:
       :skills '("code-review")
       :agent 'build
       :append-argument-p t
-      :required-tools '(read_file grep bash))))
+      :tools '(read_file read_buffer grep bash))))
 
 (magent-command-register
  "my-review"
@@ -252,11 +252,14 @@ The managed Step forms are:
 
 - ~magent-command-agent~ runs an intermediate model turn and returns its text
   by default. It accepts ~:agent~, ~:skills~, ~:buffers~,
-  ~:append-argument-p~, ~:required-tools~, ~:request-context~,
+  ~:append-argument-p~, ~:tools~, ~:request-context~,
   ~:resource-blocks~, and ~:result~.
 - ~magent-command-answer~ accepts the same model options but is terminal. It
   streams the final answer, ends the Invocation, and does not resume forms
-  after the Step.
+after the Step.
+
+~:tools~ is the exact provider tool allowlist for that Step, not merely a
+preflight requirement. Unknown or unavailable names fail before submission.
 - ~magent-command-process~ runs only a non-empty argv list of strings. It
   captures the call-site directory and process environment, and accepts
   ~:directory~, an ~:environment~ override alist, ~:timeout~, ~:check~,

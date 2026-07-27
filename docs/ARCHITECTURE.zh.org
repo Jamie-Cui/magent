@@ -72,13 +72,24 @@ manifest 和 package data recipe。
 
 ** 工具、权限与审计
 
-~magent-tools.el~ 暴露 15 个 ~gptel-tool~ ：
+~magent-tools.el~ 通过单一 canonical catalog 暴露 15 个 ~gptel-tool~ ：
 
-- ~read_file~ 、 ~write_file~ 、 ~write_repo_summary~ 、 ~edit_file~
+- ~read_file~ 、 ~read_buffer~ 、 ~write_file~ 、 ~write_repo_summary~ 、 ~edit_file~
 - ~grep~ 、 ~glob~ 、 ~bash~
 - ~emacs_eval~
 - ~spawn_agent~ 、 ~send_agent_message~ 、 ~wait_agent~ 、 ~list_agents~ 、 ~close_agent~
-- ~skill_invoke~ 、 ~web_search~
+- ~web_search~
+
+~read_file~ 始终读取磁盘上已保存的内容； ~read_buffer~ 只读取已经存在的
+file-visiting buffer（包括未保存修改），不会打开文件或回退到磁盘。二者共用
+~read~ permission key。文件写入遇到 dirty visiting buffer 会拒绝执行；clean
+visiting buffer 通过 Emacs 修改并保存，没有 visiting buffer 时则原子替换磁盘文件。
+
+Catalog 是 tool name、implementation 和 permission key 的唯一事实来源。普通
+request 选择 ~:all~；command 的 agent Step 通过 ~:tools~ 传入 exact allowlist，
+随后再应用 agent permission。所有 implementation 都返回结构化
+~magent-tool-result~；只有 provider boundary 会转换为文本，历史 session 字符串
+只在导入时迁移。~glob~ 使用有界的 event-loop slices。
 
 ~magent-tool-orchestrator.el~ 负责权限解析、必要时请求 approval、执行工具、写 audit，再把结果交回 loop。 ~magent-permission.el~ 的解析顺序是：精确 tool 规则、file-pattern 规则、wildcard fallback，最后 default allow。
 
@@ -159,7 +170,14 @@ ledger 记录、viewer 和取消，但不再拥有第二套 registry 或 context
 文件工具。自定义 probe 属于受信任 Elisp，不是 sandboxed code；详见
 [[file:DOCTOR.zh.org][DOCTOR.zh.org]]。
 
-Instruction skill 会注入 system prompt。Tool skill 通过 ~skill_invoke~ 调用。Capability 会根据当前上下文打分，激活少量 instruction skills。自动激活除了 context score 之外，还必须命中当前 prompt 中显式的 keyword intent；只有 mode、feature 或 file 命中时仍保持 suggested。Keyword 使用词边界匹配；如果 linked skill 声明的工具对 selected agent 不可用，也不会被注入。Agent-shell 的 session config 提供 ~Automatic capabilities~ 开关，可关闭自动层而不影响显式选择的 skills。Contextual capability 可以和对应 skill 放在同一个 ~SKILL.md~ 里，使触发 metadata 和注入说明保持一致。这种 progressive disclosure 能保持基础 prompt 更小，同时在需要时注入 Emacs-specific workflow 知识。
+Skill 只支持 data-only instruction Markdown，并注入 system prompt。需要执行能力时，
+使用 trusted Elisp command 或 canonical catalog 中的一等 tool；Magent 不加载
+~SKILL.md~ companion code。Capability 会根据当前上下文打分，激活少量
+instruction skills。自动激活除了 context score 之外，还必须命中当前 prompt
+中的显式 keyword intent；只有 mode、feature 或 file 命中时仍保持 suggested。
+Keyword 使用词边界匹配；如果 linked skill 声明的工具对 selected agent 不可用，
+也不会被注入。Agent-shell 的 session config 提供 ~Automatic capabilities~
+开关，可关闭自动层而不影响显式选择的 skills。
 
 ~magent-skill-manager.el~ 是独立且按需加载的用户维护层：它搜索 skills.sh，
 解析本地或公开 GitHub source，预检后把 instruction skill 复制到 canonical 用户
@@ -170,7 +188,7 @@ Instruction skill 会注入 system prompt。Tool skill 通过 ~skill_invoke~ 调
 
 - ~command~ 是由受信任 Elisp 实现、可暴露为 slash、interactive 或两者的显式 invocation。Prompt command 通常拥有
   一个 agent turn；高级 handler 可以拥有多个异步步骤。
-- ~skill~ 是可复用的模型说明或 tool-type operation。ACP 的 ~/$name~ 是普通 turn
+- ~skill~ 是可复用、data-only 的模型说明。ACP 的 ~/$name~ 是普通 turn
   的显式 skill selection；legacy ~default-prompt~ 只额外投影一个兼容 command，
   Markdown 不会因此获得 trusted Workflow 权限。
 - ~capability~ 是自动激活规则：由 ~modes~ 、~features~ 、~files~ 、~keywords~ 、~disclosure~ 和 ~risk~ 等 resolver metadata 描述什么时候为当前 turn 选择一个或多个 skills。只有 context 的匹配会作为可检查的 suggestion；active disclosure 还要求当前 user prompt 命中有词边界的 keyword。

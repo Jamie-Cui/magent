@@ -300,10 +300,6 @@ being normalized into structured tool calls."
   (let* ((reason (plist-get args :reason))
          (base
           (cond
-           ((string= name "skill_invoke")
-            (format "%s/%s"
-                    (or (plist-get args :skill_name) "?")
-                    (or (plist-get args :operation) "?")))
            ((string= name "spawn_agent")
             (format "%s: %s"
                     (or (plist-get args :agent) "?")
@@ -320,7 +316,7 @@ being normalized into structured tool calls."
                  cmd magent-agent-loop--tool-input-summary-max-length
                  nil nil "...")
               "?"))
-           ((member name '("read_file" "write_file" "edit_file"))
+           ((member name '("read_file" "read_buffer" "write_file" "edit_file"))
             (or (plist-get args :path) "?"))
            ((string= name "write_repo_summary")
             (or (plist-get args :scope)
@@ -444,7 +440,6 @@ across Magent's own serial tool queue without claiming OS-level isolation."
             (args-plist (plist-get item :args-plist))
             (fn (plist-get item :fn))
             (async-p (plist-get item :async))
-            (structured-result-p (plist-get item :structured-result-p))
             (resource-identity (plist-get item :resource-identity))
             (fn-args (plist-get item :args))
             (callback (plist-get item :callback)))
@@ -473,7 +468,7 @@ across Magent's own serial tool queue without claiming OS-level isolation."
         (cl-labels
             ((complete
               (result)
-              (let* ((result (magent-tool-result-normalize result name call-id))
+              (let* ((result (magent-tool-result-require result name call-id))
                      (status (magent-tool-result-status-value result))
                      (output (magent-tool-result-output-string result)))
                 (setf (magent-agent-loop-tool-queue-busy queue) nil)
@@ -505,7 +500,7 @@ across Magent's own serial tool queue without claiming OS-level isolation."
                    :exit-code (magent-tool-result-exit-code result)
                    :output-preview
                    (magent-agent-loop-tool-result-summary result))
-                  (funcall callback (if structured-result-p result output))
+                  (funcall callback result)
                   (magent-agent-loop-tool-queue-run queue)))))
           (let ((magent-tools--register-cancel
                  (lambda (cleanup)
@@ -513,25 +508,44 @@ across Magent's own serial tool queue without claiming OS-level isolation."
                     abort-controller cleanup)))
                 (magent-tools--request-context request-context))
             (if-let* ((identity-error
-                       (magent-agent-loop--resource-identity-error
+                (magent-agent-loop--resource-identity-error
                         resource-identity request-context fn-args)))
-                (complete identity-error)
+                (complete
+                 (magent-tool-result-create
+                  :status 'failed :success nil
+                  :output identity-error :error identity-error))
               (if async-p
                   (condition-case err
                       (apply fn #'complete fn-args)
                     (quit
-                     (complete "Error: Tool execution interrupted"))
+                     (complete
+                      (magent-tool-result-create
+                       :status 'failed :success nil
+                       :output "Error: Tool execution interrupted"
+                       :error "Error: Tool execution interrupted")))
                     (error
                      (complete
-                      (format "Error: Tool execution failed: %s"
-                              (error-message-string err)))))
+                      (let ((message
+                             (format "Error: Tool execution failed: %s"
+                                     (error-message-string err))))
+                        (magent-tool-result-create
+                         :status 'failed :success nil
+                         :output message :error message)))))
                 (complete
                  (condition-case err
                      (apply fn fn-args)
-                   (quit "Error: Tool execution interrupted")
+                   (quit
+                    (magent-tool-result-create
+                     :status 'failed :success nil
+                     :output "Error: Tool execution interrupted"
+                     :error "Error: Tool execution interrupted"))
                    (error
-                    (concat "Error: Tool execution failed: "
-                            (error-message-string err)))))))))))))
+                    (let ((message
+                           (concat "Error: Tool execution failed: "
+                                   (error-message-string err))))
+                      (magent-tool-result-create
+                       :status 'failed :success nil
+                       :output message :error message)))))))))))))
 
 (defun magent-agent-loop-tool-queue-run (queue)
   "Process the next queued tool in QUEUE when idle."
@@ -542,10 +556,8 @@ across Magent's own serial tool queue without claiming OS-level isolation."
 
 (defun magent-agent-loop-run-tool
     (loop request-context tool-spec callback arg-values
-          &optional structured-result-p resource-identity)
-  "Run TOOL-SPEC with ARG-VALUES and call CALLBACK with the result.
-When STRUCTURED-RESULT-P is non-nil, pass a `magent-tool-result'; otherwise
-preserve the historical string callback contract."
+          &optional resource-identity)
+  "Run TOOL-SPEC and call CALLBACK with a `magent-tool-result'."
   (let* ((args-spec (and (fboundp 'gptel-tool-args)
                          (gptel-tool-args tool-spec)))
          (name (magent-agent-loop--tool-name tool-spec nil))
@@ -569,7 +581,6 @@ preserve the historical string callback contract."
              :args-plist args-plist
              :fn fn
              :async async-p
-             :structured-result-p structured-result-p
              :resource-identity resource-identity
              :callback callback
              :args fn-args)))))
@@ -669,17 +680,17 @@ preserve the historical string callback contract."
        :summary summary
        :args args-plist))))
 
-(defun magent-agent-loop-tools-to-gptel (tools)
-  "Convert Magent tool plist TOOLS to gptel-tool structs for provider schema."
+(defun magent-agent-loop-tools-for-provider (tools)
+  "Return gptel TOOLS with JSON-safe provider argument schemas."
   (mapcar
    (lambda (tool)
      (gptel-make-tool
-      :name (plist-get tool :name)
-      :description (plist-get tool :description)
+      :name (gptel-tool-name tool)
+      :description (gptel-tool-description tool)
       :args (magent-agent-loop--json-safe-tool-args
-             (plist-get tool :args))
-      :function (plist-get tool :function)
-      :async (plist-get tool :async)
+             (gptel-tool-args tool))
+      :function (gptel-tool-function tool)
+      :async (gptel-tool-async tool)
       :category "magent"))
    tools))
 
@@ -700,7 +711,7 @@ preserve the historical string callback contract."
    :run-tool-function (lambda (tool-spec callback arg-values
                                &optional resource-identity)
                         (magent-agent-loop-run-tool
-                         loop request-context tool-spec callback arg-values t
+                         loop request-context tool-spec callback arg-values
                          resource-identity))
    :audit-function #'magent-agent-loop-audit-permission-decision
    :file-arg-index-function #'magent-agent-loop-find-file-arg-index
@@ -963,12 +974,16 @@ available in LOOP's request tools."
 (defun magent-agent-loop--invalid-tool-arguments-result (loop event err)
   "Record and return a model-visible invalid argument result for EVENT and ERR."
   (let* ((raw-call (magent-agent-loop--tool-raw-call event))
-         (error-message (format "Error: %s" (error-message-string err))))
+         (error-message (format "Error: %s" (error-message-string err)))
+         (result
+          (magent-tool-result-create
+           :status 'failed :success nil
+           :output error-message :error error-message)))
     (magent-agent-loop-record-tool-result
-     loop nil (magent-agent-loop--tool-args event) raw-call error-message)
+     loop nil (magent-agent-loop--tool-args event) raw-call result)
     (when-let* ((result-callback (magent-llm-event-result-callback event)))
       (funcall result-callback error-message))
-    error-message))
+    result))
 
 (defun magent-agent-loop--unknown-tool-result (loop event known-tool-names)
   "Record and return an unknown-tool result for EVENT."
@@ -979,12 +994,16 @@ available in LOOP's request tools."
          (error-message
           (format "Error: tool '%s' not found. Available: %s"
                   name
-                  (mapconcat #'identity known-tool-names ", "))))
+                  (mapconcat #'identity known-tool-names ", ")))
+         (result
+          (magent-tool-result-create
+           :status 'failed :success nil
+           :output error-message :error error-message)))
     (magent-agent-loop-record-tool-result
-     loop nil (magent-agent-loop--tool-args event) raw-call error-message)
+     loop nil (magent-agent-loop--tool-args event) raw-call result)
     (when-let* ((result-callback (magent-llm-event-result-callback event)))
       (funcall result-callback error-message))
-    error-message))
+    result))
 
 (defun magent-agent-loop--tool-dispatch-outcome
     (reason status &optional result)

@@ -23,6 +23,7 @@
   session-id
   prompt
   context
+  tool-names
   skills
   agent
   effort

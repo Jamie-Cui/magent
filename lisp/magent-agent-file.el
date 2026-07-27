@@ -24,6 +24,7 @@
 
 (defconst magent-agent-file--tool-permission-aliases
   '((read_file . read)
+    (read_buffer . read)
     (write_file . write)
     (write_repo_summary . write)
     (edit_file . edit)
@@ -31,8 +32,7 @@
     (send_agent_message . agent)
     (wait_agent . agent)
     (list_agents . agent)
-    (close_agent . agent)
-    (skill_invoke . skill))
+    (close_agent . agent))
   "Tool-name aliases accepted in legacy custom agent permissions.")
 
 (defun magent-agent-file--agent-dir (&optional directory)

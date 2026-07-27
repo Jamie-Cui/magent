@@ -14,7 +14,7 @@
       "Summarize repository"
       (magent-prompt-read "commands/summarize.org")
     :append-argument-p t
-    :required-tools '(read_file grep glob bash write_repo_summary)))
+    :tools '(read_file read_buffer grep glob bash write_repo_summary)))
 
 (defun magent-command-summarize-register ()
   "Register the bundled /summarize command."

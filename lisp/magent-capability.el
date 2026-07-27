@@ -724,7 +724,7 @@ empty one."
         (setf (magent-capability-match-status match) 'suggested
               (magent-capability-match-reasons match)
               (append (magent-capability-match-reasons match)
-                      '("required-tools-unavailable"))))))
+                      '("declared-tools-unavailable"))))))
   match)
 
 (defun magent-capability--sort-matches (matches)

@@ -1150,16 +1150,13 @@ suffix.  Successful output keeps its prefix as before."
        omitted))))
 
 (defun magent-thread--model-visible-tool-result (result)
-  "Return RESULT bounded for model-visible tool history."
-  (let* ((structured-p (magent-tool-result-p result))
-         (status (and structured-p
-                      (magent-tool-result-status-value result)))
-         (failed-p (and structured-p (not (eq status 'completed))))
-         (value (if structured-p
-                    (or (magent-tool-result-output result)
-                        (magent-tool-result-error result)
-                        "")
-                  result))
+  "Return structured RESULT bounded for model-visible tool history."
+  (setq result (magent-tool-result-require result))
+  (let* ((status (magent-tool-result-status-value result))
+         (failed-p (not (eq status 'completed)))
+         (value (or (magent-tool-result-output result)
+                    (magent-tool-result-error result)
+                    ""))
          (safe-result (if (stringp value)
                           value
                         (magent-json-safe-value value)))
@@ -1259,7 +1256,7 @@ fail the item with a terminal journal event containing the final content."
   "Record a merged tool call/result lifecycle item in THREAD."
   (let* ((safe-name (magent-json-safe-name name))
          (safe-args (magent-json-safe-tool-args args))
-         (normalized (magent-tool-result-normalize result safe-name call-id))
+         (normalized (magent-tool-result-require result safe-name call-id))
          (status (magent-tool-result-status-value normalized))
          (safe-result (magent-thread--model-visible-tool-result normalized))
          (result-metadata

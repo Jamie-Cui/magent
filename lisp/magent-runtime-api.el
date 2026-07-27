@@ -27,9 +27,6 @@
 
 (declare-function magent-skills-get "magent-skills")
 (declare-function magent-skill-requires-project "magent-skills" t t)
-(declare-function magent-tool-runtime-for-permission "magent-tool-runtime")
-(declare-function magent-tool-runtime-name "magent-tool-runtime" t t)
-
 (cl-defstruct (magent-runtime-session
                (:constructor magent-runtime-session-create)
                (:copier nil))
@@ -195,7 +192,7 @@ queued submission starts."
 When AGENT-OR-NAME is non-nil, inspect that agent instead of the session's
 current selection.  This is a read-only public preflight API for extensions."
   (require 'magent-agent-registry)
-  (require 'magent-tool-runtime)
+  (require 'magent-tools)
   (let* ((session (magent-runtime-session-magent-session runtime-session))
          (agent
           (cond
@@ -210,10 +207,9 @@ current selection.  This is a read-only public preflight API for extensions."
          (permission (and agent (magent-agent-info-permission agent))))
     (unless agent
       (error "Unknown Magent agent: %S" agent-or-name))
-    (mapcar (lambda (runtime)
-              (let ((name (magent-tool-runtime-name runtime)))
-                (if (symbolp name) name (intern (format "%s" name)))))
-            (magent-tool-runtime-for-permission permission))))
+    (mapcar (lambda (tool)
+              (intern (gptel-tool-name tool)))
+            (magent-tools-get-gptel-tools-for-permission permission :all))))
 
 (defun magent-runtime-session-effort-option (runtime-session)
   "Return RUNTIME-SESSION's current effort option."
@@ -457,6 +453,7 @@ Any active or queued work for the session is cancelled first."
                  :approval-session session
                  :ui-visibility 'none
                  :origin-context (magent-runtime-submission-context submission)
+                 :tool-names (magent-runtime-submission-tool-names submission)
                  :effort (magent-runtime-submission-effort submission)
                  :skill-names (magent-runtime-submission-skills submission)
                  :approval-provider
@@ -523,16 +520,19 @@ Any active or queued work for the session is cancelled first."
              skill-name)))))))
 
 (cl-defun magent-runtime-submit
-    (runtime-session prompt &key context skills agent observer approval-provider
-                     effort turn-metadata on-complete)
+    (runtime-session prompt &key context (tools :all) skills agent observer
+                     approval-provider effort turn-metadata on-complete)
   "Submit PROMPT to RUNTIME-SESSION.
-OBSERVER receives request-local Magent-native events."
+TOOLS is `:all' or an exact list of tool names.  OBSERVER receives
+request-local Magent-native events."
   (unless (magent-runtime-session-p runtime-session)
     (error "Expected runtime session, got: %S" runtime-session))
   (magent-runtime-api--assert-session-available runtime-session)
   (unless (and (stringp prompt)
                (not (string-empty-p (string-trim prompt))))
     (error "Prompt is empty"))
+  (unless (or (eq tools :all) (proper-list-p tools))
+    (error "Expected :tools to be :all or a proper list, got: %S" tools))
   (let* ((effective-skills
           (or skills (magent-runtime-session-pending-skills runtime-session))))
     (magent-runtime-api--validate-skill-scope
@@ -547,6 +547,12 @@ OBSERVER receives request-local Magent-native events."
              :scope (magent-runtime-session-scope runtime-session)
              :prompt prompt
              :context context
+             :tool-names
+             (if (eq tools :all)
+                 :all
+               (mapcar (lambda (tool)
+                         (if (symbolp tool) tool (intern tool)))
+                       tools))
              :skills effective-skills
              :agent agent
              :effort (or (magent-effort-normalize-option effort)

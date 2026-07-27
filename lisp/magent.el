@@ -100,7 +100,6 @@
 (require 'magent-project-instructions)
 (require 'magent-repo-summary)
 (require 'magent-tools)
-(require 'magent-tool-runtime)
 (require 'magent-tool-orchestrator)
 (require 'magent-agent-info)
 (require 'magent-agent-builtins)

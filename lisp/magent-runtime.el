@@ -106,6 +106,7 @@ wins; when all functions return nil, scope is derived from
   temperature
   top-p
   effort
+  (tool-names :all)
   skill-names
   capability-context
   permission-profile

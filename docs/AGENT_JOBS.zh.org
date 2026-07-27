@@ -38,14 +38,19 @@ Magent 使用 durable child-agent jobs 来支持协作式 agent 工作。它替�
 
 合法状态包括 ~queued~ 、 ~running~ 、 ~waiting~ 、 ~completed~ 、 ~failed~ 、 ~closed~ 和 ~cancelled~ 。
 
-Parent ~magent-session~ 会在 ~agent-jobs~ slot 中持久化 child jobs。active loop 的 runtime-only state 存在 ~magent-tools--agent-job-runtimes~ ，以 job id 为 key。这样 parent session JSON 足够恢复和检查 job 元数据，同时不会尝试序列化 live request handle。
+Parent ~magent-session~ 会在 ~agent-jobs~ slot 中持久化 child jobs。active loop 的 runtime-only state 存在 ~magent-agent-job--runtimes~ ，以 job id 为 key。这样 parent session JSON 足够恢复和检查 job 元数据，同时不会尝试序列化 live request handle。
+
+~magent-agent-job.el~ 同时拥有 status observers。~wait_agent~ 订阅状态转换并只使用
+一个 deadline timer，不做轮询。Child 状态变化通过 session deferred-save queue
+调度 parent-session 持久化，因此 tool callback 不会同步重写 session JSON。
 
 * 运行流程
 
 1. ~spawn_agent~ 在 parent session 中创建 ~magent-agent-job~ 。
 2. child request 通过 ~magent-agent-loop.el~ 中的 Magent-owned loop 启动。
 3. child 使用 summary-only UI，不把完整 transcript 写进 parent conversation body。
-4. completion、failure、close 和 wait event 会更新 durable job record。
+4. completion、failure 和 close transition 会通知 wait observer，并更新 durable
+   job record。
 5. tool result 向 root agent 返回 model-visible JSON summary。
 
 成功的 ~spawn_agent~ result 会包含机器可读的 ~next_action~，使用返回的 job id

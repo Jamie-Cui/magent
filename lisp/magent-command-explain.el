@@ -14,7 +14,7 @@
       "Explain"
       (magent-prompt-read "commands/explain.org")
     :append-argument-p t
-    :required-tools '(read_file grep bash emacs_eval)))
+    :tools '(read_file read_buffer grep bash emacs_eval)))
 
 (defun magent-command-explain-register ()
   "Register the bundled /explain command."

@@ -79,13 +79,26 @@ Legacy ~messages~ remain as the projection used for gptel prompt reuse and migra
 
 ** Tools, Permissions, And Audit
 
-~magent-tools.el~ exposes 15 ~gptel-tool~ structs:
+~magent-tools.el~ owns one canonical catalog of 15 ~gptel-tool~ structs:
 
-- ~read_file~, ~write_file~, ~write_repo_summary~, ~edit_file~
+- ~read_file~, ~read_buffer~, ~write_file~, ~write_repo_summary~, ~edit_file~
 - ~grep~, ~glob~, ~bash~
 - ~emacs_eval~
 - ~spawn_agent~, ~send_agent_message~, ~wait_agent~, ~list_agents~, ~close_agent~
-- ~skill_invoke~, ~web_search~
+- ~web_search~
+
+~read_file~ always reads saved disk state. ~read_buffer~ reads an existing
+file-visiting buffer, including unsaved changes, without opening a file or
+falling back to disk. Both use the ~read~ permission key. File writes reject
+dirty visiting buffers; clean visiting buffers are changed and saved through
+Emacs, while unvisited files use atomic disk replacement.
+
+The catalog is the single source of truth for tool names, implementations, and
+permission keys. Ordinary requests select ~:all~; command agent Steps pass an
+exact ~:tools~ allowlist, which is then filtered by agent permissions. All tool
+implementations return structured ~magent-tool-result~ values. Only the provider
+boundary renders result text, and persisted legacy strings migrate only during
+old-session import. ~glob~ traverses in bounded event-loop slices.
 
 ~magent-tool-orchestrator.el~ resolves permissions, asks for approval when needed, dispatches the tool call, writes audit records, and reports results back to the loop. ~magent-permission.el~ resolves rules in this order: exact tool match, file-pattern rules, wildcard fallback, then default allow.
 
@@ -173,7 +186,16 @@ tool-free provider request.  Doctor never enters the general agent loop and
 never exposes ~emacs_eval~, shell, or file tools.  Custom probes are trusted
 Elisp rather than sandboxed code; see [[file:DOCTOR.org][DOCTOR.org]].
 
-Instruction skills are injected into the system prompt. Tool skills are invoked through ~skill_invoke~. Capabilities score the current context and activate a small number of instruction skills. Automatic activation requires an explicit prompt-keyword intent match in addition to contextual score; mode, feature, or file matches alone remain suggestions. Keyword matching uses word boundaries, and a capability cannot inject a linked skill whose declared tools are unavailable to the selected agent. The agent-shell session config exposes an ~Automatic capabilities~ switch for disabling this automatic layer without affecting explicitly selected skills. Contextual capabilities may be co-located with their skills, so trigger metadata and injected instruction stay in one file. This progressive disclosure model keeps the base prompt smaller while still giving the agent Emacs-specific workflow knowledge when the current request needs it.
+Skills are instruction-only Markdown injected into the system prompt.
+Executable extensions belong in trusted Elisp commands or the first-class tool
+catalog; companion code next to ~SKILL.md~ is not loaded. Capabilities score the
+current context and activate a small number of instruction skills. Automatic
+activation requires an explicit prompt-keyword intent match in addition to
+contextual score; mode, feature, or file matches alone remain suggestions.
+Keyword matching uses word boundaries, and a capability cannot inject a linked
+skill whose declared tools are unavailable to the selected agent. The
+agent-shell session config exposes an ~Automatic capabilities~ switch for
+disabling this automatic layer without affecting explicitly selected skills.
 
 ~magent-skill-manager.el~ is a separate, lazily loaded user-maintenance layer.
 It searches skills.sh, resolves local or public GitHub sources, preflights and
@@ -188,7 +210,7 @@ The distinction is:
   interactive, or both surfaces. A
   prompt command normally owns one agent turn; an advanced handler may own
   multiple async steps.
-- A ~skill~ is reusable model instruction or a tool-type operation. The legacy
+- A ~skill~ is reusable, data-only model instruction. The legacy
   ~default-prompt~ field projects a compatibility command but does not make
   Markdown the native command entry point.
 - A ~capability~ is an automatic activation rule: resolver metadata such as

@@ -23,7 +23,6 @@ lisp/magent-file-loader.el
 lisp/magent-runtime.el
 lisp/magent-runtime-queue.el
 lisp/magent-tools.el
-lisp/magent-tool-runtime.el
 lisp/magent-tool-orchestrator.el
 lisp/magent-agent-info.el
 lisp/magent-agent-builtins.el

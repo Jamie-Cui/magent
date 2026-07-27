@@ -1170,15 +1170,20 @@ CONTENT can be a string or a list of content blocks."
                    (magent-thread-create-turn
                     thread nil nil (list :synthetic t)))))
        (when (magent-session--tool-content-p content)
-         (magent-thread-record-tool-result
-          thread
-          (magent-thread-turn-id turn)
-          (or (plist-get content :id)
-              (magent-protocol-generate-id "tool"))
-          (plist-get content :name)
-          (plist-get content :args)
-          (plist-get content :result)
-          (list :legacy-message t)))))
+         (let ((call-id
+                (or (plist-get content :id)
+                    (magent-protocol-generate-id "tool"))))
+           (magent-thread-record-tool-result
+            thread
+            (magent-thread-turn-id turn)
+            call-id
+            (plist-get content :name)
+            (plist-get content :args)
+            (magent-tool-result-migrate-legacy
+             (plist-get content :result)
+             (plist-get content :name)
+             call-id)
+            (list :legacy-message t))))))
     (magent-session-refresh-projections session)
     (when (> (length (magent-session-messages session))
              (+ (magent-session-max-history session) 10))
@@ -1238,12 +1243,13 @@ message boundary."
   "Add a structured tool result message to SESSION.
 ID is the provider tool-call id, NAME is the tool name, ARGS is the
 tool argument plist, and RESULT is the model-visible tool result."
+  (setq result (magent-tool-result-require result name id))
   (magent-session-add-message
    session 'tool
    (list :id id
          :name (magent-json-safe-name name)
          :args (magent-json-safe-tool-args args)
-         :result (if (stringp result) result (format "%s" result)))))
+         :result (magent-tool-result-output-string result))))
 
 (defun magent-session-get-messages (session)
   "Get all messages from SESSION in chronological order."
