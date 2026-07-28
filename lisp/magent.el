@@ -89,8 +89,8 @@
 (require 'magent-agent-job)
 (require 'magent-llm)
 (require 'magent-llm-gptel)
-(require 'magent-command-workflow)
-(require 'magent-command-session)
+(require 'magent-action-session)
+(require 'magent-action-session-view)
 (require 'magent-memory)
 (require 'magent-doctor)
 (require 'magent-agent-loop)
@@ -105,7 +105,7 @@
 (require 'magent-agent-builtins)
 (require 'magent-agent)
 (require 'magent-runtime-api)
-(require 'magent-command)
+(require 'magent-action)
 (require 'magent-acp)
 (require 'magent-agent-shell)
 (require 'magent-agent-registry)
@@ -124,7 +124,7 @@
 
 (defun magent--ensure-initialized ()
   "Ensure magent is fully initialized.
-Called on first use of any Magent command.  Loads agents, skills, slash
+Called on first use of any Magent entry point.  Loads agents, skills, slash
 commands, and capabilities."
   (magent-runtime-ensure-initialized))
 

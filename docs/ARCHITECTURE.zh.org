@@ -9,8 +9,8 @@ Magent 是一个 Emacs-native 的 AI coding agent。它的核心设计判断是�
 系统边界刻意保持清晰：
 
 - Provider transport、HTTP/SSE、模型选择和 API key 继续交给 ~gptel~ ，通过 ~gptel-request~ 调用。
-- 会话式交互只支持 ~agent-shell~ ，中间由进程内 ACP adapter 连接。显式注册的 command 也可以暴露受信任的 ~M-x~ wrapper，但不会因此形成第二套会话 frontend。
-- Agent 执行、command invocation、工具编排、权限决策、会话、技能、能力解析和 child-agent jobs 由 Magent 自己管理。
+- 会话式交互只支持 ~agent-shell~，中间由进程内 ACP adapter 连接。显式注册的 Action 也可以暴露受信任的 ~M-x~ command wrapper，但不会因此形成第二套会话 frontend。
+- Agent 执行、Action Invocation、工具编排、权限决策、会话、技能、能力解析和 child-agent jobs 由 Magent 自己管理。
 - Codex 风格的 seatbelt、bubblewrap、sandbox 和 shell isolation 不在范围内。Magent 的 permission 是工作流确认和审计，不是 OS 安全边界。
 
 * 系统边界
@@ -18,7 +18,7 @@ Magent 是一个 Emacs-native 的 AI coding agent。它的核心设计判断是�
 #+caption: Magent architecture boundary
 [[file:assets/img/diagrams/architecture-boundary.svg]]
 
-这个结构让替换点保持可见。换 provider 应该局限在 ~magent-llm-gptel.el~ 和 gptel 配置里；换 frontend 应该局限在 ~magent-agent-shell.el~ 、 ~magent-acp.el~ 和 ~magent-runtime-api.el~ 附近；command registration 或 invocation 的修改应该通过 ~magent-command.el~ ，isolated command persistence 则属于 ~magent-command-session.el~ ；其余持久化和恢复修改应该通过 ledger/session 模块；工具策略应该通过 permission 和 orchestrator 模块。
+这个结构让替换点保持可见。换 provider 应该局限在 ~magent-llm-gptel.el~ 和 gptel 配置里；换 frontend 应该局限在 ~magent-agent-shell.el~、~magent-acp.el~ 和 ~magent-runtime-api.el~ 附近；Action registration、Workflow、Step 或 Invocation 的修改应该通过 ~magent-action.el~，isolated Action persistence 属于 ~magent-action-session.el~，交互 viewer 属于 ~magent-action-session-view.el~；其余持久化和恢复修改应该通过 ledger/session 模块；工具策略应该通过 permission 和 orchestrator 模块。
 
 * 依赖层次
 
@@ -62,7 +62,7 @@ manifest 和 package data recipe。
 
 ** UI 与 Runtime API
 
-受支持的会话式 frontend 是 ~agent-shell~ 。 ~magent-agent-shell.el~ 注册 Magent 的 agent-shell 配置， ~magent-acp.el~ 实现进程内 ACP adapter。ACP text 与 resource block 会分开规范化：完整结构化输入存进 turn metadata，并以 user role 重建给模型；本地 ~file://~ resource 只额外提供 scoped file path，供项目指令发现与 capability resolution 使用。每个 ~session/prompt~ 到达后，ACP 会把已注册 slash command 分派给 ~magent-command.el~ ，普通 prompt 则直接提交给 ~magent-runtime-api.el~ 。Command 拥有的 agent turn 和 workflow step 同样通过该 runtime API 提交；受信任的 direct handler 也可以不进入通用 agent loop 而直接完成。 ~magent-runtime-queue.el~ 当前采用全局单执行模型，同时保留 session-scoped cancellation 和队列状态。显式 ~M-x~ command wrapper 复用 command invocation lifecycle，不会形成并行的会话 frontend。
+受支持的会话式 frontend 是 ~agent-shell~。~magent-agent-shell.el~ 注册 Magent 的 agent-shell 配置，~magent-acp.el~ 实现进程内 ACP adapter。ACP text 与 resource block 会分开规范化：完整结构化输入存进 turn metadata，并以 user role 重建给模型；本地 ~file://~ resource 只额外提供 scoped file path，供项目指令发现与 capability resolution 使用。每个 ~session/prompt~ 到达后，ACP 会把已注册 slash command 投影分派给 ~magent-action.el~ 中的 Action，普通 prompt 则直接提交给 ~magent-runtime-api.el~。Action-owned agent turn 和 Workflow Step 同样通过该 runtime API 提交；Action 也可以不进入通用 agent loop 而直接完成。~magent-runtime-queue.el~ 当前采用全局单执行模型，同时保留 session-scoped 和 exact-submission cancellation。显式 ~M-x~ command wrapper 复用 Action Invocation lifecycle，不会形成并行的会话 frontend。
 
 ** Ledger 与持久化
 
@@ -86,7 +86,7 @@ file-visiting buffer（包括未保存修改），不会打开文件或回退到
 visiting buffer 通过 Emacs 修改并保存，没有 visiting buffer 时则原子替换磁盘文件。
 
 Catalog 是 tool name、implementation 和 permission key 的唯一事实来源。普通
-request 选择 ~:all~；command 的 agent Step 通过 ~:tools~ 传入 exact allowlist，
+request 选择 ~:all~；Action 的 agent Step 通过 ~:tools~ 传入 exact allowlist，
 随后再应用 agent permission。所有 implementation 都返回结构化
 ~magent-tool-result~；只有 provider boundary 会转换为文本，历史 session 字符串
 只在导入时迁移。~glob~ 使用有界的 event-loop slices。
@@ -99,9 +99,9 @@ request 选择 ~:all~；command 的 agent Step 通过 ~:tools~ 传入 exact allo
 [[file:assets/img/diagrams/one-magent-turn.svg]]
 
 1. 用户 prompt 通过 agent-shell 进入 ACP ~session/prompt~ request。
-2. ACP 按 runtime session 的精确 scope 解析已注册 slash command；未知 slash input 仍作为普通 prompt。
-3. 已注册 command 进入 ~magent-command.el~，执行参数处理、feature preflight 和 session-policy 设置，然后启动 generator-backed Workflow。Process 和 callback Step 不进入 agent queue；agent 与 terminal Answer Step 通过 command runtime adapter 进入 ~magent-runtime-api.el~，普通 prompt 则直接进入同一 API。
-4. ~magent-runtime-api.el~ 记录 queued turn 和 completed user item。
+2. ACP 按 runtime session 的精确 scope 解析已注册 slash command projection；未知 slash input 仍作为普通 prompt。
+3. 对应 Action 进入 ~magent-action.el~，执行参数处理、feature preflight 和 session-policy 设置，然后启动 generator-backed Workflow。Process 和 callback Step 不进入 agent queue；agent 与 terminal Answer Step 进入 ~magent-runtime-api.el~，普通 prompt 则直接进入同一 API。
+4. ~magent-runtime-api.el~ 先解析 request-local agent 和精确 tool set，再记录 queued turn 和 completed user item。
 5. ~magent-runtime-queue.el~ 在全局执行槽空闲时启动 turn。
 6. ~magent-agent.el~ 选择 session agent、active skills、capability instructions 和允许的工具。
 7. ~magent-llm-gptel.el~ 调用 ~gptel-request~ 发起一次 sampling。
@@ -111,7 +111,7 @@ request 选择 ~:all~；command 的 agent Step 通过 ~:tools~ 传入 exact allo
 11. 如果 tool output 需要返回给模型， ~magent-agent.el~ 从 ledger 重建 prompt 并开始下一次 sampling。
 12. 如果 provider 返回空 assistant text 并明确完成， ~magent-agent.el~ 用 ~empty-completion~ metadata 完成本轮，不再发起请求。
 13. completion、failure、abort 或 queued drop 会把 turn 转到 terminal state，并通知 ACP observer。
-14. 普通 prompt 直接用 turn result 结束 pending ACP request。对于 command-owned work，runtime callback 会先返回 command invocation，再由其 terminal lifecycle 结束 ACP request，或向 interactive caller 报告结果。
+14. 普通 prompt 直接用 turn result 结束 pending ACP request。对于 Action-owned work，runtime callback 会先返回 Action Invocation，再由其 terminal lifecycle 结束 ACP request，或向 interactive caller 报告结果。
 
 这个 continuation 模型接近 Codex：工具结果会触发后续采样；但实现仍然是 Emacs-native 且由 gptel 承担 provider transport。
 
@@ -120,7 +120,7 @@ request 选择 ~:all~；command 的 agent Step 通过 ~:tools~ 传入 exact allo
 #+caption: Magent functional layers
 [[file:assets/img/diagrams/functional-layers.svg]]
 
-从功能面看，Magent 可以按四条主线使用。第一条是 coding assistant：读代码、搜代码、改文件、跑测试、解释错误、生成 commit/PR 风格总结。第二条是 Emacs runtime assistant：通过 ~emacs_eval~ 查询 buffer、mode、window、project、Magit、Org、LSP 等活状态。第三条是 agent workflow：用 skills、capabilities 和 child-agent jobs 固化或拆分任务。第四条是 explicit command workflow：从 agent-shell slash input 或已暴露的 ~M-x~ wrapper 调用同一个 registered command。Command 可以复用当前 conversation，也可以创建 isolated durable session；Doctor 和 Memory 是内置的 isolated 示例。
+从功能面看，Magent 可以按四条主线使用。第一条是 coding assistant：读代码、搜代码、改文件、跑测试、解释错误、生成 commit/PR 风格总结。第二条是 Emacs runtime assistant：通过 ~emacs_eval~ 查询 buffer、mode、window、project、Magit、Org、LSP 等活状态。第三条是 agent workflow：用 skills、capabilities 和 child-agent jobs 固化或拆分任务。第四条是 explicit Action workflow：从 agent-shell slash input 或已暴露的 ~M-x~ command wrapper 调用同一个 registered Action。Action 可以复用当前 conversation，也可以创建 isolated durable session；Doctor 和 Memory 是内置的 isolated 示例。
 
 因此 Magent 的功能设计不只是“一个聊天框和若干工具”。它把 Emacs 工作流切成可被 agent 调用、审计、恢复并投影回 UI 的动作。
 
@@ -132,38 +132,40 @@ Magent 有三层 file-backed 扩展：
 - bundled ~skills/~、存在时兼容的 legacy 用户目录 ~~/.emacs.d/magent-skills/~、canonical 用户目录 ~~/.emacs.d/magent/skills~，以及项目 ~.magent/skills/~ 下的 skills。
 - 带 ~capability: true~ 的 skill frontmatter 中的 capability metadata，以及用户 capability 目录和项目 ~.magent/capabilities/~ 下的独立 ~CAPABILITY.md~。独立文件只用于触发 metadata 不应该归属于单个 skill 的场景。
 
-Command 是另一层 Elisp-native 扩展。 ~magent-command.el~ 中的定义表示显式
-用户动作，提供分层注册、slash/interactive exposure、current/isolated session
-policy、参数处理、feature/tool preflight、progress、取消和完成生命周期。每个
-registration 只拥有一个 generator-backed Elisp Workflow。普通 Elisp 负责控制流；
+Action 是另一层 Elisp-native 扩展。~magent-action.el~ 是一个 deep module，
+统一拥有 generator Workflow DSL、managed Step runtime、分层 registry 和 Invocation
+lifecycle。Action 声明 slash/interactive exposure、current/isolated session policy、
+参数处理、feature/tool preflight、progress、取消和完成行为。普通 Elisp 负责控制流；
 由 Magent 管理的 agent、terminal Answer、argv process 和 callback Step 提供异步
 等待与 activity 记录。Agent Step 分离 prompt 文本、模型可见的 popwin 风格 buffer
-快照、tool requirements 和 agent/skill 选择，并从 Invocation 继承 frontend request
-context。Content blocks 和 canonical command metadata 由内部持久化。
-高级受信任 package 可以拥有更长的异步 Invocation，但不会接触 ACP 或 queue
-internals。内置 ~/explain~ 、 ~/fix~ 、 ~/init~ 、 ~/review~ 、 ~/summarize~ 和 ~/test~ 都只使用该公开
-API，并拥有各自的 Org prompt resource，而不是同名 skill。
-Invocation 会先锁定 terminal result 再执行 cleanup，因此 Step 失败时会取消其
-拥有的工作，同时避免同步取消 callback 覆盖原始失败，或在 ACP 完成后继续工作。
+快照、精确 tool requirements 和 request-local agent/skill 选择，并从 Invocation
+继承 frontend request context。Content blocks 和 canonical Action metadata 由内部
+持久化。高级受信任 package 可以拥有更长的异步 Invocation，但不会接触 ACP 或 queue
+internals。内置 ~/explain~、~/fix~、~/init~、~/review~、~/summarize~ 和 ~/test~
+prompt Actions 是 ~magent-action-builtins.el~ 中的数据项；系统从对应 Org prompt
+resource 统一生成 terminal Workflow。
+
+Invocation 会先锁定 terminal result 再执行 cleanup，因此 Step 失败时只取消自己
+拥有的 submission，避免同步取消 callback 覆盖原始失败，或在 ACP 完成后继续工作。
+Finalization error 是 terminal failure，不会伪装成成功结果。
 
 ~magent-skills.el~ 还拥有 frontend-neutral、scope-aware 的 skill descriptors。ACP
 会把每个 instruction descriptor 投影成 ~$name~，agent-shell 将其显示为
 ~/$name~，分派时则作为带显式 skill selection 的普通 runtime turn。该路径不要求
-~default-prompt~，也不进入 Command Invocation lifecycle。为保持兼容，带
-~default-prompt~ 的 instruction ~SKILL.md~ 还会额外投影进 command registry，提供
-legacy ~/name~ adapter；其生成的 terminal Workflow 调用时仍激活原 skill。
-Project/user adapter 按 layer 覆盖 package/bundled 定义；core controls 的名称保留。
-Project command adapter 与 skill catalog snapshot 都以 canonical project scope
-为键保留；ACP 的发现和分派按每个 runtime session 的精确 scope 解析，因此多个
-project session 可以安全共存。未来 frontend 可以消费同一 descriptor API，同时把
-commands 和 skills 展示为两个独立入口。
+Action Invocation lifecycle，也不会进入 Action registry。Project Action definitions
+与 skill catalog snapshot 都以 canonical project scope 为键保留；ACP 的发现和
+分派按每个 runtime session 的精确 scope 解析，因此多个 project session 可以安全
+共存。未来 frontend 可以消费同一 descriptor API，同时把 command projections 和
+skills 展示为两个独立入口。
 
-~magent-command-session.el~ 为 ~:session-policy 'isolated~ 的 spec 提供持久化、
-ledger 记录、viewer 和取消，但不再拥有第二套 registry 或 context 类型。
-~/doctor~ 和 ~/memory-*~ 同时提供 ~magent-command-run-*~ wrapper，两种入口执行
-相同 invocation lifecycle；新 session 写入 ~magent-session-directory/commands~ 。
+~magent-action-session.el~ 为 ~:session-policy 'isolated~ 的 Action 提供持久化、
+ledger 记录和取消；~magent-action-session-view.el~ 单独负责交互式列表与查看。
+两者都不拥有第二套 registry 或 context 类型。~/doctor~ 和 ~/memory-*~ 同时提供
+~magent-action-run-*~ wrapper，两种入口执行相同 Invocation lifecycle；新 session
+写入 ~magent-session-directory/actions~。旧 ~commands/~ 格式既不迁移、也不读取，
+文件原样留在磁盘上。
 
-~magent-command-run-doctor~ 是安全敏感的 direct-pipeline 场景。 ~magent-doctor.el~
+~magent-action-run-doctor~ 是安全敏感的 direct-pipeline 场景。 ~magent-doctor.el~
 中的受信任只读 probes 采集有界 JSON-safe 数据；数据在持久化或发送一次
 无工具 provider request 前，会经过 ~magent-redaction.el~ 的路径规范化和
 脱敏。Doctor 不进入通用 agent loop，也不会暴露 ~emacs_eval~ 、shell 或
@@ -171,7 +173,7 @@ ledger 记录、viewer 和取消，但不再拥有第二套 registry 或 context
 [[file:DOCTOR.zh.org][DOCTOR.zh.org]]。
 
 Skill 只支持 data-only instruction Markdown，并注入 system prompt。需要执行能力时，
-使用 trusted Elisp command 或 canonical catalog 中的一等 tool；Magent 不加载
+使用 trusted Elisp Action 或 canonical catalog 中的一等 tool；Magent 不加载
 ~SKILL.md~ companion code。Capability 会根据当前上下文打分，激活少量
 instruction skills。自动激活除了 context score 之外，还必须命中当前 prompt
 中的显式 keyword intent；只有 mode、feature 或 file 命中时仍保持 suggested。
@@ -186,11 +188,12 @@ Keyword 使用词边界匹配；如果 linked skill 声明的工具对 selected 
 
 这些概念的区别是：
 
-- ~command~ 是由受信任 Elisp 实现、可暴露为 slash、interactive 或两者的显式 invocation。Prompt command 通常拥有
-  一个 agent turn；高级 handler 可以拥有多个异步步骤。
-- ~skill~ 是可复用、data-only 的模型说明。ACP 的 ~/$name~ 是普通 turn
-  的显式 skill selection；legacy ~default-prompt~ 只额外投影一个兼容 command，
-  Markdown 不会因此获得 trusted Workflow 权限。
+- ~Action~ 是 executable trusted-Elisp 领域抽象，可投影为 slash command、
+  interactive command 或两者。Prompt Action 通常拥有一个 agent turn；高级 Action
+  可以拥有多个异步 Step。
+- ~command~ 是 frontend/protocol 对 Action 的投影，不是第二套扩展抽象。
+- ~skill~ 是可复用、data-only 的模型说明，在普通 turn 中显式或自动选择；
+  它不会转换成 Action。
 - ~capability~ 是自动激活规则：由 ~modes~ 、~features~ 、~files~ 、~keywords~ 、~disclosure~ 和 ~risk~ 等 resolver metadata 描述什么时候为当前 turn 选择一个或多个 skills。只有 context 的匹配会作为可检查的 suggestion；active disclosure 还要求当前 user prompt 命中有词边界的 keyword。
 - skill-backed capability 是 contextual capability 的常见形态：某个 ~SKILL.md~ 声明
   ~capability: true~ 后，resolver 会在当前 context 与 prompt intent 同时匹配且所需

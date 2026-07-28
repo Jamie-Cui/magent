@@ -95,46 +95,46 @@ NAME and CALL-ID fill missing request identity fields."
      ((null value) "")
      (t (format "%s" value)))))
 
-(cl-defstruct (magent-agent-result
-               (:constructor magent-agent-result-create)
+(cl-defstruct (magent-execution-result
+               (:constructor magent-execution-result-create)
                (:copier nil))
-  "Final status returned from an agent request."
+  "Final status returned from one Magent execution."
   status
   content
   error
   metadata)
 
-(defun magent-agent-result-success-p (result)
-  "Return non-nil when RESULT represents a successful agent response."
-  (unless (magent-agent-result-p result)
-    (signal 'wrong-type-argument (list 'magent-agent-result-p result)))
-  (eq (magent-agent-result-status result) 'completed))
+(defun magent-execution-result-success-p (result)
+  "Return non-nil when RESULT represents a successful execution."
+  (unless (magent-execution-result-p result)
+    (signal 'wrong-type-argument (list 'magent-execution-result-p result)))
+  (eq (magent-execution-result-status result) 'completed))
 
-(defun magent-agent-result-content-string (result)
+(defun magent-execution-result-content-string (result)
   "Return user-visible content for RESULT."
-  (unless (magent-agent-result-p result)
-    (signal 'wrong-type-argument (list 'magent-agent-result-p result)))
-  (or (magent-agent-result-content result)
-      (magent-agent-result-error result)
+  (unless (magent-execution-result-p result)
+    (signal 'wrong-type-argument (list 'magent-execution-result-p result)))
+  (or (magent-execution-result-content result)
+      (magent-execution-result-error result)
       ""))
 
-(defun magent-agent-result-completed (content &optional metadata)
-  "Return a completed `magent-agent-result' with CONTENT and METADATA."
-  (magent-agent-result-create
+(defun magent-execution-result-completed (content &optional metadata)
+  "Return a completed `magent-execution-result' with CONTENT and METADATA."
+  (magent-execution-result-create
    :status 'completed
    :content (or content "")
    :metadata metadata))
 
-(defun magent-agent-result-failed (error &optional metadata)
-  "Return a failed `magent-agent-result' with ERROR and METADATA."
-  (magent-agent-result-create
+(defun magent-execution-result-failed (error &optional metadata)
+  "Return a failed `magent-execution-result' with ERROR and METADATA."
+  (magent-execution-result-create
    :status 'failed
    :error (if (stringp error) error (format "%s" error))
    :metadata metadata))
 
-(defun magent-agent-result-cancelled (error &optional metadata)
-  "Return a cancelled `magent-agent-result' with ERROR and METADATA."
-  (magent-agent-result-create
+(defun magent-execution-result-cancelled (error &optional metadata)
+  "Return a cancelled `magent-execution-result' with ERROR and METADATA."
+  (magent-execution-result-create
    :status 'cancelled
    :error (if (stringp error) error (format "%s" error))
    :metadata metadata))

@@ -129,9 +129,8 @@ GitHub Actions runs:
 
 The melpazoid recipe explicitly includes ~lisp/*.el~, ~prompts/~, ~skills/~,
 and ~capabilities/~. Those production libraries and bundled runtime data must
-stay in the package recipe because Magent resolves them at runtime. Do not use
-~:defaults~ here: MELPA would exclude the production ~magent-command-test.el~
-module because its filename matches ~*-test.el~.
+stay in the package recipe because Magent resolves them at runtime. Keep the
+recipe aligned with ~source-files.txt~ and ~prompts/manifest.txt~.
 
 Keep package metadata centralized in ~magent.el~ and ~magent-pkg.el~. Do not
 add ~Package-Requires~ headers to secondary modules; package-lint treats those

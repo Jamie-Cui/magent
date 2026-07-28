@@ -1,18 +1,18 @@
-#+title: 命令与 LLM 工作流
+#+title: 命令与 Action 工作流
 #+magent_lang: zh
 #+magent_alt_url: /COMMANDS.html
 #+magent_permalink: /COMMANDS.zh.html
 #+options: toc:t num:nil
 
-Magent 使用同一个 command registry 提供两类用户入口：
+Magent 把同一个 Action registry 投影为两类用户可见的 command 入口：
 
-- *Slash commands* 在当前 agent-shell 对话中调用 Elisp-native command；大多数
-  内置命令声明一次普通 agent turn。
-- *Interactive commands* 是选择了 interactive exposure 的 command spec 对应的
+- *Slash commands* 在当前 agent-shell 对话中调用 Elisp-native Action；大多数
+  内置 prompt Action 声明一次普通 agent turn。
+- *Interactive commands* 是选择了 interactive exposure 的 Action spec 对应的
   ~M-x~ wrapper。
 
-当前内置包提供 12 个 slash commands。Doctor 和三个 Memory command 还提供
-~M-x magent-command-run-*~ wrapper，并使用独立 durable session。
+当前内置包提供 12 个 slash commands。Doctor 和三个 Memory Action 还提供
+~M-x magent-action-run-*~ wrapper，并使用独立 durable session。
 
 * Slash Commands
 
@@ -43,8 +43,8 @@ instruction skill；skill 不存在或在当前 scope 不可用时，会在提�
 | ~/compact~ | 总结当前对话                        | 用续接摘要替换较早的模型上下文 |
 | ~/skills~ | 列出当前 session scope 的 instruction skills | 本地发现，不请求 provider |
 | ~/doctor~ | 诊断 Magent 和当前 runtime | 使用有界 probes 和一次脱敏、无工具请求 |
-| ~/memory-init~ | 建立 Emacs profile memory | 在独立 command session 中确认并执行 |
-| ~/memory-refresh~ | 刷新 managed profile memory | 在独立 command session 中保留 user notes |
+| ~/memory-init~ | 建立 Emacs profile memory | 在独立 Action session 中确认并执行 |
+| ~/memory-refresh~ | 刷新 managed profile memory | 在独立 Action session 中保留 user notes |
 | ~/memory-clear~ | 停用 managed memory | 确认后在本地清理生成内容 |
 
 ** ~/compact~
@@ -124,23 +124,24 @@ org-roam capture 约定 ~YYYY-MM-DDtHHMM.org~。后续运行通过 file-level
 ** 其他调用方式与扩展
 
 ~M-x magent-agent-shell-run-command~ 可以选择并运行任意已注册 slash command。
-内置 prompt commands 和第三方包使用相同的公开 API：
+内置单 turn prompt Action 是 ~magent-action-builtins.el~ 中的数据项；第三方包使用
+相同的公开 Action API：
 
 #+begin_src emacs-lisp
-(require 'magent-command)
+(require 'magent-action)
 
 (defun my-magent-review-buffer-p (buffer)
   "当 BUFFER 含有可 review 的 diff 时返回非 nil。"
   (with-current-buffer buffer
     (derived-mode-p 'diff-mode)))
 
-(magent-command-defworkflow my-magent-review (invocation)
+(magent-define-workflow my-magent-review (invocation)
   "Review INVOCATION 对应的 staged changes。"
   (let ((changed-files
-         (magent-command-process
+         (magent-workflow-process
              "List staged files"
              '("git" "diff" "--cached" "--name-only"))))
-    (magent-command-answer
+    (magent-workflow-answer
         "Review staged changes"
         (format
          "Review the staged changes in these files:\n%s"
@@ -156,7 +157,7 @@ org-roam capture 约定 ~YYYY-MM-DDtHHMM.org~。后续运行通过 file-level
       :append-argument-p t
       :tools '(read_file read_buffer grep bash))))
 
-(magent-command-register
+(magent-action-register
  "my-review"
  :description "运行包自定义的 review workflow。"
  :title "包自定义 review"
@@ -169,15 +170,15 @@ org-roam capture 约定 ~YYYY-MM-DDtHHMM.org~。后续运行通过 file-level
 #+end_src
 
 每个 registration 必须提供且只提供一个 ~:workflow~ function，并显式指定
-~:session-policy~。Workflow 是由 ~magent-command-defworkflow~ 定义的 Elisp
+~:session-policy~。Workflow 是由 ~magent-define-workflow~ 定义的 Elisp
 generator。分支、循环、局部状态、校验以及对 Emacs 的普通调用都直接使用 Elisp；
 只有真正需要等待异步结果的地方才使用由 Magent 管理的 Step。
 
 ~:requires~ 接收一个 Emacs feature symbol 或 feature symbol list。Magent 在
-Invocation preflight 中逐个调用 ~require~。缺少 feature 时 command 仍可被发现，但
+Invocation preflight 中逐个调用 ~require~。缺少 feature 时 Action 仍可被发现，但
 会在创建 isolated session 之前失败。这个选项不会安装 package、检查 executable，
 也不会要求调用者位于 project workspace。已经移除的 ~:requires-project~ 不再有
-Command 对应项。
+Action 对应项。
 
 ~(NAME, SOURCE-LAYER, canonical SOURCE-SCOPE)~ 这个三元组对应唯一的 registry
 slot。再次注册同一 slot 会替换旧定义，并使旧 registration token 失效；撤销新
@@ -195,7 +196,7 @@ registration 不会恢复同一 slot 的旧定义。不同 layer 和不同 proje
 
 裸 pattern 默认必需，因此 ~'(magent-buffer magit-buffer)~ 表示两个 required
 major-mode selector。展开项支持 ~:required-p~、~:regexp~、~:predicate~ 和
-~:project-only-p~。Required pattern 无匹配时会在提交前终止命令；optional pattern
+~:project-only-p~。Required pattern 无匹配时会在提交前终止 Action；optional pattern
 会记录日志后跳过。Mode、regexp 和 predicate selector 会按 ~buffer-list~ 顺序选择
 全部 live buffer，并在 session 有项目时默认只匹配该项目；精确 buffer 和精确名称
 默认不做项目过滤。两类默认值都可用 ~:project-only-p~ 显式覆盖。最终结果保持配置
@@ -207,51 +208,51 @@ properties，并作为 structured user resource 保存 buffer name、mode、file
 state、point、selected/retained bounds、narrowing state 和 content。不可变快照随 user
 turn 持久化并用于后续 ledger replay；之后修改 live buffer 不会改写历史。
 
-~magent-command-buffer-context-max-chars~ 默认把所有 buffer content 的总量限制为
+~magent-action-buffer-context-max-chars~ 默认把所有 buffer content 的总量限制为
 24000 characters；较早的 ~:buffers~ 项优先。超过剩余预算的快照会保留以 point 为
 中心的窗口，并加入模型可见的截断标记。预算只计算捕获的 buffer content，不计算
 resource metadata header。
 
-模型可见 user content 的顺序是：展开后的 command prompt、command buffer
+模型可见 user content 的顺序是：展开后的 Action prompt、Action buffer
 snapshots、frontend attachments。Agent Step 的 ~append-argument-p~ 默认为 nil；
 设为非 nil 时会把 slash command 后的文本追加成 Additional instruction block。
-Workflow 已经读取 ~magent-command-invocation-argument~ 时应保持 nil。项目 scope、
-frontend facts 和附件路径仍属于 Command Invocation，并自动继承。
+Workflow 已经读取 ~magent-action-invocation-argument~ 时应保持 nil。项目 scope、
+frontend facts 和附件路径仍属于 Action Invocation，并自动继承。
 
 Request context 是 runtime metadata，不是额外的模型输入。已识别字段可以影响项目
 instructions 查找、capability resolution 或 runtime routing，但该 plist 不会原样发送
 给模型。Agent 和 Answer Step 可以设置 step-local ~:request-context~ 与模型可见的
-~:resource-blocks~。Canonical command metadata 由 Magent 管理；其他需要让模型看到
+~:resource-blocks~。Canonical Action metadata 由 Magent 管理；其他需要让模型看到
 的指令和数据应放入 prompt、~:buffers~ 或附件 resource。
 
 由 Magent 管理的 Step forms 包括：
 
-- ~magent-command-agent~ 执行中间 model turn，默认返回文本。它支持 ~:agent~、
+- ~magent-workflow-agent-turn~ 执行中间 model turn，默认返回文本。它支持 ~:agent~、
   ~:skills~、~:buffers~、~:append-argument-p~、~:tools~、
   ~:request-context~、~:resource-blocks~ 和 ~:result~。
-- ~magent-command-answer~ 支持相同的 model 选项，但它是 terminal Step：流式输出
+- ~magent-workflow-answer~ 支持相同的 model 选项，但它是 terminal Step：流式输出
   最终回答并结束 Invocation，之后的 forms 不会继续执行。
 
 ~:tools~ 是该 Step 暴露给 provider 的 exact allowlist，不只是 preflight
 requirement；未知或不可用的名字会在提交前失败。
-- ~magent-command-process~ 只运行由非空 string 组成的 argv list。它会捕获调用点
+- ~magent-workflow-process~ 只运行由非空 string 组成的 argv list。它会捕获调用点
   的 directory 和 process environment，并支持 ~:directory~、~:environment~
   override alist、~:timeout~、~:check~、~:result~、~:record-command~ 与
   ~:record-output~。默认结果是完整 stdout；~:result 'full~ 返回包含 stderr、
-  exit status、duration 和 timeout state 的 ~magent-command-process-result~。
-- ~magent-command-callback~ 用来适配已有的异步 Elisp API。Start function 接收
+  exit status、duration 和 timeout state 的 ~magent-action-process-result~。
+- ~magent-workflow-callback~ 用来适配已有的异步 Elisp API。Start function 接收
   ~DONE~，必须用 ~completed~、~failed~ 或 ~cancelled~ 调用
   ~(DONE STATUS VALUE)~ 一次，并可返回一个无参数 cancel function。
 
-~magent-command-process-timeout~ 是 process 的默认 deadline（300 秒）。
-~magent-command-step-output-max-chars~ 限制持久化到 activity ledger 的 process
+~magent-action-process-timeout~ 是 process 的默认 deadline（300 秒）。
+~magent-action-step-output-max-chars~ 限制持久化到 activity ledger 的 process
 与格式化 callback output（默认 24000 characters）；返回给 Workflow Elisp 的值
 不会被截断。
 
 Workflow 正常走到结尾时只能返回用户可见 string 或 nil。Process、agent 和 callback
-Step 失败时会在 generator 内抛出对应的 typed ~magent-command-*-error~，因此可用普通
+Step 失败时会在 generator 内抛出对应的 typed ~magent-action-*-error~，因此可用普通
 ~condition-case~ 恢复。取消是 terminal 状态，不会恢复 Workflow。
-~magent-command-progress~ 仍可发送仅通知用途的进度；每个 Step 的开始和结束会自动
+~magent-action-progress~ 仍可发送仅通知用途的进度；每个 Step 的开始和结束会自动
 写入 activity ledger。
 
 Agent 和 Answer Step 使用 runtime FIFO。Process 和 callback Step 仍由 Invocation
@@ -260,23 +261,15 @@ Agent 和 Answer Step 使用 runtime FIFO。Process 和 callback Step 仍由 Inv
 
 ACP 会把当前 runtime session 精确 scope 内可见的每个 instruction skill 发布成
 ~$name~，agent-shell 将其显示为 ~/$name~。提交 ~/$name 可选说明~ 时，原始文本仍
-作为普通 user turn 保存，同时该 skill 会被显式选择到本次 turn；它不会创建 Command
-Invocation，也不要求 ~default-prompt~。Tool-type skill 不会投影。~/skills~ 使用
-相同的 scope-aware descriptor 在本地列出 instruction skills，不联系 provider。
+作为普通 user turn 保存，同时该 skill 会被显式选择到本次 turn；它不会创建 Action
+Invocation。Tool-type skill 不会投影。~/skills~ 使用相同的 scope-aware descriptor
+在本地列出 instruction skills，不联系 provider。Skill 永远不会投影进 Action registry。
 
-~M-x magent-agent-shell-run-skill-command~ 可以通过受支持的 agent-shell frontend
-经兼容 adapter 选择并运行任意 command-like instruction skill。
-
-现有带 ~default-prompt~ 的 instruction skill 保持兼容：Magent 会把它投影到同一
-command registry，额外提供 legacy ~/name~ adapter；调用时展开预定义 prompt 并激活
-原 skill。Project/user adapter 可以按名称覆盖 installed 或 bundled command；
-~/compact~ 和 ~/skills~ 这两个 core 名称保留。
-
-Project command adapter 会按 canonical project scope 保留。~magent-command-get~、
-~magent-command-list~ 和 ~magent-command-parse~ 接受可选 scope；ACP 在发布菜单和
+Project Action definition 会按 canonical project scope 保留。~magent-action-get~、
+~magent-action-list~ 和 ~magent-action-parse~ 接受可选 scope；ACP 在发布菜单和
 分派命令时都会传入对应 runtime session 的 scope。Skill descriptor catalog 遵循
 相同规则，并保留 inactive project snapshot。因此多个项目 session 可以同时使用
-同名 command 或 skill 覆盖，而不会把一个项目的条目泄漏到另一个项目的菜单。
+同名 Action 或 skill 覆盖，而不会把一个项目的条目泄漏到另一个项目的菜单。
 
 * 用户级 Skill 管理
 
@@ -296,23 +289,25 @@ commit、description、目标位置、文件数、大小，以及是否含 scrip
 Magent 用户 skill 目录（通常是 ~~/.emacs.d/magent/skills/~），不会管理项目本地
 ~.magent/skills/~，也不会读写 ~~/.agents/skills/~。
 
-* 独立 Command Workflows
+* 独立 Action Workflows
 
 Doctor 和 Memory 既可以使用 slash name，也可以使用下列 M-x wrapper；两种入口
-执行同一个 command spec。每次运行都会在 ~magent-session-directory/commands~ 下建立独立 session，
+执行同一个 Action spec。每次运行都会在 ~magent-session-directory/actions~ 下建立独立 session，
 在原始对话中只记录一条紧凑 breadcrumb。
+
+Magent 不迁移、也不读取旧 ~commands/~ Action-session 格式；旧文件原样留在磁盘上。
 
 | Emacs 命令                     | 工作流 | LLM 行为 |
 |--------------------------------+--------+----------|
-| ~magent-command-run-memory-init~       | 建立初始 Emacs profile memory | ~magent-memory-use-llm~ 非 nil 时使用当前 gptel provider |
-| ~magent-command-run-memory-refresh~    | 刷新 managed profile memory | ~magent-memory-use-llm~ 非 nil 时使用当前 gptel provider |
-| ~magent-command-run-memory-clear~      | 停用并清理 managed memory | 本地操作，不请求 LLM 总结 |
-| ~magent-command-run-doctor~            | 诊断 Magent 和当前 runtime 状态 | 发送一次经过脱敏且不带 tools 的分析请求 |
+| ~magent-action-run-memory-init~       | 建立初始 Emacs profile memory | ~magent-memory-use-llm~ 非 nil 时使用当前 gptel provider |
+| ~magent-action-run-memory-refresh~    | 刷新 managed profile memory | ~magent-memory-use-llm~ 非 nil 时使用当前 gptel provider |
+| ~magent-action-run-memory-clear~      | 停用并清理 managed memory | 本地操作，不请求 LLM 总结 |
+| ~magent-action-run-doctor~            | 诊断 Magent 和当前 runtime 状态 | 发送一次经过脱敏且不带 tools 的分析请求 |
 
 ** Memory 初始化与刷新
 
-~M-x magent-command-run-memory-init~ 发现有边界的 Emacs 配置来源，展示 scan plan 供用户
-确认，然后写入 managed profile memory 文件。~M-x magent-command-run-memory-refresh~
+~M-x magent-action-run-memory-init~ 发现有边界的 Emacs 配置来源，展示 scan plan 供用户
+确认，然后写入 managed profile memory 文件。~M-x magent-action-run-memory-refresh~
 重新扫描并保留 user notes。
 
 默认情况下，init 和 refresh 使用当前 gptel provider 总结经过清理的 source
@@ -321,25 +316,25 @@ excerpts。把 ~magent-memory-use-llm~ 自定义为 nil，可以在不向 provid
 
 ** Memory 清理
 
-~M-x magent-command-run-memory-clear~ 经确认后停用 managed profile 并清理生成内容，
+~M-x magent-action-run-memory-clear~ 经确认后停用 managed profile 并清理生成内容，
 同时保留 user notes 和 snapshot。该工作流不会发起 LLM 总结请求。
 
 ** Doctor
 
-~M-x magent-command-run-doctor~ 通过可信的只读 probes 收集有边界的证据，递归脱敏后
+~M-x magent-action-run-doctor~ 通过可信的只读 probes 收集有边界的证据，递归脱敏后
 发送一次不包含 model tools 的请求。使用前缀参数
-~C-u M-x magent-command-run-doctor~ 可以先检查适用的 probe selection。Probe API 和
+~C-u M-x magent-action-run-doctor~ 可以先检查适用的 probe selection。Probe API 和
 安全边界见 [[file:DOCTOR.zh.html][DOCTOR.zh.org]]。
 
 * 查看与管理工作流
 
 | Emacs 命令                        | 用途 |
 |-----------------------------------+------|
-| ~magent-command-list-sessions~   | 选择已保存的 command session，查看最终结果和执行活动 |
-| ~magent-command-cancel~          | 取消提供 cancellation 的活动 isolated command |
+| ~magent-action-list-sessions~   | 选择已保存的 Action session，查看最终结果和执行活动 |
+| ~magent-action-cancel~          | 取消提供 cancellation 的活动 isolated Action |
 | ~magent-open-memory~              | 打开 managed Emacs profile memory 文件 |
 
-Command-session viewer 优先显示最终结果，并默认折叠详细 activity。Cancellation
+Action-session viewer 优先显示最终结果，并默认折叠详细 activity。Cancellation
 按 session 隔离，不会取消其他 Magent 对话所属的工作。
 
 * 如何选择入口

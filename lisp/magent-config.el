@@ -256,11 +256,11 @@ when Magent should use agent-shell's session selection flow."
   :type 'directory
   :group 'magent)
 
-(defcustom magent-command-session-directory nil
-  "Directory where isolated Magent command session files are stored.
-When nil, command sessions are stored under
-`magent-session-directory'/commands."
-  :type '(choice (const :tag "Use magent-session-directory/commands" nil)
+(defcustom magent-action-session-directory nil
+  "Directory where isolated Magent Action session files are stored.
+When nil, Action sessions are stored under
+`magent-session-directory'/actions."
+  :type '(choice (const :tag "Use magent-session-directory/actions" nil)
                  directory)
   :group 'magent)
 
@@ -364,24 +364,24 @@ notice; structured failure status headers are not part of this budget."
   :type 'integer
   :group 'magent)
 
-(defcustom magent-command-buffer-context-max-chars 24000
-  "Maximum total buffer-content characters attached by one command turn.
-The budget is shared by the buffers matched by a standard command turn in
+(defcustom magent-action-buffer-context-max-chars 24000
+  "Maximum total buffer-content characters attached by one Action turn.
+The budget is shared by the buffers matched by a standard Action turn in
 declaration and `buffer-list' order.  Longer content is retained around each
 buffer's point and receives a model-visible truncation notice.  Nil disables
-Magent-owned truncation for command buffer context."
-  :type '(choice (const :tag "Do not truncate command buffer context" nil)
+Magent-owned truncation for Action buffer context."
+  :type '(choice (const :tag "Do not truncate Action buffer context" nil)
                  natnum)
   :group 'magent)
 
-(defcustom magent-command-process-timeout 300
-  "Default timeout in seconds for command Workflow process Steps.
+(defcustom magent-action-process-timeout 300
+  "Default timeout in seconds for Action Workflow process Steps.
 Nil disables the default timeout.  Individual Steps may override this value."
   :type '(choice (const :tag "No timeout" nil)
                  number)
   :group 'magent)
 
-(defcustom magent-command-step-output-max-chars 24000
+(defcustom magent-action-step-output-max-chars 24000
   "Maximum process output characters persisted for one Workflow Step.
 The Workflow receives the complete process result.  Only the durable activity
 copy is bounded, retaining the tail with a truncation marker.  Nil disables

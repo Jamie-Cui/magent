@@ -26,7 +26,7 @@
 (require 'magent-runtime-api)
 (require 'magent-session)
 (require 'magent-ledger)
-(require 'magent-command)
+(require 'magent-action)
 (require 'magent-skills)
 
 (defvar gptel-model)
@@ -131,9 +131,9 @@
 
 (defun magent-acp--command-entry (command)
   "Return ACP available command entry for COMMAND."
-  `((name . ,(magent-command-spec-name command))
+  `((name . ,(magent-action-spec-name command))
     (description . ,(magent-acp--metadata-string
-                     (magent-command-spec-description command)))))
+                     (magent-action-spec-description command)))))
 
 (defun magent-acp--skill-command-name-p (name)
   "Return non-nil when NAME can be projected as an ACP skill command."
@@ -160,7 +160,7 @@ the leading slash, so agent-shell displays them as `/$NAME'."
            runtime-session-or-scope)))
     (vconcat
      (append
-      (mapcar #'magent-acp--command-entry (magent-command-list scope))
+      (mapcar #'magent-acp--command-entry (magent-action-list scope))
       (delq nil
             (mapcar
              #'magent-acp--skill-command-entry
@@ -417,10 +417,10 @@ RESOURCES-BEFORE appear before the frontend resources already stored in INPUT."
          (if (magent-runtime-session-p runtime-session-or-scope)
              (magent-runtime-session-scope runtime-session-or-scope)
            runtime-session-or-scope)))
-    (when-let* ((parsed (magent-command-parse prompt scope)))
+    (when-let* ((parsed (magent-action-parse prompt scope)))
       (list :kind 'command
             :spec (car parsed)
-            :name (magent-command-spec-name (car parsed))
+            :name (magent-action-spec-name (car parsed))
             :argument (cdr parsed)))))
 
 (defun magent-acp--skill-command (prompt &optional runtime-session-or-scope)
@@ -477,7 +477,7 @@ model as ambiguous prompt text."
    on-success
    `((stopReason . ,(magent-acp--stop-reason status result))
      ,@(unless (eq status 'completed)
-         `((error . ,(magent-agent-result-content-string result)))))))
+         `((error . ,(magent-execution-result-content-string result)))))))
 
 (defun magent-acp--notify (client method params)
   "Deliver incoming ACP notification METHOD PARAMS to CLIENT subscribers.
@@ -602,7 +602,7 @@ Each handler runs inside the CLIENT's context buffer (via
                 client session-id
                 `((sessionUpdate . "agent_thought_chunk")
                   (content . ,(magent-acp--content-block text)))))))
-          ('command-progress
+          ('action-progress
            (reset-stream)
            (magent-acp--notify-agent-message
             client session-id (or (plist-get event :text) "")))
@@ -999,8 +999,8 @@ switching semantics."
     ('cancelled "cancelled")
     (_
      (let ((failure-status
-            (and (magent-agent-result-p result)
-                 (plist-get (magent-agent-result-metadata result) :status))))
+            (and (magent-execution-result-p result)
+                 (plist-get (magent-execution-result-metadata result) :status))))
        (pcase failure-status
          ('sampling-limit "max_turn_requests")
          ('max-tokens "max_tokens")
@@ -1018,7 +1018,7 @@ switching semantics."
           ("session/new"
            (let* ((cwd (or (map-elt params 'cwd) default-directory))
                   (scope (magent-session-scope-from-directory cwd))
-                  (_ (magent-runtime-prepare-command-context scope))
+                  (_ (magent-runtime-prepare-context scope))
                   (runtime-session (magent-runtime-session-new scope)))
              (magent-acp--session-success client runtime-session on-success)))
           ("session/list"
@@ -1040,7 +1040,7 @@ switching semantics."
                            runtime-session)))))
                (magent-runtime-session-ensure-registerable
                 scope candidate-session))
-             (magent-runtime-prepare-command-context scope)
+             (magent-runtime-prepare-context scope)
              (let ((runtime-session
                     (or (plist-get candidate :runtime-session)
                         (magent-runtime-session-register
@@ -1089,7 +1089,7 @@ switching semantics."
                (error "Unknown session: %s" session-id))
              (cond
               (command
-               (magent-command-invoke
+               (magent-action-invoke
                 (plist-get command :spec) runtime-session
                 :raw-input instruction-text
                 :argument (plist-get command :argument)
@@ -1191,14 +1191,14 @@ active message running forever)."
              (magent-log "INFO ACP session cancel: session=%s reason=%s"
                          session-id
                          (or (map-elt params 'reason) ""))
-             (or (magent-command-cancel-session runtime-session)
+             (or (magent-action-cancel-session runtime-session)
                  (magent-runtime-cancel runtime-session))))))
       (_
        (magent-log "WARN unsupported ACP notification: %s" method)))))
 
 (defun magent-acp--ensure-command-refresh-hook ()
   "Register command refresh after the ACP frontend is first activated."
-  (add-hook 'magent-command-registry-changed-hook
+  (add-hook 'magent-action-registry-changed-hook
             #'magent-acp--refresh-available-commands))
 
 ;;;###autoload

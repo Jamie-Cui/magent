@@ -194,7 +194,7 @@ This does not affect built-in agents that will be reloaded on initialization."
   "Display a list of all agents.
 With prefix argument, include hidden agents."
   (interactive "P")
-  (magent-runtime-prepare-command-context)
+  (magent-runtime-prepare-context)
   (let ((agents (magent-agent-registry-list include-hidden)))
     (magent--with-display-buffer "*Magent Agents*"
       (insert "Available Agents:\n\n")
@@ -209,10 +209,10 @@ With prefix argument, include hidden agents."
   "Set the default agent to AGENT-NAME."
   (interactive
    (progn
-     (magent-runtime-prepare-command-context)
+     (magent-runtime-prepare-context)
      (list (completing-read "Set default agent: "
                             (magent-agent-registry-list-names)))))
-  (magent-runtime-prepare-command-context)
+  (magent-runtime-prepare-context)
   (if (magent-agent-registry-set-default agent-name)
       (magent-log "INFO default agent set to: %s" agent-name)
     (error "Agent not found: %s" agent-name)))
@@ -229,11 +229,11 @@ With prefix argument, include hidden agents."
   "Save agent named AGENT-NAME to a file."
   (interactive
    (progn
-     (magent-runtime-prepare-command-context)
+     (magent-runtime-prepare-context)
      (list (completing-read "Save agent: "
                             (magent-agent-registry-list-names t)))))
   (require 'magent-agent-file)
-  (magent-runtime-prepare-command-context)
+  (magent-runtime-prepare-context)
   (let ((agent-info (magent-agent-registry-get agent-name)))
     (if agent-info
         (let ((filepath (magent-agent-file-save agent-info directory)))

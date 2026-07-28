@@ -16,8 +16,8 @@
 (require 'seq)
 (require 'subr-x)
 (require 'gptel-request)
-(require 'magent-command)
-(require 'magent-command-session)
+(require 'magent-action)
+(require 'magent-action-session)
 (require 'magent-config)
 (require 'magent-json)
 (require 'magent-llm)
@@ -96,7 +96,7 @@
     (id &key description predicate collector timeout data-categories
         required manual-only)
   "Register a trusted read-only doctor probe ID.
-PREDICATE and COLLECTOR receive the command invocation; COLLECTOR also receives
+PREDICATE and COLLECTOR receive the Action invocation; COLLECTOR also receives
 the current `magent-doctor-state'.  Probe output must contain only JSON-safe
 values.  Custom probes execute as trusted Emacs Lisp and are not sandboxed."
   (let ((key (magent-doctor--normalize-id id)))
@@ -131,18 +131,18 @@ values.  Custom probes execute as trusted Emacs Lisp and are not sandboxed."
                      (magent-doctor-probe-id b))))))
 
 (defun magent-doctor--project-root (context)
-  "Return the project root captured by command CONTEXT, or nil."
-  (let ((scope (magent-command-invocation-origin-scope context)))
+  "Return the project root captured by Action CONTEXT, or nil."
+  (let ((scope (magent-action-invocation-origin-scope context)))
     (cond
      ((stringp scope) (directory-file-name (expand-file-name scope)))
-     ((magent-command-invocation-origin-directory context)
+     ((magent-action-invocation-origin-directory context)
       (when-let* ((root (magent-project-root
-                         (magent-command-invocation-origin-directory context) t)))
+                         (magent-action-invocation-origin-directory context) t)))
         (directory-file-name (expand-file-name root)))))))
 
 (defun magent-doctor--origin-buffer (context)
   "Return CONTEXT's live origin buffer, or nil."
-  (let ((buffer (magent-command-invocation-origin-buffer context)))
+  (let ((buffer (magent-action-invocation-origin-buffer context)))
     (and (buffer-live-p buffer) buffer)))
 
 (defun magent-doctor--json-bool (value)
@@ -163,14 +163,14 @@ values.  Custom probes execute as trusted Emacs Lisp and are not sandboxed."
 
 (defun magent-doctor--core-collector (context _state)
   "Collect bounded Magent runtime facts for CONTEXT."
-  (let* ((parent (magent-command-invocation-parent-session context))
+  (let* ((parent (magent-action-invocation-parent-session context))
          (thread (and parent (magent-session-thread-ledger parent)))
          (agent (and parent (magent-session-agent parent)))
          (active (and (fboundp 'magent-runtime-queue-active-submission)
                       (magent-runtime-queue-active-submission))))
     `((emacs-version . ,emacs-version)
       (system-type . ,system-type)
-      (origin-scope . ,(magent-command-invocation-origin-scope context))
+      (origin-scope . ,(magent-action-invocation-origin-scope context))
       (parent-session-id
        . ,(and parent (magent-session-get-id parent)))
       (parent-thread-status . ,(and thread (magent-thread-status thread)))
@@ -194,9 +194,9 @@ values.  Custom probes execute as trusted Emacs Lisp and are not sandboxed."
       (active-commands
        . ,(mapcar
            (lambda (command-context)
-             (magent-command-spec-name
-              (magent-command-invocation-spec command-context)))
-           (magent-command-session-active-invocations)))
+             (magent-action-spec-name
+              (magent-action-invocation-spec command-context)))
+           (magent-action-session-active-invocations)))
       (pending-approvals
        . ,(if (fboundp 'magent-approval-pending-count)
               (magent-approval-pending-count)
@@ -209,7 +209,7 @@ values.  Custom probes execute as trusted Emacs Lisp and are not sandboxed."
                  (lambda (feature)
                    (when-let* ((source (magent-doctor--feature-source feature)))
                      (cons feature source)))
-                 '(magent magent-command magent-command-session magent-memory
+                 '(magent magent-action magent-action-session magent-memory
                    magent-doctor magent-agent-loop magent-acp)))))))
 
 (defun magent-doctor--buffer-collector (context _state)
@@ -475,12 +475,12 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
    (magent-doctor-list-probes)))
 
 (defun magent-doctor--select-probes (context)
-  "Select probes for command CONTEXT, prompting for a manual run."
+  "Select probes for Action CONTEXT, prompting for a manual run."
   (let* ((automatic (magent-doctor--automatic-probes context))
          (manual
-          (or (plist-get (magent-command-invocation-options context)
+          (or (plist-get (magent-action-invocation-options context)
                          :select-probes)
-              (equal (magent-command-invocation-argument context) "select"))))
+              (equal (magent-action-invocation-argument context) "select"))))
     (if (not manual)
         automatic
       (let* ((available
@@ -622,7 +622,7 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
                    (remaining remaining)
                    (t nil)))
          (id (magent-doctor-probe-id probe)))
-    (magent-command-progress context (format "Running doctor probe %s..." id))
+    (magent-action-progress context (format "Running doctor probe %s..." id))
     (condition-case err
         (let* ((raw
                 (if timeout
@@ -699,7 +699,7 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
     (if (magent-doctor--structured-output-p bounded)
         bounded
       (magent-session-set-metadata-value
-       (magent-command-invocation-session context)
+       (magent-action-invocation-session context)
        'warning "unstructured-model-output")
       (concat
        "* Diagnosis\n"
@@ -748,7 +748,7 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
         (debug-on-quit nil)
         (debug-on-signal nil))
     (unless (or (magent-doctor-state-cancelled-p state)
-                (not (eq (magent-command-invocation-status context) 'active)))
+                (not (eq (magent-action-invocation-status context) 'active)))
       (pcase (magent-llm-event-type event)
       ('completed
        (magent-doctor--cancel-request-timer state)
@@ -804,10 +804,10 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
            :callback
            (lambda (event)
              (magent-doctor--request-callback context state event)))))
-    (magent-command-progress context "Analyzing sanitized diagnostics...")
+    (magent-action-progress context "Analyzing sanitized diagnostics...")
     (let ((handle (magent-llm-gptel-sample request)))
       (if (or (magent-doctor-state-cancelled-p state)
-              (not (eq (magent-command-invocation-status context) 'active)))
+              (not (eq (magent-action-invocation-status context) 'active)))
           (when (and (bufferp handle) (buffer-live-p handle))
             (kill-buffer handle))
         (setf (magent-doctor-state-request-handle state) handle)
@@ -817,7 +817,7 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
                  magent-request-timeout nil
                  (lambda ()
                    (unless (or (magent-doctor-state-cancelled-p state)
-                               (not (eq (magent-command-invocation-status
+                               (not (eq (magent-action-invocation-status
                                          context)
                                         'active)))
                      (magent-doctor--abort-request state)
@@ -826,7 +826,7 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
 
 (defun magent-doctor--start (context done)
   "Start the safe Doctor pipeline for CONTEXT, completing through DONE."
-  (unless (member (magent-command-invocation-argument context)
+  (unless (member (magent-action-invocation-argument context)
                   '("" "select"))
     (user-error "Usage: /doctor [select]"))
   (let* ((probes (magent-doctor--select-probes context))
@@ -836,7 +836,7 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
            :done done
            :project-root (magent-doctor--project-root context))))
     (magent-session-set-metadata-value
-     (magent-command-invocation-session context)
+     (magent-action-invocation-session context)
      'selected-probes
      (vconcat (mapcar #'magent-doctor-probe-id probes)))
     (if (not (magent-doctor--confirm context probes))
@@ -856,9 +856,9 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
           state 'failed "Doctor local collection timed out"))))
     (lambda () (magent-doctor--cancel state))))
 
-(magent-command-defworkflow magent-doctor--workflow (context)
+(magent-define-workflow magent-doctor--workflow (context)
   "Run Doctor as one cancellable callback Step."
-  (magent-command-callback
+  (magent-workflow-callback
       "Diagnose Magent"
       (lambda (done) (magent-doctor--start context done))))
 
@@ -912,21 +912,21 @@ DIRECTORY defaults to STATE's project root.  Return exit and output data."
    :manual-only t))
 
 ;;;###autoload
-(defun magent-command-run-doctor (&optional select-probes)
-  "Run Magent Doctor in an isolated command session.
+(defun magent-action-run-doctor (&optional select-probes)
+  "Run Magent Doctor in an isolated Action session.
 With prefix argument SELECT-PROBES, review probe selection in the minibuffer."
   (interactive "P")
   (let ((debug-on-error nil)
         (debug-on-quit nil)
         (debug-on-signal nil))
-    (magent-command-run
+    (magent-action-run
      "doctor" :options (list :select-probes (and select-probes t)))))
 
 (magent-doctor--register-builtins)
 
-(defun magent-doctor-register-command ()
-  "Register the core Doctor command."
-  (magent-command-register
+(defun magent-doctor-register-action ()
+  "Register the core Doctor Action."
+  (magent-action-register
    "doctor"
    :description "Collect safe local evidence and diagnose Magent-related issues."
    :title "Run Magent Doctor"

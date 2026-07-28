@@ -1278,8 +1278,8 @@ Return the child loop handle when startup succeeds."
                  prompt
                  (lambda (response)
                    (magent-lifecycle-events-stop-subagent subagent-context)
-                   (let* ((success (magent-agent-result-success-p response))
-                          (text (magent-agent-result-content-string response))
+                   (let* ((success (magent-execution-result-success-p response))
+                          (text (magent-execution-result-content-string response))
                           (failed (not success)))
                      (magent-tools--agent-job-update-from-child
                       job child-session

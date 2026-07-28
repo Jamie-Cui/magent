@@ -43,17 +43,18 @@ Manages conversation history, scoped overlays, and runtime state.
 *Key Files:*
 - ~magent-ledger.el~ — Thread/turn/item ledger, status transitions, snapshot shape
 - ~magent-session.el~ — Conversation projections, JSON persistence, per-project sessions
-- ~magent-command-session.el~ — Isolated command persistence, ledger, viewer, and cancellation
+- ~magent-action-session.el~ — Isolated Action persistence, ledger, and cancellation
+- ~magent-action-session-view.el~ — Isolated Action session listing and inspection
 - ~magent-doctor.el~ — Trusted read-only probes and one sanitized tool-free analysis request
 - ~magent-redaction.el~ — Fail-closed redaction for Magent-owned outbound diagnostics and memory
 - ~magent-agent-job.el~ — Durable child-agent job records and JSON shape
-- ~magent-command.el~ — Public layered slash-command registry and invocation lifecycle
-- ~magent-runtime.el~ — Static initialization plus project-local overlay activation for agents, skills, commands, and capabilities
+- ~magent-action.el~ — Workflow DSL, Step runtime, layered Action registry, and Invocation lifecycle
+- ~magent-runtime.el~ — Static initialization plus project-local overlay activation for agents, skills, Actions, and capabilities
 - ~magent-runtime-api.el~ — UI/backend-facing runtime session and prompt API
 - ~magent-runtime-queue.el~ — Global single-execution runtime queue with session-scoped cancellation
 - ~magent-audit.el~ — Persistent JSONL audit logging for permissions and sensitive actions
 
-*What it does:* Maintains ledger-backed conversation history scoped by project, persists to ~~/.emacs.d/magent/sessions/~ by default, stores durable child-agent jobs under ~agent-jobs~, and activates or unloads project-local overlays as scope changes. Ordinary ACP prompts and command-owned agent work submit through ~magent-runtime-api.el~; ~magent-runtime-queue.el~ owns queued/active turn state and session-scoped cancellation. Doctor and Memory use unified command specs exposed through slash and ~M-x magent-command-run-*~, with isolated sessions under ~magent-session-directory/commands~. Doctor is a direct probe pipeline with no model tools; read [[file:DOCTOR.org][DOCTOR.org]] before changing its data boundary or extension API.
+*What it does:* Maintains ledger-backed conversation history scoped by project, persists to ~~/.emacs.d/magent/sessions/~ by default, stores durable child-agent jobs under ~agent-jobs~, and activates or unloads project-local overlays as scope changes. Ordinary ACP prompts and Action-owned agent work submit through ~magent-runtime-api.el~; ~magent-runtime-queue.el~ owns queued/active turn state and session-scoped cancellation. Doctor and Memory use unified Actions exposed through slash and ~M-x magent-action-run-*~, with isolated sessions under ~magent-session-directory/actions~. Doctor is a direct probe pipeline with no model tools; read [[file:DOCTOR.org][DOCTOR.org]] before changing its data boundary or extension API.
 
 ** Layer 3: Agent System
 
@@ -85,7 +86,7 @@ The action layer that executes operations requested by agents.
 
 *What it does:* Tools provide concrete actions and child-agent coordination.
 Skills are data-only instructions injected into prompts. Executable extensions
-belong in trusted commands or first-class catalog tools. Approval gates
+belong in trusted Actions or first-class catalog tools. Approval gates
 dangerous operations.
 
 ** Layer 5: Agent Loop & LLM Integration
@@ -102,23 +103,24 @@ Orchestrates the tool-calling loop and LLM communication.
 ** Layer 6: Supported Frontend
 
 agent-shell is the only supported conversational frontend. Explicit ~M-x~
-command wrappers use the adjacent command lifecycle rather than another UI.
+command wrappers use the adjacent Action lifecycle rather than another UI.
 
 *Key Files:*
 - ~magent-agent-shell.el~ — Magent agent-shell config and prompt routing
 - ~magent-acp.el~ — In-process ACP adapter for agent-shell
-- ~magent-command.el~ — Registered slash/interactive command discovery and invocation
-- ~magent-command-session.el~ — Isolated command persistence and cancellation
+- ~magent-action.el~ — Action Workflow, registry, and slash/interactive projections
+- ~magent-action-session.el~ — Isolated Action persistence and cancellation
+- ~magent-action-session-view.el~ — Isolated Action session listing and inspection
 - ~magent-runtime-api.el~ — UI/backend-facing runtime API
 - ~magent-runtime-queue.el~ — Runtime queue and session-scoped cancellation
 - ~magent-file-loader.el~ — Shared frontmatter parser for agent/skill/capability files
 
 *What it does:* Prompts route through
 ~magent-agent-shell.el~ and the in-process ACP adapter. ACP sends registered
-slash commands through ~magent-command.el~, projects scope-aware instruction
+slash commands through ~magent-action.el~, projects scope-aware instruction
 skill descriptors as ~/$name~, and submits those skill selections plus ordinary
 prompts directly to ~magent-runtime-api.el~. A prompt request remains pending
-until its ordinary turn or command invocation reaches a terminal state. See
+until its ordinary turn or Action Invocation reaches a terminal state. See
 ~docs/UI_BACKENDS.org~ for the frontend development boundary before changing
 this layer.
 
@@ -163,14 +165,12 @@ Skills are instruction-only Markdown injected into the system prompt.
 Companion Elisp is not loaded.
 
 Instruction skills can be selected as one-shot context for the next request.
-The agent-shell frontend exposes native commands such as
-~magent-agent-shell-toggle-skill-for-next-request~ and
-~magent-agent-shell-run-skill-command~. ACP also advertises every visible
-instruction skill as ~/$name~; this explicitly selects the skill for an
-ordinary turn and does not require ~default-prompt~. Skills that define
-~default-prompt~ additionally retain the legacy ~/name~ compatibility action.
-Elisp-native slash commands are registered separately through
-~magent-command-register~ and can be selected with
+The agent-shell frontend exposes
+~magent-agent-shell-toggle-skill-for-next-request~. ACP also advertises every
+visible instruction skill as ~/$name~; this explicitly selects the skill for
+an ordinary turn. Skills never enter the Action registry. Elisp-native Actions
+are registered separately through
+~magent-action-register~ and can be selected with
 ~magent-agent-shell-run-command~. ~/skills~ lists the same descriptors without
 a provider request. The bundled ~/init~ command initializes or refreshes the
 project root ~AGENTS.md~ and accepts optional extra text.
@@ -191,10 +191,11 @@ Skills load from: (1) built-in ~skills/~, (2) legacy user ~~/.emacs.d/magent-ski
 
 Keep the terms separate when adding or reviewing defaults:
 
-- Use a ~command~ for an explicit slash action with an Elisp entry point.
+- Use an ~Action~ for executable trusted Elisp. It may be projected as a slash
+  command, an interactive command, or both.
+- Use ~command~ for the frontend/protocol projection, not the domain object.
 - Use a ~skill~ for reusable instructions that can be selected explicitly or
-  automatically. ~/$name~ is the ACP projection;
-  ~default-prompt~ only adds legacy ~/name~ compatibility.
+  automatically. ~/$name~ is the ACP projection; it does not create an Action.
 - Use a ~capability~ when the skill should be selected automatically from live
   context or prompt text.
 - Co-locate the capability metadata in ~SKILL.md~ when the capability only
@@ -228,17 +229,17 @@ Begin at ~magent.el~ for package initialization, then read
 ** Step 2: Explore the UI Boundary
 
 Read ~docs/UI_BACKENDS.org~, then ~magent-agent-shell.el~, ~magent-acp.el~, and
-~magent-runtime-api.el~. Read ~magent-command.el~ next when tracing slash or
+~magent-runtime-api.el~. Read ~magent-action.el~ next when tracing slash or
 interactive commands. Key insight: agent-shell is the only supported
-conversational frontend; explicit ~M-x~ command wrappers reuse the command
-invocation lifecycle, and shared runtime behavior remains in the runtime API.
+conversational frontend; explicit ~M-x~ command wrappers reuse the Action
+Invocation lifecycle, and shared runtime behavior remains in the runtime API.
 
 ** Step 3: Follow a Request Lifecycle
 
 Trace a request through these files in order:
 1. ~magent-agent-shell.el~ / ~magent-acp.el~ — Receive ~session/prompt~ and normalize frontend input
-2. ~magent-command.el~ / ~magent-skills.el~ — Resolve registered slash commands or scope-aware ~/$skill~ descriptors
-3. ~magent-runtime-api.el~ / ~magent-runtime-queue.el~ / ~magent-ledger.el~ — Record, queue, and start ordinary or command-owned turns
+2. ~magent-action.el~ / ~magent-skills.el~ — Resolve registered slash commands or scope-aware ~/$skill~ descriptors
+3. ~magent-runtime-api.el~ / ~magent-runtime-queue.el~ / ~magent-ledger.el~ — Record, queue, and start ordinary or Action-owned turns
 4. ~magent-agent.el~ — Build the prompt and select agent, skills, capabilities, and tools
 5. ~magent-llm-gptel.el~ / ~magent-agent-loop.el~ — Sample through gptel and own normalized continuation outcomes
 6. ~magent-tool-orchestrator.el~ / ~magent-tools.el~ — Resolve permissions and execute tool implementations
@@ -252,8 +253,8 @@ Read ~magent-permission.el~ to see how tool access is controlled. The ~magent-pe
 Check out:
 - ~magent-agent-file.el~ — How custom agents load from ~.magent/agent/*.md~
 - ~magent-skills.el~ — How skills extend agent capabilities
-- ~magent-command.el~ — How trusted packages register explicit slash or interactive actions
-- ~magent-command-session.el~ — How isolated command invocations persist, report progress, and cancel
+- ~magent-action.el~ — How trusted packages register explicit slash or interactive actions
+- ~magent-action-session.el~ / ~magent-action-session-view.el~ — How isolated Action Invocations persist, report progress, cancel, and render
 - ~magent-file-loader.el~ — The shared frontmatter parser for agents, skills, and capabilities
 
 ** Step 6: Study the Tools
@@ -479,7 +480,7 @@ Skill instructions for the agent.
 
 - *Documentation:* ~README.org~, ~AGENTS.md~ in repo root
 - *Child-agent architecture:* ~docs/AGENT_JOBS.org~
-- *Interactive help:* ~M-x magent-command-run-doctor~ for self-diagnostics
+- *Interactive help:* ~M-x magent-action-run-doctor~ for self-diagnostics
 - *Frontend:* ~M-x magent-start~
 - *Skills:* ~M-x magent-agent-shell-toggle-skill-for-next-request~
 - *Logs:* open ~*magent-log*~ with ~C-x b~

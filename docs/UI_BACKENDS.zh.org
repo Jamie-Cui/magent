@@ -5,7 +5,7 @@
 
 Magent 只支持一个会话式前端： ~agent-shell~ 。它通过进程内 ACP adapter 连接
 Magent runtime。会话式文档和示例必须使用 ~magent-agent-shell.el~ 导出的命令，
-或者直接使用 agent-shell。显式 registered command 也可以通过 ~magent-command~
+或者直接使用 agent-shell。显式 registered command 也可以通过 ~magent-action~
 暴露受信任的 ~M-x~ wrapper；这些 wrapper 不构成另一套会话 frontend。
 
 * 公共接口
@@ -13,15 +13,15 @@ Magent runtime。会话式文档和示例必须使用 ~magent-agent-shell.el~ �
 agent-shell integration 是完整的会话接口。Magent 不再维护并行的 workspace、compose
 buffer、command menu 或自定义 output-buffer frontend。新的会话行为放在 agent-shell
 或 ACP adapter，共享 runtime 行为放在 runtime API；显式 command registration 和
-invocation 则属于 ~magent-command.el~ 。
+invocation 则属于 ~magent-action.el~ 。
 
 * 受支持的模块
 
 - ~magent-agent-shell.el~ 注册 Magent agent-shell 配置，并提供受支持的交互入口。
 - ~magent-acp.el~ 实现进程内 ACP request、notification、response、permission 和
   ~session/update~ adapter。
-- ~magent-command.el~ 负责 registered slash/interactive command discovery 和
-  invocation lifecycle； ~magent-command-session.el~ 提供 isolated durable
+- ~magent-action.el~ 负责 registered slash/interactive command discovery 和
+  invocation lifecycle； ~magent-action-session.el~ 提供 isolated durable
   persistence，但不构成 frontend。
 - ~magent-runtime-api.el~ 是 frontend-neutral runtime/session API。
 - ~magent-runtime-queue.el~ 负责全局单执行队列和 session-scoped cancellation。
@@ -34,7 +34,7 @@ invocation 则属于 ~magent-command.el~ 。
 3. ACP 分别规范化 text 和 resource blocks。本地 ~file://~ resource 会提供 scoped
    request path；history 重建时 resource body 始终保持 user-role context。
 4. ACP 按 runtime session 的精确 scope 解析 registered slash input，并通过
-   ~magent-command.el~ 调用；普通 prompt 直接进入 ~magent-runtime-api.el~ 。Command
+   ~magent-action.el~ 调用；普通 prompt 直接进入 ~magent-runtime-api.el~ 。Command
    拥有的 turn 和 workflow step 同样使用该 API；direct handler 可以不进入通用 agent
    turn 而直接完成。
 5. runtime queue 每次只启动一个 active turn，创建带 ~:ui-visibility 'none~ 的
@@ -61,8 +61,8 @@ Skill discovery 同样保持 frontend-neutral。
 session scope 返回 metadata，但不暴露 prompt body 或 executable handler。因为
 agent-shell 只有一套 slash menu，ACP 会把 instruction skill 展平为 ~$name~，再把
 ~/$name~ 作为普通 ~magent-runtime-submit :skills~ turn 分派。未来 frontend 可以把
-registered commands 与 skill descriptors 展示为两个独立入口；它不应从 command
-registry 反推 skills，也不应要求 ~default-prompt~。
+registered Action command projections 与 skill descriptors 展示为两个独立入口；
+它不应从 Action registry 反推 skills。
 
 * 当前限制
 
@@ -71,7 +71,7 @@ registry 反推 skills，也不应要求 ~default-prompt~。
 - cancellation 是 session-scoped：取消一个 ACP session 会取消该 session 的 active
   和 queued submissions，但不会移除其他 session 的 queued work。
 - 受支持的 frontend 已支持 per-request instruction skill overrides、scope-aware
-  ~/$skill~ projection、Elisp-native slash commands 和 compatibility skill commands；
-  目前不暴露 per-request agent overrides。
+  ~/$skill~ projection 和 Elisp-native Action command projections；目前不暴露
+  per-request agent overrides。
 - ACP session config 暴露 ~Automatic capabilities~ ；关闭后，该 session 后续 turn 不再
   自动解析 contextual capabilities，但显式选择的 instruction skills 仍然生效。

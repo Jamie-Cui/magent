@@ -767,8 +767,8 @@ return that path."
   :tags '(:magent-live-smoke)
   (require 'magent)
   (magent-live-test--with-isolated-runtime
-    (let* ((magent-command--registry nil)
-           (magent-command--active-invocations
+    (let* ((magent-action--registry nil)
+           (magent-action--active-invocations
             (make-hash-table :test #'eq))
            (runtime-session
             (magent-runtime-session-create
@@ -782,13 +782,13 @@ return that path."
         (erase-buffer)
         (insert "snapshot before submission")
         (let ((context-buffer (current-buffer)))
-          (magent-command-register
+          (magent-action-register
            "live-buffer-context"
            :description "Exercise command Answer buffer context."
            :session-policy 'current
            :workflow
            (iter-lambda (_invocation)
-             (magent-command-answer
+             (magent-workflow-answer
                  "Inspect live buffer"
                  "Inspect the attached live buffer."
                :buffers (list context-buffer))))
@@ -797,9 +797,9 @@ return that path."
                        (setq submitted (list session prompt args))
                        (funcall (plist-get args :on-complete)
                                 'completed
-                                (magent-agent-result-completed "done"))
+                                (magent-execution-result-completed "done"))
                        "magent-live-submission")))
-            (magent-command-invoke
+            (magent-action-invoke
              "live-buffer-context" runtime-session
              :on-complete
              (lambda (status result)
@@ -819,7 +819,7 @@ return that path."
             (should-not (string-match-p "changed after submission" snapshot))
             (should (eq (car completion) 'completed))
             (should (equal
-                     (magent-agent-result-content-string (cadr completion))
+                     (magent-execution-result-content-string (cadr completion))
                      "done"))))))))
 
 (ert-deftest magent-live-test-real-simple-prompt ()

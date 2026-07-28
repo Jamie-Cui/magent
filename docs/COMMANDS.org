@@ -1,18 +1,18 @@
-#+title: Commands And LLM Workflows
+#+title: Commands And Action Workflows
 #+magent_lang: en
 #+magent_alt_url: /COMMANDS.zh.html
 #+magent_permalink: /COMMANDS.html
 #+options: toc:t num:nil
 
-Magent has one command registry with two user-facing entry surfaces:
+Magent has one Action registry projected onto two user-facing command surfaces:
 
-- *Slash commands* invoke Elisp-native commands in the current agent-shell
-  conversation. Most bundled commands declare one ordinary agent turn.
-- *Interactive commands* are ~M-x~ wrappers over specs that opt into
+- *Slash commands* invoke Elisp-native Actions in the current agent-shell
+  conversation. Most bundled prompt Actions declare one ordinary agent turn.
+- *Interactive commands* are ~M-x~ wrappers over Actions that opt into
   interactive exposure.
 
 The bundled package provides twelve slash commands. Doctor and the three Memory
-commands also expose ~M-x magent-command-run-*~ wrappers and use isolated
+Actions also expose ~M-x magent-action-run-*~ wrappers and use isolated
 durable sessions.
 
 * Slash Commands
@@ -46,8 +46,8 @@ provider submission.
 | ~/compact~ | Summarize the current conversation      | Replaces older model context with a continuation summary |
 | ~/skills~  | List instruction skills in this session scope | Local, provider-free discovery |
 | ~/doctor~  | Diagnose Magent and current runtime state | Uses bounded probes and one sanitized tool-free request |
-| ~/memory-init~ | Build Emacs profile memory | Uses an isolated command session and confirmation |
-| ~/memory-refresh~ | Refresh managed profile memory | Preserves user notes in an isolated command session |
+| ~/memory-init~ | Build Emacs profile memory | Uses an isolated Action session and confirmation |
+| ~/memory-refresh~ | Refresh managed profile memory | Preserves user notes in an isolated Action session |
 | ~/memory-clear~ | Deactivate managed memory | Confirms and clears generated content locally |
 
 ** ~/compact~
@@ -135,24 +135,24 @@ legacy, and manually renamed files still receive single-file updates.
 ** Alternate Invocation And Extension
 
 ~M-x magent-agent-shell-run-command~ selects and runs any registered slash
-command. The bundled prompt commands are Elisp modules that register through
-the same public API available to third-party packages:
+command. The bundled one-turn prompt Actions are data entries in
+~magent-action-builtins.el~; third-party packages use the same public Action API:
 
 #+begin_src emacs-lisp
-(require 'magent-command)
+(require 'magent-action)
 
 (defun my-magent-review-buffer-p (buffer)
   "Return non-nil when BUFFER contains a reviewable diff."
   (with-current-buffer buffer
     (derived-mode-p 'diff-mode)))
 
-(magent-command-defworkflow my-magent-review (invocation)
+(magent-define-workflow my-magent-review (invocation)
   "Review the current staged changes for INVOCATION."
   (let ((changed-files
-         (magent-command-process
+         (magent-workflow-process
              "List staged files"
              '("git" "diff" "--cached" "--name-only"))))
-    (magent-command-answer
+    (magent-workflow-answer
         "Review staged changes"
         (format
          "Review the staged changes in these files:\n%s"
@@ -168,7 +168,7 @@ the same public API available to third-party packages:
       :append-argument-p t
       :tools '(read_file read_buffer grep bash))))
 
-(magent-command-register
+(magent-action-register
  "my-review"
  :description "Run my package-specific review workflow."
  :title "My package review"
@@ -182,16 +182,16 @@ the same public API available to third-party packages:
 
 Every registration provides exactly one ~:workflow~ function and an explicit
 ~:session-policy~. The Workflow is an Elisp generator defined with
-~magent-command-defworkflow~. Ordinary Elisp owns branching, loops, local
+~magent-define-workflow~. Ordinary Elisp owns branching, loops, local
 state, validation, and calls into Emacs; managed Steps are used only where the
 Workflow must suspend for asynchronous work.
 
 ~:requires~ accepts one Emacs feature symbol or a list of feature symbols.
 Magent calls ~require~ for each feature during invocation preflight. A missing
-feature leaves the command discoverable but makes invocation fail before an
+feature leaves the Action discoverable but makes invocation fail before an
 isolated session is created. This option does not install a package, check for
 executables, or require a project workspace. The removed ~:requires-project~
-option has no Command equivalent.
+option has no Action equivalent.
 
 The tuple ~(NAME, SOURCE-LAYER, canonical SOURCE-SCOPE)~ is one registry
 slot. Registering that slot again replaces its previous definition and makes
@@ -211,7 +211,7 @@ remain independent and still participate in normal precedence resolution.
 A bare pattern is required, so ~'(magent-buffer magit-buffer)~ means two
 required major-mode selectors. Expanded entries accept ~:required-p~,
 ~:regexp~, ~:predicate~, and ~:project-only-p~. A required pattern that
-matches nothing stops the command before submission; an optional one is logged
+matches nothing stops the Action before submission; an optional one is logged
 and skipped. Selector patterns (mode, regexp, and predicate) match all live
 buffers in ~buffer-list~ order and default to project-only when the session has
 a project. Exact buffer and exact-name patterns default to no project filter.
@@ -226,62 +226,62 @@ state, point, selected bounds, retained bounds, narrowing state, and content.
 The immutable snapshot is persisted with the user turn and reused during later
 ledger replay; subsequent edits to the live buffer do not rewrite history.
 
-~magent-command-buffer-context-max-chars~ limits the combined buffer content
+~magent-action-buffer-context-max-chars~ limits the combined buffer content
 to 24000 characters by default. Earlier ~:buffers~ entries have priority. A
 snapshot that exceeds the remaining budget keeps a point-centered window and
 includes a model-visible truncation marker. This budget counts captured buffer
 content, not the resource metadata header.
 
-The model-visible user content order is the expanded command prompt, command
+The model-visible user content order is the expanded Action prompt, Action
 buffer snapshots, then frontend attachments. ~append-argument-p~ defaults to
 nil for an agent Step. Set it to non-nil to append trailing slash text as an
 Additional instruction block; leave it nil when the Workflow has already
-consumed ~magent-command-invocation-argument~. Project scope, frontend facts,
-and attached resource paths still belong to the Command Invocation and are
+consumed ~magent-action-invocation-argument~. Project scope, frontend facts,
+and attached resource paths still belong to the Action Invocation and are
 inherited automatically.
 
 Request context is runtime metadata, not extra model input. Recognized fields
 may affect project instruction discovery, capability resolution, or runtime
 routing, but the plist is not serialized verbatim for the model. Agent and
 Answer Steps may set step-local ~:request-context~ and model-visible
-~:resource-blocks~. Magent owns canonical command metadata. Put other
+~:resource-blocks~. Magent owns canonical Action metadata. Put other
 model-visible instructions and data in the prompt, ~:buffers~, or an attached
 resource.
 
 The managed Step forms are:
 
-- ~magent-command-agent~ runs an intermediate model turn and returns its text
+- ~magent-workflow-agent-turn~ runs an intermediate model turn and returns its text
   by default. It accepts ~:agent~, ~:skills~, ~:buffers~,
   ~:append-argument-p~, ~:tools~, ~:request-context~,
   ~:resource-blocks~, and ~:result~.
-- ~magent-command-answer~ accepts the same model options but is terminal. It
+- ~magent-workflow-answer~ accepts the same model options but is terminal. It
   streams the final answer, ends the Invocation, and does not resume forms
 after the Step.
 
 ~:tools~ is the exact provider tool allowlist for that Step, not merely a
 preflight requirement. Unknown or unavailable names fail before submission.
-- ~magent-command-process~ runs only a non-empty argv list of strings. It
+- ~magent-workflow-process~ runs only a non-empty argv list of strings. It
   captures the call-site directory and process environment, and accepts
   ~:directory~, an ~:environment~ override alist, ~:timeout~, ~:check~,
   ~:result~, ~:record-command~, and ~:record-output~. The default result is
   complete stdout; ~:result 'full~ returns a
-  ~magent-command-process-result~ including stderr, exit status, duration, and
+  ~magent-action-process-result~ including stderr, exit status, duration, and
   timeout state.
-- ~magent-command-callback~ adapts an existing asynchronous Elisp API. Its
+- ~magent-workflow-callback~ adapts an existing asynchronous Elisp API. Its
   start function receives ~DONE~, calls ~(DONE STATUS VALUE)~ exactly once with
   ~completed~, ~failed~, or ~cancelled~, and may return a zero-argument
   cancellation function.
 
-~magent-command-process-timeout~ is the default process deadline (300 seconds).
-~magent-command-step-output-max-chars~ bounds process and formatted callback
+~magent-action-process-timeout~ is the default process deadline (300 seconds).
+~magent-action-step-output-max-chars~ bounds process and formatted callback
 output persisted in the activity ledger (24000 characters); the value returned
 to Workflow Elisp remains untruncated.
 
 A Workflow that reaches its end returns either a user-visible string or nil.
 Failed process, agent, and callback Steps signal typed
-~magent-command-*-error~ conditions inside the generator, so ordinary
+~magent-action-*-error~ conditions inside the generator, so ordinary
 ~condition-case~ can recover. Cancellation is terminal and does not resume the
-Workflow. ~magent-command-progress~ remains available for notification-only
+Workflow. ~magent-action-progress~ remains available for notification-only
 updates; Step start/finish activity is recorded automatically.
 
 Agent and Answer Steps use the runtime FIFO. Process and callback Steps are
@@ -292,26 +292,17 @@ Project-local Markdown never receives trusted Workflow execution authority.
 Every instruction skill visible in the exact runtime session scope is
 advertised through ACP as ~$name~, which agent-shell renders as ~/$name~.
 Submitting ~/$name optional instruction~ preserves that text as the ordinary
-user turn and explicitly selects the skill for that turn. It does not create a
-Command Invocation and does not require ~default-prompt~. Tool-type skills are
-not projected. ~/skills~ lists the same scope-aware instruction descriptors
-locally without contacting the provider.
+user turn and explicitly selects the skill for that turn. It does not create an
+Action Invocation. Tool-type skills are not projected. ~/skills~ lists the same
+scope-aware instruction descriptors locally without contacting the provider.
+Skills are never projected into the Action registry.
 
-~M-x magent-agent-shell-run-skill-command~ selects and runs any command-like
-instruction skill through the compatibility adapter.
-
-Existing instruction skills with a ~default-prompt~ remain compatible: Magent
-additionally projects them into the command registry as legacy ~/name~
-adapters, expands the predefined prompt, and activates the original skill when
-invoked. Project and user adapters can override installed or bundled commands
-by name; the ~/compact~ and ~/skills~ core names remain reserved.
-
-Project command adapters are retained under their canonical project scope.
-~magent-command-get~, ~magent-command-list~, and ~magent-command-parse~ accept an
+Project Action definitions are retained under their canonical project scope.
+~magent-action-get~, ~magent-action-list~, and ~magent-action-parse~ accept an
 optional scope, and ACP always supplies the runtime session's scope for both
 advertisement and dispatch. The skill descriptor catalog follows the same
 scope rule and retains inactive project snapshots. Concurrent sessions for
-different projects can therefore expose same-name command or skill overrides
+different projects can therefore expose same-name Action or skill overrides
 without leaking entries between menus.
 
 * User Skill Management
@@ -336,25 +327,29 @@ a symbolic-link entry removes only the link. The manager uses Magent's user
 skill directories (normally ~~/.emacs.d/magent/skills/~) and never manages
 project-local ~.magent/skills/~ or ~~/.agents/skills/~.
 
-* Isolated Command Workflows
+* Isolated Action Workflows
 
 Doctor and Memory can be invoked through their slash names or the M-x wrappers
-below. Both surfaces execute the same command spec. Every run gets an isolated session under
-~magent-session-directory/commands~ and records only a compact breadcrumb in
+below. Both surfaces execute the same Action spec. Every run gets an isolated
+session under ~magent-session-directory/actions~ and records only a compact
+breadcrumb in
 the originating conversation.
+
+Magent does not migrate or read the former ~commands/~ Action-session format;
+old files are left untouched on disk.
 
 | Emacs command                  | Workflow | LLM behavior |
 |--------------------------------+----------+--------------|
-| ~magent-command-run-memory-init~       | Build initial Emacs profile memory | Uses the current gptel provider when ~magent-memory-use-llm~ is non-nil |
-| ~magent-command-run-memory-refresh~    | Refresh managed profile memory | Uses the current gptel provider when ~magent-memory-use-llm~ is non-nil |
-| ~magent-command-run-memory-clear~      | Deactivate and clear managed memory | Local operation; does not request an LLM summary |
-| ~magent-command-run-doctor~            | Diagnose Magent and current runtime state | Sends one sanitized, tool-free analysis request |
+| ~magent-action-run-memory-init~       | Build initial Emacs profile memory | Uses the current gptel provider when ~magent-memory-use-llm~ is non-nil |
+| ~magent-action-run-memory-refresh~    | Refresh managed profile memory | Uses the current gptel provider when ~magent-memory-use-llm~ is non-nil |
+| ~magent-action-run-memory-clear~      | Deactivate and clear managed memory | Local operation; does not request an LLM summary |
+| ~magent-action-run-doctor~            | Diagnose Magent and current runtime state | Sends one sanitized, tool-free analysis request |
 
 ** Memory Initialization And Refresh
 
-~M-x magent-command-run-memory-init~ discovers bounded Emacs configuration sources,
+~M-x magent-action-run-memory-init~ discovers bounded Emacs configuration sources,
 shows a scan plan for approval, and writes the managed profile memory file.
-~M-x magent-command-run-memory-refresh~ repeats the scan while preserving user notes.
+~M-x magent-action-run-memory-refresh~ repeats the scan while preserving user notes.
 
 By default, init and refresh summarize sanitized source excerpts with the
 current gptel provider. Customize ~magent-memory-use-llm~ to ~nil~ to write a
@@ -363,15 +358,15 @@ to the provider.
 
 ** Memory Clear
 
-~M-x magent-command-run-memory-clear~ deactivates the managed profile and clears its
+~M-x magent-action-run-memory-clear~ deactivates the managed profile and clears its
 generated content after confirmation. User notes and a snapshot are retained.
 This workflow does not perform an LLM summarization request.
 
 ** Doctor
 
-~M-x magent-command-run-doctor~ collects bounded evidence through trusted read-only
+~M-x magent-action-run-doctor~ collects bounded evidence through trusted read-only
 probes, recursively redacts it, and sends one request without model tools. With
-a prefix argument, ~C-u M-x magent-command-run-doctor~ lets the user review applicable
+a prefix argument, ~C-u M-x magent-action-run-doctor~ lets the user review applicable
 probe selection. See [[file:DOCTOR.html][DOCTOR.org]] for the probe API and security
 boundary.
 
@@ -379,11 +374,11 @@ boundary.
 
 | Emacs command                     | Purpose |
 |-----------------------------------+---------|
-| ~magent-command-list-sessions~   | Select a saved command session and inspect its final result and activity |
-| ~magent-command-cancel~          | Cancel an active isolated command that exposes cancellation |
+| ~magent-action-list-sessions~   | Select a saved Action session and inspect its final result and activity |
+| ~magent-action-cancel~          | Cancel an active isolated Action that exposes cancellation |
 | ~magent-open-memory~              | Open the managed Emacs profile memory file |
 
-Command-session viewers show the final result first and keep detailed activity
+Action-session viewers show the final result first and keep detailed activity
 collapsed by default. Cancellation is session-scoped and does not cancel work
 belonging to unrelated Magent conversations.
 

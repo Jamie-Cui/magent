@@ -492,6 +492,25 @@ started."
       (magent-runtime-queue-arbiter-cancel 'runtime submission))
     (nreverse removed)))
 
+(defun magent-runtime-queue-remove-submission (runtime-session submission-id)
+  "Remove queued SUBMISSION-ID owned by exact RUNTIME-SESSION.
+Return the removed submission, or nil when it is not queued."
+  (let (removed kept)
+    (dolist (submission magent-runtime-queue--pending)
+      (if (and (null removed)
+               (eq (magent-runtime-submission-session submission)
+                   runtime-session)
+               (equal (magent-runtime-submission-id submission)
+                      submission-id))
+          (setq removed submission)
+        (push submission kept)))
+    (setq magent-runtime-queue--pending (nreverse kept))
+    (when removed
+      (setf (magent-runtime-submission-status removed) 'cancelled
+            (magent-runtime-submission-finished-at removed) (float-time))
+      (magent-runtime-queue-arbiter-cancel 'runtime removed))
+    removed))
+
 (defun magent-runtime-queue--submission-session-object (submission)
   "Return the Magent session captured by runtime SUBMISSION, or nil."
   (when-let* ((runtime-session

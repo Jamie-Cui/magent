@@ -45,17 +45,18 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 
 - ~magent-ledger.el~ ：thread/turn/item ledger、状态转移和 snapshot shape。
 - ~magent-session.el~ ：conversation projections、JSON persistence、per-project sessions。
-- ~magent-command-session.el~ ：isolated command 的持久化、ledger、viewer 与取消。
+- ~magent-action-session.el~ ：isolated Action 的持久化、ledger 与取消。
+- ~magent-action-session-view.el~ ：isolated Action session 的列表与查看。
 - ~magent-doctor.el~ ：受信任只读 probes 和一次脱敏后的无工具分析请求。
 - ~magent-redaction.el~ ：Magent-owned outbound diagnostics 与 memory 的 fail-closed 脱敏。
 - ~magent-agent-job.el~ ：durable child-agent job records 和 JSON shape。
-- ~magent-command.el~ ：公开的分层 slash-command registry 和 invocation lifecycle。
-- ~magent-runtime.el~ ：静态初始化，以及 agents、skills、commands、capabilities 的 project-local overlay activation。
+- ~magent-action.el~ ：Workflow DSL、Step runtime、分层 Action registry 和 Invocation lifecycle。
+- ~magent-runtime.el~ ：静态初始化，以及 agents、skills、Actions、capabilities 的 project-local overlay activation。
 - ~magent-runtime-api.el~ ：UI/backend-facing runtime session 和 prompt API。
 - ~magent-runtime-queue.el~ ：全局单执行 runtime queue 和 session-scoped cancellation。
 - ~magent-audit.el~ ：permission 和 sensitive action 的持久 JSONL audit logging。
 
-*职责：* 维护 project-scoped、ledger-backed conversation history，默认持久化到 ~~/.emacs.d/magent/sessions/~ ，在 ~agent-jobs~ 下保存 durable child-agent jobs，并在 scope 变化时加载或卸载 project-local overlays。普通 ACP prompt 和 command-owned agent work 都通过 ~magent-runtime-api.el~ 提交； ~magent-runtime-queue.el~ 负责 queued/active turn state 和 session-scoped cancellation。Doctor 和 Memory 使用同时暴露为 slash 与 ~M-x magent-command-run-*~ 的统一 command spec，并在 ~magent-session-directory/commands~ 下使用独立 session。Doctor 是不向模型开放工具的 direct probe pipeline；修改其数据边界或扩展 API 前先读 [[file:DOCTOR.zh.org][DOCTOR.zh.org]]。
+*职责：* 维护 project-scoped、ledger-backed conversation history，默认持久化到 ~~/.emacs.d/magent/sessions/~ ，在 ~agent-jobs~ 下保存 durable child-agent jobs，并在 scope 变化时加载或卸载 project-local overlays。普通 ACP prompt 和 Action-owned agent work 都通过 ~magent-runtime-api.el~ 提交； ~magent-runtime-queue.el~ 负责 queued/active turn state 和 session-scoped cancellation。Doctor 和 Memory 使用同时暴露为 slash 与 ~M-x magent-action-run-*~ 的统一 Action，并在 ~magent-session-directory/actions~ 下使用独立 session。Doctor 是不向模型开放工具的 direct probe pipeline；修改其数据边界或扩展 API 前先读 [[file:DOCTOR.zh.org][DOCTOR.zh.org]]。
 
 ** 第 3 层：Agent System
 
@@ -89,7 +90,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 - ~magent-approval.el~ ：敏感操作的 user approval prompts。
 
 *职责：* Tools 提供具体动作；skills 只提供 data-only instructions；可执行扩展使用
-trusted command 或 canonical catalog 中的一等 tool；capability resolver 根据上下文
+trusted Action 或 canonical catalog 中的一等 tool；capability resolver 根据上下文
 自动激活少量 instruction skills；approval system gate dangerous operations。
 
 ** 第 5 层：Agent Loop 与 LLM Integration
@@ -107,23 +108,24 @@ trusted command 或 canonical catalog 中的一等 tool；capability resolver �
 ** 第 6 层：受支持的 Frontend
 
 agent-shell 是唯一受支持的会话式 frontend。显式 ~M-x~ command wrapper 使用相邻的
-command lifecycle，而不是另一套 UI。
+Action lifecycle，而不是另一套 UI。
 
 *关键文件：*
 
 - ~magent-agent-shell.el~ ：Magent agent-shell config 和 prompt routing。
 - ~magent-acp.el~ ：in-process ACP adapter。
-- ~magent-command.el~ ：registered slash/interactive command discovery 和 invocation。
-- ~magent-command-session.el~ ：isolated command persistence 和 cancellation。
+- ~magent-action.el~ ：Action Workflow、registry 和 slash/interactive projections。
+- ~magent-action-session.el~ ：isolated Action persistence 和 cancellation。
+- ~magent-action-session-view.el~ ：isolated Action session listing 和 inspection。
 - ~magent-runtime-api.el~ ：UI/backend-facing runtime API。
 - ~magent-runtime-queue.el~ ：runtime queue 和 session-scoped cancellation。
 - ~magent-file-loader.el~ ：agent/skill/capability 共享 frontmatter parser。
 
 *职责：* Prompt 走 agent-shell 和进程内 ACP adapter。ACP 把 registered slash
-command 交给 ~magent-command.el~，把 scope-aware instruction skill descriptor
+command 交给 ~magent-action.el~，把 scope-aware instruction skill descriptor
 投影为 ~/$name~，并把该 skill selection 或普通 prompt 直接提交
-~magent-runtime-api.el~。Prompt request 会保持 pending，直到对应普通 turn 或 command
-invocation 进入 terminal state。修改该层前先读 ~docs/UI_BACKENDS.org~ 中的 frontend
+~magent-runtime-api.el~。Prompt request 会保持 pending，直到对应普通 turn 或 Action
+Invocation 进入 terminal state。修改该层前先读 ~docs/UI_BACKENDS.org~ 中的 frontend
 开发边界。
 
 ** 第 7 层：Events
@@ -169,11 +171,9 @@ Agent modes：
 Skill 只支持注入 system prompt 的 instruction Markdown，不加载 companion Elisp。
 
 Instruction skills 可以作为下一次请求的一次性上下文。Agent-shell frontend 提供
-~magent-agent-shell-toggle-skill-for-next-request~ 和
-~magent-agent-shell-run-skill-command~ 等命令。ACP 还会把每个可见 instruction skill
-发布成 ~/$name~；这会在一次普通 turn 中显式选择 skill，不要求 ~default-prompt~。
-带 ~default-prompt~ 的 skill 额外保留 legacy ~/name~ 兼容 action。Elisp-native
-slash command 通过 ~magent-command-register~ 单独注册，并可用
+~magent-agent-shell-toggle-skill-for-next-request~。ACP 还会把每个可见 instruction
+skill 发布成 ~/$name~；这会在一次普通 turn 中显式选择 skill。Skill 永远不会进入
+Action registry。Elisp-native Action 通过 ~magent-action-register~ 单独注册，并可用
 ~magent-agent-shell-run-command~ 选择。~/skills~ 不请求 provider，直接列出相同的
 descriptors。内置 ~/init~ 命令用于初始化或刷新项目根目录 ~AGENTS.md~。
 
@@ -190,10 +190,11 @@ Skills 加载来源：内置 ~skills/~、存在时兼容的 legacy 用户目录 
 
 新增或 review 默认能力时保持这些概念分开：
 
-- 显式 slash action 需要 Elisp 入口时，用 ~command~ 。
+- 需要 executable trusted Elisp 时，用 ~Action~；它可以投影成 slash command、
+  interactive command 或两者。
+- ~command~ 只表示 frontend/protocol projection，不是领域对象。
 - 需要可复用 instruction，并且可以被显式或自动选择时，用 ~skill~；
-  ~/$name~ 是 ACP projection，~default-prompt~ 只额外提供 legacy
-  ~/name~ 兼容。
+  ~/$name~ 是 ACP projection，不会创建 Action。
 - 需要根据 live context 或 prompt text 自动选择某个 skill 时，用 ~capability~ 。
 - 如果 capability 只是为了激活同一个 skill，就把 metadata 和说明共址在
   ~SKILL.md~ 。只有当触发 metadata 不属于单个 skill，或属于 project overlay 时，
@@ -227,8 +228,8 @@ interactive entry points。
 
 读 ~docs/UI_BACKENDS.org~ ，再读 ~magent-agent-shell.el~ 、 ~magent-acp.el~ 和
 ~magent-runtime-api.el~ 。跟踪 slash 或 interactive command 时再读
-~magent-command.el~ 。关键点：agent-shell 是唯一受支持的会话式 frontend；显式 ~M-x~
-command wrapper 复用 command invocation lifecycle，共享 runtime 行为仍留在 runtime
+~magent-action.el~ 。关键点：agent-shell 是唯一受支持的会话式 frontend；显式 ~M-x~
+command wrapper 复用 Action Invocation lifecycle，共享 runtime 行为仍留在 runtime
 API。
 
 ** Step 3：请求生命周期
@@ -236,9 +237,9 @@ API。
 按顺序跟踪一次请求：
 
 1. ~magent-agent-shell.el~ / ~magent-acp.el~ ：接收 ~session/prompt~ 并规范化 frontend input。
-2. ~magent-command.el~ / ~magent-skills.el~ ：解析 registered slash command 或
+2. ~magent-action.el~ / ~magent-skills.el~ ：解析 registered slash command 或
    scope-aware ~/$skill~ descriptor。
-3. ~magent-runtime-api.el~ / ~magent-runtime-queue.el~ / ~magent-ledger.el~ ：记录、排队并启动普通或 command-owned turn。
+3. ~magent-runtime-api.el~ / ~magent-runtime-queue.el~ / ~magent-ledger.el~ ：记录、排队并启动普通或 Action-owned turn。
 4. ~magent-agent.el~ ：构造 prompt，选择 agent、skills、capabilities 和 tools。
 5. ~magent-llm-gptel.el~ / ~magent-agent-loop.el~ ：通过 gptel sampling，并负责 normalized continuation outcomes。
 6. ~magent-tool-orchestrator.el~ / ~magent-tools.el~ ：解析权限并执行 tool implementations。
@@ -253,8 +254,8 @@ API。
 
 - ~magent-agent-file.el~ ：custom agents 如何从 ~.magent/agent/*.md~ 加载。
 - ~magent-skills.el~ ：skills 如何扩展 agent 能力。
-- ~magent-command.el~ ：trusted package 如何注册显式 slash 或 interactive action。
-- ~magent-command-session.el~ ：isolated command invocation 如何持久化、报告 progress 和取消。
+- ~magent-action.el~ ：trusted package 如何注册显式 slash 或 interactive action。
+- ~magent-action-session.el~ / ~magent-action-session-view.el~ ：isolated Action Invocation 如何持久化、报告 progress、取消和渲染。
 - ~magent-file-loader.el~ ：agent、skill、capability 共用的 frontmatter parser。
 
 ** Step 6：工具
@@ -411,7 +412,7 @@ Skill instructions for the agent.
 
 - *Documentation:* ~README.org~ 和仓库根目录 ~AGENTS.md~
 - *Child-agent architecture:* ~docs/AGENT_JOBS.org~
-- *Interactive help:* ~M-x magent-command-run-doctor~
+- *Interactive help:* ~M-x magent-action-run-doctor~
 - *Frontend:* ~M-x magent-start~ 。
 - *Skills:* ~M-x magent-agent-shell-toggle-skill-for-next-request~ 。
 - *Logs:* 使用 ~C-x b~ 打开 ~*magent-log*~ 。

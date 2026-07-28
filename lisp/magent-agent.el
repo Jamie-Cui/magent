@@ -170,7 +170,7 @@ receives the same instruction-provenance and permission invariants."
                  request-context capability-resolution text-callback request-live-p
                  request-state)
   "Process USER-PROMPT through the AI agent using the Magent loop.
-CALLBACK is called with one final `magent-agent-result'.
+CALLBACK is called with one final `magent-execution-result'.
 AGENT-INFO is the agent to use (defaults to session agent or registry default).
 SKILL-NAMES is a list of skill name strings to activate for this request.
 EVENT-CONTEXT is an optional existing event context to reuse.
@@ -225,7 +225,6 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                   (or (magent-request-context-live-p request-state)
                       request-live-p)
                   (magent-request-context-event-context request-state) context))
-          (magent-session-set-agent session agent)
           ;; Freeze scalar audit attribution after the request-local agent is
           ;; selected.  Later UI/session mutations must not relabel this turn.
           (when request-state
@@ -622,9 +621,9 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                    (when callback
                      (funcall callback
                               (if (eq status 'completed)
-                                  (magent-agent-result-completed
+                                  (magent-execution-result-completed
                                    response metadata)
-                                (magent-agent-result-failed
+                                (magent-execution-result-failed
                                  response metadata)))))
                   (start-streaming
                    ()
@@ -774,7 +773,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
   "Run one Magent turn for SESSION with PROMPT.
 This is the UI-neutral execution entry point.  OBSERVER receives
 Magent-native request events through REQUEST-CONTEXT.  ON-COMPLETE is
-called with one final `magent-agent-result'."
+called with one final `magent-execution-result'."
   (unless session
     (error ":session is required"))
   (unless prompt

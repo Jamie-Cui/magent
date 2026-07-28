@@ -1,4 +1,4 @@
-;;; magent-command-skills.el --- Skill discovery command  -*- lexical-binding: t; -*-
+;;; magent-action-skills.el --- Skill discovery command  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -8,15 +8,15 @@
 
 ;; Provider-free /skills command backed by the scope-aware Magent skill
 ;; catalog.  Frontends may project the same descriptors through other
-;; interaction surfaces without coupling skills to the command registry.
+;; interaction surfaces without coupling skills to the Action registry.
 
 ;;; Code:
 
 (require 'subr-x)
-(require 'magent-command)
+(require 'magent-action)
 (require 'magent-skills)
 
-(defun magent-command-skills--description-string (value)
+(defun magent-action-skills--description-string (value)
   "Return skill description VALUE as display text."
   (cond
    ((stringp value) value)
@@ -26,11 +26,11 @@
                  ", "))
    (t (format "%s" value))))
 
-(magent-command-defworkflow magent-command-skills--workflow (invocation)
+(magent-define-workflow magent-action-skills--workflow (invocation)
   "List instruction skills visible to INVOCATION."
   (let ((descriptors
          (magent-skills-list-descriptors
-          (magent-command-invocation-scope invocation)
+          (magent-action-invocation-scope invocation)
           'instruction)))
     (if descriptors
         (string-join
@@ -39,7 +39,7 @@
           (mapcar
            (lambda (descriptor)
              (let ((description
-                    (magent-command-skills--description-string
+                    (magent-action-skills--description-string
                      (magent-skill-descriptor-description descriptor))))
                (if (string-empty-p description)
                    (format "- %s"
@@ -51,14 +51,14 @@
          "\n")
       "No skills configured.")))
 
-(defun magent-command-skills-register ()
-  "Register the reserved Magent skill discovery command."
-  (magent-command-register
+(defun magent-action-skills-register ()
+  "Register the reserved Magent skill discovery Action."
+  (magent-action-register
    "skills"
    :description "List instruction skills available in this session."
    :session-policy 'current
-   :workflow #'magent-command-skills--workflow
+   :workflow #'magent-action-skills--workflow
    :source-layer 'core))
 
-(provide 'magent-command-skills)
-;;; magent-command-skills.el ends here
+(provide 'magent-action-skills)
+;;; magent-action-skills.el ends here

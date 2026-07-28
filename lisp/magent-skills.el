@@ -23,7 +23,6 @@
 (require 'magent-log)
 (require 'magent-runtime)
 
-(declare-function magent-command-refresh-skill-adapters "magent-command")
 (declare-function magent-session-scope-origin "magent-session")
 
 ;;; Built-in skill metadata
@@ -49,7 +48,6 @@ through these stages: understand intent -> write SKILL.md -> test in Emacs -> it
 name: skill-name
 description: When to trigger and what this skill does
 tools: bash, read        # optional: tools this skill needs
-default-prompt: Optional portable compatibility slash-command prompt
 requires-project: true   # optional: reject the skill in global sessions
 capability: true         # optional: auto-activate this instruction skill by context
 ---
@@ -63,10 +61,8 @@ The Markdown body is injected into the system prompt when the skill is active.
 Use for workflow guidance, coding standards, domain knowledge.
 Keep under 200 lines to avoid bloating the system prompt.
 Agent-shell exposes every available instruction skill as `/$name`.
-Add `default-prompt` only when this Markdown skill should additionally expose
-the legacy `/name` compatibility adapter with a predefined prompt.  A trusted
-installed Magent extension that needs Elisp execution or a multi-step workflow
-should instead register through `magent-command-register`; project-local
+A trusted installed Magent extension that needs Elisp execution or a
+multi-step workflow should register a first-class action; project-local
 Markdown remains data-only.
 
 **capability metadata**: Instruction skills can also declare `capability: true`
@@ -151,7 +147,6 @@ use a skill - make it count."
   (type 'instruction)
   (tools nil)
   (prompt nil)
-  (default-prompt nil)
   (requires-project nil)
   (file-path nil)
   (source-layer 'builtin)
@@ -167,8 +162,7 @@ use a skill - make it count."
   tools
   requires-project
   source-layer
-  source-scope
-  command-like-p)
+  source-scope)
 
 ;;; Skill registry
 
@@ -291,10 +285,7 @@ their overlays are inactive so live frontend sessions remain scope-correct.")
    :tools (copy-sequence (magent-skill-tools skill))
    :requires-project (magent-skill-requires-project skill)
    :source-layer (magent-skill-source-layer skill)
-   :source-scope (magent-skill-source-scope skill)
-   :command-like-p
-   (and (stringp (magent-skill-default-prompt skill))
-        (not (string-blank-p (magent-skill-default-prompt skill))))))
+   :source-scope (magent-skill-source-scope skill)))
 
 (defun magent-skills-list-descriptors (&optional scope type)
   "Return effective skill descriptors for SCOPE, optionally limited to TYPE.
@@ -356,22 +347,6 @@ sorted by skill name and do not expose prompt bodies or executable handlers."
       (when (and (stringp name) (not (member name seen)))
         (push name seen)
         (push name result)))))
-
-(defun magent-skills-command-names ()
-  "Return sorted instruction skill names with a default prompt."
-  (sort (cl-remove-if-not #'magent-skills-default-prompt
-                          (magent-skills-list-by-type 'instruction))
-        #'string<))
-
-(defun magent-skills-command-text (skill-name extra-instruction)
-  "Return SKILL-NAME's default prompt plus EXTRA-INSTRUCTION."
-  (let ((prompt (magent-skills-default-prompt skill-name))
-        (extra (string-trim (or extra-instruction ""))))
-    (unless prompt
-      (user-error "Magent: skill '%s' has no default prompt" skill-name))
-    (if (string-blank-p extra)
-        prompt
-      (concat prompt "\n\nAdditional instruction:\n" extra))))
 
 (defun magent-skills-missing-tools (skill-name available-tools)
   "Return SKILL-NAME's declared tools absent from AVAILABLE-TOOLS.
@@ -455,14 +430,6 @@ If SKILL-NAMES is a list, only include those skills."
                                 "")
                               prompt)))
                   skills))))
-
-(defun magent-skills-default-prompt (skill-name)
-  "Return the default prompt for instruction skill SKILL-NAME, if any."
-  (when-let* ((skill (magent-skills-get skill-name))
-              ((eq (magent-skill-type skill) 'instruction))
-              (prompt (magent-skill-default-prompt skill))
-              ((not (string-blank-p prompt))))
-    prompt))
 
 ;;; Built-in skill registration
 
@@ -567,18 +534,6 @@ TOOLS-SPEC can be a string, symbol, or list."
             tools-spec))
    (t nil)))
 
-(defun magent-skills--parse-text (text-spec)
-  "Parse TEXT-SPEC frontmatter into a string.
-The shared frontmatter loader splits comma-containing scalars for
-list fields.  Text fields such as `default-prompt' need those
-pieces joined back together."
-  (cond
-   ((null text-spec) nil)
-   ((stringp text-spec) text-spec)
-   ((listp text-spec)
-    (mapconcat (lambda (item) (format "%s" item)) text-spec ", "))
-   (t (format "%s" text-spec))))
-
 (defun magent-skills-load-file (filepath)
   "Load a skill from FILEPATH.
 Returns the skill if successful, nil otherwise."
@@ -603,9 +558,6 @@ Returns the skill if successful, nil otherwise."
                          :type type
                          :tools tools
                          :prompt (when (> (length body) 0) body)
-                         :default-prompt
-                         (magent-skills--parse-text
-                          (plist-get frontmatter :default-prompt))
                          :requires-project
                          (eq (plist-get frontmatter :requires-project) t)
                          :file-path filepath
@@ -656,13 +608,8 @@ local skills after static definitions are reloaded."
      'magent-skills--registry
      #'magent-skill-file-path
      #'magent-skills-initialize-static)
-    (when (fboundp 'magent-command-refresh-skill-adapters)
-      (magent-command-refresh-skill-adapters 'global))
     (when project-scope
       (magent-skills-load-project-scope project-scope))
-    (when (and project-scope
-               (fboundp 'magent-command-refresh-skill-adapters))
-      (magent-command-refresh-skill-adapters project-scope))
     (magent-skills--record-scope-catalog 'global)
     (when project-scope
       (magent-skills--record-scope-catalog project-scope))))
@@ -682,7 +629,7 @@ local skills after static definitions are reloaded."
 (defun magent-list-skills ()
   "Display a list of all registered skills."
   (interactive)
-  (magent-runtime-prepare-command-context)
+  (magent-runtime-prepare-context)
   (let ((skills (mapcar #'cdr (magent-skills--effective-entries))))
     (magent--with-display-buffer "*Magent Skills*"
       (insert "Available Skills:\n\n")
@@ -710,7 +657,7 @@ local skills after static definitions are reloaded."
 This clears file-based skills and reloads them from disk.
 Built-in skills are preserved."
   (interactive)
-  (magent-runtime-prepare-command-context)
+  (magent-runtime-prepare-context)
   (magent-skills-reload)
   (message "Skills reloaded: %s" (mapconcat #'identity (magent-skills-list) ", ")))
 
@@ -719,9 +666,9 @@ Built-in skills are preserved."
   "Show detailed information about SKILL-NAME."
   (interactive
    (progn
-     (magent-runtime-prepare-command-context)
+     (magent-runtime-prepare-context)
      (list (completing-read "Describe skill: " (magent-skills-list) nil t))))
-  (magent-runtime-prepare-command-context)
+  (magent-runtime-prepare-context)
   (let ((skill (magent-skills-get skill-name)))
     (if (not skill)
         (message "Skill '%s' not found" skill-name)

@@ -119,27 +119,27 @@ When VALUE is nil, remove KEY.  Return SESSION metadata."
      ((symbolp value) (symbol-name value))
      (t (format "%s" value)))))
 
-(defun magent-session--command-kind-p (kind)
-  "Return non-nil when KIND denotes an isolated command session."
-  (or (eq kind 'command)
-      (equal kind "command")))
+(defun magent-session--action-kind-p (kind)
+  "Return non-nil when KIND denotes an isolated action session."
+  (or (eq kind 'action)
+      (equal kind "action")))
 
-(defun magent-session-command-scope-p (scope)
-  "Return non-nil when SCOPE is an isolated command scope."
+(defun magent-session-action-scope-p (scope)
+  "Return non-nil when SCOPE is an isolated action scope."
   (and (listp scope)
-       (magent-session--command-kind-p (plist-get scope :kind))))
+       (magent-session--action-kind-p (plist-get scope :kind))))
 
-(defun magent-session-command-scope
-    (session-id command origin-scope)
-  "Return an isolated command scope for SESSION-ID, COMMAND, and ORIGIN-SCOPE."
-  (list :kind 'command
+(defun magent-session-action-scope
+    (session-id action origin-scope)
+  "Return an isolated action scope for SESSION-ID, ACTION, and ORIGIN-SCOPE."
+  (list :kind 'action
         :id session-id
-        :command command
+        :action action
         :origin-scope origin-scope))
 
 (defun magent-session--scope-origin (scope)
   "Return ordinary project/global origin for SCOPE."
-  (if (magent-session-command-scope-p scope)
+  (if (magent-session-action-scope-p scope)
       (or (plist-get scope :origin-scope) 'global)
     scope))
 
@@ -153,8 +153,8 @@ When VALUE is nil, remove KEY.  Return SESSION metadata."
       (magent-session--scope-origin scope)
       'global))
 
-(defun magent-session--command-name-for-storage (name)
-  "Return safe command NAME for storage paths."
+(defun magent-session--action-name-for-storage (name)
+  "Return safe action NAME for storage paths."
   (let ((raw (cond
               ((stringp name) name)
               ((symbolp name) (symbol-name name))
@@ -164,13 +164,13 @@ When VALUE is nil, remove KEY.  Return SESSION metadata."
      "[^[:alnum:]_.-]+" "-"
      (string-trim raw))))
 
-(defun magent-session-command-directory (&optional command)
-  "Return isolated command session directory, optionally for COMMAND."
-  (let ((root (or magent-command-session-directory
-                  (expand-file-name "commands" magent-session-directory))))
-    (if command
+(defun magent-session-action-directory (&optional action)
+  "Return isolated action session directory, optionally for ACTION."
+  (let ((root (or magent-action-session-directory
+                  (expand-file-name "actions" magent-session-directory))))
+    (if action
         (expand-file-name
-         (magent-session--command-name-for-storage command)
+         (magent-session--action-name-for-storage action)
          root)
       root)))
 
@@ -570,8 +570,8 @@ selected agent, and history limit so runtime UI handles remain valid."
 (defun magent-session--scope-storage-directory (scope)
   "Return the storage directory for SCOPE."
   (cond
-   ((magent-session-command-scope-p scope)
-    (magent-session-command-directory (plist-get scope :command)))
+   ((magent-session-action-scope-p scope)
+    (magent-session-action-directory (plist-get scope :action)))
    ((eq scope 'global)
     magent-session-directory)
    (t
@@ -633,9 +633,9 @@ Fall back to the file modification time for legacy filenames."
       (magent-session--sort-files-by-time
        (directory-files-recursively projects-dir "\\.json$")))))
 
-(defun magent-session-list-command-files (&optional command)
-  "Return isolated command session files, optionally limited to COMMAND."
-  (let ((directory (magent-session-command-directory command)))
+(defun magent-session-list-action-files (&optional action)
+  "Return isolated action session files, optionally limited to ACTION."
+  (let ((directory (magent-session-action-directory action)))
     (when (file-directory-p directory)
       (magent-session--sort-files-by-time
        (directory-files-recursively directory "\\.json$")))))
@@ -670,7 +670,7 @@ Fall back to the file modification time for legacy filenames."
                           "Session id %S does not match filename %S"
                           id file-id)))))
                (kind (cdr (assq 'kind data)))
-               (command (cdr (assq 'command data)))
+               (action (cdr (assq 'action data)))
                (status (cdr (assq 'status data)))
                (title (cdr (assq 'title data)))
                (parent-session-id (cdr (assq 'parent-session-id data)))
@@ -689,7 +689,7 @@ Fall back to the file modification time for legacy filenames."
                 :project-root (magent-session--normalize-project-root project-root)
                 :summary-title summary-title
                 :kind kind
-                :command command
+                :action action
                 :status status
                 :title title
                 :parent-session-id parent-session-id
@@ -701,7 +701,7 @@ Fall back to the file modification time for legacy filenames."
            :project-root nil
            :summary-title nil
            :kind nil
-           :command nil
+           :action nil
            :status nil
            :title nil
            :parent-session-id nil
@@ -851,7 +851,7 @@ temporarily rebinds the ambient current session or scope."
                (origin-scope (magent-session--origin-scope-for-session
                               session scope))
                (kind (magent-session--metadata-string session 'kind))
-               (command (magent-session--metadata-string session 'command))
+               (action (magent-session--metadata-string session 'action))
                (status (magent-session--metadata-string session 'status))
                (title (magent-session--metadata-string session 'title))
                (parent-session-id
@@ -866,8 +866,8 @@ temporarily rebinds the ambient current session or scope."
                        (schema-version . ,magent-session-schema-version)
                        ,@(when kind
                            `((kind . ,kind)))
-                       ,@(when command
-                           `((command . ,command)))
+                       ,@(when action
+                           `((action . ,action)))
                        ,@(when status
                            `((status . ,status)))
                        ,@(when title
@@ -986,7 +986,7 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
                           "Session id %S does not match filename %S"
                           id file-id)))))
                (kind (cdr (assq 'kind data)))
-               (command (cdr (assq 'command data)))
+               (action (cdr (assq 'action data)))
                (status (cdr (assq 'status data)))
                (title (cdr (assq 'title data)))
                (parent-session-id (cdr (assq 'parent-session-id data)))
@@ -1022,7 +1022,7 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
                (metadata (append metadata-raw
                                  (delq nil
                                        `((kind . ,kind)
-                                         (command . ,command)
+                                         (action . ,action)
                                          (status . ,status)
                                          (title . ,title)
                                          (parent-session-id
