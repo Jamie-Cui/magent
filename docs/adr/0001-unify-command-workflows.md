@@ -1,6 +1,6 @@
 # Use one Elisp Workflow model for commands
 
-- Status: Accepted
+- Status: Superseded by [ADR-0002](0002-rename-commands-to-actions.md)
 - Date: 2026-07-23
 
 ## Context

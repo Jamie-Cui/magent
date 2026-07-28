@@ -16,7 +16,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'magent-acp)
-(require 'magent-command)
+(require 'magent-action)
 (require 'magent-config)
 (require 'magent-runtime)
 (require 'magent-runtime-api)
@@ -79,7 +79,7 @@
 
 (defun magent-agent-shell--prepare-skill-context ()
   "Load project-local skill definitions for the current command context."
-  (magent-runtime-prepare-command-context))
+  (magent-runtime-prepare-context))
 
 (defun magent-agent-shell--make-client (buffer)
   "Create Magent's in-process ACP client for BUFFER.
@@ -484,12 +484,12 @@ When ARGUMENT is nil, prompt for optional trailing command text."
               (or (magent-runtime-active-project-scope) 'global)))
            (name
             (or command-name
-                (let ((names (mapcar #'magent-command-spec-name
-                                     (magent-command-list scope))))
+                (let ((names (mapcar #'magent-action-spec-name
+                                     (magent-action-list scope))))
                   (unless names
                     (user-error "Magent: no slash commands are registered"))
                   (completing-read "Run Magent command: " names nil t))))
-           (_spec (or (magent-command-get name scope)
+           (_spec (or (magent-action-get name scope)
                       (user-error "Magent: unknown command /%s" name)))
            (extra (if argument
                       argument
@@ -499,23 +499,6 @@ When ARGUMENT is nil, prompt for optional trailing command text."
                            (unless (string-blank-p extra)
                              (concat " " extra)))))
       (magent-agent-shell-send-prompt prompt))))
-
-;;;###autoload
-(defun magent-agent-shell-run-skill-command
-    (&optional skill-name extra-instruction)
-  "Run a compatibility skill command through Magent agent-shell.
-When EXTRA-INSTRUCTION is non-nil, pass it as slash command argument."
-  (interactive)
-  (magent--ensure-initialized)
-  (let ((name (or skill-name
-                  (let ((names (magent-skills-command-names)))
-                    (unless names
-                      (user-error
-                       "Magent: no command-like skills are registered"))
-                    (completing-read "Run skill command: " names nil t)))))
-    (unless (magent-skills-default-prompt name)
-      (user-error "Magent: skill '%s' has no command adapter" name))
-    (magent-agent-shell-run-command name extra-instruction)))
 
 ;;;###autoload
 (defun magent-agent-shell-run-init-command (&optional extra-instruction)

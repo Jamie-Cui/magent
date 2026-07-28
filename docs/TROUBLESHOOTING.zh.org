@@ -22,7 +22,7 @@
 Opening input file: No such file or directory, /workspace/pkg/prompts/system.org
 #+end_src
 
-*原因：* MELPA-style packaging 只复制 recipe 匹配的文件。Magent 打包后仍然需要 production libraries 和 bundled runtime data。MELPA 的 ~:defaults~ 会排除 test-file patterns，包括 production 模块 ~magent-command-test.el~。
+*原因：* MELPA-style packaging 只复制 recipe 匹配的文件。Magent 打包后仍然需要全部 production libraries 和 bundled runtime data。
 
 *解决：* 保持 ~.github/workflows/melpazoid.yml~ 的 recipe 形状类似：
 
@@ -31,7 +31,7 @@ Opening input file: No such file or directory, /workspace/pkg/prompts/system.org
         :files ("lisp/*.el" "prompts" "skills" "capabilities"))
 #+end_src
 
-显式 glob 提供全部 production Elisp files，包括 ~magent-command-test.el~；显式目录提供 package 通过相对路径加载的 runtime data。ERT 源码应放在 ~test/~ 下，使其不进入 production package。
+显式 glob 提供全部 production Elisp files；显式目录提供 package 通过相对路径加载的 runtime data。ERT 源码应放在 ~test/~ 下，使其不进入 production package；recipe 应与 ~source-files.txt~ 和 ~prompts/manifest.txt~ 保持一致。
 
 *** package-lint 报告 ineffective ~Package-Requires~
 
@@ -373,7 +373,7 @@ magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
 ** Self-Check
 
 #+begin_src elisp
-M-x magent-command-run-doctor
+M-x magent-action-run-doctor
 #+end_src
 
 运行 Magent-specific diagnosis request 并报告问题。
@@ -398,7 +398,7 @@ M-x describe-variable RET gptel-api-key
 
 如果问题仍然存在：
 
-1. 运行 ~M-x magent-command-run-doctor~ 并保存输出。
+1. 运行 ~M-x magent-action-run-doctor~ 并保存输出。
 2. 检查 ~*magent-log*~ 和 ~*Messages*~ 。
 3. 开 GitHub issue，并提供 reproduction steps。
 4. 附上 Emacs version： ~M-x emacs-version~ 。

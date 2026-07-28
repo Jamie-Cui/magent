@@ -40,101 +40,101 @@
   exit-code
   metadata)
 
-(defun magent-tool-result--legacy-status (value)
-  "Infer a tool status from legacy string VALUE."
-  (if (and (stringp value)
-           (or (string-match-p "\\`Error\\b" value)
-               (string-match-p "\\`HTTP error\\b" value)
-               (string-match-p "\\`Command timed out\\b" value)))
-      'failed
-    'completed))
+(defun magent-tool-result-migrate-legacy (value &optional name call-id)
+  "Losslessly migrate legacy tool VALUE into a structured result.
+This function is for persisted legacy session import only; runtime tool
+execution must produce `magent-tool-result' values directly."
+  (let ((status
+         (if (and (stringp value)
+                  (or (string-match-p "\\`Error\\b" value)
+                      (string-match-p "\\`HTTP error\\b" value)
+                      (string-match-p "\\`Command timed out\\b" value)))
+             'failed
+           'completed)))
+    (magent-tool-result-create
+     :call-id call-id
+     :name name
+     :output (if (stringp value) value (magent-json-safe-value value))
+     :success (eq status 'completed)
+     :status status
+     :error (and (eq status 'failed)
+                 (if (stringp value) value (format "%s" value)))
+     :metadata (list :migrated-from 'legacy-string))))
+
+(defun magent-tool-result-require (value &optional name call-id)
+  "Validate and complete structured tool result VALUE.
+NAME and CALL-ID fill missing request identity fields."
+  (unless (magent-tool-result-p value)
+    (signal 'wrong-type-argument (list 'magent-tool-result-p value)))
+  (unless (magent-tool-result-name value)
+    (setf (magent-tool-result-name value) name))
+  (unless (magent-tool-result-call-id value)
+    (setf (magent-tool-result-call-id value) call-id))
+  (unless (magent-tool-result-status value)
+    (setf (magent-tool-result-status value)
+          (if (magent-tool-result-success value) 'completed 'failed)))
+  value)
 
 (defun magent-tool-result-status-value (result)
-  "Return normalized status for tool RESULT."
-  (cond
-   ((magent-tool-result-p result)
-    (or (magent-tool-result-status result)
-        (if (magent-tool-result-success result) 'completed 'failed)))
-   (t (magent-tool-result--legacy-status result))))
+  "Return normalized status for structured tool RESULT."
+  (magent-tool-result-status
+   (magent-tool-result-require result)))
 
 (defun magent-tool-result-success-p (result)
-  "Return non-nil when tool RESULT represents successful execution."
+  "Return non-nil when structured tool RESULT completed."
   (eq (magent-tool-result-status-value result) 'completed))
 
 (defun magent-tool-result-output-string (result)
-  "Return model/UI-visible output string for tool RESULT."
-  (let ((value (if (magent-tool-result-p result)
-                   (or (magent-tool-result-output result)
-                       (magent-tool-result-error result)
-                       "")
-                 result)))
+  "Return model/UI-visible output string for structured tool RESULT."
+  (setq result (magent-tool-result-require result))
+  (let ((value (or (magent-tool-result-output result)
+                   (magent-tool-result-error result)
+                   "")))
     (cond
      ((stringp value) value)
      ((null value) "")
      (t (format "%s" value)))))
 
-(defun magent-tool-result-normalize (value &optional name call-id)
-  "Return VALUE as a structured tool result with optional NAME and CALL-ID."
-  (if (magent-tool-result-p value)
-      (progn
-        (unless (magent-tool-result-name value)
-          (setf (magent-tool-result-name value) name))
-        (unless (magent-tool-result-call-id value)
-          (setf (magent-tool-result-call-id value) call-id))
-        (unless (magent-tool-result-status value)
-          (setf (magent-tool-result-status value)
-                (if (magent-tool-result-success value) 'completed 'failed)))
-        value)
-    (let ((status (magent-tool-result--legacy-status value)))
-      (magent-tool-result-create
-       :call-id call-id
-       :name name
-       :output (if (stringp value) value (magent-json-safe-value value))
-       :success (eq status 'completed)
-       :status status
-       :error (and (eq status 'failed)
-                   (magent-tool-result-output-string value))))))
-
-(cl-defstruct (magent-agent-result
-               (:constructor magent-agent-result-create)
+(cl-defstruct (magent-execution-result
+               (:constructor magent-execution-result-create)
                (:copier nil))
-  "Final status returned from an agent request."
+  "Final status returned from one Magent execution."
   status
   content
   error
   metadata)
 
-(defun magent-agent-result-success-p (result)
-  "Return non-nil when RESULT represents a successful agent response."
-  (unless (magent-agent-result-p result)
-    (signal 'wrong-type-argument (list 'magent-agent-result-p result)))
-  (eq (magent-agent-result-status result) 'completed))
+(defun magent-execution-result-success-p (result)
+  "Return non-nil when RESULT represents a successful execution."
+  (unless (magent-execution-result-p result)
+    (signal 'wrong-type-argument (list 'magent-execution-result-p result)))
+  (eq (magent-execution-result-status result) 'completed))
 
-(defun magent-agent-result-content-string (result)
+(defun magent-execution-result-content-string (result)
   "Return user-visible content for RESULT."
-  (unless (magent-agent-result-p result)
-    (signal 'wrong-type-argument (list 'magent-agent-result-p result)))
-  (or (magent-agent-result-content result)
-      (magent-agent-result-error result)
+  (unless (magent-execution-result-p result)
+    (signal 'wrong-type-argument (list 'magent-execution-result-p result)))
+  (or (magent-execution-result-content result)
+      (magent-execution-result-error result)
       ""))
 
-(defun magent-agent-result-completed (content &optional metadata)
-  "Return a completed `magent-agent-result' with CONTENT and METADATA."
-  (magent-agent-result-create
+(defun magent-execution-result-completed (content &optional metadata)
+  "Return a completed `magent-execution-result' with CONTENT and METADATA."
+  (magent-execution-result-create
    :status 'completed
    :content (or content "")
    :metadata metadata))
 
-(defun magent-agent-result-failed (error &optional metadata)
-  "Return a failed `magent-agent-result' with ERROR and METADATA."
-  (magent-agent-result-create
+(defun magent-execution-result-failed (error &optional metadata)
+  "Return a failed `magent-execution-result' with ERROR and METADATA."
+  (magent-execution-result-create
    :status 'failed
    :error (if (stringp error) error (format "%s" error))
    :metadata metadata))
 
-(defun magent-agent-result-cancelled (error &optional metadata)
-  "Return a cancelled `magent-agent-result' with ERROR and METADATA."
-  (magent-agent-result-create
+(defun magent-execution-result-cancelled (error &optional metadata)
+  "Return a cancelled `magent-execution-result' with ERROR and METADATA."
+  (magent-execution-result-create
    :status 'cancelled
    :error (if (stringp error) error (format "%s" error))
    :metadata metadata))

@@ -9,16 +9,10 @@
 
 ;;; Commentary:
 
-;; Central skills module for magent.  Supports two skill types:
-;;
-;; - `instruction' type: Markdown body is injected into the system prompt.
-;;   LLM follows instructions and uses available tools directly.
-;;
-;; - `tool' type: Skill is invoked via `skill_invoke' tool with
-;;   predefined operations.
-;;
-;; This file also contains file-backed skill loading and the built-in
-;; `skill-creator' instruction skill.
+;; Central registry and file loader for instruction skills.  Markdown bodies
+;; are injected into the system prompt and use the request's exact tool set.
+;; Executable extensions register commands or tools in trusted Elisp instead
+;; of hiding dispatch behind a generic skill gateway.
 
 ;;; Code:
 
@@ -29,7 +23,6 @@
 (require 'magent-log)
 (require 'magent-runtime)
 
-(declare-function magent-command-refresh-skill-adapters "magent-command")
 (declare-function magent-session-scope-origin "magent-session")
 
 ;;; Built-in skill metadata
@@ -54,9 +47,7 @@ through these stages: understand intent -> write SKILL.md -> test in Emacs -> it
 ---
 name: skill-name
 description: When to trigger and what this skill does
-type: instruction        # 'instruction' or 'tool'
 tools: bash, read        # optional: tools this skill needs
-default-prompt: Optional portable compatibility slash-command prompt
 requires-project: true   # optional: reject the skill in global sessions
 capability: true         # optional: auto-activate this instruction skill by context
 ---
@@ -64,21 +55,15 @@ capability: true         # optional: auto-activate this instruction skill by con
 Markdown body: instructions for the AI...
 ```
 
-## Skill Types
+## Skill Behavior
 
-**instruction**: Markdown body is injected into the system prompt every request.
+The Markdown body is injected into the system prompt when the skill is active.
 Use for workflow guidance, coding standards, domain knowledge.
 Keep under 200 lines to avoid bloating the system prompt.
 Agent-shell exposes every available instruction skill as `/$name`.
-Add `default-prompt` only when this Markdown skill should additionally expose
-the legacy `/name` compatibility adapter with a predefined prompt.  A trusted
-installed Magent extension that needs Elisp execution or a multi-step workflow
-should instead register through `magent-command-register`; project-local
+A trusted installed Magent extension that needs Elisp execution or a
+multi-step workflow should register a first-class action; project-local
 Markdown remains data-only.
-
-**tool**: Invoked explicitly via `skill_invoke` with named operations.
-Requires a companion `.el` file defining `magent-skill-<name>-invoke`.
-Use for structured operations with discrete inputs/outputs.
 
 **capability metadata**: Instruction skills can also declare `capability: true`
 plus fields such as `modes`, `features`, `files`, `keywords`, `disclosure`, and
@@ -103,7 +88,6 @@ Place each skill in its own subdirectory named after the skill.
 Ask:
 - What should the skill enable magent to do?
 - When should it be used? (what user phrases, what context)
-- What type fits: instruction (passive guidance) or tool (active operations)?
 
 ### 2. Write the Skill
 
@@ -112,7 +96,7 @@ Key principles:
   to use this skill vs. handling the task directly. Include example phrasings.
   Lean toward being slightly \"pushy\" - Claude tends to undertrigger skills.
 - **body**: Use imperative form. Explain the *why* behind steps, not just the *what*.
-  Keep instruction-type skills concise. If it grows large, split into sections
+  Keep skills concise. If one grows large, split it into sections
   with references to separate files.
 
 Write the SKILL.md using `write_file`:
@@ -132,40 +116,11 @@ Use the `emacs_eval` tool to reload without leaving the chat. Then test: start
 a new session or prompt magent with a request that
 should trigger the skill. Check `M-x magent-list-skills` to confirm registration.
 
-For tool-type skills, test each operation:
-```elisp
-(magent-skills-invoke \"skill-name\" \"operation\" (list \"arg\")
-                      (lambda (r) (message \"%s\" r)))
-```
-
 ### 4. Iterate
 
 - If the AI ignores the skill: strengthen the description, add trigger phrases
 - If instructions are misunderstood: clarify the why, add examples
 - If the skill is too verbose: trim sections that aren't pulling their weight
-- If tool operations misbehave: check the companion `.el` file
-
----
-
-## Tool-type Skill Companion File
-
-For tool-type skills, create `.magent/skills/<name>/<name>.el`:
-
-```elisp
-;;; -*- lexical-binding: t; -*-
-(defun magent-skill-<name>-invoke (operation args callback)
-  \"Invoke <name> skill OPERATION with ARGS.
-CALLBACK is called with result string.\"
-  (run-at-time
-   0 nil
-   (lambda ()
-     (funcall callback
-              (pcase operation
-                (\"op-name\" (format \"result: %s\" (car args)))
-                (_ (format \"Unknown operation: %s\" operation)))))))
-```
-
-The companion file is loaded automatically when the skill file is loaded.
 
 ---
 
@@ -192,9 +147,7 @@ use a skill - make it count."
   (type 'instruction)
   (tools nil)
   (prompt nil)
-  (default-prompt nil)
   (requires-project nil)
-  (invoke-function nil)
   (file-path nil)
   (source-layer 'builtin)
   source-scope)
@@ -209,8 +162,7 @@ use a skill - make it count."
   tools
   requires-project
   source-layer
-  source-scope
-  command-like-p)
+  source-scope)
 
 ;;; Skill registry
 
@@ -333,10 +285,7 @@ their overlays are inactive so live frontend sessions remain scope-correct.")
    :tools (copy-sequence (magent-skill-tools skill))
    :requires-project (magent-skill-requires-project skill)
    :source-layer (magent-skill-source-layer skill)
-   :source-scope (magent-skill-source-scope skill)
-   :command-like-p
-   (and (stringp (magent-skill-default-prompt skill))
-        (not (string-blank-p (magent-skill-default-prompt skill))))))
+   :source-scope (magent-skill-source-scope skill)))
 
 (defun magent-skills-list-descriptors (&optional scope type)
   "Return effective skill descriptors for SCOPE, optionally limited to TYPE.
@@ -399,22 +348,6 @@ sorted by skill name and do not expose prompt bodies or executable handlers."
         (push name seen)
         (push name result)))))
 
-(defun magent-skills-command-names ()
-  "Return sorted instruction skill names with a default prompt."
-  (sort (cl-remove-if-not #'magent-skills-default-prompt
-                          (magent-skills-list-by-type 'instruction))
-        #'string<))
-
-(defun magent-skills-command-text (skill-name extra-instruction)
-  "Return SKILL-NAME's default prompt plus EXTRA-INSTRUCTION."
-  (let ((prompt (magent-skills-default-prompt skill-name))
-        (extra (string-trim (or extra-instruction ""))))
-    (unless prompt
-      (user-error "Magent: skill '%s' has no default prompt" skill-name))
-    (if (string-blank-p extra)
-        prompt
-      (concat prompt "\n\nAdditional instruction:\n" extra))))
-
 (defun magent-skills-missing-tools (skill-name available-tools)
   "Return SKILL-NAME's declared tools absent from AVAILABLE-TOOLS.
 Tool names may be strings or symbols.  An unknown skill has no requirements."
@@ -435,6 +368,9 @@ Tool names may be strings or symbols.  An unknown skill has no requirements."
   "Register SKILL in the registry.
 If a skill with the same name and owner exists, it will be replaced.
 Shadowed lower-layer definitions remain registered for later restoration."
+  (unless (eq (magent-skill-type skill) 'instruction)
+    (error "Unsupported skill type %S; Magent skills are instruction-only"
+           (magent-skill-type skill)))
   (let ((name (magent-skill-name skill)))
     (setq magent-skills--registry
           (cl-remove-if (lambda (entry)
@@ -467,32 +403,6 @@ Shadowed lower-layer definitions remain registered for later restoration."
   (setq magent-skills--registry nil)
   (clrhash magent-skills--scope-catalog))
 
-;;; Skill invocation
-
-(defun magent-skills-invoke (skill-name operation args callback)
-  "Invoke SKILL-NAME with OPERATION and ARGS asynchronously.
-CALLBACK is called with the result.
-Only works for tool-type skills."
-  (let ((skill (magent-skills-get skill-name)))
-    (cond
-     ((null skill)
-      (funcall callback
-               (format "Error: skill '%s' not found. Available skills: %s"
-                       skill-name (mapconcat #'identity (magent-skills-list) ", "))))
-     ((eq (magent-skill-type skill) 'instruction)
-      (funcall callback
-               (format "Error: skill '%s' is instruction-type, not invokable via tool"
-                       skill-name)))
-     ((null (magent-skill-invoke-function skill))
-      (funcall callback
-               (format "Error: skill '%s' has no invoke function" skill-name)))
-     (t
-      (condition-case err
-          (funcall (magent-skill-invoke-function skill) operation args callback)
-        (error (funcall callback
-                        (format "Error invoking skill '%s': %s"
-                                skill-name (error-message-string err)))))))))
-
 ;;; Instruction skill prompts
 
 (defun magent-skills-get-instruction-prompts (&optional skill-names)
@@ -520,14 +430,6 @@ If SKILL-NAMES is a list, only include those skills."
                                 "")
                               prompt)))
                   skills))))
-
-(defun magent-skills-default-prompt (skill-name)
-  "Return the default prompt for instruction skill SKILL-NAME, if any."
-  (when-let* ((skill (magent-skills-get skill-name))
-              ((eq (magent-skill-type skill) 'instruction))
-              (prompt (magent-skill-default-prompt skill))
-              ((not (string-blank-p prompt))))
-    prompt))
 
 ;;; Built-in skill registration
 
@@ -609,11 +511,11 @@ directory if it exists."
      ordered-directories magent-skill-file-name)))
 
 (defun magent-skills--parse-type (type-str)
-  "Parse type string TYPE-STR to a skill type symbol."
-  (pcase (downcase type-str)
-    ("tool" 'tool)
-    ("instruction" 'instruction)
-    (_ 'instruction)))
+  "Validate TYPE-STR and return the sole supported skill type."
+  (unless (equal (downcase (format "%s" type-str)) "instruction")
+    (error "Unsupported skill type %S; Magent skills are instruction-only"
+           type-str))
+  'instruction)
 
 (defun magent-skills--parse-tools (tools-spec)
   "Parse TOOLS-SPEC to list of tool symbols.
@@ -631,68 +533,6 @@ TOOLS-SPEC can be a string, symbol, or list."
               (if (stringp tool) (intern tool) tool))
             tools-spec))
    (t nil)))
-
-(defun magent-skills--parse-text (text-spec)
-  "Parse TEXT-SPEC frontmatter into a string.
-The shared frontmatter loader splits comma-containing scalars for
-list fields.  Text fields such as `default-prompt' need those
-pieces joined back together."
-  (cond
-   ((null text-spec) nil)
-   ((stringp text-spec) text-spec)
-   ((listp text-spec)
-    (mapconcat (lambda (item) (format "%s" item)) text-spec ", "))
-   (t (format "%s" text-spec))))
-
-(defun magent-skills--find-companion-file (skill-file)
-  "Find companion implementation file for SKILL-FILE."
-  (let* ((dir (file-name-directory skill-file))
-         (basename (file-name-sans-extension
-                    (file-name-nondirectory skill-file)))
-         (sibling-el (expand-file-name (concat basename ".el") dir))
-         (skill-name (file-name-nondirectory
-                      (directory-file-name dir)))
-         (named-el (expand-file-name (concat skill-name ".el") dir)))
-    (cond
-     ((file-exists-p sibling-el) sibling-el)
-     ((file-exists-p named-el) named-el)
-     (t nil))))
-
-(defun magent-skills--normalized-root (root)
-  "Return normalized directory ROOT for trust comparisons."
-  (when (stringp root)
-    (file-truename (directory-file-name (expand-file-name root)))))
-
-(defun magent-skills--project-companion-trusted-p (source)
-  "Return non-nil when project SOURCE may execute companion Elisp."
-  (pcase (plist-get source :layer)
-    ((or 'builtin 'user) t)
-    ('project
-     (let ((scope (magent-skills--normalized-root
-                   (plist-get source :scope))))
-       (cl-some
-        (lambda (root)
-          (equal scope (magent-skills--normalized-root root)))
-        magent-trusted-project-skill-companion-roots)))
-    (_ nil)))
-
-(defun magent-skills--load-companion (skill-file skill-name source)
-  "Load companion implementation file for SKILL-FILE.
-SKILL-NAME is used to resolve the invoke function.  SOURCE controls the
-explicit trust gate for executable project-local skill code."
-  (when-let* ((el-file (magent-skills--find-companion-file skill-file)))
-    (if (magent-skills--project-companion-trusted-p source)
-        (progn
-          (magent-log "INFO loading companion file: %s" el-file)
-          (load-file el-file)
-          (let ((invoke-fn (intern (format "magent-skill-%s-invoke"
-                                           skill-name))))
-            (when (fboundp invoke-fn)
-              invoke-fn)))
-      (magent-log
-       "WARN skipped untrusted project skill companion: %s (trust root via magent-trusted-project-skill-companion-roots)"
-       el-file)
-      nil)))
 
 (defun magent-skills-load-file (filepath)
   "Load a skill from FILEPATH.
@@ -712,28 +552,18 @@ Returns the skill if successful, nil otherwise."
                         (or (plist-get frontmatter :type) "instruction")))
                  (tools (magent-skills--parse-tools
                          (plist-get frontmatter :tools)))
-                 (invoke-fn (when (eq type 'tool)
-                              (magent-skills--load-companion
-                               filepath name source)))
                  (skill (magent-skill-create
                          :name name
                          :description description
                          :type type
                          :tools tools
                          :prompt (when (> (length body) 0) body)
-                         :default-prompt
-                         (magent-skills--parse-text
-                          (plist-get frontmatter :default-prompt))
                          :requires-project
                          (eq (plist-get frontmatter :requires-project) t)
-                         :invoke-function invoke-fn
                          :file-path filepath
                          :source-layer (plist-get source :layer)
                          :source-scope (plist-get source :scope))))
             (when (magent-skill-name skill)
-              (when (and (eq type 'tool) (not invoke-fn))
-                (magent-log "WARN tool-type skill '%s' has no companion .el file or invoke function"
-                            name))
               (magent-skills-register skill)
               (magent-log "INFO loaded skill: %s (%s)" name type)
               skill))))
@@ -778,13 +608,8 @@ local skills after static definitions are reloaded."
      'magent-skills--registry
      #'magent-skill-file-path
      #'magent-skills-initialize-static)
-    (when (fboundp 'magent-command-refresh-skill-adapters)
-      (magent-command-refresh-skill-adapters 'global))
     (when project-scope
       (magent-skills-load-project-scope project-scope))
-    (when (and project-scope
-               (fboundp 'magent-command-refresh-skill-adapters))
-      (magent-command-refresh-skill-adapters project-scope))
     (magent-skills--record-scope-catalog 'global)
     (when project-scope
       (magent-skills--record-scope-catalog project-scope))))
@@ -804,7 +629,7 @@ local skills after static definitions are reloaded."
 (defun magent-list-skills ()
   "Display a list of all registered skills."
   (interactive)
-  (magent-runtime-prepare-command-context)
+  (magent-runtime-prepare-context)
   (let ((skills (mapcar #'cdr (magent-skills--effective-entries))))
     (magent--with-display-buffer "*Magent Skills*"
       (insert "Available Skills:\n\n")
@@ -832,7 +657,7 @@ local skills after static definitions are reloaded."
 This clears file-based skills and reloads them from disk.
 Built-in skills are preserved."
   (interactive)
-  (magent-runtime-prepare-command-context)
+  (magent-runtime-prepare-context)
   (magent-skills-reload)
   (message "Skills reloaded: %s" (mapconcat #'identity (magent-skills-list) ", ")))
 
@@ -841,9 +666,9 @@ Built-in skills are preserved."
   "Show detailed information about SKILL-NAME."
   (interactive
    (progn
-     (magent-runtime-prepare-command-context)
+     (magent-runtime-prepare-context)
      (list (completing-read "Describe skill: " (magent-skills-list) nil t))))
-  (magent-runtime-prepare-command-context)
+  (magent-runtime-prepare-context)
   (let ((skill (magent-skills-get skill-name)))
     (if (not skill)
         (message "Skill '%s' not found" skill-name)

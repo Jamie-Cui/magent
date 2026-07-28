@@ -463,7 +463,7 @@ local capabilities after static definitions are reloaded."
 (defun magent-reload-capabilities ()
   "Reload capabilities from disk."
   (interactive)
-  (magent-runtime-prepare-command-context)
+  (magent-runtime-prepare-context)
   (magent-capability-reload)
   (message "Capabilities reloaded: %s"
            (mapconcat #'identity (magent-capability-list) ", ")))
@@ -724,7 +724,7 @@ empty one."
         (setf (magent-capability-match-status match) 'suggested
               (magent-capability-match-reasons match)
               (append (magent-capability-match-reasons match)
-                      '("required-tools-unavailable"))))))
+                      '("declared-tools-unavailable"))))))
   match)
 
 (defun magent-capability--sort-matches (matches)
@@ -960,7 +960,7 @@ When INCLUDE-HIDDEN is non-nil, include hidden matches too."
 (defun magent-list-capabilities ()
   "Display all registered capabilities."
   (interactive)
-  (magent-runtime-prepare-command-context)
+  (magent-runtime-prepare-context)
   (let ((capabilities
          (mapcar #'cdr (magent-capability--effective-entries))))
     (magent--with-display-buffer "*Magent Capabilities*"
@@ -989,10 +989,10 @@ When INCLUDE-HIDDEN is non-nil, include hidden matches too."
   "Show detailed information about CAPABILITY-NAME."
   (interactive
    (progn
-     (magent-runtime-prepare-command-context)
+     (magent-runtime-prepare-context)
      (list (completing-read "Describe capability: "
                             (magent-capability-list) nil t))))
-  (magent-runtime-prepare-command-context)
+  (magent-runtime-prepare-context)
   (let ((capability (magent-capability-get capability-name)))
     (if (not capability)
         (message "Capability '%s' not found" capability-name)
@@ -1042,7 +1042,7 @@ When INCLUDE-HIDDEN is non-nil, include hidden matches too."
 (defun magent-explain-current-capabilities (&optional prompt)
   "Explain capability matching for PROMPT in the current buffer context."
   (interactive)
-  (magent-runtime-prepare-command-context)
+  (magent-runtime-prepare-context)
   (let* ((resolution (magent-capability-resolve
                       (or prompt "")
                       (magent-capability-capture-context)

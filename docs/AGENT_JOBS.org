@@ -38,14 +38,20 @@ These tools share the ~agent~ permission key. The old ~delegate~ tool is not kep
 
 Valid statuses are ~queued~, ~running~, ~waiting~, ~completed~, ~failed~, ~closed~, and ~cancelled~.
 
-The parent ~magent-session~ persists child jobs in its ~agent-jobs~ slot. Runtime-only state for active loops lives in ~magent-tools--agent-job-runtimes~, keyed by job id. This keeps parent session JSON sufficient for resume/inspection while avoiding serializing live request handles.
+The parent ~magent-session~ persists child jobs in its ~agent-jobs~ slot. Runtime-only state for active loops lives in ~magent-agent-job--runtimes~, keyed by job id. This keeps parent session JSON sufficient for resume/inspection while avoiding serializing live request handles.
+
+~magent-agent-job.el~ also owns status observers. ~wait_agent~ subscribes to
+those transitions and uses one deadline timer; it does not poll. Child
+transitions schedule parent-session persistence through the session's deferred
+save queue, so tool callbacks do not synchronously rewrite session JSON.
 
 * Runtime Flow
 
 1. ~spawn_agent~ creates a ~magent-agent-job~ in the parent session.
 2. The child request starts through the Magent-owned loop in ~magent-agent-loop.el~.
 3. The child runs with summary-only UI so it does not write its full transcript into the parent conversation body.
-4. Completion, failure, close, and wait events update the durable job record.
+4. Completion, failure, and close transitions notify wait observers and update
+   the durable job record.
 5. Tool results return model-visible JSON summaries to the root agent.
 
 A successful ~spawn_agent~ result includes a machine-readable ~next_action~

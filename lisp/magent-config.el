@@ -78,10 +78,10 @@ The default value is read from prompts/system.org in the package."
   :type 'natnum
   :group 'magent)
 
-(defcustom magent-enable-tools '(read write edit grep glob bash emacs_eval agent skill web_search)
+(defcustom magent-enable-tools '(read write edit grep glob bash emacs_eval agent web_search)
   "List of enabled tools.
 Available tools: read, write, edit, grep, glob, bash, emacs_eval,
-agent, skill, web_search."
+agent, web_search."
   :type '(set (const :tag "Read files" read)
               (const :tag "Write files" write)
               (const :tag "Edit files" edit)
@@ -90,7 +90,6 @@ agent, skill, web_search."
               (const :tag "Run shell commands" bash)
               (const :tag "Evaluate Emacs Lisp" emacs_eval)
               (const :tag "Coordinate child agents" agent)
-              (const :tag "Invoke Claude Code skills" skill)
               (const :tag "Search the web" web_search))
   :group 'magent)
 
@@ -246,16 +245,6 @@ when Magent should use agent-shell's session selection flow."
   :type 'boolean
   :group 'magent)
 
-(defcustom magent-trusted-project-skill-companion-roots nil
-  "Project roots allowed to load tool-skill companion Elisp files.
-
-Project-local `.magent/skills/*/*.el' files are executable Emacs Lisp and are
-not loaded unless their normalized project root appears in this list.
-Instruction-only project skills do not require trust.  Built-in and user-level
-tool skills retain their existing loading behavior."
-  :type '(repeat directory)
-  :group 'magent)
-
 (defcustom magent-agent-directory ".magent/agent"
   "Relative path (from project root) to the custom agent directory."
   :type 'string
@@ -267,11 +256,11 @@ tool skills retain their existing loading behavior."
   :type 'directory
   :group 'magent)
 
-(defcustom magent-command-session-directory nil
-  "Directory where isolated Magent command session files are stored.
-When nil, command sessions are stored under
-`magent-session-directory'/commands."
-  :type '(choice (const :tag "Use magent-session-directory/commands" nil)
+(defcustom magent-action-session-directory nil
+  "Directory where isolated Magent Action session files are stored.
+When nil, Action sessions are stored under
+`magent-session-directory'/actions."
+  :type '(choice (const :tag "Use magent-session-directory/actions" nil)
                  directory)
   :group 'magent)
 
@@ -326,6 +315,21 @@ If rg is not found, grep tool calls will fail with an informative error."
   :type 'integer
   :group 'magent)
 
+(defcustom magent-glob-max-results 500
+  "Maximum number of matching paths returned by one glob call."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-glob-max-files-scanned 50000
+  "Maximum number of filesystem entries inspected by one glob call."
+  :type 'integer
+  :group 'magent)
+
+(defcustom magent-glob-batch-size 500
+  "Maximum filesystem entries processed per glob event-loop slice."
+  :type 'integer
+  :group 'magent)
+
 (defcustom magent-bash-program "bash"
   "Bash-compatible executable used by the bash tool.
 Commands run with pipefail enabled and errexit disabled.  If this executable
@@ -360,24 +364,24 @@ notice; structured failure status headers are not part of this budget."
   :type 'integer
   :group 'magent)
 
-(defcustom magent-command-buffer-context-max-chars 24000
-  "Maximum total buffer-content characters attached by one command turn.
-The budget is shared by the buffers matched by a standard command turn in
+(defcustom magent-action-buffer-context-max-chars 24000
+  "Maximum total buffer-content characters attached by one Action turn.
+The budget is shared by the buffers matched by a standard Action turn in
 declaration and `buffer-list' order.  Longer content is retained around each
 buffer's point and receives a model-visible truncation notice.  Nil disables
-Magent-owned truncation for command buffer context."
-  :type '(choice (const :tag "Do not truncate command buffer context" nil)
+Magent-owned truncation for Action buffer context."
+  :type '(choice (const :tag "Do not truncate Action buffer context" nil)
                  natnum)
   :group 'magent)
 
-(defcustom magent-command-process-timeout 300
-  "Default timeout in seconds for command Workflow process Steps.
+(defcustom magent-action-process-timeout 300
+  "Default timeout in seconds for Action Workflow process Steps.
 Nil disables the default timeout.  Individual Steps may override this value."
   :type '(choice (const :tag "No timeout" nil)
                  number)
   :group 'magent)
 
-(defcustom magent-command-step-output-max-chars 24000
+(defcustom magent-action-step-output-max-chars 24000
   "Maximum process output characters persisted for one Workflow Step.
 The Workflow receives the complete process result.  Only the durable activity
 copy is bounded, retaining the tail with a truncation marker.  Nil disables

@@ -128,11 +128,11 @@
 (defun magent-benchmark--result-alist (status result started finished)
   "Return a JSON-safe benchmark result for STATUS RESULT and timestamps."
   `((status . ,(symbol-name status))
-    (success . ,(if (magent-agent-result-success-p result) t :json-false))
-    (output . ,(magent-agent-result-content-string result))
-    (error . ,(magent-agent-result-error result))
+    (success . ,(if (magent-execution-result-success-p result) t :json-false))
+    (output . ,(magent-execution-result-content-string result))
+    (error . ,(magent-execution-result-error result))
     (metadata . ,(magent-json-safe-value
-                  (magent-agent-result-metadata result)))
+                  (magent-execution-result-metadata result)))
     (model . ,(magent-benchmark--env "MAGENT_BENCH_MODEL"))
     (provider . ,(magent-benchmark--env "MAGENT_BENCH_PROVIDER"))
     (wire-api . ,(magent-benchmark--env "MAGENT_BENCH_WIRE_API"))
@@ -211,10 +211,10 @@
             (magent-benchmark--write-json
              (expand-file-name "magent-result.json" logs) result-data)
             (unless (and (eq final-status 'completed)
-                         (magent-agent-result-success-p final-result))
+                         (magent-execution-result-success-p final-result))
               (error "Magent trial failed: %s"
-                     (magent-agent-result-content-string final-result)))
-            (magent-agent-result-content-string final-result)))
+                     (magent-execution-result-content-string final-result)))
+            (magent-execution-result-content-string final-result)))
       (advice-remove 'magent-agent-loop-apply-event
                      #'magent-benchmark--capture-usage))))
 

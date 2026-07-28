@@ -27,9 +27,7 @@
 
 (declare-function magent-skills-get "magent-skills")
 (declare-function magent-skill-requires-project "magent-skills" t t)
-(declare-function magent-tool-runtime-for-permission "magent-tool-runtime")
-(declare-function magent-tool-runtime-name "magent-tool-runtime" t t)
-
+(declare-function magent-tools-get-gptel-tools-for-permission "magent-tools")
 (cl-defstruct (magent-runtime-session
                (:constructor magent-runtime-session-create)
                (:copier nil))
@@ -160,18 +158,29 @@ queued submission starts."
   (magent-session-install scope session)
   (magent-runtime-api--wrap-session session scope))
 
+(defun magent-runtime-api--resolve-agent (runtime-session &optional agent-or-name)
+  "Resolve AGENT-OR-NAME for RUNTIME-SESSION without changing session state."
+  (let* ((session (magent-runtime-session-magent-session runtime-session))
+         (agent
+          (cond
+           ((null agent-or-name)
+            (or (magent-session-agent session)
+                (magent-agent-registry-get-default)))
+           ((magent-agent-info-p agent-or-name) agent-or-name)
+           ((stringp agent-or-name)
+            (magent-agent-registry-get agent-or-name))
+           ((symbolp agent-or-name)
+            (magent-agent-registry-get (symbol-name agent-or-name))))))
+    (unless agent
+      (error "Unknown Magent agent: %S" agent-or-name))
+    agent))
+
 (defun magent-runtime-session-set-agent (runtime-session agent-or-name)
   "Set RUNTIME-SESSION's agent to AGENT-OR-NAME."
   (magent-runtime-api--assert-session-available runtime-session)
-  (let* ((agent (cond
-                 ((magent-agent-info-p agent-or-name) agent-or-name)
-                 ((stringp agent-or-name)
-                  (magent-agent-registry-get agent-or-name))
-                 ((symbolp agent-or-name)
-                  (magent-agent-registry-get (symbol-name agent-or-name)))))
+  (let* ((agent (magent-runtime-api--resolve-agent
+                 runtime-session agent-or-name))
          (session (magent-runtime-session-magent-session runtime-session)))
-    (unless agent
-      (error "Unknown Magent agent: %S" agent-or-name))
     (magent-session-set-agent session agent)
     agent))
 
@@ -195,25 +204,13 @@ queued submission starts."
 When AGENT-OR-NAME is non-nil, inspect that agent instead of the session's
 current selection.  This is a read-only public preflight API for extensions."
   (require 'magent-agent-registry)
-  (require 'magent-tool-runtime)
-  (let* ((session (magent-runtime-session-magent-session runtime-session))
-         (agent
-          (cond
-           ((null agent-or-name)
-            (or (magent-session-agent session)
-                (magent-agent-registry-get-default)))
-           ((magent-agent-info-p agent-or-name) agent-or-name)
-           ((symbolp agent-or-name)
-            (magent-agent-registry-get (symbol-name agent-or-name)))
-           ((stringp agent-or-name)
-            (magent-agent-registry-get agent-or-name))))
+  (require 'magent-tools)
+  (let* ((agent
+          (magent-runtime-api--resolve-agent runtime-session agent-or-name))
          (permission (and agent (magent-agent-info-permission agent))))
-    (unless agent
-      (error "Unknown Magent agent: %S" agent-or-name))
-    (mapcar (lambda (runtime)
-              (let ((name (magent-tool-runtime-name runtime)))
-                (if (symbolp name) name (intern (format "%s" name)))))
-            (magent-tool-runtime-for-permission permission))))
+    (mapcar (lambda (tool)
+              (intern (gptel-tool-name tool)))
+            (magent-tools-get-gptel-tools-for-permission permission :all))))
 
 (defun magent-runtime-session-effort-option (runtime-session)
   "Return RUNTIME-SESSION's current effort option."
@@ -457,6 +454,7 @@ Any active or queued work for the session is cancelled first."
                  :approval-session session
                  :ui-visibility 'none
                  :origin-context (magent-runtime-submission-context submission)
+                 :tool-names (magent-runtime-submission-tool-names submission)
                  :effort (magent-runtime-submission-effort submission)
                  :skill-names (magent-runtime-submission-skills submission)
                  :approval-provider
@@ -483,7 +481,7 @@ Any active or queued work for the session is cancelled first."
                     :on-complete
                     (lambda (result)
                       (let ((status
-                             (if (magent-agent-result-success-p result)
+                             (if (magent-execution-result-success-p result)
                                  'completed
                                'failed)))
                         (magent-runtime-api--finish-submission
@@ -499,7 +497,7 @@ Any active or queued work for the session is cancelled first."
     (error
      (let* ((startup-message (format "Runtime startup failed: %s"
                                      (error-message-string err)))
-            (result (magent-agent-result-failed
+            (result (magent-execution-result-failed
                      startup-message (list :status 'startup-error))))
        (magent-runtime-api--mark-submission-turn-failed
         submission startup-message)
@@ -522,18 +520,53 @@ Any active or queued work for the session is cancelled first."
              "Skill /%s requires a project workspace; global sessions are unsupported"
              skill-name)))))))
 
+(defun magent-runtime-api--resolve-tools (agent tools)
+  "Return validated exact tool names for AGENT and requested TOOLS.
+TOOLS may be `:all' or a proper list.  Exact selections fail before a ledger
+turn is created when any name is unknown or unavailable."
+  (require 'magent-tools)
+  (let* ((permission (magent-agent-info-permission agent))
+         (requested
+          (unless (eq tools :all)
+            (delete-dups
+             (mapcar (lambda (tool)
+                       (if (symbolp tool)
+                           tool
+                         (intern (format "%s" tool))))
+                     tools))))
+         (resolved
+          (magent-tools-get-gptel-tools-for-permission
+           permission (if (eq tools :all) :all requested)))
+         (available
+          (mapcar (lambda (tool)
+                    (intern (gptel-tool-name tool)))
+                  resolved)))
+    (when requested
+      (when-let* ((missing (cl-set-difference requested available)))
+        (user-error "Magent tools unavailable to agent %s: %s"
+                    (magent-agent-info-name agent)
+                    (mapconcat #'symbol-name missing ", "))))
+    (if (eq tools :all) :all requested)))
+
 (cl-defun magent-runtime-submit
-    (runtime-session prompt &key context skills agent observer approval-provider
-                     effort turn-metadata on-complete)
+    (runtime-session prompt &key context (tools :all) skills agent observer
+                     approval-provider effort turn-metadata on-complete)
   "Submit PROMPT to RUNTIME-SESSION.
-OBSERVER receives request-local Magent-native events."
+TOOLS is `:all' or an exact list of tool names.  OBSERVER receives
+request-local Magent-native events."
   (unless (magent-runtime-session-p runtime-session)
     (error "Expected runtime session, got: %S" runtime-session))
   (magent-runtime-api--assert-session-available runtime-session)
   (unless (and (stringp prompt)
                (not (string-empty-p (string-trim prompt))))
     (error "Prompt is empty"))
-  (let* ((effective-skills
+  (unless (or (eq tools :all) (proper-list-p tools))
+    (error "Expected :tools to be :all or a proper list, got: %S" tools))
+  (let* ((effective-agent
+          (magent-runtime-api--resolve-agent runtime-session agent))
+         (effective-tools
+          (magent-runtime-api--resolve-tools effective-agent tools))
+         (effective-skills
           (or skills (magent-runtime-session-pending-skills runtime-session))))
     (magent-runtime-api--validate-skill-scope
      runtime-session effective-skills)
@@ -547,8 +580,9 @@ OBSERVER receives request-local Magent-native events."
              :scope (magent-runtime-session-scope runtime-session)
              :prompt prompt
              :context context
+             :tool-names effective-tools
              :skills effective-skills
-             :agent agent
+             :agent effective-agent
              :effort (or (magent-effort-normalize-option effort)
                          (magent-effort-normalize-option
                           (magent-runtime-session-effort runtime-session)))
@@ -567,14 +601,12 @@ OBSERVER receives request-local Magent-native events."
 INSTRUCTION optionally refines the summary.  OBSERVER, APPROVAL-PROVIDER,
 TURN-METADATA, and ON-COMPLETE have the same roles as in
 `magent-runtime-submit'.  The compaction turn is marked as a future
-prompt-history boundary while the session's selected user-facing agent is
-restored after the request finishes."
+prompt-history boundary.  Its request-local agent does not change the
+session's selected user-facing agent."
   (unless (magent-runtime-session-p runtime-session)
     (error "Expected runtime session, got: %S" runtime-session))
   (magent-runtime-api--assert-session-available runtime-session)
-  (let* ((session (magent-runtime-session-magent-session runtime-session))
-         (selected-agent (magent-session-agent session))
-         (compaction-agent (magent-agent-registry-get "compaction"))
+  (let* ((compaction-agent (magent-agent-registry-get "compaction"))
          (pending-skills
           (magent-runtime-session-pending-skills runtime-session))
          (extra (string-trim (or instruction "")))
@@ -598,9 +630,6 @@ restored after the request finishes."
          :turn-metadata (append (list :compaction t) turn-metadata)
          :on-complete
          (lambda (status result)
-           (magent-session-set-agent session selected-agent)
-           (magent-session-save-deferred-for-session
-            session (magent-runtime-session-scope runtime-session))
            (when on-complete
              (funcall on-complete status result))))
       (setf (magent-runtime-session-pending-skills runtime-session)
@@ -614,6 +643,35 @@ restored after the request finishes."
   "Return queued turn count, optionally for RUNTIME-SESSION."
   (magent-runtime-queue-length runtime-session))
 
+(defun magent-runtime-cancel-submission (runtime-session submission-id)
+  "Cancel exact SUBMISSION-ID owned by RUNTIME-SESSION.
+Return non-nil when an active or queued submission was cancelled."
+  (let ((queued
+         (magent-runtime-queue-remove-submission
+          runtime-session submission-id))
+        (active (magent-runtime-queue-active-submission))
+        (reason "Submission cancelled"))
+    (cond
+     (queued
+      (magent-runtime-api--mark-submission-turn-dropped queued reason)
+      (magent-runtime-api--finish-submission
+       queued 'cancelled
+       (magent-execution-result-cancelled reason (list :reason 'cancelled)))
+      t)
+     ((and active
+           (eq (magent-runtime-submission-session active) runtime-session)
+           (equal (magent-runtime-submission-id active) submission-id))
+      (setf (magent-runtime-submission-status active) 'cancelled)
+      (when-let* ((handle (magent-runtime-submission-handle active)))
+        (when (magent-agent-loop-p handle)
+          (magent-agent-loop-abort handle)))
+      (magent-runtime-api--mark-submission-turn-interrupted active reason)
+      (magent-runtime-api--finish-submission
+       active 'cancelled
+       (magent-execution-result-cancelled reason (list :reason 'cancelled)))
+      t)
+     (t nil))))
+
 (defun magent-runtime-cancel (runtime-session)
   "Cancel RUNTIME-SESSION active and queued submissions."
   (let* ((removed (magent-runtime-queue-remove-session runtime-session))
@@ -623,7 +681,7 @@ restored after the request finishes."
        submission "Queued turn cancelled")
       (magent-runtime-api--finish-submission
        submission 'cancelled
-       (magent-agent-result-cancelled
+       (magent-execution-result-cancelled
         "Queued turn cancelled" (list :reason 'cancelled))))
     (when (and active
                (eq (magent-runtime-submission-session active)
@@ -636,7 +694,7 @@ restored after the request finishes."
        active "Active turn cancelled")
       (magent-runtime-api--finish-submission
        active 'cancelled
-       (magent-agent-result-cancelled
+       (magent-execution-result-cancelled
         "Active turn cancelled" (list :reason 'cancelled))))
     (+ (length removed)
        (if (and active

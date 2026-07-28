@@ -25,7 +25,6 @@
 (require 'magent-protocol)
 (require 'magent-runtime)
 (require 'magent-tools)
-(require 'magent-tool-runtime)
 (require 'magent-session)
 (require 'magent-ledger)
 (require 'magent-agent-registry)
@@ -171,7 +170,7 @@ receives the same instruction-provenance and permission invariants."
                  request-context capability-resolution text-callback request-live-p
                  request-state)
   "Process USER-PROMPT through the AI agent using the Magent loop.
-CALLBACK is called with one final `magent-agent-result'.
+CALLBACK is called with one final `magent-execution-result'.
 AGENT-INFO is the agent to use (defaults to session agent or registry default).
 SKILL-NAMES is a list of skill name strings to activate for this request.
 EVENT-CONTEXT is an optional existing event context to reuse.
@@ -226,7 +225,6 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                   (or (magent-request-context-live-p request-state)
                       request-live-p)
                   (magent-request-context-event-context request-state) context))
-          (magent-session-set-agent session agent)
           ;; Freeze scalar audit attribution after the request-local agent is
           ;; selected.  Later UI/session mutations must not relabel this turn.
           (when request-state
@@ -260,13 +258,14 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
            (agent-role-msg (magent-agent-info-prompt agent))
            (request-project-root
             (magent-agent--request-project-root request-context request-state))
-           (tools (mapcar #'magent-tool-runtime-to-plist
-                          (magent-tool-runtime-for-permission
-                           effective-permission)))
+           (tools
+            (magent-tools-get-gptel-tools-for-permission
+             effective-permission
+             (if request-state
+                 (magent-request-context-tool-names request-state)
+               :all)))
            (available-tool-names
-            (mapcar (lambda (tool)
-                      (intern (plist-get tool :name)))
-                    tools))
+            (mapcar (lambda (tool) (intern (gptel-tool-name tool))) tools))
            (explicit-skill-names
             (magent-skills-dedupe-names
              (append skill-names
@@ -372,14 +371,15 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                        (magent-agent-info-name agent)
                        (gptel-backend-name backend)
                        model
-                       (mapconcat (lambda (tool) (plist-get tool :name)) tools ", "))
+                       (mapconcat #'gptel-tool-name tools ", "))
            (when resolved-skill-names
              (magent-log "INFO active skills=[%s]"
                          (mapconcat #'identity resolved-skill-names ", ")))
            (let* ((gptel-backend backend)
                   (gptel-model model)
                   (gptel-temperature temperature)
-                  (request-tools (magent-agent-loop-tools-to-gptel tools))
+                  (request-tools
+                   (magent-agent-loop-tools-for-provider tools))
                   (gptel-tools request-tools)
                   (live-p (or request-live-p
                               (and request-state
@@ -621,9 +621,9 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                    (when callback
                      (funcall callback
                               (if (eq status 'completed)
-                                  (magent-agent-result-completed
+                                  (magent-execution-result-completed
                                    response metadata)
-                                (magent-agent-result-failed
+                                (magent-execution-result-failed
                                  response metadata)))))
                   (start-streaming
                    ()
@@ -773,7 +773,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
   "Run one Magent turn for SESSION with PROMPT.
 This is the UI-neutral execution entry point.  OBSERVER receives
 Magent-native request events through REQUEST-CONTEXT.  ON-COMPLETE is
-called with one final `magent-agent-result'."
+called with one final `magent-execution-result'."
   (unless session
     (error ":session is required"))
   (unless prompt

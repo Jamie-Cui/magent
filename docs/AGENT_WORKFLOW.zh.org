@@ -127,12 +127,12 @@ Prompt reconstruction 是 ledger-driven。知道 current turn id 时，Magent �
 
 * UI 投影
 
-受支持的 frontend 是 agent-shell。 ~magent-agent-shell.el~ 创建由 ~magent-acp.el~ 实现的 in-process ACP client。ACP session/prompt request 把 registered slash command 分派给 ~magent-command.el~ ，普通 prompt 则直接提交 ~magent-runtime-api.el~ ；request 会保持 pending，直到对应 command invocation 或普通 runtime turn completed、failed 或 cancelled。Command-owned turn 和 workflow step 使用同一个 runtime API。Runtime 发出 Magent-native observer events； ~magent-acp.el~ 转换为 ACP ~session/update~ 消息。
+受支持的 frontend 是 agent-shell。 ~magent-agent-shell.el~ 创建由 ~magent-acp.el~ 实现的 in-process ACP client。ACP session/prompt request 把 registered slash command 分派给 ~magent-action.el~ ，普通 prompt 则直接提交 ~magent-runtime-api.el~ ；request 会保持 pending，直到对应 command invocation 或普通 runtime turn completed、failed 或 cancelled。Command-owned turn 和 workflow step 使用同一个 runtime API。Runtime 发出 Magent-native observer events； ~magent-acp.el~ 转换为 ACP ~session/update~ 消息。
 
 ~magent-runtime-queue.el~ 负责 queued/active turn state。当前实现一次只有一个全局 active turn，但 submission 都带 runtime session id，所以 cancellation 是 session-scoped：取消一个 ACP session 会移除该 session 的 queued work 并 abort 该 session 的 active turn，不会丢掉其他 session 的 queued turns。
 
 agent-shell + ACP 路径是完整的会话式 UI projection 和 slash-command surface。显式
-~M-x~ wrapper 进入同一个 ~magent-command~ invocation lifecycle，不会形成另一套会话
+~M-x~ wrapper 进入同一个 ~magent-action~ invocation lifecycle，不会形成另一套会话
 frontend；共享 runtime 行为保持 frontend-neutral。
 
 * 保留的 Codex 差异

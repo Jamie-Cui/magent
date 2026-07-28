@@ -28,9 +28,9 @@
 (declare-function magent-capability-initialize-static "magent-capability")
 (declare-function magent-capability-load-project-scope "magent-capability")
 (declare-function magent-capability-remove-project-scope "magent-capability")
-(declare-function magent-command-initialize-static "magent-command")
-(declare-function magent-command-load-project-scope "magent-command")
-(declare-function magent-command-remove-project-scope "magent-command")
+(declare-function magent-action-initialize-static "magent-action")
+(declare-function magent-action-load-project-scope "magent-action")
+(declare-function magent-action-remove-project-scope "magent-action")
 (declare-function magent-runtime-queue-active-scope "magent-runtime-queue")
 (declare-function magent-runtime-queue-execution-active-p "magent-runtime-queue")
 (declare-function magent-skills-initialize-static "magent-skills")
@@ -43,8 +43,8 @@
 (defvar-local magent-runtime-context-buffer-p nil
   "Non-nil when the current buffer is a Magent-owned UI context buffer.")
 
-(defvar magent-runtime-command-scope-functions nil
-  "Functions that may resolve the scope for the current command buffer.
+(defvar magent-runtime-context-scope-functions nil
+  "Functions that may resolve the scope for the current interactive context.
 Each function is called without arguments.  The first non-nil return value
 wins; when all functions return nil, scope is derived from
 `default-directory'.")
@@ -68,14 +68,14 @@ wins; when all functions return nil, scope is derived from
      :load-project magent-skills-load-project-scope
      :unload-project-feature magent-skills
      :unload-project magent-skills-remove-project-scope)
-    (:name commands
-     :state-variable magent-command--registry
-     :static-feature magent-command
-     :static magent-command-initialize-static
-     :load-project-feature magent-command
-     :load-project magent-command-load-project-scope
-     :unload-project-feature magent-command
-     :unload-project magent-command-remove-project-scope)
+    (:name actions
+     :state-variable magent-action--registry
+     :static-feature magent-action
+     :static magent-action-initialize-static
+     :load-project-feature magent-action
+     :load-project magent-action-load-project-scope
+     :unload-project-feature magent-action
+     :unload-project magent-action-remove-project-scope)
     (:name capabilities
      :state-variable magent-capability--registry
      :static-feature magent-capability
@@ -106,6 +106,7 @@ wins; when all functions return nil, scope is derived from
   temperature
   top-p
   effort
+  (tool-names :all)
   skill-names
   capability-context
   permission-profile
@@ -314,17 +315,17 @@ Nil means only static definitions are loaded.")
     (magent-log "INFO magent initialization complete"))
   magent--initialized)
 
-(defun magent-runtime-command-scope ()
-  "Return the scope implied by the current interactive command context."
+(defun magent-runtime-context-scope ()
+  "Return the scope implied by the current interactive context."
   (or (run-hook-with-args-until-success
-       'magent-runtime-command-scope-functions)
+       'magent-runtime-context-scope-functions)
       (magent-session-scope-from-directory default-directory)))
 
-(defun magent-runtime-prepare-command-context (&optional scope)
-  "Ensure Magent is initialized and activate the command SCOPE.
+(defun magent-runtime-prepare-context (&optional scope)
+  "Ensure Magent is initialized and activate SCOPE.
 When SCOPE is nil, derive it from the current buffer context."
   (magent-runtime-ensure-initialized)
-  (let ((target (or scope (magent-runtime-command-scope))))
+  (let ((target (or scope (magent-runtime-context-scope))))
     (when (and (fboundp 'magent-runtime-queue-execution-active-p)
                (magent-runtime-queue-execution-active-p)
                (not (equal target

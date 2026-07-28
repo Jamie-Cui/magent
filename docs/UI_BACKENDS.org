@@ -7,7 +7,7 @@ Magent supports one conversational frontend: ~agent-shell~, connected to the
 Magent runtime through the in-process ACP adapter.  Conversational documentation
 and examples must use the commands exported by ~magent-agent-shell.el~ or
 agent-shell itself.  Explicit registered commands may additionally expose
-trusted ~M-x~ wrappers through ~magent-command~; those wrappers are not another
+trusted ~M-x~ wrappers through ~magent-action~; those wrappers are not another
 conversation frontend.
 
 * Public Interface
@@ -16,7 +16,7 @@ The agent-shell integration is the complete conversational interface.  Magent
 does not maintain a parallel workspace, compose buffer, command menu, or custom
 output-buffer frontend.  New conversational behavior belongs in agent-shell or
 in the ACP adapter; shared runtime behavior belongs in the runtime API, while
-explicit command registration and invocation belong in ~magent-command.el~.
+explicit command registration and invocation belong in ~magent-action.el~.
 
 * Supported Modules
 
@@ -24,8 +24,8 @@ explicit command registration and invocation belong in ~magent-command.el~.
   provides the supported interactive entry points.
 - ~magent-acp.el~ implements the in-process ACP request, notification,
   response, permission, and ~session/update~ adapter.
-- ~magent-command.el~ owns registered slash/interactive command discovery and
-  the invocation lifecycle; ~magent-command-session.el~ adds isolated durable
+- ~magent-action.el~ owns registered slash/interactive command discovery and
+  the invocation lifecycle; ~magent-action-session.el~ adds isolated durable
   persistence without becoming a frontend.
 - ~magent-runtime-api.el~ is the frontend-neutral runtime and session API.
 - ~magent-runtime-queue.el~ owns the global single-execution queue and
@@ -40,7 +40,7 @@ explicit command registration and invocation belong in ~magent-command.el~.
    populate scoped request paths, while resource bodies remain user-role context
    when history is reconstructed.
 4. ACP resolves registered slash input against the runtime session's exact
-   scope and invokes it through ~magent-command.el~. Ordinary prompts go
+   scope and invokes it through ~magent-action.el~. Ordinary prompts go
    directly to ~magent-runtime-api.el~. Command-owned turns and workflow steps
    also use that API; direct handlers may complete without a general agent turn.
 5. The runtime queue starts exactly one active turn at a time, builds a
@@ -69,8 +69,8 @@ without exposing prompt bodies or executable handlers. ACP flattens instruction
 skills into its command list as ~$name~ because agent-shell has one slash-menu
 surface, then dispatches ~/$name~ as an ordinary
 ~magent-runtime-submit :skills~ turn. A future frontend may instead present
-registered commands and skill descriptors as two separate entry surfaces; it
-must not infer skills from the command registry or require ~default-prompt~.
+registered Action command projections and skill descriptors as two separate
+entry surfaces; it must not infer skills from the Action registry.
 
 * Current Limitations
 
@@ -80,9 +80,8 @@ must not infer skills from the command registry or require ~default-prompt~.
   session's active and queued submissions without removing other sessions'
   queued work.
 - Per-request instruction skill overrides, scope-aware ~/$skill~ projection,
-  Elisp-native slash commands, and compatibility skill commands are supported.
-  Per-request agent overrides are not currently exposed by the supported
-  frontend.
+  and Elisp-native Action command projections are supported. Per-request agent
+  overrides are not currently exposed by the supported frontend.
 - ACP session config exposes ~Automatic capabilities~. Disabling it suppresses
   contextual capability auto-resolution for future turns in that session while
   retaining explicitly selected instruction skills.

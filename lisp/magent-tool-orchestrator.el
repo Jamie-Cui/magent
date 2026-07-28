@@ -96,6 +96,16 @@
   (when-let* ((fn (magent-tool-orchestrator-result-callback orchestrator)))
     (funcall fn tool-spec arg-values raw-call result)))
 
+(defun magent-tool-orchestrator--deliver-provider-result (callback result)
+  "Deliver structured RESULT to provider CALLBACK as model-visible text."
+  (when callback
+    (funcall callback (magent-tool-result-output-string result))))
+
+(defun magent-tool-orchestrator--failed-result (message)
+  "Return a structured orchestration failure for MESSAGE."
+  (magent-tool-result-create
+   :status 'failed :success nil :output message :error message))
+
 (defun magent-tool-orchestrator--annotate-approval
     (raw-call decision source)
   "Return RAW-CALL annotated with approval DECISION and SOURCE."
@@ -155,8 +165,7 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
             (magent-tool-orchestrator--run
              orchestrator tool-spec
              (lambda (result)
-               (when cb
-                 (funcall cb result))
+               (magent-tool-orchestrator--deliver-provider-result cb result)
                (complete-one tool-spec arg-values raw-call result))
              arg-values)))
       (let (pending)
@@ -240,14 +249,15 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
                       (magent-tool-orchestrator--annotate-approval
                        raw-call 'deny source))
                 (let ((result
-                       (if canonicalization-error
-                           (format "Error: invalid or unstable resource path for %s"
-                                   tool-name)
-                         (format "Error: access denied for %s on %s"
-                                 tool-name
-                                 (or file-path "this resource")))))
-                  (when cb
-                    (funcall cb result))
+                       (magent-tool-orchestrator--failed-result
+                        (if canonicalization-error
+                            (format
+                             "Error: invalid or unstable resource path for %s"
+                             tool-name)
+                          (format "Error: access denied for %s on %s"
+                                  tool-name
+                                  (or file-path "this resource"))))))
+                  (magent-tool-orchestrator--deliver-provider-result cb result)
                   (complete-one tool-spec arg-values raw-call result))))
              ((eq override 'allow)
               (magent-log "PERM auto-allow (session override): %s" tool-name)
@@ -260,8 +270,7 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
               (magent-tool-orchestrator--run
                orchestrator tool-spec
                (lambda (result)
-                 (when cb
-                   (funcall cb result))
+                 (magent-tool-orchestrator--deliver-provider-result cb result)
                  (complete-one tool-spec arg-values raw-call result))
                arg-values resource-identity))
              ((eq override 'deny)
@@ -272,10 +281,11 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
               (setq raw-call
                     (magent-tool-orchestrator--annotate-approval
                      raw-call 'deny 'session-override-deny))
-              (let ((result (format "Error: tool '%s' denied by session policy"
-                                    tool-name)))
-                (when cb
-                  (funcall cb result))
+              (let ((result
+                     (magent-tool-orchestrator--failed-result
+                      (format "Error: tool '%s' denied by session policy"
+                              tool-name))))
+                (magent-tool-orchestrator--deliver-provider-result cb result)
                 (complete-one tool-spec arg-values raw-call result)))
              ((and file-path (eq resolved 'allow))
               (magent-log "PERM auto-allow (file rule): %s %s"
@@ -288,8 +298,7 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
               (magent-tool-orchestrator--run
                orchestrator tool-spec
                (lambda (result)
-                 (when cb
-                   (funcall cb result))
+                 (magent-tool-orchestrator--deliver-provider-result cb result)
                  (complete-one tool-spec arg-values raw-call result))
                arg-values resource-identity))
              ((eq resolved 'allow)
@@ -302,8 +311,7 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
               (magent-tool-orchestrator--run
                orchestrator tool-spec
                (lambda (result)
-                 (when cb
-                   (funcall cb result))
+                 (magent-tool-orchestrator--deliver-provider-result cb result)
                  (complete-one tool-spec arg-values raw-call result))
                arg-values resource-identity))
              (t
@@ -366,8 +374,7 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
             (magent-tool-orchestrator--run
              orchestrator tool-spec
              (lambda (result)
-               (when cb
-                 (funcall cb result))
+               (magent-tool-orchestrator--deliver-provider-result cb result)
                (when complete-one
                  (funcall complete-one tool-spec arg-values raw-call result)))
              arg-values resource-identity))
@@ -378,9 +385,10 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
             (setq raw-call
                   (magent-tool-orchestrator--annotate-approval
                    raw-call 'deny 'user-deny-once))
-            (let ((result (format "Error: tool '%s' denied by user" tool-name)))
-              (when cb
-                (funcall cb result))
+            (let ((result
+                   (magent-tool-orchestrator--failed-result
+                    (format "Error: tool '%s' denied by user" tool-name))))
+              (magent-tool-orchestrator--deliver-provider-result cb result)
               (when complete-one
                 (funcall complete-one tool-spec arg-values raw-call result))))
            ('allow-session
@@ -396,8 +404,7 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
             (magent-tool-orchestrator--run
              orchestrator tool-spec
              (lambda (result)
-               (when cb
-                 (funcall cb result))
+               (magent-tool-orchestrator--deliver-provider-result cb result)
                (when complete-one
                  (funcall complete-one tool-spec arg-values raw-call result)))
              arg-values resource-identity))
@@ -411,9 +418,10 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
             (setq raw-call
                   (magent-tool-orchestrator--annotate-approval
                    raw-call 'deny 'user-deny-session))
-            (let ((result (format "Error: tool '%s' denied by user" tool-name)))
-              (when cb
-                (funcall cb result))
+            (let ((result
+                   (magent-tool-orchestrator--failed-result
+                    (format "Error: tool '%s' denied by user" tool-name))))
+              (magent-tool-orchestrator--deliver-provider-result cb result)
                (when complete-one
                  (funcall complete-one tool-spec arg-values raw-call result)))))
          (magent-tool-orchestrator-prompt-next

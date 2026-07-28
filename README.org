@@ -7,7 +7,7 @@
 
 An Emacs Lisp AI coding agent with multi-agent architecture, permission-based
 tool access, an Elisp-native slash-command extension API through
-~magent-command~, and LLM integration via [[https://github.com/karthink/gptel][gptel]].
+~magent-action~, and LLM integration via [[https://github.com/karthink/gptel][gptel]].
 
 homepage: https://jamie-cui.github.io/magent/
 
@@ -20,36 +20,34 @@ Magent now uses a durable child-agent lifecycle for collaborative agent work: sp
 
 See [[file:docs/UI_BACKENDS.org][docs/UI_BACKENDS.org]] for the supported agent-shell frontend boundary.
 
-* ~magent-command~ vs Skills in Emacs
+* ~magent-action~ vs Skills in Emacs
 
-~magent-command~ and skills are complementary extension points, not two ways to
+~magent-action~ and skills are complementary extension points, not two ways to
 define the same thing:
 
-|                        | ~magent-command~                                                                   | Skill                                                                                              |
-|------------------------+----------------------------------------------------------------------------------+----------------------------------------------------------------------------------------------------|
-| Primary role           | An explicit Emacs or slash-command action                                        | Reusable instructions or a model-invokable operation                                               |
-| Definition             | Trusted Elisp registered with ~magent-command-register~                            | A ~SKILL.md~ file; a tool skill may also have a companion Elisp implementation                       |
-| Activation             | The user enters ~/name~ or runs ~M-x magent-agent-shell-run-command~                 | The user enters ~/$name~, selects it for the next turn, or a capability activates it; a tool skill is called by the model |
-| Owns                   | Arguments, requirements, session policy, Steps, and multi-step control            | Model context and workflow guidance, or one named operation through ~skill_invoke~                   |
-| Project trust boundary | Command Workflows are trusted installed Elisp                                    | Project instruction Markdown is data-only; companion Elisp runs only for explicitly trusted roots  |
+|                        | ~magent-action~                                                        | Skill                                                            |
+|------------------------+-----------------------------------------------------------------------+------------------------------------------------------------------|
+| Primary role           | An explicit Emacs or slash-command action                             | Reusable model instructions                                      |
+| Definition             | Trusted Elisp registered with ~magent-action-register~                 | A data-only ~SKILL.md~ file                                        |
+| Activation             | The user enters ~/name~ or runs ~M-x magent-agent-shell-run-command~      | The user enters ~/$name~, selects it, or a capability activates it |
+| Owns                   | Arguments, requirements, session policy, Steps, and multi-step control | Model context and workflow guidance                              |
+| Project trust boundary | Action Workflows are trusted installed Elisp                          | Project skill Markdown never executes code                       |
 
-Use ~magent-command~ when you want a stable, user-triggered entry point in
-Emacs.  Use a skill when you want reusable expertise or an operation that the
-agent can apply while handling requests.  Use both when an explicit command
+Use ~magent-action~ when you want a stable, user-triggered entry point in
+Emacs.  Use a skill when you want reusable expertise that the agent can apply
+while handling requests. Use both when an explicit Action
 should activate reusable expertise: an agent Step can select skills with
-~:skills~ and declare its tool preflight with ~:required-tools~.
+~:skills~ and expose its exact provider tool set with ~:tools~.
 
-ACP advertises every visible instruction skill as ~/$name~ in agent-shell,
-without requiring ~default-prompt~. An instruction skill with ~default-prompt~
-is additionally projected into the command registry as a legacy ~/name~
-compatibility adapter. Invoking either surface activates the original skill; it
-does not turn Markdown into a Command Workflow or give it trusted Elisp
-execution authority.
+ACP advertises every visible instruction skill as ~/$name~ in agent-shell.
+Skills are never projected into the Action registry: ~/$name~ selects
+instruction data for one ordinary turn, while ~/name~ invokes a registered
+Action. Markdown never receives trusted Elisp execution authority.
 
-~magent-command~ therefore makes slash commands first-class, explicit user
-actions.  Your init file or another trusted Elisp package can register a command
-through the public ~magent-command-register~ API without changing the agent-shell
-or ACP integration. Every command owns one generator-backed Elisp Workflow;
+~magent-action~ therefore makes slash commands first-class, explicit user
+actions.  Your init file or another trusted Elisp package can register an Action
+through the public ~magent-action-register~ API without changing the agent-shell
+or ACP integration. Every Action owns one generator-backed Elisp Workflow;
 managed agent, process, and callback Steps provide asynchronous suspension,
 cancellation, progress, and activity recording.
 
@@ -113,18 +111,18 @@ Magent directly from Git:
 
   (magent-agent-shell-ensure-config)
 
-  ;; Register /ask-name as an Elisp-native Magent command.
-  (magent-command-defworkflow my-magent-ask-name (invocation)
+  ;; Register /ask-name as an Elisp-native Magent Action.
+  (magent-define-workflow my-magent-ask-name (invocation)
     (let ((topic
            (string-trim
-            (or (magent-command-invocation-argument invocation) ""))))
-      (magent-command-answer
+            (or (magent-action-invocation-argument invocation) ""))))
+      (magent-workflow-answer
           "Ask selected agent"
           (if (string-empty-p topic)
               "What is your name?"
             (format "What is your name? Also discuss: %s" topic)))))
 
-  (magent-command-register
+  (magent-action-register
    "ask-name"
    :description "Ask the selected Magent agent to introduce itself."
    :session-policy 'current
@@ -138,7 +136,7 @@ Magent directly from Git:
 a project workspace. Tool requirements belong to the agent Step that needs
 them. Every registration requires one ~:workflow~ and an explicit
 ~:session-policy~. A ~user~ command can override an installed ~package~ or
-~builtin~ command with the same name. Registering the same name, layer, and
+~builtin~ Action with the same name. Registering the same name, layer, and
 canonical scope again replaces that slot's previous definition. The core
 ~/compact~ and ~/skills~ names remain reserved.
 
@@ -197,6 +195,9 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-audit-directory~                       | ~nil~                                 | Override directory for audit JSONL files; defaults to ~magent-session-directory/audit/~          |
 | ~magent-grep-program~                          | ~"rg"~                              | Path to ripgrep binary                                                                         |
 | ~magent-grep-max-matches~                      | ~100~                                 | Max matches from grep searches                                                                 |
+| ~magent-glob-max-results~                      | ~500~                                 | Maximum paths returned by one glob                                                             |
+| ~magent-glob-max-files-scanned~                | ~50000~                               | Maximum filesystem entries inspected by one glob                                                |
+| ~magent-glob-batch-size~                       | ~500~                                 | Filesystem entries processed per event-loop slice                                               |
 | ~magent-bash-program~                          | ~"bash"~                            | Bash-compatible executable; commands use pipefail without implicit errexit                     |
 | ~magent-bash-timeout~                          | ~300~                                 | Host-owned timeout in seconds for synchronous bash commands                                    |
 | ~magent-child-agent-max-depth~                 | ~1~                                   | Max recursive child-agent depth; direct children are allowed by default                        |
@@ -206,7 +207,6 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-project-instructions-max-bytes~        | ~65536~                               | Aggregate per-request byte limit for project instructions; nil disables discovery              |
 | ~magent-audit-preview-length~                  | ~120~                                 | Max width for persisted normalized audit path markers                                          |
 | ~magent-include-reasoning~                     | ~t~                                   | Display (~t~), hide but retain (~ignore~), or discard (~nil~) reasoning; never final-answer fallback |
-| ~magent-trusted-project-skill-companion-roots~ | ~nil~                                 | Project roots explicitly trusted to execute tool-skill companion Elisp                         |
 
 ** Prompt Files
 
@@ -270,7 +270,7 @@ clear selected skills.  Selected skills are scoped to the active Magent session
 and are consumed by the next prompt.
 
 Elisp-native slash commands are registered through the public
-~magent-command-register~ API and can be selected with
+~magent-action-register~ API and can be selected with
 ~M-x magent-agent-shell-run-command~. Agent-shell advertises twelve bundled
 commands: ~/explain~, ~/fix~, ~/init~, ~/review~, ~/summarize~, ~/test~,
 ~/compact~, ~/skills~, ~/doctor~, ~/memory-init~, ~/memory-refresh~, and
@@ -279,21 +279,17 @@ do not activate same-name skills. ~/summarize~ writes one canonical Org note
 for the current Git project and accepts an optional path or semantic scope.
 
 Every instruction skill in the exact session scope is advertised as ~/$name~.
-~/skills~ lists those descriptors locally. Skills with ~default-prompt~ retain
-the additional legacy ~/name~ adapter; use
-~M-x magent-agent-shell-run-skill-command~ to select one directly. Project and
-user skill adapters may override package commands, while the core ~/compact~
-and ~/skills~ controls are reserved. See
-[[file:docs/COMMANDS.org][docs/COMMANDS.org]] for command behavior, the
-third-party Elisp API, and compatibility details. Project adapters and skill
-descriptors are retained by canonical project scope, and agent-shell uses the
-exact session scope for both menus and dispatch.
+~/skills~ lists those descriptors locally. Submit ~/$name~ to select a skill
+for one normal turn; submit ~/name~ or use
+~M-x magent-agent-shell-run-command~ to invoke an Action. See
+[[file:docs/COMMANDS.org][docs/COMMANDS.org]] for slash-command behavior and
+the third-party Action API. Action definitions and skill descriptors are
+resolved by canonical project scope, and agent-shell uses the exact session
+scope for both menus and dispatch.
 
-Project-local instruction skills are data-only and load normally.  A
-tool-type project skill may also contain executable companion Elisp; Magent
-does not execute that file by default.  Add the normalized project root to
-~magent-trusted-project-skill-companion-roots~ only after reviewing the code.
-Built-in and user-level tool skills retain their normal loading behavior.
+All skills are instruction-only and data-only. For executable extensions, use
+a trusted Elisp command or add a first-class tool to Magent's canonical tool
+catalog; companion Elisp next to ~SKILL.md~ is never loaded.
 
 ** User Skill Management
 
@@ -423,21 +419,26 @@ The AI agent has access to these tools (can be customized per agent):
 
 | Tool               | Side-effect | Description                                             |
 |--------------------+-------------+---------------------------------------------------------|
-| ~read_file~          | no          | Read file contents from the filesystem                  |
-| ~write_file~         | yes         | Write or create a file (auto-creates parent dirs)       |
+| ~read_file~          | no          | Read saved file contents from disk                      |
+| ~read_buffer~        | no          | Read an existing file-visiting buffer, including edits  |
+| ~write_file~         | yes         | Atomically write a file; rejects dirty buffer conflicts |
 | ~write_repo_summary~ | yes         | Update the canonical single-file Org repository summary |
-| ~edit_file~          | yes         | Replace exact text in a file (must match once)          |
+| ~edit_file~          | yes         | Atomically replace unique text; rejects dirty conflicts |
 | ~grep~               | no          | Regex search via ripgrep; returns ~file:line:content~     |
-| ~glob~               | no          | Find files matching a glob pattern                      |
-| ~bash~               | yes         | Execute shell commands (default timeout 30s)            |
+| ~glob~               | no          | Bounded, event-loop-sliced glob traversal               |
+| ~bash~               | yes         | Execute shell commands (default timeout 300s)           |
 | ~emacs_eval~         | yes         | Evaluate Emacs Lisp expressions (default timeout 10s)   |
 | ~spawn_agent~        | yes         | Start a durable child-agent job                         |
 | ~send_agent_message~ | yes         | Send follow-up input to a live child job                |
 | ~wait_agent~         | no          | Wait for child jobs and return status/results           |
 | ~list_agents~        | no          | List child-agent jobs for the current session           |
 | ~close_agent~        | yes         | Close or cancel a child-agent job                       |
-| ~skill_invoke~       | no          | Invoke tool-type skills                                 |
 | ~web_search~         | no          | Search the web via DuckDuckGo                           |
+
+The canonical catalog in ~magent-tools.el~ owns each tool's name, implementation,
+and permission key. Ordinary turns request all available catalog tools; command
+Steps use ~:tools~ as an exact allowlist. Every implementation returns a
+structured ~magent-tool-result~; only the provider boundary converts it to text.
 
 Each tool follows the active agent's ~allow~, ~deny~, or ~ask~ rule.  The
 default build profile asks for shell, Emacs evaluation, and general file
@@ -452,19 +453,19 @@ Tool availability is controlled by:
 
 * Isolated Maintenance Commands
 
-Magent-owned maintenance workflows share one command spec between agent-shell
+Magent-owned maintenance workflows share one Action spec between agent-shell
 slash input and their M-x wrappers:
 
-- ~/memory-init~ or ~M-x magent-command-run-memory-init~ initializes Emacs profile memory.
-- ~/memory-refresh~ or ~M-x magent-command-run-memory-refresh~ refreshes the managed profile while keeping
+- ~/memory-init~ or ~M-x magent-action-run-memory-init~ initializes Emacs profile memory.
+- ~/memory-refresh~ or ~M-x magent-action-run-memory-refresh~ refreshes the managed profile while keeping
   user notes.
-- ~/memory-clear~ or ~M-x magent-command-run-memory-clear~ deactivates and clears the managed profile
+- ~/memory-clear~ or ~M-x magent-action-run-memory-clear~ deactivates and clears the managed profile
   while retaining user notes and a snapshot.
-- ~/doctor~ or ~M-x magent-command-run-doctor~ collects bounded local diagnostics
+- ~/doctor~ or ~M-x magent-action-run-doctor~ collects bounded local diagnostics
   and sends one sanitized, tool-free analysis request. Use ~/doctor select~ or
   ~C-u~ on the M-x command for manual probe selection.
-- ~M-x magent-command-list-sessions~ opens the progressive command-session
-  viewer; ~M-x magent-command-cancel~ cancels active work.
+- ~M-x magent-action-list-sessions~ opens the progressive command-session
+  viewer; ~M-x magent-action-cancel~ cancels active work.
 
 Doctor never gives the model ~emacs_eval~, shell, or file tools.  Its probes
 are trusted read-only Elisp extensions, and only path-normalized, recursively
