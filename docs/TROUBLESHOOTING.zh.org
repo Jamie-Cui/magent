@@ -28,7 +28,7 @@ Opening input file: No such file or directory, /workspace/pkg/prompts/system.org
 
 #+begin_src elisp
 (magent :fetcher github :repo "Jamie-Cui/magent"
-        :files ("lisp/*.el" "prompts" "skills" "capabilities"))
+        :files ("lisp/magent*.el" "prompts" "skills" "capabilities"))
 #+end_src
 
 显式 glob 提供全部 production Elisp files；显式目录提供 package 通过相对路径加载的 runtime data。ERT 源码应放在 ~test/~ 下，使其不进入 production package；recipe 应与 ~source-files.txt~ 和 ~prompts/manifest.txt~ 保持一致。

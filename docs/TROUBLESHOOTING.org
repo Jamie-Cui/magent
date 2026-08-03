@@ -30,7 +30,7 @@ shape:
 
 #+begin_src elisp
 (magent :fetcher github :repo "Jamie-Cui/magent"
-        :files ("lisp/*.el" "prompts" "skills" "capabilities"))
+        :files ("lisp/magent*.el" "prompts" "skills" "capabilities"))
 #+end_src
 
 The explicit glob supplies every production Elisp file. The explicit

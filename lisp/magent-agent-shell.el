@@ -35,14 +35,14 @@
 (declare-function magent--ensure-initialized "magent")
 (declare-function agent-shell--display-buffer "agent-shell")
 (declare-function agent-shell--dwim "agent-shell")
-(declare-function agent-shell--process-pending-request "agent-shell")
 (declare-function agent-shell--send-command "agent-shell")
 (declare-function agent-shell-cwd "agent-shell-project")
 (declare-function agent-shell-status "agent-shell")
 (declare-function agent-shell-interrupt "agent-shell")
 (declare-function agent-shell-insert "agent-shell")
 (declare-function agent-shell-make-agent-config "agent-shell")
-(declare-function agent-shell-queue-request "agent-shell")
+(declare-function agent-shell-prompt-queue "agent-shell-prompt-queue")
+(declare-function agent-shell-prompt-queue-resume "agent-shell-prompt-queue")
 (declare-function agent-shell-start "agent-shell")
 (declare-function shell-maker-busy "shell-maker")
 
@@ -393,8 +393,8 @@ after clearing the stale state."
     (magent-log "WARN recovered stale agent-shell busy state in %s"
                 (buffer-name))
     (when (and process-pending
-               (map-elt agent-shell--state :pending-requests))
-      (agent-shell--process-pending-request))
+               (map-elt agent-shell--state :pending-prompts))
+      (agent-shell-prompt-queue-resume))
     t))
 
 ;;;###autoload
@@ -431,7 +431,7 @@ after clearing the stale state."
       (if (with-current-buffer shell-buffer
             (shell-maker-busy))
           (with-current-buffer shell-buffer
-            (agent-shell-queue-request prompt))
+            (agent-shell-prompt-queue prompt))
         (agent-shell-insert :text prompt
                             :submit t
                             :no-focus no-focus

@@ -3,6 +3,10 @@
 ;; Copyright (C) 2026 Jamie Cui
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
+;;; Commentary:
+
+;; Define the built-in controls for the current Magent conversation.
+
 ;;; Code:
 
 (require 'magent-action)

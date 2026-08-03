@@ -8,6 +8,12 @@ on:
 jobs:
   ert:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        emacs:
+          - emacs-29-4
+          - emacs-30-1
 
     steps:
       - uses: actions/checkout@v4
@@ -16,10 +22,10 @@ jobs:
         with:
           github_access_token: ${{ github.token }}
 
-      - name: Install Emacs 29.4
+      - name: Install ${{ matrix.emacs }}
         run: |
           nix profile install --accept-flake-config \
-            github:purcell/nix-emacs-ci/868482a78575138aebb1b5c16a9266b95c800f2e#emacs-29-4
+            github:purcell/nix-emacs-ci/868482a78575138aebb1b5c16a9266b95c800f2e#${{ matrix.emacs }}
           emacs --version
 
       - name: Install Emacs package dependencies
@@ -29,10 +35,13 @@ jobs:
             --eval "(setq package-archives '((\"gnu\" . \"https://elpa.gnu.org/packages/\") (\"nongnu\" . \"https://elpa.nongnu.org/nongnu/\") (\"melpa\" . \"https://melpa.org/packages/\")))" \
             --eval "(package-initialize)" \
             --eval "(package-refresh-contents)" \
-            --eval "(dolist (pkg '(gptel yaml cond-let compat llama with-editor acp shell-maker agent-shell)) (unless (package-installed-p pkg) (package-install pkg)))"
+            --eval "(dolist (pkg '(gptel yaml cond-let compat llama with-editor acp shell-maker agent-shell package-lint)) (unless (package-installed-p pkg) (package-install pkg)))"
 
       - name: Byte-compile
         run: make compile
+
+      - name: Lint
+        run: make lint
 
       - name: Run ERT unit tests
         run: make test-unit

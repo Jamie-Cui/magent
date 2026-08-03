@@ -22,14 +22,16 @@ shell isolation parity 不在范围内。
 - gptel 0.9.8+
 - compat 30.1+
 - yaml 1.0+
-- acp 0.12.2+
-- agent-shell 0.57.1+
+- acp 0.13.1+
+- agent-shell 0.66.1+
+- package-lint（仅开发时需要）
 - ripgrep，用于 ~grep~ tool
 
 ** 构建
 
 #+begin_src bash
 make compile    # Byte-compile all files
+make lint       # 检查声明和 package metadata
 make test-unit  # Run batch ERT unit tests
 make test       # Run unit tests plus deterministic live smoke tests
 make coverage   # Run ERT under built-in testcover
@@ -126,11 +128,11 @@ emacsclient --eval '(setq debug-on-error t)'
 
 GitHub Actions 运行：
 
-- ~test.yml~ ：安装 Emacs 29.4、安装依赖、byte-compile、unit tests、在临时 daemon 中跑 deterministic live smoke tests。
+- ~test.yml~ ：分别安装 Emacs 29.4 和 30.1、安装依赖、执行 byte-compile、声明/package lint、unit tests，并在临时 daemon 中跑 deterministic live smoke tests。
 - ~coverage.yml~ ：运行 ~make coverage~ 并上传 ~coverage/testcover-summary.tsv~ 。
 - ~melpazoid.yml~ ：运行 MELPA-style package checks。
 
-melpazoid recipe 显式包含 ~lisp/*.el~、~prompts/~、~skills/~ 和 ~capabilities/~。这些 production libraries 和 bundled runtime data 必须保留，因为 Magent 会在运行时解析它们。Recipe 应与 ~source-files.txt~ 和 ~prompts/manifest.txt~ 保持一致。
+melpazoid recipe 显式包含 ~lisp/magent*.el~、~prompts/~、~skills/~ 和 ~capabilities/~。这些 production libraries 和 bundled runtime data 必须保留，因为 Magent 会在运行时解析它们。Recipe 应与 ~source-files.txt~ 和 ~prompts/manifest.txt~ 保持一致。
 
 Package metadata 保持集中在 ~magent.el~ 和 ~magent-pkg.el~ 。不要在 secondary modules 中添加 ~Package-Requires~ headers；package-lint 会把 main file 之外的这些 headers 视为 ineffective。每个 Elisp 文件都应包含 SPDX license identifier。
 

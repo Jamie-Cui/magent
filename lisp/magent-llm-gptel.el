@@ -39,7 +39,6 @@
 (defvar gptel-include-reasoning)
 (defvar gptel-temperature)
 (defvar gptel-proxy)
-(defvar gptel--request-params)
 (defvar magent-include-reasoning)
 
 (defun magent-llm-gptel--managed-context-p (context)
