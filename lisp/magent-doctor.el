@@ -28,7 +28,7 @@
 
 (declare-function flymake-diagnostic-beg "flymake" t t)
 (declare-function flymake-diagnostic-end "flymake" t t)
-(declare-function flymake-diagnostic-text "ext:flymake")
+(declare-function flymake-diagnostic-text "flymake" t t)
 (declare-function flymake-diagnostic-type "flymake" t t)
 (declare-function flymake-diagnostics "flymake")
 (declare-function flycheck-error-filename "ext:flycheck" t t)
