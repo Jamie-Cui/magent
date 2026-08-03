@@ -3,6 +3,10 @@
 ;; Copyright (C) 2026 Jamie Cui
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
+;;; Commentary:
+
+;; Register the bundled prompt actions and compose the built-in Action layers.
+
 ;;; Code:
 
 (require 'magent-action)

@@ -21,14 +21,16 @@ sandboxing, seatbelt, bubblewrap, and shell isolation parity are out of scope.
 - gptel 0.9.8+
 - compat 30.1+
 - yaml 1.0+
-- acp 0.12.2+
-- agent-shell 0.57.1+
+- acp 0.13.1+
+- agent-shell 0.66.1+
+- package-lint (development only)
 - ripgrep (for grep tool)
 
 ** Building
 
 #+begin_src bash
 make compile    # Byte-compile all files
+make lint       # Validate declarations and package metadata
 make test-unit  # Run batch ERT unit tests
 make test       # Run unit tests plus deterministic live smoke tests
 make coverage   # Run ERT under built-in testcover
@@ -122,15 +124,16 @@ headers, request bodies, or API-key material.
 
 GitHub Actions runs:
 
-- ~test.yml~: Emacs 29.4 installation, dependency installation, byte-compile,
-  unit tests, and deterministic live smoke tests in a temporary daemon.
+- ~test.yml~: Emacs 29.4 and 30.1 installation, dependency installation,
+  byte-compile, declaration/package lint, unit tests, and deterministic live
+  smoke tests in a temporary daemon.
 - ~coverage.yml~: ~make coverage~, uploading ~coverage/testcover-summary.tsv~.
 - ~melpazoid.yml~: MELPA-style package checks.
 
-The melpazoid recipe explicitly includes ~lisp/*.el~, ~prompts/~, ~skills/~,
-and ~capabilities/~. Those production libraries and bundled runtime data must
-stay in the package recipe because Magent resolves them at runtime. Keep the
-recipe aligned with ~source-files.txt~ and ~prompts/manifest.txt~.
+The melpazoid recipe explicitly includes ~lisp/magent*.el~, ~prompts/~,
+~skills/~, and ~capabilities/~. Those production libraries and bundled runtime
+data must stay in the package recipe because Magent resolves them at runtime.
+Keep the recipe aligned with ~source-files.txt~ and ~prompts/manifest.txt~.
 
 Keep package metadata centralized in ~magent.el~ and ~magent-pkg.el~. Do not
 add ~Package-Requires~ headers to secondary modules; package-lint treats those

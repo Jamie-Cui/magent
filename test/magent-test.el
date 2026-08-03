@@ -92,6 +92,42 @@
                (length (delete-dups (copy-sequence manifest)))))
     (should (equal sorted-manifest (sort actual #'string<)))))
 
+(ert-deftest magent-test-production-elisp-has-commentary-sections ()
+  "Test every production Elisp module has a Commentary section."
+  (dolist (relative-file
+           (magent-test-source-files magent-test--root-directory))
+    (with-temp-buffer
+      (insert-file-contents
+       (expand-file-name relative-file magent-test--root-directory))
+      (should (re-search-forward "^;;; Commentary:$" nil t)))))
+
+(ert-deftest magent-test-production-elisp-declarations-are-valid ()
+  "Test declarations in every production Elisp module resolve."
+  (require 'check-declare)
+  (dolist (relative-file
+           (magent-test-source-files magent-test--root-directory))
+    (should-not
+     (check-declare-file
+      (expand-file-name relative-file magent-test--root-directory)))))
+
+(ert-deftest magent-test-gptel-adapter-does-not-declare-private-state ()
+  "Test the gptel adapter does not hide private variable API changes."
+  (let ((adapter-file
+         (expand-file-name "lisp/magent-llm-gptel.el"
+                           magent-test--root-directory))
+        declarations)
+    (with-temp-buffer
+      (insert-file-contents adapter-file)
+      (goto-char (point-min))
+      (condition-case nil
+          (while t
+            (pcase (read (current-buffer))
+              (`(defvar ,(and variable (pred symbolp)) . ,_)
+               (when (string-prefix-p "gptel--" (symbol-name variable))
+                 (push variable declarations)))))
+        (end-of-file nil)))
+    (should-not declarations)))
+
 (ert-deftest magent-test-melpazoid-recipe-packages-production-libraries ()
   "Test the MELPA recipe includes all production libraries and runtime data."
   (let ((workflow (expand-file-name ".github/workflows/melpazoid.yml"
@@ -104,7 +140,7 @@
       (setq recipe (read (match-string 1))))
     (should
      (equal (plist-get (cdr recipe) :files)
-            '("lisp/*.el" "prompts" "skills" "capabilities")))
+            '("lisp/magent*.el" "prompts" "skills" "capabilities")))
     (should (member "lisp/magent-action-builtins.el"
                     (magent-test-source-files
                      magent-test--root-directory)))))
@@ -120,7 +156,7 @@
        (re-search-forward "^;; Package-Requires: \\(.*\\)$" nil t))
       (setq requirements (read (match-string 1))))
     (should (version<= "0.13.1" (cadr (assq 'acp requirements))))
-    (should (version<= "0.62.1" (cadr (assq 'agent-shell requirements))))))
+    (should (version<= "0.66.1" (cadr (assq 'agent-shell requirements))))))
 
 (defconst magent-test--builtin-slash-command-names
   '("explain" "fix" "init" "review" "summarize" "test")
@@ -12205,13 +12241,15 @@
                         '((:agent-config . ((:identifier . magent))))))
           (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
                      #'ignore)
+                    ((symbol-function 'magent-agent-shell-ensure-config)
+                     (lambda () 'magent))
                     ((symbol-function 'magent-agent-shell--buffer)
                      (lambda (&optional _no-create) buffer))
                     ((symbol-function 'magent-agent-shell--recover-stale-busy)
                      #'ignore)
                     ((symbol-function 'shell-maker-busy)
                      (lambda () t))
-                    ((symbol-function 'agent-shell-queue-request)
+                    ((symbol-function 'agent-shell-prompt-queue)
                      (lambda (prompt)
                        (setq queued prompt))))
             (magent-agent-shell-send-prompt
@@ -12991,9 +13029,11 @@
                           (:session . ((:id . "session-1")))
                           (:active-requests . nil)
                           (:pending-restore . nil)
-                          (:pending-requests . nil))))
+                          (:pending-prompts . nil))))
           (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
                      #'ignore)
+                    ((symbol-function 'magent-agent-shell-ensure-config)
+                     (lambda () 'magent))
                     ((symbol-function 'magent-agent-shell--buffer)
                      (lambda (&optional _no-create) buffer))
                     ((symbol-function 'shell-maker-busy)
@@ -13001,7 +13041,7 @@
                     ((symbol-function 'agent-shell-insert)
                      (lambda (&rest args)
                        (setq inserted args)))
-                    ((symbol-function 'agent-shell-queue-request)
+                    ((symbol-function 'agent-shell-prompt-queue)
                      (lambda (prompt)
                        (setq queued prompt))))
             (magent-agent-shell-send-prompt "hello" :no-focus t))
@@ -13014,6 +13054,22 @@
           (should (eq (plist-get inserted :shell-buffer) buffer)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest magent-test-agent-shell-stale-recovery-resumes-prompt-queue ()
+  "Test stale recovery resumes pending prompts through the public queue API."
+  (require 'magent-agent-shell)
+  (with-temp-buffer
+    (setq-local shell-maker--busy t)
+    (setq-local agent-shell--state '((:pending-prompts . ("queued"))))
+    (let (resumed)
+      (cl-letf (((symbol-function 'magent-agent-shell--stale-busy-p)
+                 (lambda () t))
+                ((symbol-function 'agent-shell-prompt-queue-resume)
+                 (lambda ()
+                   (setq resumed t))))
+        (should (magent-agent-shell--recover-stale-busy t)))
+      (should-not shell-maker--busy)
+      (should resumed))))
 
 (ert-deftest magent-test-agent-shell-send-queues-real-busy ()
   "Test prompt dispatch keeps using agent-shell queue for live work."
@@ -13037,9 +13093,11 @@
                           (:session . ((:id . "session-1")))
                           (:active-requests . (((:method . "session/prompt"))))
                           (:pending-restore . nil)
-                          (:pending-requests . nil))))
+                          (:pending-prompts . nil))))
           (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
                      #'ignore)
+                    ((symbol-function 'magent-agent-shell-ensure-config)
+                     (lambda () 'magent))
                     ((symbol-function 'magent-agent-shell--buffer)
                      (lambda (&optional _no-create) buffer))
                     ((symbol-function 'shell-maker-busy)
@@ -13047,7 +13105,7 @@
                     ((symbol-function 'agent-shell-insert)
                      (lambda (&rest args)
                        (setq inserted args)))
-                    ((symbol-function 'agent-shell-queue-request)
+                    ((symbol-function 'agent-shell-prompt-queue)
                      (lambda (prompt)
                        (setq queued prompt))))
             (magent-agent-shell-send-prompt "hello" :no-focus t))
@@ -13081,7 +13139,7 @@
                           (:session . ((:id . "session-1")))
                           (:active-requests . nil)
                           (:pending-restore . nil)
-                          (:pending-requests . nil))))
+                          (:pending-prompts . nil))))
           (should-not (magent-agent-shell-processing-p)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))

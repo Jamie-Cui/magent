@@ -26,6 +26,7 @@ COMPAT_DIR ?= $(call elpa-package-dir,compat-*)
 YAML_DIR ?= $(call elpa-package-dir,yaml-[0-9]*)
 LLAMA_DIR ?= $(call elpa-package-dir,llama-*)
 WITH_EDITOR_DIR ?= $(call elpa-package-dir,with-editor-*)
+PACKAGE_LINT_DIR ?= $(call elpa-package-dir,package-lint-[0-9]*)
 
 LOADPATH = -L lisp \
 	$(if $(GPTEL_DIR),-L "$(GPTEL_DIR)") \
@@ -39,6 +40,8 @@ LOADPATH = -L lisp \
 	$(if $(LLAMA_DIR),-L "$(LLAMA_DIR)") \
 	$(if $(WITH_EDITOR_DIR),-L "$(WITH_EDITOR_DIR)")
 
+PACKAGE_LINT_LOADPATH = $(if $(PACKAGE_LINT_DIR),-L "$(PACKAGE_LINT_DIR)")
+
 # Compilation flags
 BYTE_COMPILE_FLAGS = --eval "(setq byte-compile-error-on-warn nil)" \
 	--eval "(setq byte-compile-warnings '(not cl-functions))"
@@ -47,7 +50,7 @@ SRCS = $(shell sed -e '/^[[:space:]]*\#/d' -e '/^[[:space:]]*$$/d' "$(SOURCE_MAN
 
 COMPILED = $(SRCS:.el=.elc)
 
-.PHONY: all compile clean purge test test-unit test-benchmark test-live test-live-smoke coverage help \
+.PHONY: all compile lint check-declare package-lint clean purge test test-unit test-benchmark test-live test-live-smoke coverage help \
 	benchmark benchmark-prepare benchmark-run benchmark-test
 
 all: compile
@@ -58,6 +61,9 @@ help:
 	@echo "Development targets:"
 	@echo "  make          - Default; same as make compile"
 	@echo "  compile       - Byte compile all Elisp files"
+	@echo "  lint          - Validate declarations and package metadata"
+	@echo "  check-declare - Validate declarations in production Elisp files"
+	@echo "  package-lint  - Run package-lint with warnings treated as failures"
 	@echo "  clean         - Remove build files and Harbor trial containers/networks"
 	@echo "  purge         - Clean plus benchmark Docker images and Harbor task cache"
 	@echo "  help          - Show this help message"
@@ -78,6 +84,21 @@ help:
 
 compile: $(COMPILED)
 	@echo "Compilation complete: $(words $(COMPILED)) files"
+
+lint: check-declare package-lint
+
+check-declare:
+	@echo "Checking declarations..."
+	@$(EMACS_BATCH) $(LOADPATH) \
+		-l check-declare \
+		--eval '(when (check-declare-directory "lisp") (kill-emacs 1))'
+
+package-lint:
+	@echo "Running package-lint..."
+	@$(EMACS_BATCH) $(PACKAGE_LINT_LOADPATH) \
+		-l package-lint \
+		--eval '(setq package-lint-main-file (expand-file-name "lisp/magent.el") package-lint-batch-fail-on-warnings t)' \
+		-f package-lint-batch-and-exit $(SRCS)
 
 lisp/%.elc: lisp/%.el
 	@echo "Compiling $<..."

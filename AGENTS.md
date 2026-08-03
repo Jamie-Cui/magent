@@ -15,6 +15,7 @@ See `docs/AGENT_JOBS.org` and `docs/AGENT_WORKFLOW.org` for child-agent lifecycl
 
 ```bash
 make compile    # Byte-compile all Elisp files
+make lint       # Validate declarations and package metadata
 make test-unit  # Run ERT unit tests in batch mode
 make test       # Run unit tests plus deterministic live smoke tests
 make coverage   # Run ERT under testcover and write coverage/testcover-summary.tsv
@@ -22,7 +23,7 @@ make clean      # Remove build files and Harbor benchmark containers/networks
 make purge      # Also remove benchmark Docker images and Harbor task cache
 ```
 
-The Makefile auto-detects dependency paths (`gptel`, `acp`, `shell-maker`, `agent-shell`, `cond-let`, `compat`, `yaml`, `llama`, `with-editor`) by scanning `~/.emacs.d/elpa/`. Override any with e.g. `GPTEL_DIR=/path/to/gptel`.
+The Makefile auto-detects dependency paths (`gptel`, `acp`, `shell-maker`, `agent-shell`, `cond-let`, `compat`, `yaml`, `llama`, `with-editor`, `package-lint`) by scanning `~/.emacs.d/elpa/`. Override any with e.g. `GPTEL_DIR=/path/to/gptel`.
 
 Single-file compilation:
 ```bash
@@ -52,9 +53,9 @@ emacs -Q --batch -L lisp -L $(find ~/.emacs.d/elpa -maxdepth 1 -name 'gptel-*' -
 ### GitHub Actions
 
 CI is defined under `.github/workflows/`:
-- `test.yml`: installs Emacs 29.4 via Nix, installs package dependencies, runs `make compile`, `make test-unit`, and `make test-live-smoke` in a temporary daemon.
+- `test.yml`: tests Emacs 29.4 and 30.1 via Nix, installs package dependencies, runs `make compile`, `make lint`, `make test-unit`, and `make test-live-smoke` in a temporary daemon.
 - `coverage.yml`: runs `make coverage` and uploads `coverage/testcover-summary.tsv`.
-- `melpazoid.yml`: runs MELPA-style package checks. Its recipe explicitly includes `lisp/*.el`, `prompts/`, `skills/`, and `capabilities/`, because Magent depends on those production libraries and bundled data at runtime. Keep the explicit library and runtime-data entries aligned with the package source manifest.
+- `melpazoid.yml`: runs MELPA-style package checks. Its recipe explicitly includes `lisp/magent*.el`, `prompts/`, `skills/`, and `capabilities/`, because Magent depends on those production libraries and bundled data at runtime. Keep the explicit library and runtime-data entries aligned with the package source manifest.
 
 Package metadata should stay centralized in `magent.el` and `magent-pkg.el`; non-main modules should not carry `Package-Requires` headers. Keep SPDX license identifiers in every Elisp source file so melpazoid can detect licensing consistently.
 
