@@ -24,12 +24,13 @@ jobs:
 
       - name: Install Emacs package dependencies
         run: |
+          # Keep Transient's macro providers ahead of packages that pull it in.
           emacs -Q --batch \
             --eval "(require 'package)" \
             --eval "(setq package-archives '((\"gnu\" . \"https://elpa.gnu.org/packages/\") (\"nongnu\" . \"https://elpa.nongnu.org/nongnu/\") (\"melpa\" . \"https://melpa.org/packages/\")))" \
             --eval "(package-initialize)" \
             --eval "(package-refresh-contents)" \
-            --eval "(dolist (pkg '(gptel yaml cond-let compat llama with-editor acp shell-maker agent-shell)) (unless (package-installed-p pkg) (package-install pkg)))"
+            --eval "(dolist (pkg '(compat cond-let llama gptel yaml with-editor acp shell-maker agent-shell)) (unless (package-installed-p pkg) (package-install pkg)))"
 
       - name: Run coverage
         run: make coverage

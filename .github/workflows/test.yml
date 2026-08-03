@@ -30,12 +30,14 @@ jobs:
 
       - name: Install Emacs package dependencies
         run: |
+          # Install Transient's macro providers before packages that pull it in.
+          # Emacs 30 can otherwise byte-compile Transient before these are active.
           emacs -Q --batch \
             --eval "(require 'package)" \
             --eval "(setq package-archives '((\"gnu\" . \"https://elpa.gnu.org/packages/\") (\"nongnu\" . \"https://elpa.nongnu.org/nongnu/\") (\"melpa\" . \"https://melpa.org/packages/\")))" \
             --eval "(package-initialize)" \
             --eval "(package-refresh-contents)" \
-            --eval "(dolist (pkg '(gptel yaml cond-let compat llama with-editor acp shell-maker agent-shell package-lint)) (unless (package-installed-p pkg) (package-install pkg)))"
+            --eval "(dolist (pkg '(compat cond-let llama gptel yaml with-editor acp shell-maker agent-shell package-lint)) (unless (package-installed-p pkg) (package-install pkg)))"
 
       - name: Byte-compile
         run: make compile
