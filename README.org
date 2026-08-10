@@ -423,7 +423,7 @@ The AI agent has access to these tools (can be customized per agent):
 | ~read_buffer~        | no          | Read an existing file-visiting buffer, including edits  |
 | ~write_file~         | yes         | Atomically write a file; rejects dirty buffer conflicts |
 | ~write_repo_summary~ | yes         | Update the canonical single-file Org repository summary |
-| ~edit_file~          | yes         | Atomically replace unique text; rejects dirty conflicts |
+| ~edit_file~          | yes         | Atomically replace unique text; refreshes clean stale buffers and rejects dirty conflicts |
 | ~grep~               | no          | Regex search via ripgrep; returns ~file:line:content~     |
 | ~glob~               | no          | Bounded, event-loop-sliced glob traversal               |
 | ~bash~               | yes         | Execute shell commands (default timeout 300s)           |
