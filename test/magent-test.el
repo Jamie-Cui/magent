@@ -110,6 +110,20 @@
      (check-declare-file
       (expand-file-name relative-file magent-test--root-directory)))))
 
+(ert-deftest magent-test-generated-external-accessors-use-ext-declarations ()
+  "Test generated external accessors use explicit ext declarations."
+  (let ((doctor-file
+         (expand-file-name "lisp/magent-doctor.el"
+                           magent-test--root-directory)))
+    (with-temp-buffer
+      (insert-file-contents doctor-file)
+      (goto-char (point-min))
+      (should
+       (re-search-forward
+        (rx "(declare-function flymake-diagnostic-text "
+            "\"ext:flymake\" t t)")
+        nil t)))))
+
 (ert-deftest magent-test-gptel-adapter-does-not-declare-private-state ()
   "Test the gptel adapter does not hide private variable API changes."
   (let ((adapter-file
