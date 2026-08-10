@@ -269,18 +269,26 @@ buffer contents and state metadata or an error message."
       (format "Error reading buffer: %s"
               (error-message-string err))))))
 
-(defun magent-tools--clean-visiting-buffer (path)
+(defun magent-tools--clean-visiting-buffer (path &optional refresh-stale)
   "Return the clean file-visiting buffer for PATH, or nil.
 Signal a conflict when the visiting buffer is modified or its file changed on
-disk since it was visited."
+disk since it was visited.  When REFRESH-STALE is non-nil, refresh a clean
+stale buffer from disk without running revert hooks or reinitializing modes."
   (when-let* ((buffer (find-buffer-visiting path)))
     (with-current-buffer buffer
       (when (buffer-modified-p)
         (error "buffer_conflict: visiting buffer %S has unsaved changes"
                (buffer-name buffer)))
       (unless (verify-visited-file-modtime buffer)
-        (error "disk_conflict: %s changed on disk since buffer %S visited it"
-               path (buffer-name buffer))))
+        (if refresh-stale
+            (let ((before-revert-hook nil)
+                  (after-revert-hook nil))
+              (revert-buffer t t t)
+              (unless (verify-visited-file-modtime buffer)
+                (error "disk_conflict: %s changed while refreshing buffer %S"
+                       path (buffer-name buffer))))
+          (error "disk_conflict: %s changed on disk since buffer %S visited it"
+                 path (buffer-name buffer)))))
     buffer))
 
 (defun magent-tools--atomic-write-string (path content &optional coding-system)
@@ -644,8 +652,8 @@ and bounded by `magent-glob-max-results' and
 (defun magent-tools--edit-file (callback path old-text new-text)
   "Edit file at PATH by replacing OLD-TEXT with NEW-TEXT asynchronously.
 OLD-TEXT must match exactly once in the file.  Rejects a modified visiting
-buffer; updates and saves a clean visiting buffer so Emacs and disk remain
-synchronized.
+buffer; refreshes a clean stale buffer without revert hooks, then updates and
+saves it so Emacs and disk remain synchronized.
 CALLBACK is called with success message or error."
   (condition-case err
       (progn
@@ -654,7 +662,7 @@ CALLBACK is called with success message or error."
         (unless (stringp new-text)
           (error "new_text must be a string"))
         (let ((path (magent-tools--resolve-path path)))
-          (if-let* ((buffer (magent-tools--clean-visiting-buffer path)))
+          (if-let* ((buffer (magent-tools--clean-visiting-buffer path t)))
               (with-current-buffer buffer
                 (save-excursion
                   (atomic-change-group
@@ -1784,7 +1792,7 @@ See `magent-agent-loop-filter-display-args'.")
 (defvar magent-tools--edit-file-tool
   (gptel-make-tool
    :name "edit_file"
-   :description "Edit a file by replacing an exact text match using atomic disk replacement. The old_text must appear exactly once. If Emacs has a clean visiting buffer, updates and saves that buffer; fails with buffer_conflict instead of overwriting unsaved buffer edits. Use this for precise, surgical edits instead of rewriting entire files."
+   :description "Edit a file by replacing an exact text match using atomic disk replacement. The old_text must appear exactly once. If Emacs has a clean visiting buffer, refreshes stale disk contents without revert hooks, then updates and saves that buffer; fails with buffer_conflict instead of overwriting unsaved buffer edits. Use this for precise, surgical edits instead of rewriting entire files."
    :args (list '(:name "path"
                        :type string
                        :description "Absolute or relative path to the file")
@@ -1855,7 +1863,7 @@ See `magent-agent-loop-filter-display-args'.")
 (defvar magent-tools--emacs-eval-tool
   (gptel-make-tool
    :name "emacs_eval"
-   :description "Evaluate an Emacs Lisp expression. Returns the result as a string. Use for buffer inspection, Emacs state queries, running compilation, navigating code with xref, etc. When you need multiple pieces of Emacs state, batch them in a single call using (let ...) or (list ...) rather than making separate calls — but only after you have gathered enough context to know what you need."
+   :description "Evaluate an Emacs Lisp expression. Returns the result as a string. Use for buffer inspection, Emacs state queries, running compilation, navigating code with xref, etc. Do not use this tool to revert or synchronize a file-visiting buffer after edit_file reports a conflict: edit_file refreshes clean stale buffers itself and preserves dirty buffers. When you need multiple pieces of Emacs state, batch them in a single call using (let ...) or (list ...) rather than making separate calls — but only after you have gathered enough context to know what you need."
    :args (list '(:name "sexp"
                        :type string
                        :description "Emacs Lisp s-expression to evaluate")

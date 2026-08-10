@@ -6975,6 +6975,37 @@
         (kill-buffer buffer))
       (delete-file tmpfile))))
 
+(ert-deftest magent-test-tools-write-file-rejects-clean-stale-visiting-buffer ()
+  "Test write_file does not overwrite a disk change behind a clean buffer."
+  (require 'magent-tools)
+  (let* ((tmpfile (make-temp-file "magent-write-stale-"))
+         (buffer nil)
+         result)
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "old buffer text"))
+          (setq buffer (find-file-noselect tmpfile t))
+          (with-temp-file tmpfile
+            (insert "new disk text"))
+          (with-current-buffer buffer
+            (set-visited-file-modtime (seconds-to-time 0)))
+          (magent-tools--write-file
+           (lambda (value) (setq result (magent-test-tool-output value)))
+           tmpfile "replacement")
+          (should (string-match-p "disk_conflict" result))
+          (should
+           (equal (with-temp-buffer
+                    (insert-file-contents tmpfile)
+                    (buffer-string))
+                  "new disk text"))
+          (with-current-buffer buffer
+            (should (equal (buffer-string) "old buffer text"))
+            (should-not (buffer-modified-p))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-file tmpfile))))
+
 (ert-deftest magent-test-tools-edit-file ()
   "Test edit_file tool implementation."
   (require 'magent-tools)
@@ -7076,6 +7107,49 @@
                     (insert-file-contents tmpfile)
                     (buffer-string))
                   "goodbye world")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-file tmpfile))))
+
+(ert-deftest magent-test-tools-edit-file-refreshes-clean-stale-buffer ()
+  "Test edit_file safely refreshes a clean buffer after a disk change."
+  (require 'magent-tools)
+  (let* ((tmpfile (make-temp-file "magent-edit-stale-"))
+         (buffer nil)
+         major-mode-before
+         before-revert-ran
+         after-revert-ran
+         result)
+    (unwind-protect
+        (progn
+          (with-temp-file tmpfile
+            (insert "hello old"))
+          (setq buffer (find-file-noselect tmpfile t))
+          (with-temp-file tmpfile
+            (insert "hello changed on disk"))
+          (with-current-buffer buffer
+            (setq major-mode-before major-mode)
+            (set-visited-file-modtime (seconds-to-time 0))
+            (add-hook 'before-revert-hook
+                      (lambda () (setq before-revert-ran t)) nil t)
+            (add-hook 'after-revert-hook
+                      (lambda () (setq after-revert-ran t)) nil t))
+          (magent-tools--edit-file
+           (lambda (value) (setq result (magent-test-tool-output value)))
+           tmpfile "changed" "updated")
+          (should (string-match-p "Successfully" result))
+          (should-not before-revert-ran)
+          (should-not after-revert-ran)
+          (with-current-buffer buffer
+            (should (equal (buffer-string) "hello updated on disk"))
+            (should (eq major-mode major-mode-before))
+            (should-not (buffer-modified-p))
+            (should (verify-visited-file-modtime buffer)))
+          (should
+           (equal (with-temp-buffer
+                    (insert-file-contents tmpfile)
+                    (buffer-string))
+                  "hello updated on disk")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (delete-file tmpfile))))
