@@ -314,6 +314,27 @@ Return non-nil when SKILL-NAME is selected after toggling."
     (line-beginning-position)
     (line-end-position))))
 
+(defun magent-agent-shell--get-region-context (orig &rest args)
+  "Build region context through ORIG without remote path queries.
+
+For remote files, agent-shell shortens the file name against
+`:agent-cwd' with `file-in-directory-p'.  That can synchronously query
+TRAMP while agent-shell is starting and deadlock with the in-process
+ACP request.  Keep the full remote file name instead; constructing
+context must not perform remote file I/O."
+  (let ((agent-cwd (plist-get args :agent-cwd)))
+    (when (or (and (stringp buffer-file-name)
+                   (file-remote-p buffer-file-name))
+              (and (stringp agent-cwd)
+                   (file-remote-p agent-cwd)))
+      (setq args (plist-put (copy-sequence args) :agent-cwd nil))))
+  (apply orig args))
+
+(unless (advice-member-p #'magent-agent-shell--get-region-context
+                         'agent-shell--get-region-context)
+  (advice-add 'agent-shell--get-region-context :around
+              #'magent-agent-shell--get-region-context))
+
 (defun magent-agent-shell--get-current-line-context (orig &rest args)
   "Suppress empty current-line context before delegating to ORIG.
 

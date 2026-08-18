@@ -12315,6 +12315,50 @@
         "line-context"))
       (should called))))
 
+(ert-deftest magent-test-agent-shell-remote-line-context-avoids-file-io ()
+  "Test remote current-line context does not query the TRAMP filesystem."
+  (require 'magent-agent-shell)
+  (with-temp-buffer
+    (insert "remote line\n")
+    (goto-char (point-min))
+    (setq buffer-file-name "/ssh:test.invalid:/srv/project/example.el"
+          default-directory "/ssh:test.invalid:/srv/project/")
+    (let (context)
+      (cl-letf (((symbol-function 'file-in-directory-p)
+                 (lambda (&rest _args)
+                   (ert-fail "Remote line context performed file I/O"))))
+        (setq context
+              (agent-shell--get-current-line-context
+               :agent-cwd "/ssh:test.invalid:/srv/project/")))
+      (setq context (substring-no-properties context))
+      (should (string-match-p
+               (regexp-quote buffer-file-name)
+               context))
+      (should (string-match-p "remote line" context)))))
+
+(ert-deftest magent-test-agent-shell-remote-region-context-avoids-file-io ()
+  "Test explicit remote region context does not query the TRAMP filesystem."
+  (require 'magent-agent-shell)
+  (with-temp-buffer
+    (insert "first remote line\nsecond remote line\n")
+    (goto-char (point-min))
+    (push-mark (line-end-position) t t)
+    (setq buffer-file-name "/ssh:test.invalid:/srv/project/example.el"
+          default-directory "/ssh:test.invalid:/srv/project/")
+    (let (context)
+      (cl-letf (((symbol-function 'file-in-directory-p)
+                 (lambda (&rest _args)
+                   (ert-fail "Remote region context performed file I/O"))))
+        (setq context
+              (agent-shell--get-region-context
+               :deactivate t
+               :agent-cwd "/ssh:test.invalid:/srv/project/")))
+      (setq context (substring-no-properties context))
+      (should (string-match-p
+               (regexp-quote buffer-file-name)
+               context))
+      (should (string-match-p "first remote line" context)))))
+
 (ert-deftest magent-test-agent-shell-send-prompt-queues-skills ()
   "Test agent-shell prompt submission records request-local skills."
   (require 'magent-agent-shell)
