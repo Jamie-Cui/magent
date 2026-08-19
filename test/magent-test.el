@@ -13780,7 +13780,7 @@
          (session (magent-session-create :id "spill_session.1"))
          (other (magent-session-create :id "other-session"))
          (payload (concat "first\n" (make-string 120 ?z) "\nlast\n"))
-         result-id page denied spill-file)
+         result-id page denied spill-file read-file-page-budget)
     (unwind-protect
         (progn
           (magent-session-add-message session 'user "Run large tool")
@@ -13802,8 +13802,13 @@
           (let ((magent-tools--request-context
                  (magent-request-context-create :session session)))
             (magent-tools--read-tool-output
-             (lambda (value) (setq page (magent-test-tool-output value)))
+             (lambda (value)
+               (setq page (magent-test-tool-output value)
+                     read-file-page-budget
+                     magent-tools--read-file-page-max-characters))
              result-id 1 10))
+          (should (= read-file-page-budget
+                     magent-tools--read-file-page-max-characters))
           (should (string-match-p (regexp-quote payload) page))
           (let ((magent-tools--request-context
                  (magent-request-context-create :session other)))

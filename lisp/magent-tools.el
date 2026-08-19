@@ -167,11 +167,15 @@ absolute versus project-relative spellings of the same resource."
         (or line-count magent-tools--read-file-default-line-count)))
 
 (defun magent-tools--buffer-page
-    (tool-name start-line line-count metadata)
+    (tool-name start-line line-count metadata &optional page-max-characters)
   "Return a self-describing page from the current buffer.
 TOOL-NAME identifies the calling tool.  START-LINE is one-based and LINE-COUNT
 is the requested maximum number of lines.  METADATA is the source description
-included in the result header."
+included in the result header.  PAGE-MAX-CHARACTERS defaults to the fixed
+`read_file' page budget."
+  (setq page-max-characters
+        (or page-max-characters
+            magent-tools--read-file-page-max-characters))
   (save-excursion
     (save-restriction
       (widen)
@@ -181,10 +185,8 @@ included in the result header."
         (let ((begin (point)))
           (forward-line line-count)
           (let ((end (point)))
-            (when (> (- end begin)
-                     magent-tools--read-file-page-max-characters)
-              (goto-char (+ begin
-                            magent-tools--read-file-page-max-characters))
+            (when (> (- end begin) page-max-characters)
+              (goto-char (+ begin page-max-characters))
               (unless (bolp)
                 (beginning-of-line))
               (when (= (point) begin)
@@ -1182,16 +1184,15 @@ Evaluation runs in the user's context buffer when known
              (path (magent-tool-output-spill-file session-id result-id))
              (range
               (magent-tools--read-range
-               start-line (or line-count magent-tool-output-spill-page-lines)))
-             (magent-tools--read-file-page-max-characters
-              magent-tool-output-spill-page-characters))
+               start-line (or line-count magent-tool-output-spill-page-lines))))
         (with-temp-buffer
           (insert-file-contents path)
           (magent-tools--complete
            callback
            (magent-tools--buffer-page
             "read_tool_output" (car range) (cdr range)
-            (format "result_id=%s; session_id=%s" result-id session-id))
+            (format "result_id=%s; session_id=%s" result-id session-id)
+            magent-tool-output-spill-page-characters)
            nil (list :result-id result-id :session-id session-id))))
     (error
      (magent-tools--fail
