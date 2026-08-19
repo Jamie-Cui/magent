@@ -503,10 +503,12 @@ PROJECT-ROOT is the captured request root used to normalize path prefixes."
         (cons 'include_closed
               (magent-audit--safe-true-boolean
                (plist-get args :include_closed)))))
-      ((or "read_file" "read_buffer")
+      ("read_file"
        (magent-audit--compact-alist
         (cons 'path (magent-audit--path-preview
-                     (plist-get args :path) project-root))))
+                     (plist-get args :path) project-root))
+        (cons 'source (magent-audit--safe-identifier
+                       (plist-get args :source)))))
       ("grep"
        (magent-audit--compact-alist
         (cons 'pattern_length

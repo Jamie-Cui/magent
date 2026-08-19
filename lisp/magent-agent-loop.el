@@ -316,7 +316,7 @@ being normalized into structured tool calls."
                  cmd magent-agent-loop--tool-input-summary-max-length
                  nil nil "...")
               "?"))
-           ((member name '("read_file" "read_buffer" "write_file" "edit_file"))
+           ((member name '("read_file" "write_file" "edit_file"))
             (or (plist-get args :path) "?"))
            ((string= name "write_repo_summary")
             (or (plist-get args :scope)
@@ -469,6 +469,15 @@ across Magent's own serial tool queue without claiming OS-level isolation."
             ((complete
               (result)
               (let* ((result (magent-tool-result-require result name call-id))
+                     (session (and request-context
+                                   (magent-request-context-session
+                                    request-context)))
+                     (thread (and session
+                                  (magent-session-thread-ledger session)))
+                     (result (if thread
+                                 (magent-thread-bound-tool-result-for-model
+                                  result thread)
+                               result))
                      (status (magent-tool-result-status-value result))
                      (output (magent-tool-result-output-string result)))
                 (setf (magent-agent-loop-tool-queue-busy queue) nil)

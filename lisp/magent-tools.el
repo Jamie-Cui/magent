@@ -19,6 +19,7 @@
 (require 'dom)
 (require 'gptel-request)
 (require 'json)
+(require 'seq)
 (require 'subr-x)
 (require 'magent-config)
 (require 'magent-agent-job)
@@ -60,9 +61,6 @@ whole so a subsequent line-based request always makes progress.")
 
 (defconst magent-tools--agent-wait-fallback-timeout 300
   "Fallback wait timeout in seconds when the host request timeout is disabled.")
-
-(defconst magent-tools--bash-failure-max-lines 300
-  "Maximum Bash failure output lines retained before model-side bounding.")
 
 (defun magent-tools--completed (output &optional exit-code metadata)
   "Return a completed structured tool result."
@@ -213,61 +211,81 @@ included in the result header."
               (concat header
                       (buffer-substring-no-properties begin end)))))))))
 
-(defun magent-tools--read-file (callback path &optional start-line line-count)
-  "Read the on-disk contents of file at PATH asynchronously.
-START-LINE is an optional one-based starting line.  LINE-COUNT defaults to
-`magent-tools--read-file-default-line-count'.  The result includes pagination
-metadata before the requested file contents.  CALLBACK is called with the file
-contents or error message."
+(defun magent-tools--buffer-revision (&optional buffer)
+  "Return a SHA-256 revision for the widened contents of BUFFER."
+  (with-current-buffer (or buffer (current-buffer))
+    (save-restriction
+      (widen)
+      (secure-hash 'sha256 (current-buffer) (point-min) (point-max)))))
+
+(defun magent-tools--file-revision (path)
+  "Return the decoded-content SHA-256 revision for file PATH."
+  (with-temp-buffer
+    (insert-file-contents path)
+    (magent-tools--buffer-revision)))
+
+(defun magent-tools--assert-file-revision (path expected-revision)
+  "Require PATH to match EXPECTED-REVISION or the sentinel \"absent\"."
+  (unless (and (stringp expected-revision)
+               (not (string-empty-p expected-revision)))
+    (error "expected_revision must be a non-empty string"))
+  (if (file-exists-p path)
+      (progn
+        (when (equal expected-revision "absent")
+          (error "stale_revision: %s already exists" path))
+        (let ((actual (magent-tools--file-revision path)))
+          (unless (equal actual expected-revision)
+            (error "stale_revision: expected %s but found %s for %s"
+                   expected-revision actual path))))
+    (unless (equal expected-revision "absent")
+      (error "stale_revision: %s no longer exists" path))))
+
+(defun magent-tools--read-file
+    (callback path source &optional start-line line-count)
+  "Read a bounded page from PATH using explicit SOURCE.
+SOURCE is \"disk\" or \"live-buffer\".  START-LINE is one-based and
+LINE-COUNT defaults to `magent-tools--read-file-default-line-count'."
   (condition-case err
       (progn
         (unless (stringp path)
           (error "Missing required argument 'path' (got %S)" path))
+        (unless (member source '("disk" "live-buffer"))
+          (error "source must be either disk or live-buffer"))
         (let* ((path (magent-tools--resolve-path path))
-               (range (magent-tools--read-range start-line line-count)))
-          (with-temp-buffer
-            (insert-file-contents path)
-            (magent-tools--complete
-             callback
-             (magent-tools--buffer-page
-              "read_file" (car range) (cdr range)
-              "source=disk; modified=false")))))
+               (range (magent-tools--read-range start-line line-count))
+               (buffer (and (equal source "live-buffer")
+                            (find-buffer-visiting path))))
+          (if (equal source "disk")
+              (with-temp-buffer
+                (insert-file-contents path)
+                (let ((revision (magent-tools--buffer-revision)))
+                  (magent-tools--complete
+                   callback
+                   (magent-tools--buffer-page
+                    "read_file" (car range) (cdr range)
+                    (format "source=disk; modified=false; revision=%s"
+                            revision))
+                   nil (list :source "disk" :revision revision))))
+            (unless (buffer-live-p buffer)
+              (error "buffer_not_found: no live buffer is visiting %s" path))
+            (with-current-buffer buffer
+              (let* ((revision (magent-tools--buffer-revision))
+                     (metadata
+                      (format
+                       "source=live-buffer; buffer=%S; modified=%s; narrowed=%s; revision=%s"
+                       (buffer-name buffer)
+                       (if (buffer-modified-p) "true" "false")
+                       (if (buffer-narrowed-p) "true" "false")
+                       revision)))
+                (magent-tools--complete
+                 callback
+                 (magent-tools--buffer-page
+                  "read_file" (car range) (cdr range) metadata)
+                 nil (list :source "live-buffer" :revision revision
+                           :modified (buffer-modified-p))))))))
     (error
      (magent-tools--fail
       callback (format "Error reading file: %s" (error-message-string err))))))
-
-(defun magent-tools--read-buffer
-    (callback path &optional start-line line-count)
-  "Read live contents of the file-visiting buffer for PATH asynchronously.
-The buffer must already exist; this function never opens PATH or falls back to
-disk.  START-LINE is an optional one-based starting line.  LINE-COUNT defaults
-to `magent-tools--read-file-default-line-count'.  CALLBACK is called with the
-buffer contents and state metadata or an error message."
-  (condition-case err
-      (progn
-        (unless (stringp path)
-          (error "Missing required argument 'path' (got %S)" path))
-        (let* ((path (magent-tools--resolve-path path))
-               (range (magent-tools--read-range start-line line-count))
-               (buffer (find-buffer-visiting path)))
-          (unless (buffer-live-p buffer)
-            (error "buffer_not_found: no live buffer is visiting %s" path))
-          (with-current-buffer buffer
-            (let ((metadata
-                   (format
-                    "source=live-buffer; buffer=%S; modified=%s; narrowed=%s"
-                    (buffer-name buffer)
-                    (if (buffer-modified-p) "true" "false")
-                    (if (buffer-narrowed-p) "true" "false"))))
-              (magent-tools--complete
-               callback
-               (magent-tools--buffer-page
-                "read_buffer" (car range) (cdr range) metadata))))))
-    (error
-     (magent-tools--fail
-      callback
-      (format "Error reading buffer: %s"
-              (error-message-string err))))))
 
 (defun magent-tools--clean-visiting-buffer (path &optional refresh-stale)
   "Return the clean file-visiting buffer for PATH, or nil.
@@ -332,8 +350,8 @@ Signal a descriptive error mentioning PATH when the match is not unique."
       (search-forward old-text)
       (replace-match new-text t t))))
 
-(defun magent-tools--write-file (callback path content)
-  "Write CONTENT to file at PATH asynchronously.
+(defun magent-tools--write-file (callback path content expected-revision)
+  "Write CONTENT to PATH after validating EXPECTED-REVISION.
 Creates parent directories if needed.  Rejects a modified visiting buffer;
 updates and saves a clean visiting buffer so Emacs and disk remain synchronized.
 CALLBACK is called with success message or error."
@@ -344,6 +362,7 @@ CALLBACK is called with success message or error."
         (unless (stringp content)
           (error "Missing required argument 'content' (got %S)" content))
         (let ((path (magent-tools--resolve-path path)))
+          (magent-tools--assert-file-revision path expected-revision)
           (let ((dir (file-name-directory path)))
             (when (and dir (not (file-exists-p dir)))
               (make-directory dir t)))
@@ -386,6 +405,28 @@ SCOPE and SCOPE-FILES describe a scoped summary."
       (format "Error writing repository summary: %s"
               (error-message-string err))))))
 
+(defun magent-tools--grep-revisions (output directory)
+  "Return file revision alist parsed from ripgrep OUTPUT in DIRECTORY."
+  (let (paths revisions)
+    (dolist (line (split-string output "\n" t))
+      (when (string-match "\\`\\(.+\\):[0-9]+:" line)
+        (push (match-string 1 line) paths)))
+    (dolist (path (delete-dups paths))
+      (let ((absolute (expand-file-name path directory)))
+        (when (file-regular-p absolute)
+          (push (cons path (magent-tools--file-revision absolute)) revisions))))
+    (sort revisions (lambda (left right) (string< (car left) (car right))))))
+
+(defun magent-tools--format-grep-output (matches revisions)
+  "Return MATCHES with a deterministic REVISIONS header."
+  (if (null revisions)
+      matches
+    (format "[file revisions]\n%s\n[/file revisions]\n%s"
+            (mapconcat (lambda (entry)
+                         (format "%s %s" (cdr entry) (car entry)))
+                       revisions "\n")
+            matches)))
+
 (defun magent-tools--grep (callback pattern path &optional case-sensitive)
   "Search for PATTERN in files under PATH using ripgrep asynchronously.
 If CASE-SENSITIVE is nil, performs case-insensitive search.
@@ -407,7 +448,8 @@ CALLBACK is called with matching lines or error message."
                  (target (if directory-p "." resolved))
                  (limit (max 1 magent-grep-max-matches))
                  (args (append
-                        (list "--no-heading" "--line-number" "--color=never")
+                        (list "--no-heading" "--with-filename"
+                              "--line-number" "--color=never")
                         (unless case-sensitive (list "--ignore-case"))
                         (list "--" pattern target)))
                  (finished nil)
@@ -422,7 +464,13 @@ CALLBACK is called with matching lines or error message."
                                        (with-current-buffer buf (buffer-string))
                                      ""))
                            (exit-code (process-exit-status process))
-                           (trimmed (string-trim-right output)))
+                           (trimmed (string-trim-right output))
+                           (revisions
+                            (magent-tools--grep-revisions
+                             trimmed default-directory))
+                           (rendered
+                            (magent-tools--format-grep-output
+                             trimmed revisions)))
                       (when (buffer-live-p buf)
                         (kill-buffer buf))
                       (funcall
@@ -433,19 +481,21 @@ CALLBACK is called with matching lines or error message."
                           :status 'completed
                           :success t
                           :exit-code 0
-                          :metadata (list :truncated t :limit limit)
+                          :metadata (list :truncated t :limit limit
+                                          :revisions revisions)
                           :output (format "%s%s[results truncated after %d matches]"
-                                          trimmed
-                                          (if (string-empty-p trimmed) "" "\n")
+                                          rendered
+                                          (if (string-empty-p rendered) "" "\n")
                                           limit)))
                         ((= exit-code 0)
                          (magent-tool-result-create
                           :status 'completed
                           :success t
                           :exit-code exit-code
+                          :metadata (list :revisions revisions)
                           :output (if (string-blank-p output)
                                       "No matches found"
-                                    trimmed)))
+                                    rendered)))
                         ((= exit-code 1)
                          (magent-tool-result-create
                           :status 'completed
@@ -649,8 +699,10 @@ and bounded by `magent-glob-max-results' and
       callback
       (format "Error during glob: %s" (error-message-string err))))))
 
-(defun magent-tools--edit-file (callback path old-text new-text)
-  "Edit file at PATH by replacing OLD-TEXT with NEW-TEXT asynchronously.
+(defun magent-tools--edit-file
+    (callback path old-text new-text expected-revision)
+  "Edit PATH after validating EXPECTED-REVISION.
+Replace OLD-TEXT with NEW-TEXT asynchronously.
 OLD-TEXT must match exactly once in the file.  Rejects a modified visiting
 buffer; refreshes a clean stale buffer without revert hooks, then updates and
 saves it so Emacs and disk remain synchronized.
@@ -662,6 +714,7 @@ CALLBACK is called with success message or error."
         (unless (stringp new-text)
           (error "new_text must be a string"))
         (let ((path (magent-tools--resolve-path path)))
+          (magent-tools--assert-file-revision path expected-revision)
           (if-let* ((buffer (magent-tools--clean-visiting-buffer path t)))
               (with-current-buffer buffer
                 (save-excursion
@@ -684,8 +737,163 @@ CALLBACK is called with success message or error."
       callback (format "Error editing file: %s"
                        (error-message-string err))))))
 
+(defconst magent-tools--emacs-eval-result-marker
+  "\n__MAGENT_EVAL_RESULT__"
+  "Marker preceding the child evaluator's terminal payload.")
+
+(defconst magent-tools--emacs-eval-output-limit (* 1024 1024)
+  "Maximum child evaluator output retained while waiting for its result.")
+
+(defconst magent-tools--emacs-eval-worker-form
+  "(progn (require 'subr-x) (let ((debug-on-error nil) (debug-on-quit nil) (debug-on-signal nil) (print-circle t) (print-level 20) (print-length 1000))
+     (condition-case err
+         (let* ((input (getenv \"MAGENT_EVAL_INPUT\"))
+                (sexp (with-temp-buffer (insert-file-contents input) (buffer-string)))
+                (parsed (read-from-string sexp))
+                (form (car parsed)))
+           (unless (string-blank-p (substring sexp (cdr parsed)))
+             (error \"emacs_eval accepts exactly one Lisp form\"))
+           (let ((value (eval form t)))
+             (princ \"\\n__MAGENT_EVAL_RESULT__\")
+             (prin1 (list :status 'completed :value (prin1-to-string value)))))
+       (error
+        (princ \"\\n__MAGENT_EVAL_RESULT__\")
+        (prin1 (list :status 'failed :error (error-message-string err)))
+        (kill-emacs 2)))))"
+  "Fixed expression evaluated by the disposable child Emacs.")
+
+(defun magent-tools--emacs-program ()
+  "Return the executable path for a child matching this Emacs."
+  (let ((program (expand-file-name invocation-name invocation-directory)))
+    (if (file-executable-p program)
+        program
+      (or (executable-find invocation-name)
+          (error "Cannot find Emacs executable %s" invocation-name)))))
+
+(defun magent-tools--emacs-eval-payload (output)
+  "Return the terminal child evaluator payload parsed from OUTPUT."
+  (let ((start 0)
+        found)
+    (while (string-match (regexp-quote magent-tools--emacs-eval-result-marker)
+                         output start)
+      (setq found (match-end 0)
+            start (match-end 0)))
+    (when found
+      (car (read-from-string (substring output found))))))
+
 (defun magent-tools--emacs-eval (callback sexp &optional timeout)
-  "Evaluate SEXP string as Emacs Lisp with optional TIMEOUT in seconds.
+  "Evaluate one SEXP in a fresh `emacs -Q --batch' child process."
+  (let ((input-file nil)
+        (buffer nil)
+        (process nil)
+        (timer nil)
+        (finished nil)
+        (cancelled nil))
+    (cl-labels
+        ((cleanup ()
+           (when timer
+             (cancel-timer timer)
+             (setq timer nil))
+           (when (and process (process-live-p process))
+             (delete-process process))
+           (when (buffer-live-p buffer)
+             (kill-buffer buffer))
+           (when (and input-file (file-exists-p input-file))
+             (delete-file input-file)))
+         (finish (result)
+           (unless finished
+             (setq finished t)
+             (cleanup)
+             (unless cancelled
+               (funcall callback result)))))
+      (condition-case err
+          (progn
+            (unless (and (stringp sexp) (not (string-blank-p sexp)))
+              (error "sexp must be a non-blank string"))
+            (setq timeout (or timeout magent-emacs-eval-timeout))
+            (unless (and (numberp timeout) (> timeout 0))
+              (error "timeout must be a positive number"))
+            (setq input-file (make-temp-file "magent-eval-" nil ".el"))
+            (with-temp-file input-file
+              (let ((coding-system-for-write 'utf-8-unix))
+                (insert sexp)))
+            (set-file-modes input-file #o600)
+            (setq buffer (generate-new-buffer " *magent-emacs-eval*"))
+            (let ((default-directory
+                   (file-name-as-directory
+                    (or (magent-tools--request-project-root)
+                        temporary-file-directory)))
+                  (process-environment (copy-sequence process-environment)))
+              (setenv "MAGENT_EVAL_INPUT" input-file)
+              (setq process
+                    (make-process
+                     :name "magent-emacs-eval"
+                     :buffer buffer
+                     :command (list (magent-tools--emacs-program)
+                                    "-Q" "--batch" "--eval"
+                                    magent-tools--emacs-eval-worker-form)
+                     :noquery t
+                     :connection-type 'pipe
+                     :filter
+                     (lambda (_process chunk)
+                       (when (buffer-live-p buffer)
+                         (with-current-buffer buffer
+                           (goto-char (point-max))
+                           (insert chunk)
+                           (when (> (buffer-size)
+                                    magent-tools--emacs-eval-output-limit)
+                             (delete-region
+                              (point-min)
+                              (- (point-max)
+                                 magent-tools--emacs-eval-output-limit))))))
+                     :sentinel
+                     (lambda (child _event)
+                       (when (and (memq (process-status child) '(exit signal))
+                                  (not finished))
+                         (let* ((output
+                                 (if (buffer-live-p buffer)
+                                     (with-current-buffer buffer (buffer-string))
+                                   ""))
+                                (payload
+                                 (condition-case nil
+                                     (magent-tools--emacs-eval-payload output)
+                                   (error nil))))
+                           (if (eq (plist-get payload :status) 'completed)
+                               (finish
+                                (magent-tools--completed
+                                 (or (plist-get payload :value) "nil")
+                                 (process-exit-status child)
+                                 (list :execution "child-process")))
+                             (finish
+                              (magent-tools--failed
+                               (or (plist-get payload :error)
+                                   (format
+                                    "Error: child Emacs exited without a result (status=%s, exit=%s)"
+                                    (process-status child)
+                                    (process-exit-status child)))
+                               (process-exit-status child)
+                               (list :execution "child-process"))))))))))
+            (setq timer
+                  (run-at-time
+                   timeout nil
+                   (lambda ()
+                     (unless finished
+                       (finish
+                        (magent-tools--failed
+                         "Error: Evaluation timed out"
+                         nil (list :execution "child-process" :timeout t)))))))
+            (magent-tools--register-cancel-cleanup
+             (lambda ()
+               (setq cancelled t)
+               (cleanup))))
+        (error
+         (finish
+          (magent-tools--failed
+           (format "Error starting child Emacs: %s"
+                   (error-message-string err)))))))))
+
+(defun magent-tools--emacs-eval-live (callback sexp &optional timeout)
+  "Evaluate SEXP in the live Emacs with optional TIMEOUT in seconds.
 CALLBACK is called with the result as a readable string, or an error message.
 Evaluation runs in the user's context buffer when known
 \(see `magent-tools--request-context'), falling back to current buffer."
@@ -811,31 +1019,189 @@ Evaluation runs in the user's context buffer when known
         (format "Error evaluating sexp: %s"
                 (error-message-string err)))))))
 
-(defun magent-tools--bound-bash-failure-output (message)
-  "Return MESSAGE with long Bash failure output compacted by line count.
-Keep the first line for failure context and the final diagnostic lines."
-  (let* ((trimmed (string-trim-right message))
-         (lines (split-string trimmed "\n" nil))
-         (line-count (length lines))
-         (tail-count (1- magent-tools--bash-failure-max-lines)))
-    (if (<= line-count magent-tools--bash-failure-max-lines)
-        trimmed
-      (let ((omitted (- line-count 1 tail-count)))
-        (string-join
-         (append
-          (list
-           (car lines)
-           (format
-            "[Bash failure output truncated: omitted %d lines; kept first 1 and final %d.]"
-            omitted tail-count))
-          (last lines tail-count))
-         "\n")))))
+(defun magent-tools--emacs-read-buffer (target)
+  "Return an existing buffer named or visited by TARGET."
+  (or (and (stringp target) (get-buffer target))
+      (and (stringp target)
+           (condition-case nil
+               (find-buffer-visiting (magent-tools--resolve-path target))
+             (error nil)))
+      (when-let* ((name (magent-tools--origin-buffer-name)))
+        (get-buffer name))))
+
+(defun magent-tools--emacs-read-symbol-name (value)
+  "Return a bounded descriptive name for hook VALUE."
+  (cond
+   ((symbolp value) (symbol-name value))
+   ((byte-code-function-p value) "<byte-code-function>")
+   ((functionp value) "<lambda-function>")
+   (t (format "<%s>" (type-of value)))))
+
+(defun magent-tools--emacs-read-value (operation target)
+  "Return the trusted structured result for OPERATION and TARGET."
+  (pcase operation
+    ("list_buffers"
+     (let ((buffers (buffer-list))
+           rows)
+       (dolist (buffer (seq-take buffers 200))
+         (with-current-buffer buffer
+           (push (list :name (buffer-name buffer)
+                       :file buffer-file-name
+                       :major-mode major-mode
+                       :modified (buffer-modified-p)
+                       :narrowed (buffer-narrowed-p))
+                 rows)))
+       (list :count (length buffers)
+             :returned (length rows)
+             :buffers (nreverse rows))))
+    ("buffer_info"
+     (let ((buffer (magent-tools--emacs-read-buffer target)))
+       (unless (buffer-live-p buffer)
+         (error "buffer_not_found: %s" (or target "request origin")))
+       (with-current-buffer buffer
+         (list :name (buffer-name buffer)
+               :file buffer-file-name
+               :major-mode major-mode
+               :modified (buffer-modified-p)
+               :narrowed (buffer-narrowed-p)
+               :point (point)
+               :point-min (point-min)
+               :point-max (point-max)
+               :read-only buffer-read-only))))
+    ("current_context"
+     (let ((buffer (magent-tools--emacs-read-buffer nil)))
+       (unless (buffer-live-p buffer)
+         (error "request origin buffer is unavailable"))
+       (with-current-buffer buffer
+         (list :buffer (buffer-name buffer)
+               :file buffer-file-name
+               :major-mode major-mode
+               :point (point)
+               :mark (and (mark t) (mark t))
+               :region-active (use-region-p)
+               :region-bounds (and (use-region-p)
+                                   (list (region-beginning) (region-end)))
+               :narrowed (buffer-narrowed-p)
+               :modified (buffer-modified-p)))))
+    ("symbol_info"
+     (unless (and (stringp target) (not (string-empty-p target)))
+       (error "symbol_info requires target"))
+     (let ((symbol (intern-soft target)))
+       (unless symbol
+         (error "unknown_symbol: %s" target))
+       (list :name (symbol-name symbol)
+             :bound (boundp symbol)
+             :function-bound (fboundp symbol)
+             :command (commandp symbol)
+             :function-source (and (fboundp symbol) (symbol-file symbol 'defun))
+             :variable-source (and (boundp symbol) (symbol-file symbol 'defvar))
+             :variable-documentation
+             (documentation-property symbol 'variable-documentation t))))
+    ("key_binding"
+     (unless (and (stringp target) (not (string-empty-p target)))
+       (error "key_binding requires a key sequence target"))
+     (let ((buffer (magent-tools--emacs-read-buffer nil)))
+       (unless (buffer-live-p buffer)
+         (error "request origin buffer is unavailable"))
+       (with-current-buffer buffer
+         (let ((binding (key-binding (kbd target) t)))
+           (list :key target
+                 :binding (and binding (format "%s" binding))
+                 :buffer (buffer-name buffer)
+                 :major-mode major-mode)))))
+    ("hook_members"
+     (unless (and (stringp target) (not (string-empty-p target)))
+       (error "hook_members requires a hook variable target"))
+     (let ((symbol (intern-soft target))
+           (buffer (magent-tools--emacs-read-buffer nil)))
+       (unless (and symbol (boundp symbol))
+         (error "unknown_hook: %s" target))
+       (unless (buffer-live-p buffer)
+         (error "request origin buffer is unavailable"))
+       (with-current-buffer buffer
+         (let ((value (symbol-value symbol)))
+           (list :hook target
+                 :local (local-variable-p symbol)
+                 :members
+                 (mapcar #'magent-tools--emacs-read-symbol-name
+                         (if (listp value) value (list value))))))))
+    ("project_info"
+     (require 'project)
+     (let* ((buffer (magent-tools--emacs-read-buffer nil))
+            (default-directory
+             (or (and buffer
+                      (buffer-local-value 'default-directory buffer))
+                 (magent-tools--request-project-root)
+                 default-directory))
+            (project (project-current nil default-directory)))
+       (unless project
+         (error "no project for %s" default-directory))
+       (list :root (project-root project)
+             :buffer-count
+             (if (fboundp 'project-buffers)
+                 (length (project-buffers project))
+               0))))
+    (_ (error "unsupported emacs_read operation: %s" operation))))
+
+(defun magent-tools--emacs-read (callback operation &optional target)
+  "Run trusted read-only OPERATION against live Emacs state."
+  (condition-case err
+      (let* ((value (magent-tools--emacs-read-value operation target))
+             (print-circle t)
+             (print-level 12)
+             (print-length 500)
+             (output (prin1-to-string value)))
+        (when (> (length output) magent-emacs-read-max-characters)
+          (setq output
+                (concat (substring output 0 magent-emacs-read-max-characters)
+                        "\n[emacs_read result truncated]")))
+        (magent-tools--complete callback output nil
+                                (list :operation operation)))
+    (error
+     (magent-tools--fail
+      callback
+      (format "Error reading Emacs state: %s" (error-message-string err))))))
+
+(defun magent-tools--request-session-id ()
+  "Return the exact current tool request session id."
+  (let ((session
+         (or (and magent-tools--request-context
+                  (magent-request-context-session magent-tools--request-context))
+             (and magent-tools--request-context
+                  (magent-request-context-approval-session
+                   magent-tools--request-context))
+             (magent-session-get))))
+    (or (and session (magent-session-id session))
+        (error "No active Magent session id"))))
+
+(defun magent-tools--read-tool-output
+    (callback result-id &optional start-line line-count)
+  "Read a bounded page from spilled RESULT-ID in the current session."
+  (condition-case err
+      (let* ((session-id (magent-tools--request-session-id))
+             (path (magent-tool-output-spill-file session-id result-id))
+             (range
+              (magent-tools--read-range
+               start-line (or line-count magent-tool-output-spill-page-lines)))
+             (magent-tools--read-file-page-max-characters
+              magent-tool-output-spill-page-characters))
+        (with-temp-buffer
+          (insert-file-contents path)
+          (magent-tools--complete
+           callback
+           (magent-tools--buffer-page
+            "read_tool_output" (car range) (cdr range)
+            (format "result_id=%s; session_id=%s" result-id session-id))
+           nil (list :result-id result-id :session-id session-id))))
+    (error
+     (magent-tools--fail
+      callback
+      (format "Error reading tool output: %s" (error-message-string err))))))
 
 (defun magent-tools--bash-failure (message &optional exit-code metadata)
   "Return a structured bash failure for MESSAGE.
 EXIT-CODE is nil when no process exit status exists.  METADATA is optional."
-  (let ((bounded-message
-         (magent-tools--bound-bash-failure-output message)))
+  (let ((bounded-message message))
     (magent-tool-result-create
      :status 'failed
      :success nil
@@ -1048,6 +1414,9 @@ result containing combined stdout and stderr plus the process exit status."
       (bash . ,(symbol-name (magent-permission-resolve rules 'bash)))
       (emacs_eval . ,(symbol-name
                       (magent-permission-resolve rules 'emacs_eval)))
+      (emacs_eval_live . ,(symbol-name
+                           (magent-permission-resolve
+                            rules 'emacs_eval_live)))
       (read . ,(symbol-name (magent-permission-resolve rules 'read)))
       (write . ,(symbol-name (magent-permission-resolve rules 'write)))
       (edit . ,(symbol-name (magent-permission-resolve rules 'edit)))
@@ -1706,10 +2075,14 @@ See `magent-agent-loop-filter-display-args'.")
 (defvar magent-tools--read-file-tool
   (gptel-make-tool
    :name "read_file"
-   :description "Read a bounded page of a file's saved contents from disk. This tool never reads unsaved Emacs buffer edits; use read_buffer when live editor state is required. Every result reports source, actual line range, total_lines, has_more, and next_start_line. Continue with next_start_line when has_more is true; do not use shell commands such as wc or sed to determine file size or pagination."
+   :description "Read a bounded page from an explicit source. Use source=disk for saved contents or source=live-buffer for an existing file-visiting buffer including unsaved edits. Every result includes a SHA-256 revision plus pagination metadata."
    :args (list '(:name "path"
                        :type string
                        :description "Absolute or relative path to the file")
+               '(:name "source"
+                       :type string
+                       :enum ["disk" "live-buffer"]
+                       :description "Required source of truth")
                '(:name "start_line"
                        :type integer
                        :description "One-based line at which to start reading; defaults to 1"
@@ -1724,27 +2097,6 @@ See `magent-agent-loop-filter-display-args'.")
    :category "magent")
   "gptel-tool struct for read_file.")
 
-(defvar magent-tools--read-buffer-tool
-  (gptel-make-tool
-   :name "read_buffer"
-   :description "Read a bounded page from an existing Emacs file-visiting buffer, including unsaved edits. The path must already have a visiting buffer; this tool never opens files or falls back to disk. Every result reports the buffer name, modified and narrowed state, actual line range, total_lines, has_more, and next_start_line. Use read_file for saved disk contents."
-   :args (list '(:name "path"
-                       :type string
-                       :description "Absolute or relative path whose live file-visiting buffer should be read")
-               '(:name "start_line"
-                       :type integer
-                       :description "One-based line at which to start reading; defaults to 1"
-                       :optional t)
-               '(:name "line_count"
-                       :type integer
-                       :description "Requested maximum number of lines; defaults to a bounded 200-line page and may return fewer to stay within the result budget"
-                       :optional t)
-               magent-tools--reason-arg)
-   :function #'magent-tools--read-buffer
-   :async t
-   :category "magent")
-  "gptel-tool struct for read_buffer.")
-
 (defvar magent-tools--write-file-tool
   (gptel-make-tool
    :name "write_file"
@@ -1755,6 +2107,9 @@ See `magent-agent-loop-filter-display-args'.")
                '(:name "content"
                        :type string
                        :description "The full content to write to the file")
+               '(:name "expected_revision"
+                       :type string
+                       :description "SHA-256 revision returned by read_file, or absent when creating a new file")
                magent-tools--reason-arg)
    :function #'magent-tools--write-file
    :async t
@@ -1803,6 +2158,9 @@ See `magent-agent-loop-filter-display-args'.")
                '(:name "new_text"
                        :type string
                        :description "The text to replace old_text with")
+               '(:name "expected_revision"
+                       :type string
+                       :description "Required SHA-256 disk revision returned by read_file or grep")
                magent-tools--reason-arg)
    :function #'magent-tools--edit-file
    :async t
@@ -1863,7 +2221,7 @@ See `magent-agent-loop-filter-display-args'.")
 (defvar magent-tools--emacs-eval-tool
   (gptel-make-tool
    :name "emacs_eval"
-   :description "Evaluate an Emacs Lisp expression. Returns the result as a string. Use for buffer inspection, Emacs state queries, running compilation, navigating code with xref, etc. Do not use this tool to revert or synchronize a file-visiting buffer after edit_file reports a conflict: edit_file refreshes clean stale buffers itself and preserves dirty buffers. When you need multiple pieces of Emacs state, batch them in a single call using (let ...) or (list ...) rather than making separate calls — but only after you have gathered enough context to know what you need."
+   :description "Evaluate one Emacs Lisp expression in a fresh emacs -Q --batch child process. Hangs and crashes are contained to the child, but the code retains the current user's host file, process, and network authority. It cannot access live buffers or the user's loaded Emacs state; use emacs_read for trusted live inspection."
    :args (list '(:name "sexp"
                        :type string
                        :description "Emacs Lisp s-expression to evaluate")
@@ -1877,6 +2235,65 @@ See `magent-agent-loop-filter-display-args'.")
    :confirm t
    :category "magent")
   "gptel-tool struct for emacs_eval.")
+
+(defvar magent-tools--emacs-read-tool
+  (gptel-make-tool
+   :name "emacs_read"
+   :description "Run one trusted, bounded, read-only query against the live Emacs. This tool does not accept Lisp code or arbitrary function names. Use read_file with source=live-buffer for buffer text."
+   :args (list '(:name "operation"
+                       :type string
+                       :enum ["list_buffers" "buffer_info" "current_context"
+                              "symbol_info" "key_binding" "hook_members"
+                              "project_info"]
+                       :description "Structured live-state query")
+               '(:name "target"
+                       :type string
+                       :description "Buffer, symbol, key sequence, or hook name required by some operations"
+                       :optional t)
+               magent-tools--reason-arg)
+   :function #'magent-tools--emacs-read
+   :async t
+   :category "magent")
+  "gptel-tool struct for emacs_read.")
+
+(defvar magent-tools--read-tool-output-tool
+  (gptel-make-tool
+   :name "read_tool_output"
+   :description "Read a bounded page from a full tool result that Magent spilled for the current session. Accepts only the opaque result_id shown in a truncation notice; it cannot read arbitrary paths or another session's results."
+   :args (list '(:name "result_id"
+                       :type string
+                       :description "Opaque result id from a tool truncation notice")
+               '(:name "start_line"
+                       :type integer
+                       :description "One-based line at which to start; defaults to 1"
+                       :optional t)
+               '(:name "line_count"
+                       :type integer
+                       :description "Maximum lines to return; defaults to 200"
+                       :optional t)
+               magent-tools--reason-arg)
+   :function #'magent-tools--read-tool-output
+   :async t
+   :category "magent")
+  "gptel-tool struct for read_tool_output.")
+
+(defvar magent-tools--emacs-eval-live-tool
+  (gptel-make-tool
+   :name "emacs_eval_live"
+   :description "DANGEROUS: evaluate arbitrary Elisp inside the live Emacs process. This can hang or crash Emacs and mutate global state. Use only when emacs_read and the child-process emacs_eval cannot perform the task. Every call requires fresh user approval."
+   :args (list '(:name "sexp"
+                       :type string
+                       :description "Exactly one Emacs Lisp form to evaluate")
+               '(:name "timeout"
+                       :type integer
+                       :description "Best-effort timeout in seconds; not a safety boundary"
+                       :optional t)
+               magent-tools--reason-arg)
+   :function #'magent-tools--emacs-eval-live
+   :async t
+   :confirm t
+   :category "magent")
+  "gptel-tool struct for emacs_eval_live.")
 
 (defvar magent-tools--spawn-agent-tool
   (gptel-make-tool
@@ -1989,8 +2406,6 @@ See `magent-agent-loop-filter-display-args'.")
 (defconst magent-tools-catalog
   `((:name "read_file" :tool ,magent-tools--read-file-tool
      :permission read)
-    (:name "read_buffer" :tool ,magent-tools--read-buffer-tool
-     :permission read)
     (:name "write_file" :tool ,magent-tools--write-file-tool
      :permission write)
     (:name "write_repo_summary" :tool ,magent-tools--write-repo-summary-tool
@@ -2001,7 +2416,13 @@ See `magent-agent-loop-filter-display-args'.")
     (:name "glob" :tool ,magent-tools--glob-tool :permission glob)
     (:name "bash" :tool ,magent-tools--bash-tool :permission bash)
     (:name "emacs_eval" :tool ,magent-tools--emacs-eval-tool
-     :permission emacs_eval)
+     :permission emacs_eval :approval once-only)
+    (:name "emacs_read" :tool ,magent-tools--emacs-read-tool
+     :permission read)
+    (:name "read_tool_output" :tool ,magent-tools--read-tool-output-tool
+     :permission read)
+    (:name "emacs_eval_live" :tool ,magent-tools--emacs-eval-live-tool
+     :permission emacs_eval_live :approval once-only)
     (:name "spawn_agent" :tool ,magent-tools--spawn-agent-tool
      :permission agent)
     (:name "send_agent_message" :tool ,magent-tools--send-agent-message-tool
@@ -2028,6 +2449,10 @@ See `magent-agent-loop-filter-display-args'.")
 (defun magent-tools-permission-key (tool-name)
   "Return the permission key symbol for TOOL-NAME, or nil if unknown."
   (plist-get (magent-tools-catalog-entry tool-name) :permission))
+
+(defun magent-tools-approval-policy (tool-name)
+  "Return the approval policy for TOOL-NAME, or nil."
+  (plist-get (magent-tools-catalog-entry tool-name) :approval))
 
 (defun magent-tools-get-gptel-tools-for-permission
     (permission &optional tool-names)

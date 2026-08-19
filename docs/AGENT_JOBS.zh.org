@@ -88,7 +88,7 @@ transcripts 仍会保留。
 这个生命周期刻意保留 Magent 的 Emacs-native 工作流：
 
 - live Emacs buffers
-- ~emacs_eval~
+- 隔离的 ~emacs_eval~、受信任的 ~emacs_read~ 和显式 ~emacs_eval_live~
 - agent-shell UI
 - project-scoped sessions
 - gptel transport

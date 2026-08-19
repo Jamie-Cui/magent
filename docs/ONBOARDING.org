@@ -78,7 +78,7 @@ Multi-agent architecture with specialized agents for different tasks.
 The action layer that executes operations requested by agents.
 
 *Key Files:*
-- ~magent-tools.el~ — canonical catalog of 15 ~gptel-tool~ structs: read_file, read_buffer, write_file, write_repo_summary, edit_file, grep, glob, bash, emacs_eval, spawn_agent, send_agent_message, wait_agent, list_agents, close_agent, web_search
+- ~magent-tools.el~ — canonical catalog of 17 ~gptel-tool~ structs: read_file, write_file, write_repo_summary, edit_file, grep, glob, bash, emacs_read, emacs_eval, emacs_eval_live, read_tool_output, spawn_agent, send_agent_message, wait_agent, list_agents, close_agent, web_search
 - ~magent-skills.el~ — Skill registry, built-in skills, file loading, inspection commands
 - ~magent-skill-manager.el~ — User-level skills.sh finder, safe copy installer, and permanent deletion
 - ~magent-capability.el~ — Capability definitions, resolution, and file-backed loading
@@ -260,7 +260,11 @@ Check out:
 ** Step 6: Study the Tools
 
 Read ~magent-tools.el~ to understand the available tools. Pay attention to:
-- ~emacs_eval~ — Executes in the request buffer context (uses ~magent-tools--request-buffer-name~)
+- ~read_file~ — Requires ~source=disk~ or ~source=live-buffer~ and returns a revision used by writes
+- ~emacs_read~ — Runs fixed, bounded queries against the live Emacs
+- ~emacs_eval~ — Runs arbitrary Elisp in a fresh child Emacs with once-only approval
+- ~emacs_eval_live~ — Runs arbitrary Elisp in the live Emacs; dangerous, once-only, and unavailable to restricted built-ins
+- ~read_tool_output~ — Pages a spilled result by opaque id within the current session
 - ~spawn_agent~ / ~send_agent_message~ / ~wait_agent~ / ~list_agents~ / ~close_agent~ — Coordinate durable child-agent jobs
 - ~web_search~ — DuckDuckGo integration via ~url-retrieve~
 
@@ -293,7 +297,7 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 
 ** Tools & Skills
 - *magent-repo-summary.el* — deterministic org-roam repository-note upserts
-- *magent-tools.el* — canonical catalog of 15 gptel-tool implementations
+- *magent-tools.el* — canonical catalog of 17 gptel-tool implementations
 - *magent-skills.el* — Skill registry, built-in skills, file loading, commands
 - *magent-capability.el* — Capability definitions, resolution, and file-backed loading
 - *magent-approval.el* — User approval prompts for sensitive operations
@@ -355,9 +359,9 @@ ACP conversion in ~magent-acp.el~, and agent-shell-specific behavior in
 *Approach carefully:* More specific patterns must come before less specific ones. Test with various glob patterns.
 
 ** 5. magent-tools.el (Medium Complexity)
-*Why it's complex:* 15 different tool implementations with varying side effects, timeouts, child-agent runtime state, and error handling. ~emacs_eval~ uses ~magent-tools--request-buffer-name~ to execute in correct buffer context.
+*Why it's complex:* 17 tool implementations have different side effects, process lifecycles, revision contracts, spill retention, child-agent state, and error handling. ~emacs_read~ uses the captured origin buffer; ~emacs_eval~ uses a disposable child process; ~emacs_eval_live~ deliberately crosses into the main process.
 
-*Approach carefully:* Tools run in process filters. Timeout handling must be robust. Context capture for ~emacs_eval~, child-agent status persistence, and parent/child request-context inheritance are critical.
+*Approach carefully:* Keep child-eval cleanup and host-owned timeout handling robust. Preserve once-only approval for both arbitrary eval tools, session isolation for spilled output, revision validation for writes, and parent/child request-context inheritance.
 
 ** 6. magent-session.el (Medium Complexity)
 *Why it's complex:* Per-project session scoping with global fallback, JSON persistence, ledger-driven UI restoration, child-agent job persistence, and history trimming.
@@ -411,7 +415,7 @@ emacsclient --eval '(with-current-buffer "*magent-log*" (buffer-string))'
 
 After changes, verify with:
 - *Non-tool:* ~"你好"~ — Tests streaming and assistant sections
-- *Tool-use:* ~"帮我看下 emacs 里面有多少 buffer"~ — Tests ~emacs_eval~ tool
+- *Tool-use:* ~"帮我看下 emacs 里面有多少 buffer"~ — Tests ~emacs_read~ tool
 - *Multi-step:* ~"帮我在 emacs 里面打开 magent 的 magit buffer"~ — Tests chained execution
 
 Check the active Magent agent-shell buffer, ~*magent-log*~, and ~*Messages*~ for

@@ -3,7 +3,7 @@ name: project-workflow
 title: Project Navigation Workflow
 description: Use project.el-style project roots, scoped commands, project buffers, and project-aware execution.
 type: instruction
-tools: emacs_eval, grep, glob, bash
+tools: emacs_read, emacs_eval_live, grep, glob, bash
 capability: true
 family: project
 source: package

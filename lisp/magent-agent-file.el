@@ -24,7 +24,8 @@
 
 (defconst magent-agent-file--tool-permission-aliases
   '((read_file . read)
-    (read_buffer . read)
+    (emacs_read . read)
+    (read_tool_output . read)
     (write_file . write)
     (write_repo_summary . write)
     (edit_file . edit)

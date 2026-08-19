@@ -237,20 +237,25 @@ Returns the assigned request id."
   "Request local approval for REQUEST, then resolve it."
   (let* ((request-id (plist-get request :request-id))
          (tool-name (plist-get request :tool-name))
+         (once-only (eq (plist-get request :approval-policy) 'once-only))
          (summary (plist-get request :summary))
          (timer
           (run-at-time
            0 nil
-           (lambda (request-id tool-name summary)
+           (lambda (request-id tool-name summary once-only)
              (magent-approval--local-forget-prompt-timer request-id)
              (when (magent-approval-pending-request request-id)
                (let* ((summary (or summary ""))
-                      (prompt (format "magent: allow %s%s? [y]es/[n]o/[A]lways/[D]eny always: "
+                      (prompt (format (if once-only
+                                          "magent: allow %s%s once? [y]es/[n]o/[D]eny always: "
+                                        "magent: allow %s%s? [y]es/[n]o/[A]lways/[D]eny always: ")
                                       tool-name
                                       (if (string-empty-p summary)
                                           ""
                                         (format " (%s)" summary))))
-                      (choice (read-char-choice prompt '(?y ?n ?A ?D))))
+                      (choice (read-char-choice
+                               prompt
+                               (if once-only '(?y ?n ?D) '(?y ?n ?A ?D)))))
                  (magent-approval-resolve-request
                   request-id
                   (pcase choice
@@ -258,7 +263,7 @@ Returns the assigned request id."
                     (?n 'deny-once)
                     (?A 'allow-session)
                     (?D 'deny-session))))))
-           request-id tool-name summary)))
+           request-id tool-name summary once-only)))
     (when timer
       (puthash request-id timer magent-approval--local-prompt-timers))))
 

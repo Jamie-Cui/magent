@@ -78,17 +78,19 @@ The default value is read from prompts/system.org in the package."
   :type 'natnum
   :group 'magent)
 
-(defcustom magent-enable-tools '(read write edit grep glob bash emacs_eval agent web_search)
+(defcustom magent-enable-tools
+  '(read write edit grep glob bash emacs_eval emacs_eval_live agent web_search)
   "List of enabled tools.
 Available tools: read, write, edit, grep, glob, bash, emacs_eval,
-agent, web_search."
+emacs_eval_live, agent, web_search."
   :type '(set (const :tag "Read files" read)
               (const :tag "Write files" write)
               (const :tag "Edit files" edit)
               (const :tag "Search content (grep)" grep)
               (const :tag "Find files (glob)" glob)
               (const :tag "Run shell commands" bash)
-              (const :tag "Evaluate Emacs Lisp" emacs_eval)
+              (const :tag "Evaluate Elisp in a child Emacs" emacs_eval)
+              (const :tag "Evaluate Elisp in the live Emacs" emacs_eval_live)
               (const :tag "Coordinate child agents" agent)
               (const :tag "Search the web" web_search))
   :group 'magent)
@@ -345,6 +347,31 @@ cannot be resolved, bash tool calls fail without affecting other Magent tools."
 (defcustom magent-emacs-eval-timeout 10
   "Default timeout in seconds for emacs_eval operations."
   :type 'integer
+  :group 'magent)
+
+(defcustom magent-emacs-read-max-characters 12000
+  "Maximum characters returned by one structured emacs_read call."
+  :type 'natnum
+  :group 'magent)
+
+(defcustom magent-tool-output-spill-session-max-bytes (* 64 1024 1024)
+  "Maximum bytes retained for spilled tool results in one session."
+  :type 'natnum
+  :group 'magent)
+
+(defcustom magent-tool-output-spill-ttl (* 24 60 60)
+  "Seconds spilled tool results remain available after their last write."
+  :type 'natnum
+  :group 'magent)
+
+(defcustom magent-tool-output-spill-page-lines 200
+  "Maximum lines returned by one read_tool_output page."
+  :type 'natnum
+  :group 'magent)
+
+(defcustom magent-tool-output-spill-page-characters 8000
+  "Target maximum characters returned by one read_tool_output page."
+  :type 'natnum
   :group 'magent)
 
 (defcustom magent-tool-result-model-max-length 12000

@@ -83,7 +83,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 *关键文件：*
 
 - ~magent-repo-summary.el~ ：确定性更新单个 org-roam repository note。
-- ~magent-tools.el~ ：单一 canonical catalog 中的 15 个 ~gptel-tool~ structs，包括 disk/live-buffer read、file write、repository summary writer、grep/glob、bash、emacs_eval、child-agent coordination 和 web_search。
+- ~magent-tools.el~ ：单一 canonical catalog 中的 17 个 ~gptel-tool~ structs，包括显式 disk/live-buffer source 的 read、revision-checked write/edit、grep/glob、bash、emacs_read、隔离与 live eval、tool-result pagination、child-agent coordination 和 web_search。
 - ~magent-skills.el~ ：skill registry、built-in skills、file loading 和 inspection commands。
 - ~magent-skill-manager.el~ ：用户级 skills.sh finder、安全复制安装与永久删除。
 - ~magent-capability.el~ ：capability definitions、resolution 和 file-backed loading。
@@ -262,7 +262,11 @@ API。
 
 读 ~magent-tools.el~ ，重点看：
 
-- ~emacs_eval~ ：在 request buffer context 中执行。
+- ~read_file~ ：必须指定 ~source=disk~ 或 ~source=live-buffer~，并返回写入所需的 revision。
+- ~emacs_read~ ：对 live Emacs 执行固定、受限的查询。
+- ~emacs_eval~ ：每次在新的 child Emacs 中执行任意 Elisp，并要求 once-only approval。
+- ~emacs_eval_live~ ：在 live Emacs 中执行任意 Elisp；危险、逐次确认，受限内置 agent 不暴露。
+- ~read_tool_output~ ：凭 opaque id 在当前 session 内分页读取 spill。
 - ~spawn_agent~ / ~send_agent_message~ / ~wait_agent~ / ~list_agents~ / ~close_agent~ ：durable child-agent jobs。
 - ~web_search~ ：通过 ~url-retrieve~ 和 DuckDuckGo 实现。
 
@@ -302,9 +306,9 @@ API。
 
 ** 5. ~magent-tools.el~
 
-*复杂原因：* 15 个 tool implementation 各自有 side effects、timeout、child-agent runtime state 和 error handling。 ~read_file~ 与 ~read_buffer~ 必须保持 disk/live-buffer 语义分离， ~emacs_eval~ 要在正确 buffer context 中执行。
+*复杂原因：* 17 个 tool implementation 各自有 side effects、process lifecycle、revision contract、spill retention、child-agent runtime state 和 error handling。~emacs_read~ 使用捕获的 origin buffer，~emacs_eval~ 使用一次性 child process，~emacs_eval_live~ 刻意跨入主进程。
 
-*修改建议：* timeout handling 必须可靠； ~emacs_eval~ context capture、child-agent status persistence 和 parent/child request-context inheritance 都很关键。
+*修改建议：* child-eval cleanup 和 host-owned timeout 必须可靠；两个任意 eval tool 的 once-only approval、spill 的 session isolation、写入的 revision validation、child-agent status persistence 和 parent/child request-context inheritance 都不能弱化。
 
 ** 6. ~magent-session.el~
 
@@ -345,7 +349,7 @@ emacsclient --eval '(with-current-buffer "*magent-log*" (buffer-string))'
 修改后用这些 prompt 验证：
 
 - *Non-tool:* ~"你好"~ ，验证 streaming 和 assistant sections。
-- *Tool-use:* ~"帮我看下 emacs 里面有多少 buffer"~ ，验证 ~emacs_eval~ tool。
+- *Tool-use:* ~"帮我看下 emacs 里面有多少 buffer"~ ，验证 ~emacs_read~ tool。
 - *Multi-step:* ~"帮我在 emacs 里面打开 magent 的 magit buffer"~ ，验证 chained execution。
 
 检查当前 Magent agent-shell buffer、 ~*magent-log*~ 和 ~*Messages*~ 是否有错误。

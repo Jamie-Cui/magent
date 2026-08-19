@@ -149,7 +149,13 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
                              orchestrator))
                    (funcall (magent-tool-orchestrator-done-callback
                              orchestrator)))))
-    (if (magent-permission-bypass-p)
+    (if (and (magent-permission-bypass-p)
+             (not (cl-some
+                   (lambda (tc)
+                     (eq (magent-tools-approval-policy
+                          (gptel-tool-name (car tc)))
+                         'once-only))
+                   tool-calls)))
         (dolist (tc tool-calls)
           (let* ((tool-spec (car tc))
                  (arg-values (cadr tc))
@@ -176,6 +182,7 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
                  (raw-call (nth 3 tc))
                  (tool-name (gptel-tool-name tool-spec))
                  (perm-key (magent-tools-permission-key tool-name))
+                 (approval-policy (magent-tools-approval-policy tool-name))
                  (file-arg-index
                   (when perm-key
                     (magent-tool-orchestrator--file-arg-index
@@ -198,15 +205,26 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
                       (error
                        (setq canonicalization-error err)
                        nil))))
-                 (resolved
+                 (rule-decision
                   (when perm-key
                     (if canonicalization-error
                         'deny
                       (magent-permission-resolve
                        permission perm-key file-path project-root))))
-                 (override (when perm-key
-                             (magent-permission-session-override
-                              perm-key approval-session)))
+                 (resolved
+                  (if (and (eq approval-policy 'once-only)
+                           (not (eq rule-decision 'deny)))
+                      'ask
+                    rule-decision))
+                 (raw-override
+                  (when perm-key
+                    (magent-permission-session-override
+                     perm-key approval-session)))
+                 (override
+                  (if (and (eq approval-policy 'once-only)
+                           (eq raw-override 'allow))
+                      nil
+                    raw-override))
                  (resource-identity
                   (and file-arg-index
                        file-path
@@ -334,6 +352,7 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
            (resource-identity (nth 4 tc))
            (tool-name (gptel-tool-name tool-spec))
            (perm-key (magent-tools-permission-key tool-name))
+           (approval-policy (magent-tools-approval-policy tool-name))
            (request-context
             (magent-tool-orchestrator-request-context orchestrator))
            (approval-session
@@ -352,6 +371,7 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
              (magent-request-context-audit-snapshot request-context)
              :tool-name tool-name
              :perm-key perm-key
+             :approval-policy approval-policy
              :summary summary
              :args (magent-tool-orchestrator--args-plist
                     orchestrator (gptel-tool-args tool-spec) arg-values))
@@ -363,6 +383,9 @@ TOOL-CALLS follows gptel's `(TOOL-SPEC ARG-VALUES CALLBACK RAW-CALL)' shape."
           :decision decision
           :args (magent-tool-orchestrator--args-plist
                  orchestrator (gptel-tool-args tool-spec) arg-values))
+         (when (and (eq approval-policy 'once-only)
+                    (eq decision 'allow-session))
+           (setq decision 'allow-once))
          (pcase decision
            ('allow-once
             (magent-log "PERM user allowed (once): %s" tool-name)

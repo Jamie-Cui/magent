@@ -56,7 +56,7 @@ allow, ask, and deny rules."
 (defconst magent-permission-ask 'ask)
 
 (defconst magent-permission-keys
-  '(read write edit grep glob bash emacs_eval agent web_search)
+  '(read write edit grep glob bash emacs_eval emacs_eval_live agent web_search)
   "Canonical tool permission group keys used across Magent.")
 
 ;;;###autoload
@@ -89,6 +89,7 @@ permission rules."
    ;; Sensitive tools require user confirmation
    (cons 'bash magent-permission-ask)
    (cons 'emacs_eval magent-permission-ask)
+   (cons 'emacs_eval_live magent-permission-ask)
    (cons 'agent magent-permission-allow)
    (cons 'web_search magent-permission-allow)
    ;; File read restrictions (mirror .gitignore for .env)

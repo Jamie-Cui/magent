@@ -3,7 +3,7 @@ name: emacs-command-variable-introspection
 title: Emacs Command And Variable Introspection
 description: Inspect Emacs commands, variables, bindings, defaults, and buffer-local values.
 type: instruction
-tools: emacs_eval
+tools: emacs_read, emacs_eval_live
 capability: true
 family: emacs-introspection
 source: builtin

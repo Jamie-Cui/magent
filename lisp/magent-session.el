@@ -517,6 +517,7 @@ Return JOB."
   "Activate SCOPE and return its session.
 SCOPE must be either `global' or a normalized project root string."
   (let ((target-scope (or scope 'global)))
+    (magent-tool-output-spill-cleanup-all)
     (setq magent-session--current-scope target-scope
           magent--current-session (magent-session--session-for-scope target-scope))))
 
@@ -1419,8 +1420,8 @@ Returns a condensed version of the conversation."
       (setq cursor (cdr cursor)))
     result))
 
-(defun magent-session-to-gptel-prompt-list (session &optional current-turn-id)
-  "Convert SESSION messages to a gptel-request prompt list.
+(defun magent-session--provider-context-view (session &optional current-turn-id)
+  "Build the explicit provider replay context view for SESSION.
 Returns a list in gptel's advanced format:
   ((prompt . \"user msg\") (response . \"assistant msg\") ...)
 Structured tool result messages are emitted as `(tool . PLIST)' entries so
@@ -1487,6 +1488,38 @@ sampling request."
                           effective-current-turn-id))
           (setq stop t))))
     (nreverse prompt-list)))
+
+(defconst magent-session-context-view-kinds
+  '(ledger transcript provider compaction audit)
+  "Explicit durable and derived session context views.")
+
+(defun magent-session-context-view
+    (session kind &optional current-turn-id)
+  "Return explicit context view KIND for SESSION.
+LEDGER is the complete materialized snapshot, TRANSCRIPT is the UI/legacy
+message projection, PROVIDER is provider-shaped replay, COMPACTION is the
+bounded model replay used as summarizer input, and AUDIT contains the durable
+snapshot plus the bounded journal tail."
+  (unless (memq kind magent-session-context-view-kinds)
+    (error "Unknown Magent context view: %S" kind))
+  (let ((thread (magent-session-thread-ledger session)))
+    (pcase kind
+      ('ledger (and thread (magent-thread-snapshot-to-alist thread)))
+      ('transcript (and thread (magent-thread-messages thread)))
+      ((or 'provider 'compaction)
+       (magent-session--provider-context-view session current-turn-id))
+      ('audit
+       (and thread
+            `((snapshot . ,(magent-thread-snapshot-to-alist thread))
+              (journal . ,(vconcat
+                            (mapcar #'magent-thread-event-to-alist
+                                    (magent-thread-journal thread))))))))))
+
+(defun magent-session-to-gptel-prompt-list (session &optional current-turn-id)
+  "Return SESSION's explicit provider context view.
+This compatibility name remains the provider request boundary; callers that
+need another projection must use `magent-session-context-view'."
+  (magent-session-context-view session 'provider current-turn-id))
 
 (provide 'magent-session)
 ;;; magent-session.el ends here

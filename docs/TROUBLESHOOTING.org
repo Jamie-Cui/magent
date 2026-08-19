@@ -251,8 +251,35 @@ Expected final status files include ~:status passed~, ~:repo-source~ paths under
   Commands run without errexit and with pipefail.  Use ~&&~ or explicit ~set -e~
   when fail-fast sequencing is required.  Output-limiting pipelines such as
   ~rg ... | head~ can fail on SIGPIPE; prefer native limit options.
-- For emacs_eval: Check for syntax errors
+- For ~emacs_read~: verify that the requested fixed operation and its target
+  are valid and that the origin buffer still exists.
+- For ~emacs_eval~: check syntax and child-process diagnostics. It starts one
+  fresh ~emacs -Q --batch~ process per call and cannot see live buffers or the
+  user's loaded packages.
+- For ~emacs_eval_live~: treat the timeout as best effort only. A blocking C
+  primitive or process-wide failure may still hang or crash the live Emacs.
 - For grep: Verify ripgrep is installed: ~which rg~
+
+*** Elisp returned by the model hangs or crashes Emacs
+*Problem:* An arbitrary form does not terminate, signals a fatal error, or
+calls ~kill-emacs~.
+
+*Diagnosis:*
+1. Run ~/authority~ and confirm which eval boundary was selected.
+2. Prefer ~emacs_read~ for live buffers, modes, symbols, bindings, hooks, and
+   project state.
+3. Confirm ordinary arbitrary code used ~emacs_eval~, whose result metadata
+   says ~execution=child-process~.
+
+*Solution:*
+- Keep arbitrary evaluation on ~emacs_eval~. The parent owns the timeout and
+  deletes the disposable child on timeout or cancellation.
+- Use ~emacs_eval_live~ only when the task truly requires live package or
+  buffer mutation. Every invocation requires a fresh approval; neither
+  ~magent-bypass-permission~ nor a stored session allow suppresses it.
+- This boundary contains Emacs-process failure, not host authority. Evaluated
+  code still runs as the current user and can access files, processes, and the
+  network.
 
 *** Child-agent behavior is confusing
 *Problem:* A child-agent task does not behave like a durable job that can be messaged, waited on, listed, or closed.
@@ -281,6 +308,9 @@ agent-shell session mode.
 - Or customize: ~(setq magent-bypass-permission t)~
 - Or switch agent with ~M-x agent-shell-set-session-mode~ in the agent-shell
   buffer and select one with appropriate permissions.
+
+The bypass does not suppress once-only approval for ~emacs_eval~ or
+~emacs_eval_live~, and an agent-level deny still keeps a tool unavailable.
 
 *** Session not saving
 *Problem:* Session state lost between Emacs restarts.

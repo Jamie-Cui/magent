@@ -21,6 +21,7 @@
 - [[file:../AGENT_JOBS.zh.html][AGENT_JOBS.zh.org]] ：durable child-agent job 生命周期、工具面、持久化、UI 和边界。
 - [[file:../UI_BACKENDS.zh.html][UI_BACKENDS.zh.org]] ：受支持的 agent-shell + ACP 流程，以及 frontend 开发边界。
 - [[file:../DOCTOR.zh.html][DOCTOR.zh.org]] ：Doctor probe API、信任边界、脱敏、session 和取消。
+- [[file:../PTC_MULTI_MODEL_PLAN.zh.html][PTC_MULTI_MODEL_PLAN.zh.org]] ：PTC、~run_code~ nested executor 和单个 agent loop 内多模型 phase 的详细实施计划。
 
 ** 贡献
 
