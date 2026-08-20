@@ -177,6 +177,11 @@ was changed."
   "Return KEY from ALIST."
   (cdr (assq key alist)))
 
+(defconst magent-agent-job--alist-keys
+  '(id parent-session-id agent-name task-name status prompt created-at
+       updated-at transcript result error metadata)
+  "Fields in the current persisted child-agent job schema.")
+
 (defun magent-agent-job-to-alist (job)
   "Convert JOB to a JSON-serializable alist."
   `((id . ,(magent-agent-job-id job))
@@ -199,6 +204,17 @@ was changed."
 
 (defun magent-agent-job-from-alist (alist)
   "Create a `magent-agent-job' from JSON-decoded ALIST."
+  (unless (and (listp alist) (cl-every #'consp alist))
+    (error "Invalid child-agent job object: expected an alist"))
+  (let ((actual (mapcar #'car alist)))
+    (unless (and (= (length actual) (length magent-agent-job--alist-keys))
+                 (null (cl-set-exclusive-or
+                        actual magent-agent-job--alist-keys :test #'eq)))
+      (error "Invalid child-agent job fields: expected %S, got %S"
+             magent-agent-job--alist-keys actual)))
+  (dolist (key '(id status created-at updated-at))
+    (unless (magent-agent-job--alist-get key alist)
+      (error "Invalid child-agent job: required field %s is empty" key)))
   (magent-agent-job-create
    :id (magent-agent-job--alist-get 'id alist)
    :parent-session-id (magent-agent-job--alist-get 'parent-session-id alist)

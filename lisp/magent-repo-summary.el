@@ -23,7 +23,7 @@
 (declare-function org-roam-capture- "ext:org-roam-capture" t)
 (declare-function org-roam-db-update-file
                   "ext:org-roam-db"
-                  (&optional file-path _deprecated-arg))
+                  (&optional file-path))
 (declare-function org-roam-node-create "ext:org-roam-node" t t)
 (defvar org-roam-directory)
 
@@ -72,13 +72,12 @@
 
 (defun magent-repo-summary--metadata-value (content property)
   "Return PROPERTY from CONTENT's document-level property drawer."
-  (let* ((heading (string-match "^\\* " content))
-         (preamble (if heading (substring content 0 heading) content))
-         (case-fold-search t))
-    (when (string-match
-           (format "^:%s:[ \\t]+\\(.+\\)$" (regexp-quote property))
-           preamble)
-      (string-trim (match-string 1 preamble)))))
+  (with-temp-buffer
+    (insert content)
+    (org-mode)
+    (goto-char (point-min))
+    (when (looking-at-p ":PROPERTIES:[ \\t]*$")
+      (org-entry-get nil property))))
 
 (defun magent-repo-summary--file-metadata-value (path property)
   "Return document-level PROPERTY from the beginning of Org file PATH."
@@ -119,7 +118,7 @@ The filename follows the user's Org-roam convention
             t)))
     path))
 
-(defun magent-repo-summary--note-path (directory _repository-name root)
+(defun magent-repo-summary--note-path (directory root)
   "Return the single summary note path in DIRECTORY for repository ROOT.
 Existing notes are identified by their file-level REPO_PATH rather than by
 filename.  New notes use the normal Org-roam timestamp naming convention."
@@ -383,7 +382,7 @@ uses SCOPE and SCOPE-FILES.  Return a plist describing the written note."
          (name (plist-get repository :name))
          (commit (plist-get repository :commit))
          (directory (magent-repo-summary--directory))
-         (path (magent-repo-summary--note-path directory name root))
+         (path (magent-repo-summary--note-path directory root))
          (created (not (file-exists-p path)))
          (old-content (unless created (magent-repo-summary--read-file path)))
          (parts (magent-repo-summary--document-parts (or old-content "")))

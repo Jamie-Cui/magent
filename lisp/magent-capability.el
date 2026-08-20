@@ -37,6 +37,10 @@
 (require 'magent-runtime)
 (require 'magent-skills)
 
+(declare-function magent-runtime-session-current "magent-runtime-api")
+(declare-function magent-runtime-session-available-tool-names
+                  "magent-runtime-api")
+
 (cl-defstruct (magent-capability
                (:constructor magent-capability-create))
   "Capability definition used for progressive disclosure."
@@ -138,19 +142,6 @@ so project overlays can be removed without rebuilding static registries.")
 (defconst magent-capability--keyword-match-score 1
   "Score contribution for a prompt keyword match.")
 
-(defconst magent-capability--builtin-dir
-  (let ((dir (file-name-directory (or load-file-name buffer-file-name))))
-    ;; In the git repo sources are under lisp/ and capabilities/ is at
-    ;; the root (one level up); after MELPA install lisp/magent*.el is
-    ;; flattened to the top level.  Try sibling first, then parent.
-    (or (let ((d (expand-file-name "capabilities" dir)))
-          (and (file-directory-p d) d))
-        (let ((d (expand-file-name "capabilities"
-                                   (expand-file-name ".." dir))))
-          (and (file-directory-p d) d))
-        (expand-file-name "capabilities" dir)))
-  "Directory containing built-in capability files bundled with magent.")
-
 (defcustom magent-capability-directories
   (list (expand-file-name "magent/capabilities" user-emacs-directory))
   "List of directories to scan for capability files.
@@ -162,6 +153,25 @@ Each directory can contain subdirectories with CAPABILITY.md files."
   "Name of the capability definition file."
   :type 'string
   :group 'magent)
+
+(defconst magent-capability--frontmatter-keys
+  '(:name :title :description :family :source :source-name
+    :capability-skills :modes :features :files :prompt-keywords
+    :disclosure :risk)
+  "Supported standalone CAPABILITY.md frontmatter keys.")
+
+(defun magent-capability--validate-frontmatter (frontmatter &optional embedded)
+  "Reject unsupported capability FRONTMATTER.
+When EMBEDDED is non-nil, accept the complete SKILL.md schema."
+  (let ((allowed (if embedded
+                     magent-skills--frontmatter-keys
+                   magent-capability--frontmatter-keys)))
+    (cl-loop for (key _value) on frontmatter by #'cddr
+             unless (memq key allowed)
+             do (error "Unsupported capability frontmatter key: %s" key)))
+  (unless (or embedded (plist-member frontmatter :name))
+    (error "Capability frontmatter is missing required key: :name"))
+  frontmatter)
 
 (defun magent-capability-register (capability)
   "Register CAPABILITY while retaining definitions from other layers."
@@ -197,7 +207,6 @@ Each directory can contain subdirectories with CAPABILITY.md files."
   (pcase (plist-get
           (magent-file-loader-classify-source
            filepath
-           :builtin-dirs (list magent-capability--builtin-dir)
            :user-dirs magent-capability-directories
            :project-relative-dir ".magent/capabilities"
            :default-layer 'external-metadata)
@@ -222,32 +231,32 @@ Each directory can contain subdirectories with CAPABILITY.md files."
        directories magent-capability-file-name)
     (magent-file-loader-list-definition-files
      magent-capability-file-name
-     :builtin-dirs (list magent-capability--builtin-dir)
      :user-dirs magent-capability-directories
      :project-relative-dir ".magent/capabilities")))
 
 (defun magent-capability--parse-source-kind (value)
   "Parse capability source kind VALUE."
-  (pcase (if (symbolp value) (symbol-name value) (downcase (format "%s" value)))
+  (pcase (and value
+              (if (symbolp value)
+                  (symbol-name value)
+                (downcase (format "%s" value))))
+    ('nil 'builtin)
+    ("builtin" 'builtin)
     ("package" 'package)
-    (_ 'builtin)))
+    (_ (error "Invalid capability source: %S" value))))
 
 (defun magent-capability--normalize-list (value)
-  "Normalize VALUE into a flat list of strings."
+  "Return YAML sequence VALUE as a flat list of strings."
   (cond
    ((null value) nil)
    ((listp value)
-    (apply #'append
-           (mapcar #'magent-capability--normalize-list value)))
-   ((symbolp value)
-    (list (symbol-name value)))
-   ((stringp value)
-    (let* ((trimmed (string-trim value))
-           (parts (split-string trimmed "," t "[[:space:]\n]*")))
-      (if (> (length parts) 1)
-          (mapcar #'string-trim parts)
-        (list trimmed))))
-   (t (list (string-trim (format "%s" value))))))
+    (mapcar (lambda (item)
+              (cond
+               ((stringp item) item)
+               ((symbolp item) (symbol-name item))
+               (t (error "Capability list item must be a string: %S" item))))
+            value))
+   (t (error "Capability list fields must be YAML sequences"))))
 
 (defun magent-capability--parse-symbol-list (value)
   "Parse VALUE into a list of symbols."
@@ -259,17 +268,27 @@ Each directory can contain subdirectories with CAPABILITY.md files."
 
 (defun magent-capability--parse-disclosure (value)
   "Parse disclosure VALUE."
-  (pcase (if (symbolp value) (symbol-name value) (downcase (format "%s" value)))
+  (pcase (and value
+              (if (symbolp value)
+                  (symbol-name value)
+                (downcase (format "%s" value))))
+    ('nil 'suggested)
     ("hidden" 'hidden)
     ("active" 'active)
-    (_ 'suggested)))
+    ("suggested" 'suggested)
+    (_ (error "Invalid capability disclosure: %S" value))))
 
 (defun magent-capability--parse-risk (value)
   "Parse risk VALUE."
-  (pcase (if (symbolp value) (symbol-name value) (downcase (format "%s" value)))
+  (pcase (and value
+              (if (symbolp value)
+                  (symbol-name value)
+                (downcase (format "%s" value))))
+    ('nil 'low)
+    ("low" 'low)
     ("medium" 'medium)
     ("high" 'high)
-    (_ 'low)))
+    (_ (error "Invalid capability risk: %S" value))))
 
 (defun magent-capability--policy-family (frontmatter source-kind source-name owner)
   "Return the policy family for FRONTMATTER under SOURCE-KIND and OWNER."
@@ -308,12 +327,9 @@ capabilities."
                      (file-name-directory filepath)))))
          (source-kind (magent-capability--parse-source-kind
                        (plist-get frontmatter :source)))
-         (source-name (or (plist-get frontmatter :source-name)
-                          (plist-get frontmatter :feature)
-                          (plist-get frontmatter :package)))
+         (source-name (plist-get frontmatter :source-name))
          (skills (magent-capability--parse-string-list
                   (or (plist-get frontmatter :capability-skills)
-                      (plist-get frontmatter :skills)
                       default-skills))))
     (magent-capability-create
      :name name
@@ -330,13 +346,11 @@ capabilities."
      :modes (magent-capability--parse-symbol-list
              (plist-get frontmatter :modes))
      :features (magent-capability--parse-symbol-list
-                (or (plist-get frontmatter :features)
-                    (plist-get frontmatter :feature)))
+                (plist-get frontmatter :features))
      :files (magent-capability--parse-string-list
              (plist-get frontmatter :files))
      :prompt-keywords (magent-capability--parse-string-list
-                       (or (plist-get frontmatter :prompt-keywords)
-                           (plist-get frontmatter :keywords)))
+                       (plist-get frontmatter :prompt-keywords))
      :disclosure (magent-capability--policy-disclosure frontmatter owner)
      :risk (magent-capability--policy-risk frontmatter owner)
      :notes (unless (string-empty-p body) body)
@@ -355,10 +369,10 @@ capabilities."
              (body (string-trim (plist-get definition :body)))
              (source (magent-file-loader-classify-source
                       filepath
-                      :builtin-dirs (list magent-capability--builtin-dir)
                       :user-dirs magent-capability-directories
                       :project-relative-dir ".magent/capabilities")))
         (when frontmatter
+          (magent-capability--validate-frontmatter frontmatter)
           (let* ((owner (magent-capability--source-owner filepath))
                  (capability (magent-capability--from-frontmatter
                               frontmatter body filepath source owner)))
@@ -379,6 +393,8 @@ capabilities."
              (source (magent-skills-classify-source filepath)))
         (when (and frontmatter
                    (magent-capability--frontmatter-capability-p frontmatter))
+          (magent-skills--validate-frontmatter frontmatter)
+          (magent-capability--validate-frontmatter frontmatter t)
           (let* ((name (or (plist-get frontmatter :name)
                            (file-name-nondirectory
                             (directory-file-name
@@ -425,12 +441,10 @@ capabilities."
     count))
 
 (defun magent-capability-initialize-static ()
-  "Load built-in and user-global capability definitions."
+  "Load skill-declared and user-global capability definitions."
   (magent-capability-load-skill-capabilities
    (magent-skills-definition-directories))
-  (magent-capability-load-all
-   (append (list magent-capability--builtin-dir)
-           magent-capability-directories)))
+  (magent-capability-load-all magent-capability-directories))
 
 (defun magent-capability-load-project-scope (scope)
   "Load project-local capability definitions for SCOPE."
@@ -706,13 +720,9 @@ source for contextual capability resolution."
   "Return non-nil when SKILL-NAME's tool requirements are AVAILABLE-TOOLS."
   (magent-skills-tool-requirements-satisfied-p skill-name available-tools))
 
-(defun magent-capability--apply-tool-availability
-    (match available-tools filter-tools-p)
-  "Downgrade MATCH when no linked skill can use AVAILABLE-TOOLS.
-FILTER-TOOLS-P distinguishes an omitted availability list from an explicitly
-empty one."
-  (when (and filter-tools-p
-             (eq (magent-capability-match-status match) 'active))
+(defun magent-capability--apply-tool-availability (match available-tools)
+  "Downgrade MATCH when no linked skill can use AVAILABLE-TOOLS."
+  (when (eq (magent-capability-match-status match) 'active)
     (let* ((capability (magent-capability-match-capability match))
            (skills (magent-capability-skills capability))
            (usable (cl-remove-if-not
@@ -791,21 +801,21 @@ empty one."
                   (magent-capability-resolution-matches resolution)))))
 
 (defun magent-capability-resolve
-    (prompt &optional request-context explicit-skills &rest available-tools-arg)
+    (prompt request-context explicit-skills available-tools)
   "Resolve capabilities for PROMPT and REQUEST-CONTEXT.
 EXPLICIT-SKILLS are user-selected instruction skills that should
-remain active regardless of capability selection.  When AVAILABLE-TOOLS-ARG
-is supplied, linked skills whose declared tools are unavailable do not
-auto-activate."
-  (let* ((filter-tools-p (consp available-tools-arg))
-         (available-tools (car available-tools-arg))
-         (context (magent-capability--merge-context request-context prompt))
+remain active regardless of capability selection.  Linked skills whose
+declared tools are absent from AVAILABLE-TOOLS do not auto-activate."
+  (unless (proper-list-p available-tools)
+    (error "Capability resolution requires an exact tool-name list: %S"
+           available-tools))
+  (let* ((context (magent-capability--merge-context request-context prompt))
          (matches (magent-capability--sort-matches
                    (mapcar (lambda (entry)
                              (magent-capability--apply-tool-availability
                               (magent-capability--score
                                (cdr entry) prompt context)
-                              available-tools filter-tools-p))
+                              available-tools))
                            (magent-capability--effective-entries))))
          (active-all (cl-remove-if-not
                       (lambda (match)
@@ -824,9 +834,8 @@ auto-activate."
                                (cl-mapcan (lambda (match)
                                             (cl-remove-if-not
                                              (lambda (skill-name)
-                                               (or (not filter-tools-p)
-                                                   (magent-capability--skill-usable-p
-                                                    skill-name available-tools)))
+                                               (magent-capability--skill-usable-p
+                                                skill-name available-tools))
                                              (copy-sequence
                                               (magent-capability-skills
                                                (magent-capability-match-capability
@@ -852,14 +861,6 @@ auto-activate."
                                 (magent-capability-match-capability match)))
                              suggested ", ")))
     resolution))
-
-(defun magent-capability-resolve-for-turn
-    (prompt &optional request-context explicit-skills &rest available-tools-arg)
-  "Resolve capabilities for one turn.
-Returns nil when capability auto-disclosure is disabled."
-  (when magent-enable-capabilities
-    (apply #'magent-capability-resolve
-           prompt request-context explicit-skills available-tools-arg)))
 
 (defun magent-capability--insert-match (match)
   "Insert a human-readable description of MATCH into current buffer."
@@ -1043,10 +1044,14 @@ When INCLUDE-HIDDEN is non-nil, include hidden matches too."
   "Explain capability matching for PROMPT in the current buffer context."
   (interactive)
   (magent-runtime-prepare-context)
-  (let* ((resolution (magent-capability-resolve
+  (require 'magent-runtime-api)
+  (let* ((runtime-session (magent-runtime-session-current))
+         (available-tools
+          (magent-runtime-session-available-tool-names runtime-session))
+         (resolution (magent-capability-resolve
                       (or prompt "")
                       (magent-capability-capture-context)
-                      nil))
+                      nil available-tools))
          (buffer-name "*Magent Capability Resolution*"))
     (setq magent-capability--last-resolution resolution)
     (magent--with-display-buffer buffer-name

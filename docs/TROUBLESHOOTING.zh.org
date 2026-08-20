@@ -369,7 +369,7 @@ magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
 
 *解决：*
 
-- 使用 ~M-x magent-agent-shell-start~ 启动一个新 session。
+- 使用 ~M-x magent-agent-shell-start~ 启动一个新 shell，然后选择新 session。
 - 如果仍然存在，重启 Emacs。
 
 ** 性能问题
@@ -395,7 +395,7 @@ magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
 #+end_src
 
 当前 session 不再需要保留在 active buffer 时，使用
-~M-x magent-agent-shell-start~ 开始新 conversation。
+~M-x magent-agent-shell-start~ 启动新 shell，然后选择新 conversation。
 
 * Diagnostic Commands
 

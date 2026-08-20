@@ -77,8 +77,8 @@ bubblewrap 或 shell isolation。
    cancellation；批准外层 ~run_code~ 不能替代对子工具的授权。
 7. nested call 返回 lossless canonical JSON value；provider 文本和 UI 展示是该
    value 的渲染，不是 canonical value 本身。
-8. legacy session 必须单向、无损加载；不能伪造历史请求中原本没有记录的模型、
-   system 或 tool schema。
+8. Session 只接受届时定义的精确 schema；版本或字段 shape 不匹配时 fail closed，
+   不猜测历史请求中未记录的模型、system 或 tool schema。
 9. ~native~ 模式和当前单模型 agent 的行为在未启用新 policy 时保持等价。
 
 ** 本轮明确不做
@@ -165,7 +165,7 @@ plan --finish_plan approved--> execute
 
 | 领域 | 当前行为 | 缺口 |
 |---+---+---|
-| Model route | ~magent-agent-process~ 在 turn 开始时解析一次 backend/model | 后续 sampling 无法换模型 |
+| Model route | ~magent-agent-run-turn~ 在 turn 开始时解析一次 backend/model | 后续 sampling 无法换模型 |
 | Prompt/tools | system 和 request tools 在 loop 创建前冻结 | phase 变化不能重组 prompt/projection |
 | Continuation | 有 continuation 就优先恢复 provider FSM | 不能检查下一 epoch 是否已经换 route/header |
 | Request persistence | ledger 保存 turn/message/tool，未保存完整请求 header | 无法解释某次 sampling 看到了哪个 model/system/tools |
@@ -273,8 +273,8 @@ sample 与 tool-result 后续 sample；并且它直接消除当前散落在闭�
 - failed result 在 nested runtime 中成为可捕获的 ~ToolCallError~，而不是成功返回一段
   以 ~Error:~ 开头的字符串；
 - provider boundary 只接收 ~content~，不自行重新解释 ~value~；
-- legacy persisted output string 在导入时保留为 ~content~，并以同一 string 作为
-  legacy ~value~，因此迁移不丢字节。
+- persisted output 必须已经符合 canonical result schema；非结构化 string 或未知
+  result shape 在加载边界被拒绝。
 
 ** Model route
 
@@ -585,7 +585,7 @@ Magent permission、approval 和用户选择是否启用 code presentation。
             :usage ...))
 #+end_src
 
-现有 legacy message projection 只读取 ~message~ 与 ~tool~ item，因此 sample item
+Provider conversation projection 只读取 ~message~ 与 ~tool~ item，因此 sample item
 不会进入 provider conversation。ACP replay 默认忽略它；P0 observability 通过
 session inspector、~*magent-log*~ 和 UI-neutral observer events 提供，不伪装成
 tool call 或 assistant thought。
@@ -599,18 +599,13 @@ Observer 新增：
 只有 ACP/agent-shell 出现合适的标准展示形状时才增加视觉 projection；核心不能为
 临时 UI 伪造协议事件。
 
-** Session migration
+** Session schema
 
-Session snapshot version 单向升级。迁移规则：
+引入 sample/header 时定义一个精确的新 session schema。加载器只接受该版本及其
+完整字段集合；旧版本、未知字段、缺失 sample attribution 或非结构化 tool result
+直接停止加载并报告 session id/field，不迁移、不猜测，也不双写 shadow state。
 
-1. 旧 snapshot、journal、messages 和 tool strings 原样加载；
-2. 旧 turn 没有 sample item 时标记 ~legacy-request-unattributed~，不猜 model/system；
-3. 第一次新 sampling 写入完整 header，reason 为 ~resume~；
-4. legacy tool output string 迁移为相同字节的 ~content~ 和 string ~value~；
-5. 下一次保存只写新格式，不写双格式 compatibility shadow；
-6. 遇到不能无损表达的旧值时停止迁移并报告 session id/field，不静默丢弃。
-
-Request context 是 runtime object，不需要磁盘迁移。其 frozen scalar
+Request context 是 runtime object，不需要落盘。其 frozen scalar
 backend/model/temperature/top-p 将替换为 per-phase route override 和当前 epoch
 reference；audit snapshot 仍冻结 root agent/session attribution，并额外记录 phase
 profile，避免 UI 中途切 agent 后重标历史。
@@ -632,11 +627,11 @@ profile，避免 UI 中途切 agent 后重标历史。
 | ~lisp/magent-runtime.el~ | request context 的 route override、epoch/phase controller reference |
 | ~lisp/magent-agent-info.el~ | ~tool-presentation~ 与 validated ~loop-policy~ |
 | ~lisp/magent-agent-file.el~ | 新 frontmatter parse/save；unknown/invalid values fail loud |
-| ~lisp/magent-ledger.el~ | sample item helpers、migration metadata；不新增平行 event store |
-| ~lisp/magent-session.el~ | snapshot version migration、sample/header JSON round-trip |
+| ~lisp/magent-ledger.el~ | sample item helpers、严格 schema metadata；不新增平行 event store |
+| ~lisp/magent-session.el~ | 精确 snapshot schema、sample/header JSON round-trip 与拒绝旧版本 |
 | ~lisp/magent-acp.el~ | observer passthrough和 replay 忽略规则；不新增 frontend |
 | ~prompts/runtime/*.org~ | plan/execute policy 与 code SDK 固定说明，更新 manifest |
-| ~test/magent-test.el~ | unit、loop、migration、projection、runtime 与 regression tests |
+| ~test/magent-test.el~ | unit、loop、schema rejection、projection、runtime 与 regression tests |
 | ~Makefile~ / CI / melpazoid recipe | 新 Elisp module 与 runtime asset 的 compile/package coverage |
 | ~docs/ARCHITECTURE*.org~ / ~AGENT_WORKFLOW*.org~ | 实现完成后把稳定结论并入正式双语文档 |
 
@@ -673,7 +668,7 @@ presentation、optional code runtime。Model route 和 phase 不再拆额外 reg
 - 迁移 15 个工具，native projection 生成与当前等价的 gptel tools；
 - 合并 permission key、file arg identity 和 schema source；
 - 将 result 分成 canonical ~value~ 与 rendered ~content~；
-- 更新 ledger/session legacy string migration；
+- 更新 ledger/session 严格 result schema validation；
 - 删除旧的并行 permission/schema maps，不保留 compatibility wrapper。
 
 退出门槛：native request tool schemas 与基线语义等价；所有实现只返回新 result；
@@ -781,7 +776,7 @@ execute sample 和 final assistant；没有第二个 runtime submission。
 - route precedence 与 durable serialization；
 - policy validation、unknown/cyclic phase agent；
 - header equality/fingerprint 和 continuation decision；
-- session v1→v2 legacy migration 与二次加载幂等。
+- 当前 session schema round-trip，以及旧版本、未知字段和无效嵌套 shape 的拒绝。
 
 ** Loop integration tests（mock gptel）
 
@@ -816,7 +811,7 @@ execute sample 和 final assistant；没有第二个 runtime submission。
 
 - sample item/full header JSON round-trip；
 - replay 不把 sample item 投影进 provider messages；
-- legacy session 所有原始 message/tool content 字节保留；
+- 当前 session 的 message/tool canonical value round-trip 保真；
 - observer sequence：sample-start → tool events → sample-end → phase-transition；
 - audit record 带 epoch/phase/profile/parent-child call ids；
 - agent-shell 普通 transcript 不出现伪造 tool/thought 卡片。
@@ -917,10 +912,10 @@ Correctness、权限和可恢复性是发布 gate；token/latency 是选择默�
 | approval provider 失败 | fail closed，不执行 tool |
 | ~finish_plan~ deny | 留在 plan phase |
 | plan 未 finish 就 completion | turn failed，无隐藏请求 |
-| incompatible continuation | 静默丢弃 continuation，fresh request；log reason |
+| incompatible continuation | 丢弃 continuation，fresh request；明确记录 reason |
 | worker protocol violation | kill worker，outer ~run_code~ failed |
 | cancellation | abort provider/runtime/nested queue；late callbacks ignored |
-| session migration 不可无损 | 停止加载并报告，不覆盖原文件 |
+| session schema/version 不匹配 | 停止加载并报告，不覆盖原文件 |
 
 错误必须靠近 owner：route/preflight 在 request builder；schema/result 在 tool contract；
 permission 在 orchestrator；worker/protocol 在 Code Runtime；turn terminal state在 loop。
@@ -935,11 +930,9 @@ permission 在 orchestrator；worker/protocol 在 Code Runtime；turn terminal s
   native projection；
 - tool result 不再以一个 string 同时承担 canonical value、error 和 UI content；
 - request context 不再用一个 frozen backend/model scalar 控制所有 epoch；
-- 不提供旧 result constructor 或旧 loop continuation 的 compatibility wrapper；
-- session 只做一次无损 v1→v2 migration，不长期双写 old/new sample state。
-
-不会顺便删除与本目标无关的 ~options~、~steps~ 或其他历史字段；它们若要清理，应
-由独立变更证明范围和迁移。Breaking-change 授权不是扩大任务范围的理由。
+- 不提供旧 result constructor 或旧 loop continuation 的 wrapper；
+- session 只读写精确的当前 sample state，不迁移或双写其他版本；
+- agent schema 不重新引入没有 runtime consumer 的 ~options~、~steps~ 字段。
 
 * Definition of Done
 
@@ -953,7 +946,7 @@ permission 在 orchestrator；worker/protocol 在 Code Runtime；turn terminal s
 - [ ] nested calls 全部经过 permission、approval、audit、cancellation；
 - [ ] code mode 中 direct native hallucination 不能执行；
 - [ ] canonical JSON value 与 provider/UI content 分离并通过 schema validation；
-- [ ] legacy session 单向无损迁移，失败不覆盖；
+- [ ] 当前 session schema 可保真 round-trip，其他版本和无效 shape 被拒绝且不覆盖；
 - [ ] ordinary single/native、Action、child-agent、Doctor 路径无行为回归；
 - [ ] compile、lint、unit、live smoke、coverage、melpazoid 全绿；
 - [ ] benchmark 数据已记录，默认建议有证据；

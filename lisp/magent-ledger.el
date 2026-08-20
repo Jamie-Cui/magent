@@ -7,8 +7,8 @@
 ;;; Commentary:
 
 ;; Explicit Codex-style thread, turn, and item state machine for Magent.
-;; The thread ledger is the durable source of truth.  Legacy session
-;; messages and context items are projections derived from this state.
+;; The thread ledger is the durable source of truth.  Frontends and providers
+;; consume explicit projections derived from this state.
 
 ;;; Code:
 
@@ -64,7 +64,6 @@
   turns
   items
   journal
-  snapshot-version
   snapshot-created-at
   last-event-seq)
 
@@ -181,7 +180,6 @@
      :turns (plist-get args :turns)
      :items (plist-get args :items)
      :journal (plist-get args :journal)
-     :snapshot-version (or (plist-get args :snapshot-version) 1)
      :snapshot-created-at (plist-get args :snapshot-created-at)
      :last-event-seq (or (plist-get args :last-event-seq) 0))))
 
@@ -254,6 +252,37 @@
   "Return KEY from ALIST."
   (cdr (assq key alist)))
 
+(defconst magent-thread--event-alist-keys
+  '(seq type thread-id turn-id item-id payload created-at))
+
+(defconst magent-thread--item-alist-keys
+  '(id turn-id type status role content name call-id input output error phase
+       metadata created-at updated-at completed-at))
+
+(defconst magent-thread--turn-alist-keys
+  '(id thread-id op-id status input items error usage metadata queued-at
+       started-at completed-at duration-ms))
+
+(defconst magent-thread--snapshot-alist-keys
+  '(id session-id scope status created-at updated-at preview metadata turns
+       snapshot-created-at last-event-seq))
+
+(defun magent-thread--validate-alist-shape
+    (alist expected kind &optional required)
+  "Require ALIST to contain exactly EXPECTED keys for KIND.
+REQUIRED keys must also have non-nil values."
+  (unless (and (listp alist) (cl-every #'consp alist))
+    (error "Invalid %s object: expected an alist" kind))
+  (let ((actual (mapcar #'car alist)))
+    (unless (and (= (length actual) (length expected))
+                 (null (cl-set-exclusive-or actual expected :test #'eq)))
+      (error "Invalid %s fields: expected %S, got %S"
+             kind expected actual)))
+  (dolist (key required)
+    (unless (magent-thread--alist-get key alist)
+      (error "Invalid %s: required field %s is empty" kind key)))
+  alist)
+
 (defun magent-thread-event-to-alist (event)
   "Convert journal EVENT to a JSON-serializable alist."
   `((seq . ,(magent-thread-event-seq event))
@@ -268,6 +297,10 @@
 
 (defun magent-thread-event-from-alist (alist)
   "Reconstruct a journal event from JSON-decoded ALIST."
+  (magent-thread--validate-alist-shape
+   alist magent-thread--event-alist-keys "journal event"
+   '(seq type thread-id created-at))
+  (magent-thread--validate-event-alist alist)
   (magent-thread-event-create
    :seq (magent-thread--alist-get 'seq alist)
    :type (magent-thread--alist-get 'type alist)
@@ -345,6 +378,9 @@
 
 (defun magent-thread-item-from-alist (alist)
   "Reconstruct an item from JSON-decoded ALIST."
+  (magent-thread--validate-alist-shape
+   alist magent-thread--item-alist-keys "thread item"
+   '(id turn-id type status created-at updated-at))
   (magent-thread-item-create
    :id (magent-thread--alist-get 'id alist)
    :turn-id (magent-thread--alist-get 'turn-id alist)
@@ -387,6 +423,9 @@
 
 (defun magent-thread-turn-from-alist (alist)
   "Reconstruct a turn from JSON-decoded ALIST."
+  (magent-thread--validate-alist-shape
+   alist magent-thread--turn-alist-keys "thread turn"
+   '(id thread-id status queued-at))
   (magent-thread-turn-create
    :id (magent-thread--alist-get 'id alist)
    :thread-id (magent-thread--alist-get 'thread-id alist)
@@ -402,6 +441,44 @@
    :started-at (magent-thread--alist-get 'started-at alist)
    :completed-at (magent-thread--alist-get 'completed-at alist)
    :duration-ms (magent-thread--alist-get 'duration-ms alist)))
+
+(defun magent-thread--validate-event-alist (alist)
+  "Validate current-format journal event ALIST and its exact payload shape."
+  (let* ((type (magent-thread--coerce-event-type
+                (magent-thread--alist-get 'type alist)))
+         (turn-id (magent-thread--alist-get 'turn-id alist))
+         (item-id (magent-thread--alist-get 'item-id alist))
+         (payload (magent-thread--alist-get 'payload alist))
+         (payload-keys
+          (pcase type
+            ('thread-started nil)
+            ('thread-status-changed '(status))
+            ((or 'turn-queued 'turn-started) '(turn))
+            ('turn-status-changed '(status))
+            ('turn-completed '(usage))
+            ((or 'turn-failed 'turn-interrupted 'turn-dropped) '(error))
+            ((or 'item-started 'item-updated 'item-completed) '(item))
+            ((or 'item-failed 'item-cancelled) '(item error)))))
+    (when (memq type '(turn-queued turn-started turn-status-changed
+                       turn-completed turn-failed turn-interrupted
+                       turn-dropped item-started item-updated item-completed
+                       item-failed item-cancelled))
+      (unless (and (stringp turn-id) (not (string-empty-p turn-id)))
+        (error "Invalid journal event %s: turn-id is required" type)))
+    (when (memq type '(item-started item-updated item-completed
+                       item-failed item-cancelled))
+      (unless (and (stringp item-id) (not (string-empty-p item-id)))
+        (error "Invalid journal event %s: item-id is required" type)))
+    (magent-thread--validate-alist-shape
+     payload payload-keys (format "%s payload" type))
+    (when (memq type '(turn-queued turn-started))
+      (magent-thread-turn-from-alist
+       (magent-thread--alist-get 'turn payload)))
+    (when (memq type '(item-started item-updated item-completed
+                       item-failed item-cancelled))
+      (magent-thread-item-from-alist
+       (magent-thread--alist-get 'item payload)))
+    alist))
 
 (defun magent-thread-snapshot-to-alist (thread)
   "Convert THREAD's full materialized state to a JSON snapshot alist."
@@ -419,13 +496,15 @@
     (turns . ,(vconcat
                (mapcar #'magent-thread-turn-to-alist
                        (magent-thread-turns thread))))
-    (snapshot-version . ,(magent-thread-snapshot-version thread))
     (snapshot-created-at . ,(or (magent-thread-snapshot-created-at thread)
                                 (magent-thread--now)))
     (last-event-seq . ,(magent-thread-last-event-seq thread))))
 
 (defun magent-thread-snapshot-from-alist (alist)
   "Reconstruct a thread from a JSON snapshot ALIST."
+  (magent-thread--validate-alist-shape
+   alist magent-thread--snapshot-alist-keys "thread snapshot"
+   '(id session-id scope status created-at updated-at snapshot-created-at))
   (let ((scope (magent-thread--alist-get 'scope alist)))
     (magent-thread-create
      :id (magent-thread--alist-get 'id alist)
@@ -438,7 +517,6 @@
      :metadata (magent-thread--alist-get 'metadata alist)
      :turns (mapcar #'magent-thread-turn-from-alist
                     (magent-thread--alist-get 'turns alist))
-     :snapshot-version (magent-thread--alist-get 'snapshot-version alist)
      :snapshot-created-at (magent-thread--alist-get 'snapshot-created-at alist)
      :last-event-seq (magent-thread--alist-get 'last-event-seq alist))))
 
@@ -520,9 +598,6 @@
     (cond
      ((magent-thread-turn-p turn) turn)
      ((listp turn) (magent-thread-turn-from-alist turn))
-     ((and (listp payload)
-           (magent-thread--alist-get 'id payload))
-      (magent-thread-turn-from-alist payload))
      (t nil))))
 
 (defun magent-thread--event-payload-item (payload)
@@ -531,9 +606,6 @@
     (cond
      ((magent-thread-item-p item) item)
      ((listp item) (magent-thread-item-from-alist item))
-     ((and (listp payload)
-           (magent-thread--alist-get 'id payload))
-      (magent-thread-item-from-alist payload))
      (t nil))))
 
 (defun magent-thread--event-payload-status (payload)
@@ -548,8 +620,7 @@
     (let ((alist-key (intern (substring (symbol-name key) 1))))
       (or (and (magent-json--plist-p payload)
                (plist-get payload key))
-          (magent-thread--alist-get alist-key payload)
-          (plist-get payload alist-key)))))
+          (magent-thread--alist-get alist-key payload)))))
 
 (defun magent-thread--update-timestamp (thread &optional now)
   "Update THREAD's `updated-at' timestamp to NOW."
@@ -1026,8 +1097,8 @@ number of lifecycle objects changed."
          (mapcar #'magent-thread-turn-items
                  (magent-thread-turns thread))))
 
-(defun magent-thread-messages (thread)
-  "Return legacy session message projections for THREAD."
+(defun magent-thread-transcript (thread)
+  "Return the UI-facing transcript projection for THREAD."
   (let (messages)
     (dolist (item (magent-thread-all-items thread) (nreverse messages))
       (pcase (magent-thread-item-type item)
@@ -1043,7 +1114,7 @@ number of lifecycle objects changed."
                                 :id (magent-thread-item-call-id item)
                                 :name (magent-json-safe-name
                                        (magent-thread-item-name item))
-                                :args (magent-thread--tool-input-plist
+                                :args (magent-thread-tool-input-plist
                                        (magent-thread-item-input item))
                                 :result
                                 (let ((output
@@ -1076,46 +1147,12 @@ number of lifecycle objects changed."
     (mapcar #'magent-thread--alist-to-keyword-plist (append value nil)))
    (t value)))
 
-(defun magent-thread--legacy-tool-value (value)
-  "Return VALUE in the legacy plist/list shape used by session messages."
-  (cond
-   ((null value) nil)
-   ((eq value :null) nil)
-   ((symbolp value) (magent-json--symbol-value value))
-   ((vectorp value)
-    (mapcar #'magent-thread--legacy-tool-value (append value nil)))
-   ((magent-json--alist-p value)
-    (let (out)
-      (dolist (entry value out)
-        (setq out
-              (append out
-                      (list (if (keywordp (car entry))
-                                (car entry)
-                              (intern (concat ":"
-                                              (magent-json-safe-name
-                                               (car entry)))))
-                            (magent-thread--legacy-tool-value
-                             (cdr entry))))))))
-   ((magent-json--plist-p value)
-    (let (out)
-      (while value
-        (let ((key (pop value))
-              (val (pop value)))
-          (when val
-            (setq out
-                  (append out
-                          (list key
-                                (magent-thread--legacy-tool-value
-                                 val)))))))
-      out))
-   ((consp value)
-    (mapcar #'magent-thread--legacy-tool-value value))
-   (t value)))
-
-(defun magent-thread--tool-input-plist (input)
-  "Return tool INPUT in the legacy keyword plist shape."
-  (magent-thread--legacy-tool-value
-   (magent-thread--alist-to-keyword-plist input)))
+(defun magent-thread-tool-input-plist (input)
+  "Return tool INPUT as the provider-facing keyword plist."
+  (magent-json-safe-tool-args
+   (if (magent-json--plist-p input)
+       input
+     (magent-thread--alist-to-keyword-plist input))))
 
 (defun magent-thread--truncate-model-visible-tool-result-body
     (body failed-p max-length)
@@ -1176,9 +1213,9 @@ suffix.  Successful output keeps its prefix as before."
 
 (defun magent-tool-output-spill--directory (scope session-id)
   "Return the private spill directory for exact SCOPE and SESSION-ID."
-  (let* ((root
-          (magent-tool-output-spill--ensure-private-directory
-           (expand-file-name "tool-results/v2" magent-session-directory)))
+      (let* ((root
+              (magent-tool-output-spill--ensure-private-directory
+               (expand-file-name "tool-results" magent-session-directory)))
          (scope-directory
           (magent-tool-output-spill--ensure-private-directory
            (expand-file-name
@@ -1266,10 +1303,9 @@ Return nil when BODY alone exceeds the configured session quota."
   "Sweep expired spilled results for every stored session once."
   (unless magent-tool-output-spill--startup-cleaned
     (setq magent-tool-output-spill--startup-cleaned t)
-    (let* ((root (expand-file-name "tool-results" magent-session-directory))
-           (v2-root (expand-file-name "v2" root)))
-      (when (file-directory-p v2-root)
-        (dolist (scope-directory (directory-files v2-root t "\\`[^.]" t))
+    (let ((root (expand-file-name "tool-results" magent-session-directory)))
+      (when (file-directory-p root)
+        (dolist (scope-directory (directory-files root t "\\`[^.]" t))
           (when (file-directory-p scope-directory)
             (dolist (session-directory
                      (directory-files scope-directory t "\\`[^.]" t))
@@ -1277,17 +1313,7 @@ Return nil when BODY alone exceeds the configured session quota."
                 (condition-case nil
                     (magent-tool-output-spill--cleanup-directory
                      session-directory)
-                  (error nil)))))))
-      ;; Pre-v2 result ids intentionally do not migrate because they omitted
-      ;; exact scope and therefore cannot be attributed safely.
-      (when (file-directory-p root)
-        (dolist (legacy (directory-files root t "\\`[^.]" t))
-          (when (and (file-directory-p legacy)
-                     (not (equal (file-truename legacy)
-                                 (file-truename v2-root))))
-            (condition-case nil
-                (delete-directory legacy t)
-              (error nil))))))))
+                  (error nil))))))))))
 
 (defun magent-thread-project-tool-result-for-model
     (result &optional thread scope)

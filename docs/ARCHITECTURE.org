@@ -75,7 +75,6 @@ The supported conversational frontend is ~agent-shell~. ~magent-agent-shell.el~ 
 
 The durable source of truth is a ~thread -> turn -> item~ ledger. ~magent-ledger.el~ defines the state objects, transitions, and journal events. ~magent-runtime-api.el~ creates user submissions, while ~magent-runtime-queue.el~ schedules active execution. ~magent-session.el~ atomically stores a materialized ~snapshot~ plus a bounded tail of the in-memory append-only ~journal~. The snapshot records ~last-event-seq~, so retained events at or below that watermark remain inspectable but are not replayed twice.
 
-Legacy ~messages~ remain as a compatibility projection and migration input.
 Named context views make consumer intent explicit: ~ledger~, ~transcript~,
 ~provider~, ~compaction~, and ~audit~. They are not interchangeable canonical
 state containers.
@@ -114,15 +113,15 @@ The catalog is the single source of truth for tool names, implementations, and
 permission keys. Ordinary requests select ~:all~; Action agent Steps pass an
 exact ~:tools~ allowlist, which is then filtered by agent permissions. All tool
 implementations return structured ~magent-tool-result~ values. Only the provider
-boundary renders result text, and persisted legacy strings migrate only during
-old-session import. Oversized model-visible results are truncated centrally;
+boundary renders result text; unstructured runtime or persisted values are
+rejected. Oversized model-visible results are truncated centrally;
 the full value is stored in a private, TTL/quota-bounded session spill and may
 be paged only with its opaque id through ~read_tool_output~. Spill identity
 includes the exact runtime scope and session id; pages use one-based character
 offsets so even a single oversized line is fully retrievable. ~glob~ traverses
 in bounded event-loop slices.
 
-~magent-tool-orchestrator.el~ resolves permissions, asks for approval when needed, dispatches the tool call, writes audit records, and reports results back to the loop. ~magent-permission.el~ resolves rules in this order: exact tool match, file-pattern rules, wildcard fallback, then default allow.
+~magent-tool-orchestrator.el~ resolves permissions, asks for approval when needed, dispatches the tool call, writes audit records, and reports results back to the loop. ~magent-permission.el~ resolves an exact tool rule before the tool wildcard and then default allow. Nested resource rules use exact declared first-match order, including their ~*~ entry.
 
 *** Breaking tool migration
 
@@ -176,7 +175,7 @@ The product is therefore more than a prompt box with tools. It turns Emacs workf
 Magent has three file-backed extension layers:
 
 - Custom agents under ~.magent/agent/*.md~.
-- Skills under bundled ~skills/~, legacy user ~~/.emacs.d/magent-skills/~ when present, canonical user ~~/.emacs.d/magent/skills~, and project ~.magent/skills/~.
+- Skills under bundled ~skills/~, user ~~/.emacs.d/magent/skills~, and project ~.magent/skills/~.
 - Capability metadata embedded in skills with ~capability: true~, plus standalone ~CAPABILITY.md~ files under user capability directories and project ~.magent/capabilities/~ when trigger metadata should live outside one skill.
 
 Actions are a separate Elisp-native extension layer. ~magent-action.el~ is one
@@ -257,7 +256,7 @@ The distinction is:
 - A ~skill~ is reusable, data-only model instruction selected for an ordinary
   turn. It is not converted into an Action.
 - A ~capability~ is an automatic activation rule: resolver metadata such as
-  ~modes~, ~features~, ~files~, ~keywords~, ~disclosure~, and ~risk~ that says
+  ~modes~, ~features~, ~files~, ~prompt-keywords~, ~disclosure~, and ~risk~ that says
   when one or more skills should be selected for this turn. Context-only
   matches are inspectable suggestions; active disclosure also requires a
   bounded keyword match in the current user prompt.

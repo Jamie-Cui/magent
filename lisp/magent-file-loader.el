@@ -36,32 +36,15 @@ If no frontmatter is found, returns (nil . CONTENT)."
         (cons normalized body))
     (cons nil content)))
 
-(defconst magent-file-loader--comma-list-keys
-  '(:tools :skills :capability-skills :modes :features :files
-    :prompt-keywords :keywords)
-  "Frontmatter keys that accept the legacy comma-separated list syntax.")
-
 (defun magent-file-loader--normalize-frontmatter-plist (plist)
-  "Normalize PLIST keys and values for Magent definition files."
+  "Validate and return PLIST for Magent definition files."
   (let (result)
     (cl-loop for (key val) on plist by #'cddr do
-      (let* ((key-str (substring (symbol-name key) 1))
-             (normalized-key (intern (concat ":" (subst-char-in-string ?_ ?- key-str))))
-             (normalized-val
-              (magent-file-loader--normalize-frontmatter-value
-               normalized-key val)))
-        (setq result (plist-put result normalized-key normalized-val))))
+      (let ((key-str (substring (symbol-name key) 1)))
+        (when (string-match-p "_" key-str)
+          (error "Frontmatter keys must use kebab-case: %s" key-str))
+        (setq result (plist-put result key val))))
     result))
-
-(defun magent-file-loader--normalize-frontmatter-value (key val)
-  "Normalize frontmatter VAL for KEY.
-Only declared list fields accept the legacy comma-separated shorthand; commas
-in descriptions and other scalar strings remain data."
-  (if (and (memq key magent-file-loader--comma-list-keys)
-           (stringp val)
-           (string-match-p "," val))
-      (mapcar #'string-trim (split-string val ","))
-    val))
 
 (defun magent-file-loader--parse-simple-frontmatter (header)
   "Parse flat scalar HEADER without losing JSON-compatible string escapes.

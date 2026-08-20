@@ -3,14 +3,14 @@ name: project-workflow
 title: Project Navigation Workflow
 description: Use project.el-style project roots, scoped commands, project buffers, and project-aware execution.
 type: instruction
-tools: emacs_read, emacs_eval_live, grep, glob, bash
+tools: ["emacs_read", "emacs_eval_live", "grep", "glob", "bash"]
 capability: true
 family: project
 source: package
-package: project
-modes: prog-mode, text-mode, dired-mode
-features: project
-keywords: project root, current project, switch project, project file, project buffer, project compile
+source-name: project
+modes: ["prog-mode", "text-mode", "dired-mode"]
+features: ["project"]
+prompt-keywords: ["project root", "current project", "switch project", "project file", "project buffer", "project compile"]
 disclosure: active
 risk: low
 ---

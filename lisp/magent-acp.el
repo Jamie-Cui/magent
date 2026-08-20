@@ -729,22 +729,18 @@ Each handler runs inside the CLIENT's context buffer (via
   (make-hash-table :test #'eq :weakness 'key)
   "Frozen session-id to scope bindings for each in-process ACP client.")
 
-(defun magent-acp--client-default-scope (client)
-  "Return the current buffer-derived scope for unbound ACP CLIENT."
-  (when-let* ((buffer (magent-acp--callback-buffer client nil)))
-    (with-current-buffer buffer
-      (magent-session-scope-from-directory default-directory))))
-
 (defun magent-acp--bind-client-session (client runtime-session)
   "Bind CLIENT's RUNTIME-SESSION id to its exact creation/load scope."
   (let* ((session-id (magent-runtime-session-id runtime-session))
-         (scope (magent-runtime-session-scope runtime-session))
-         (bindings
-          (or (gethash client magent-acp--client-session-scopes)
-              (let ((table (make-hash-table :test #'equal)))
-                (puthash client table magent-acp--client-session-scopes)
-                table))))
-    (puthash session-id scope bindings)
+         (scope (magent-runtime-session-scope runtime-session)))
+    (unless scope
+      (error "Cannot bind ACP session %s without an explicit scope" session-id))
+    (let ((bindings
+           (or (gethash client magent-acp--client-session-scopes)
+               (let ((table (make-hash-table :test #'equal)))
+                 (puthash client table magent-acp--client-session-scopes)
+                 table))))
+      (puthash session-id scope bindings))
     scope))
 
 (defun magent-acp--client-session-scope (client session-id)
@@ -753,11 +749,9 @@ Each handler runs inside the CLIENT's context buffer (via
     (gethash session-id bindings)))
 
 (defun magent-acp--request-session-scope (client session-id)
-  "Return CLIENT's stable scope for SESSION-ID.
-The buffer-derived fallback preserves clients that survived a source reload;
-new and resumed sessions are always explicitly bound before use."
+  "Return CLIENT's bound scope for SESSION-ID."
   (or (magent-acp--client-session-scope client session-id)
-      (magent-acp--client-default-scope client)))
+      (error "ACP session %s is not bound to this client" session-id)))
 
 (defun magent-acp--wrap-callback (client buffer callback)
   "Return CALLBACK wrapped to run in CLIENT/BUFFER context."
@@ -768,25 +762,10 @@ new and resumed sessions are always explicitly bound before use."
                                  (current-buffer))
           (apply callback args))))))
 
-(defun magent-acp--call-failure (on-failure error &optional raw-message)
-  "Call ON-FAILURE with ERROR and optional RAW-MESSAGE."
+(defun magent-acp--call-failure (on-failure error)
+  "Call ON-FAILURE with ERROR."
   (when on-failure
-    (let* ((arity (func-arity on-failure))
-           (min (car arity))
-           (max (cdr arity)))
-      (cond
-       ((and (<= min 2)
-             (or (eq max 'many)
-                 (null max)
-                 (and (numberp max) (>= max 2))))
-        (funcall on-failure error raw-message))
-       ((and (<= min 1)
-             (or (eq max 'many)
-                 (null max)
-                 (and (numberp max) (>= max 1))))
-        (funcall on-failure error))
-       (t
-        (funcall on-failure))))))
+    (funcall on-failure error)))
 
 (defun magent-acp--scope-equal-p (left right)
   "Return non-nil when session scopes LEFT and RIGHT are equal."
@@ -828,18 +807,14 @@ new and resumed sessions are always explicitly bound before use."
     ;; treated as corrupt/ambiguous state.
     (and (= (length matches) 1) (car matches))))
 
-(defun magent-acp--runtime-session-by-id (session-id &optional expected-scope)
+(defun magent-acp--runtime-session-by-id (session-id expected-scope)
   "Return runtime SESSION-ID in EXPECTED-SCOPE, loading it if needed."
   (magent-session-validate-id session-id)
+  (unless expected-scope
+    (error "An explicit ACP session scope is required"))
   (or (when-let* ((runtime-session
-                   (if expected-scope
-                       (magent-runtime-session-from-id
-                        session-id expected-scope)
-                     (magent-runtime-session-from-id session-id)))
-                  ((or (null expected-scope)
-                       (magent-acp--scope-equal-p
-                        (magent-runtime-session-scope runtime-session)
-                        expected-scope))))
+                   (magent-runtime-session-from-id
+                    session-id expected-scope)))
         runtime-session)
       (when-let* ((file (magent-acp--session-file-by-id
                          session-id expected-scope)))
@@ -847,9 +822,7 @@ new and resumed sessions are always explicitly bound before use."
 
 (defun magent-acp--runtime-session-for-scope (session-id expected-scope)
   "Return SESSION-ID restricted to EXPECTED-SCOPE when it is available."
-  (if expected-scope
-      (magent-acp--runtime-session-by-id session-id expected-scope)
-    (magent-acp--runtime-session-by-id session-id)))
+  (magent-acp--runtime-session-by-id session-id expected-scope))
 
 (defun magent-acp--load-candidate (session-id scope)
   "Return a read-only load candidate for SESSION-ID in exact SCOPE.

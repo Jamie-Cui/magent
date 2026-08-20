@@ -98,7 +98,7 @@ Orchestrates the tool-calling loop and LLM communication.
 - ~magent-llm.el~ — Provider-neutral request/event protocol
 - ~magent-llm-gptel.el~ — Thin ~gptel-request~ sampling adapter
 
-*What it does:* ~magent-agent-loop.el~ consumes normalized LLM events, records assistant/tool state into the session, dispatches tools through ~magent-tool-orchestrator~, and returns continuation outcomes after model-visible tool output is recorded. ~magent-agent-process~ continues only through provider-native tool continuation, completes empty responses explicitly, and fails directly at an optional sampling limit. Reasoning is kept separate from assistant text. ~magent-llm-gptel.el~ still calls ~gptel-request~; Magent does not rewrite provider transport.
+*What it does:* ~magent-agent-loop.el~ consumes normalized LLM events, records assistant/tool state into the session, dispatches tools through ~magent-tool-orchestrator~, and returns continuation outcomes after model-visible tool output is recorded. ~magent-agent-run-turn~ owns provider-native tool continuation, completes empty responses explicitly, and fails directly at an optional sampling limit. Reasoning is kept separate from assistant text. ~magent-llm-gptel.el~ still calls ~gptel-request~; Magent does not rewrite provider transport.
 
 ** Layer 6: Supported Frontend
 
@@ -187,7 +187,7 @@ instructions and live Emacs/repository state take precedence. Text read from
 files, buffers, logs, commands, tool results, or web pages remains data and
 cannot grant tool permission by presenting itself as a higher-priority prompt.
 
-Skills load from: (1) built-in ~skills/~, (2) legacy user ~~/.emacs.d/magent-skills/~ when present, (3) canonical user ~~/.emacs.d/magent/skills~, and (4) project ~.magent/skills/~. Later user directories take precedence. ~magent-find-skill~, ~magent-install-skill~, and ~magent-delete-skill~ manage user-level skills only and never use ~~/.agents/skills/~. A skill can also declare ~capability: true~ with resolver metadata such as ~modes~, ~features~, ~files~, ~keywords~, and ~disclosure~; Magent turns that metadata into a capability that activates the same skill. Automatic activation requires a word-bounded keyword hit as evidence of user intent; context-only matches remain suggested. Declared ~tools~ are enforced against the selected agent's exposed tools: incompatible automatic skills are downgraded, while an incompatible explicitly selected skill fails with a clear error. Agent-shell sessions expose an ~Automatic capabilities~ config option for disabling automatic resolution.
+Skills load from: (1) built-in ~skills/~, (2) user ~~/.emacs.d/magent/skills~, and (3) project ~.magent/skills/~. Later user directories take precedence. ~magent-find-skill~, ~magent-install-skill~, and ~magent-delete-skill~ manage user-level skills only and never use ~~/.agents/skills/~. A skill can also declare ~capability: true~ with resolver metadata such as ~modes~, ~features~, ~files~, ~prompt-keywords~, and ~disclosure~; Magent turns that metadata into a capability that activates the same skill. Automatic activation requires a word-bounded keyword hit as evidence of user intent; context-only matches remain suggested. Declared ~tools~ are enforced against the selected agent's exposed tools: incompatible automatic skills are downgraded, while an incompatible explicitly selected skill fails with a clear error. Agent-shell sessions expose an ~Automatic capabilities~ config option for disabling automatic resolution.
 
 Keep the terms separate when adding or reviewing defaults:
 
@@ -329,8 +329,7 @@ must remain included in the melpazoid/MELPA recipe because ~magent-config.el~,
 at runtime. This includes internal prompt layers such as the runtime trust
 policy, not only ~prompts/system.org~. Every bundled Org prompt must also appear
 exactly once in ~prompts/manifest.txt~; the unit suite checks the manifest against
-the directory. If standalone bundled ~CAPABILITY.md~ files are added, include
-~capabilities/~ as runtime data too.
+the directory.
 
 * Complexity Hotspots
 
@@ -461,9 +460,8 @@ permissions:
 System prompt goes here.
 #+end_src
 
-Use permission group keys such as ~read~, ~write~, ~edit~, and ~agent~.  The
-older list form with concrete tool names remains supported for reading, but
-new definitions should use this mapping form.
+Use exact permission group keys such as ~read~, ~write~, ~edit~, and ~agent~.
+Unknown keys and non-mapping permission forms are rejected.
 
 ** Adding a Skill
 
@@ -474,7 +472,7 @@ Create ~skills/my-skill/SKILL.md~:
 name: my-skill
 description: Brief description
 type: instruction
-tools: read_file, grep
+tools: [read_file, grep]
 ---
 
 Skill instructions for the agent.

@@ -3,7 +3,7 @@
 
 ;;; Commentary:
 
-;; Tests for magent-agent-process and session handling.
+;; Tests for the canonical turn API and ledger-backed session handling.
 
 ;;; Code:
 
@@ -24,6 +24,154 @@
 (defun magent-test-tool-output (result)
   "Return model-visible text from structured tool RESULT."
   (magent-tool-result-output-string result))
+
+(defun magent-test--session-transcript (session)
+  "Return SESSION's current ledger transcript projection."
+  (magent-session-context-view session 'transcript))
+
+(defsubst magent-test--transcript-role (entry)
+  "Return transcript ENTRY's role."
+  (cdr (assq 'role entry)))
+
+(defsubst magent-test--transcript-content (entry)
+  "Return transcript ENTRY's content."
+  (cdr (assq 'content entry)))
+
+(defun magent-test--record-session-entry (session role content)
+  "Record a test transcript entry in SESSION's current ledger."
+  (let* ((thread (magent-session-thread-ledger session))
+         (turn (magent-thread-active-turn thread)))
+    (pcase role
+      ('user
+       (when turn
+         (magent-thread-complete-turn thread (magent-thread-turn-id turn)))
+       (setq turn (magent-thread-create-turn thread content))
+       (magent-thread-record-user-message-if-needed
+        thread (magent-thread-turn-id turn) content nil (list :source 'test)))
+      ('assistant
+       (unless turn
+         (error "Assistant test entry requires an active turn"))
+       (magent-thread-record-message
+        thread (magent-thread-turn-id turn) 'assistant content nil
+        (list :source 'test))
+       (magent-thread-complete-turn thread (magent-thread-turn-id turn)))
+      ('tool
+       (unless turn
+         (error "Tool test entry requires an active turn"))
+       (let* ((call-id (or (plist-get content :id)
+                           (magent-protocol-generate-id "tool")))
+              (value (plist-get content :result))
+              (result (if (magent-tool-result-p value)
+                          value
+                        (magent-test-tool-result value))))
+         (magent-thread-record-tool-result
+          thread (magent-thread-turn-id turn) call-id
+          (plist-get content :name) (plist-get content :args) result
+          (list :source 'test))))
+      (_ (error "Unsupported test transcript role: %S" role)))
+    (when (> (length (magent-test--session-transcript session))
+             (+ (magent-session-max-history session) 10))
+      (magent-session--trim-history session))
+    session))
+
+(defun magent-test--record-tool-entry (session id name args result)
+  "Record a structured tool entry in SESSION's current ledger."
+  (magent-test--record-session-entry
+   session 'tool (list :id id :name name :args args :result result)))
+
+(defun magent-test--session-with-transcript (id entries &optional metadata)
+  "Return a current-format session ID containing transcript ENTRIES."
+  (let ((session (magent-session-create :id id :metadata metadata)))
+    (dolist (entry entries session)
+      (magent-test--record-session-entry
+       session (car entry) (cadr entry)))))
+
+(defun magent-test--latest-tool-transcript (session)
+  "Return the newest tool transcript entry in SESSION."
+  (cl-find 'tool (reverse (magent-test--session-transcript session))
+           :key #'magent-test--transcript-role))
+
+(defun magent-test--loop-create-for-session (session prompt &rest args)
+  "Create an agent loop for a real current-format turn in SESSION."
+  (magent-test--record-session-entry session 'user prompt)
+  (let* ((thread (magent-session-thread-ledger session))
+         (turn (magent-thread-active-turn thread)))
+    (apply #'magent-agent-loop-create
+           :session session :turn-id (magent-thread-turn-id turn) args)))
+
+(defun magent-test--provider-context (session &optional current-turn-id)
+  "Return SESSION's provider replay context."
+  (magent-session-context-view session 'provider current-turn-id))
+
+(defun magent-test--all-tool-names ()
+  "Return every canonical Magent tool name for resolver tests."
+  (mapcar (lambda (entry) (intern (plist-get entry :name)))
+          magent-tools-catalog))
+
+(defun magent-test--save-current-session ()
+  "Save the explicitly bound current test session."
+  (when magent--current-session
+    (magent-session-save-for-session
+     magent--current-session magent-session--current-scope)))
+
+(defun magent-test--session-files (directory)
+  "Return current session JSON files recursively under DIRECTORY."
+  (directory-files-recursively directory "\\.json\\'"))
+
+(defun magent-test--write-session-fixture (directory id scope title)
+  "Write a valid current session ID for SCOPE under DIRECTORY."
+  (let* ((magent-session-directory directory)
+         (magent-session--current-scope scope)
+         (session (magent-session-create
+                   :id id :metadata `((title . ,title)))))
+    (magent-test--record-session-entry session 'user title)
+    (magent-session-save-for-session session scope)))
+
+(defun magent-test--current-session-json-data (id &optional schema-version)
+  "Return current-format session JSON data for ID and SCHEMA-VERSION."
+  (let ((thread (magent-thread-create :id id :session-id id :scope 'global)))
+    `((id . ,id)
+      (schema-version . ,(or schema-version magent-session-schema-version))
+      (scope . "global")
+      (snapshot . ,(magent-thread-snapshot-to-alist thread))
+      (journal . [])
+      (agent-jobs . [])
+      (approval-overrides . []))))
+
+(defun magent-test--acp-client-for-runtime
+    (runtime-session &optional notification-handlers context-buffer)
+  "Return an ACP client explicitly bound to RUNTIME-SESSION."
+  (let ((client `((:context-buffer . ,context-buffer)
+                  (:notification-handlers . ,notification-handlers)
+                  (:request-handlers . nil))))
+    (magent-acp--bind-client-session client runtime-session)
+    client))
+
+(defun magent-test--run-turn
+    (prompt &optional callback agent skills event-context context
+            capability-resolution text-callback request-live-p request-context)
+  "Exercise `magent-agent-run-turn' using compact test-call arguments."
+  (let* ((session (or (and request-context
+                            (magent-request-context-session request-context))
+                       (magent-session-get)))
+         (request-context
+          (or request-context
+              (magent-request-context-create
+               :session session :ui-visibility 'none)))
+         (existing-observer (magent-request-context-observer request-context)))
+    (when event-context
+      (setf (magent-request-context-event-context request-context) event-context))
+    (when text-callback
+      (setf (magent-request-context-observer request-context)
+            (lambda (event)
+              (when existing-observer (funcall existing-observer event))
+              (when (eq (plist-get event :type) 'assistant-delta)
+                (funcall text-callback (plist-get event :text))))))
+    (magent-agent-run-turn
+     :session session :prompt prompt :agent agent :skills skills
+     :context context :request-context request-context
+     :capability-resolution capability-resolution
+     :on-complete callback :request-live-p request-live-p)))
 
 (defun magent-test--read-audit-records (directory)
   "Return all JSONL audit records stored under DIRECTORY."
@@ -154,7 +302,7 @@
       (setq recipe (read (match-string 1))))
     (should
      (equal (plist-get (cdr recipe) :files)
-            '("lisp/magent*.el" "prompts" "skills" "capabilities")))
+            '("lisp/magent*.el" "prompts" "skills")))
     (should (member "lisp/magent-action-builtins.el"
                     (magent-test-source-files
                      magent-test--root-directory)))))
@@ -234,6 +382,11 @@
           (insert-file-contents config-file)
           (should (re-search-forward regexp nil t)))))))
 
+(ert-deftest magent-test-aa-agent-shell-session-strategy-defaults-to-prompt ()
+  "Test new Magent shells offer scoped session selection by default."
+  (should (eq (default-value 'magent-agent-shell-session-strategy)
+              'prompt)))
+
 (ert-deftest magent-test-aa-retired-compatibility-files-and-symbols-are-removed ()
   "Test production sources contain no retired compatibility implementation."
   (dolist (file '("lisp/magent-ui.el"
@@ -252,7 +405,17 @@
        (re-search-forward
         "magent-\\(?:ui\\|legacy-queue\\|output-mode\\|compose-mode\\|evil\\)"
         nil t))))
-  (should-not (fboundp 'magent-action-prompt-handler)))
+  (dolist (symbol '(magent-action-prompt-handler
+                    magent-agent-process
+                    magent-session-add-message
+                    magent-session-add-tool-message
+                    magent-session-get-messages
+                    magent-session-refresh-projections
+                    magent-session-to-gptel-prompt-list
+                    magent-tool-result-migrate-legacy
+                    magent-runtime-queue--set-submission-starter
+                    magent-runtime-queue--bootstrap-preserved-backends))
+    (should-not (fboundp symbol))))
 
 (ert-deftest magent-test-aa-interactive-command-names-are-canonical ()
   "Test public commands use canonical verb-first names."
@@ -311,7 +474,7 @@
                  (let* ((callback (plist-get kwargs :callback)))
                    (funcall callback "Hello from AI" nil)
                    (funcall callback t (list :content "Hello from AI"))))))
-      (magent-agent-process "Hello" (lambda (r) (setq response r))))
+      (magent-test--run-turn "Hello" (lambda (r) (setq response r))))
     (should (= call-count 1))
     (should (magent-execution-result-p response))
     (should (magent-execution-result-success-p response))
@@ -319,7 +482,7 @@
                    "Hello from AI"))))
 
 (ert-deftest magent-test-session-recording ()
-  "Test that user message is recorded in session by magent-agent-process."
+  "Test that the public turn runner records the user message in the ledger."
   (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
         (gptel-model 'gpt-4o-mini)
         (gptel-tools nil)
@@ -331,23 +494,23 @@
                    (funcall callback "AI response" nil)
                    (funcall callback t (list :content "AI response"))))))
       (magent-session-reset)
-      (magent-agent-process
+      (magent-test--run-turn
        "User message"
        (lambda (r)
          (setq response r)))
       (let* ((session (magent-session-get))
-             (messages (magent-session-get-messages session)))
+             (messages (magent-test--session-transcript session)))
         (should (>= (length messages) 2))
         (should (equal (magent-execution-result-content-string response)
                        "AI response"))
         (let ((user-msg (nth 0 messages)))
-          (should (eq (magent-msg-role user-msg) 'user))
-          (should (equal (magent-msg-content user-msg) "User message")))
+          (should (eq (magent-test--transcript-role user-msg) 'user))
+          (should (equal (magent-test--transcript-content user-msg) "User message")))
         (let ((assistant-msg (nth 1 messages)))
-          (should (eq (magent-msg-role assistant-msg) 'assistant))
-          (should (equal (magent-msg-content assistant-msg) "AI response")))))))
+          (should (eq (magent-test--transcript-role assistant-msg) 'assistant))
+          (should (equal (magent-test--transcript-content assistant-msg) "AI response")))))))
 
-(ert-deftest magent-test-agent-process-renders-completed-delta-after-stream-prefix ()
+(ert-deftest magent-test-agent-run-turn-renders-completed-delta-after-stream-prefix ()
   "Test final completion text after streamed prefix is still rendered."
   (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
         (gptel-model 'gpt-4o-mini)
@@ -363,7 +526,7 @@
               ((symbol-function 'magent-tools-get-gptel-tools-for-permission)
                (lambda (&rest _args) nil)))
       (magent-session-reset)
-      (magent-agent-process
+      (magent-test--run-turn
        "Hello"
        (lambda (r) (setq response r))
        nil nil nil nil nil
@@ -411,7 +574,7 @@
                            (nreverse events)))
              '("MAGENT_HELLO")))))
 
-(ert-deftest magent-test-agent-process-error-returns-failed-result ()
+(ert-deftest magent-test-agent-run-turn-error-returns-failed-result ()
   "Test provider errors are returned as failed agent results."
   (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
         (gptel-model 'gpt-4o-mini)
@@ -426,7 +589,7 @@
               ((symbol-function 'magent-tools-get-gptel-tools-for-permission)
                (lambda (&rest _args) nil)))
       (magent-session-reset)
-      (magent-agent-process
+      (magent-test--run-turn
        "Hello"
        (lambda (result)
          (setq response result))))
@@ -434,31 +597,18 @@
     (should-not (magent-execution-result-success-p response))
     (should (equal (magent-execution-result-content-string response)
                    "Request timed out after 5 seconds"))
-    (should (equal (magent-session-to-gptel-prompt-list
+    (should (equal (magent-test--provider-context
                     (magent-session-get))
                    nil))))
 
-(ert-deftest magent-test-agent-process-does-not-limit-tool-rounds-from-agent-steps ()
-  "Test agent step metadata does not impose a tool-loop limit."
-  (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
-        (gptel-model 'gpt-4o-mini)
-        (captured nil)
-        (agent (magent-agent-info-create
-                :name "test"
-                :mode 'primary
-                :steps 7
-                :permission (magent-permission-defaults))))
-    (cl-letf (((symbol-function 'magent-agent-loop-start)
-               (lambda (loop)
-                 (setq captured loop)
-                 loop))
-              ((symbol-function 'magent-tools-get-gptel-tools-for-permission)
-               (lambda (&rest _args) nil)))
-      (magent-session-reset)
-      (magent-agent-process "Hello" nil agent))
-    (should (magent-agent-loop-p captured))))
+(ert-deftest magent-test-agent-info-rejects-retired-agent-fields ()
+  "Agent records expose no inert options or steps fields."
+  (should-error
+   (apply #'magent-agent-info-create '(:name "test" :steps 7)))
+  (should-error
+   (apply #'magent-agent-info-create '(:name "test" :options (:style strict)))))
 
-(ert-deftest magent-test-agent-process-continues-after-tool-output ()
+(ert-deftest magent-test-agent-run-turn-continues-after-tool-output ()
   "Test a tool continuation returns only its terminal sample."
   (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
          (gptel-model 'gpt-4o-mini)
@@ -521,7 +671,7 @@
               ((symbol-function 'magent-lifecycle-events-begin-turn)
                (lambda (_title) 'turn))
               ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
-      (magent-agent-process
+      (magent-test--run-turn
        "Run eval"
        (lambda (result) (setq response result))
        agent nil nil nil nil nil nil request-state))
@@ -547,7 +697,7 @@
                              :args (:sexp "(+ 1 2)")
                              :result "eval:(+ 1 2)")))))))
 
-(ert-deftest magent-test-agent-process-prefers-provider-native-continuation ()
+(ert-deftest magent-test-agent-run-turn-prefers-provider-native-continuation ()
   "Tool output resumes an available provider context without resampling."
   (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
          (gptel-model 'gpt-4o-mini)
@@ -603,7 +753,7 @@
               ((symbol-function 'magent-lifecycle-events-begin-turn)
                (lambda (_title) 'turn))
               ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
-      (magent-agent-process
+      (magent-test--run-turn
        "Run eval"
        (lambda (result) (setq response result))
        agent nil nil nil nil nil nil request-state))
@@ -622,7 +772,7 @@
 
 
 
-(ert-deftest magent-test-agent-process-async-continuation-preserves-tools ()
+(ert-deftest magent-test-agent-run-turn-async-continuation-preserves-tools ()
   "Async continuation preserves tools and accepts an empty completion."
   (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
          (gptel-model 'gpt-4o-mini)
@@ -669,7 +819,7 @@
               ((symbol-function 'magent-lifecycle-events-begin-turn)
                (lambda (_title) 'turn))
               ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
-      (magent-agent-process
+      (magent-test--run-turn
        "Run eval"
        (lambda (result) (setq response result))
        agent nil nil nil nil nil nil request-state)
@@ -708,7 +858,7 @@
 
 
 
-(ert-deftest magent-test-agent-process-fails-directly-at-sampling-budget ()
+(ert-deftest magent-test-agent-run-turn-fails-directly-at-sampling-budget ()
   "The optional sampling budget fails without another provider request."
   (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
          (gptel-model 'gpt-4o-mini)
@@ -757,7 +907,7 @@
               ((symbol-function 'magent-lifecycle-events-begin-turn)
                (lambda (_title) 'turn))
               ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
-      (magent-agent-process
+      (magent-test--run-turn
        "Run eval"
        (lambda (result) (setq response result))
        agent nil nil nil nil nil nil request-state))
@@ -853,11 +1003,11 @@
 (ert-deftest magent-test-frontmatter-numeric-values ()
   "Test frontmatter numeric value parsing."
   (require 'magent-file-loader)
-  (let* ((content "---\ntemperature: 0.7\nsteps: 10\n---\n")
+  (let* ((content "---\ntemperature: 0.7\nmax-items: 10\n---\n")
          (result (magent-file-loader-parse-frontmatter content))
          (fm (car result)))
     (should (= (plist-get fm :temperature) 0.7))
-    (should (= (plist-get fm :steps) 10))))
+    (should (= (plist-get fm :max-items) 10))))
 
 (ert-deftest magent-test-frontmatter-quoted-strings ()
   "Test frontmatter quoted string value parsing."
@@ -882,22 +1032,20 @@
     (should (equal (plist-get fm :tools) '("bash" "read")))))
 
 (ert-deftest magent-test-frontmatter-keeps-commas-in-scalar-fields ()
-  "Legacy comma shorthand applies only to declared list fields."
+  "Comma-containing scalar fields remain scalar values."
   (require 'magent-file-loader)
   (let* ((content "---\ndescription: Fast, focused, composable\n---\n")
          (fm (car (magent-file-loader-parse-frontmatter content))))
     (should (equal (plist-get fm :description)
                    "Fast, focused, composable"))))
 
-(ert-deftest magent-test-frontmatter-comma-separated-list ()
-  "Test frontmatter comma-separated list value parsing."
+(ert-deftest magent-test-frontmatter-does-not-infer-comma-separated-lists ()
+  "Generic frontmatter parsing does not infer a list from commas."
   (require 'magent-file-loader)
   (let* ((content "---\ntools: bash, read, write\n---\n")
          (result (magent-file-loader-parse-frontmatter content))
          (fm (car result)))
-    (should (listp (plist-get fm :tools)))
-    (should (= (length (plist-get fm :tools)) 3))
-    (should (equal (plist-get fm :tools) '("bash" "read" "write")))))
+    (should (equal (plist-get fm :tools) "bash, read, write"))))
 
 (ert-deftest magent-test-frontmatter-multiline-yaml-list ()
   "Test multiline YAML frontmatter falls back to the YAML parser."
@@ -926,14 +1074,12 @@
     (should (equal (plist-get (car result) :name) "test"))
     (should (string-empty-p (string-trim (cdr result))))))
 
-(ert-deftest magent-test-frontmatter-underscore-to-hyphen ()
-  "Test that underscores in keys are converted to hyphens."
+(ert-deftest magent-test-frontmatter-rejects-underscore-keys ()
+  "Frontmatter keys must use the canonical kebab-case spelling."
   (require 'magent-file-loader)
-  (let* ((content "---\ntop_p: 0.9\nmax_tokens: 100\n---\n")
-         (result (magent-file-loader-parse-frontmatter content))
-         (fm (car result)))
-    (should (= (plist-get fm :top-p) 0.9))
-    (should (= (plist-get fm :max-tokens) 100))))
+  (should-error
+   (magent-file-loader-parse-frontmatter
+    "---\ntop_p: 0.9\nmax_tokens: 100\n---\n")))
 
 ;; ──────────────────────────────────────────────────────────────────────
 ;;; Permission system tests
@@ -1041,17 +1187,16 @@
     (should (eq (magent-permission-resolve rules 'read "docs/item.el")
                 'deny))))
 
-(ert-deftest magent-test-permission-resource-globs-keep-specific-order ()
-  "Specific resource rules are first-match; bare `*' remains fallback."
+(ert-deftest magent-test-permission-resource-globs-use-exact-declared-order ()
+  "Every resource rule, including `*', participates in first-match order."
   (require 'magent-permission)
   (let ((rules '((read . ((* . allow)
                           ("src/**" . ask)
                           ("src/private/**" . deny))))))
-    ;; The catch-all is a fallback even when declared first.  Between the two
-    ;; matching specific rules, the first rule wins.
+    ;; The declared catch-all wins because it is first.
     (should (eq (magent-permission-resolve
                  rules 'read "src/private/secret.el")
-                'ask))
+                'allow))
     (should (eq (magent-permission-resolve rules 'read "docs/public.el")
                 'allow))))
 
@@ -1161,8 +1306,8 @@
     (should (eq (magent-permission-resolve merged 'read) 'allow))
     (should (eq (magent-permission-resolve merged 'bash) 'deny))))
 
-(ert-deftest magent-test-permission-plan-merge-replaces-wildcard-fallback ()
-  "Plan's string wildcard cannot coexist with defaults' symbol wildcard."
+(ert-deftest magent-test-permission-plan-keeps-specific-rule-before-wildcard ()
+  "Plan policy has one canonical wildcard after its writable path rule."
   (require 'magent-agent-builtins)
   (let* ((permission
           (magent-agent-info-permission (magent-agent-builtins--plan)))
@@ -1223,18 +1368,18 @@
 ;;; Session tests
 ;; ──────────────────────────────────────────────────────────────────────
 
-(ert-deftest magent-test-session-add-message ()
+(ert-deftest magent-test-session-records-ledger-messages ()
   "Test session message addition and retrieval."
   (let ((session (magent-session-create)))
-    (magent-session-add-message session 'user "Hello")
-    (magent-session-add-message session 'assistant "Hi there")
-    (should (= (length (magent-session-messages session)) 2))
-    (let ((messages (magent-session-get-messages session)))
+    (magent-test--record-session-entry session 'user "Hello")
+    (magent-test--record-session-entry session 'assistant "Hi there")
+    (should (= (length (magent-test--session-transcript session)) 2))
+    (let ((messages (magent-test--session-transcript session)))
       (should (= (length messages) 2))
-      (should (eq (magent-msg-role (nth 0 messages)) 'user))
-      (should (equal (magent-msg-content (nth 0 messages)) "Hello"))
-      (should (eq (magent-msg-role (nth 1 messages)) 'assistant))
-      (should (equal (magent-msg-content (nth 1 messages)) "Hi there")))))
+      (should (eq (magent-test--transcript-role (nth 0 messages)) 'user))
+      (should (equal (magent-test--transcript-content (nth 0 messages)) "Hello"))
+      (should (eq (magent-test--transcript-role (nth 1 messages)) 'assistant))
+      (should (equal (magent-test--transcript-content (nth 1 messages)) "Hi there")))))
 
 (ert-deftest magent-test-session-history-trimming ()
   "Test lazy history trimming."
@@ -1242,14 +1387,14 @@
     (setf (magent-session-max-history session) 5)
     ;; Add 10 messages
     (dotimes (i 10)
-      (magent-session-add-message session 'user (format "msg %d" i)))
+      (magent-test--record-session-entry session 'user (format "msg %d" i)))
     ;; Should have 10 messages (lazy trim hasn't triggered yet)
-    (should (= (length (magent-session-messages session)) 10))
+    (should (= (length (magent-test--session-transcript session)) 10))
     ;; Add 6 more to trigger trim (10 + 6 = 16 > 5 + 10)
     (dotimes (i 6)
-      (magent-session-add-message session 'user (format "extra %d" i)))
+      (magent-test--record-session-entry session 'user (format "extra %d" i)))
     ;; Now should be trimmed to max-history (5)
-    (should (= (length (magent-session-messages session)) 5))))
+    (should (= (length (magent-test--session-transcript session)) 5))))
 
 (ert-deftest magent-test-session-trimming-preserves-recent ()
   "Test that trimming keeps the most recent messages."
@@ -1257,18 +1402,18 @@
     (setf (magent-session-max-history session) 3)
     ;; Add enough to trigger trim (3 + 10 = 13, need > 13)
     (dotimes (i 14)
-      (magent-session-add-message session 'user (format "msg-%d" i)))
-    (should (= (length (magent-session-messages session)) 3))
-    (let* ((messages (magent-session-get-messages session))
-           (first-content (magent-msg-content (nth 0 messages))))
+      (magent-test--record-session-entry session 'user (format "msg-%d" i)))
+    (should (= (length (magent-test--session-transcript session)) 3))
+    (let* ((messages (magent-test--session-transcript session))
+           (first-content (magent-test--transcript-content (nth 0 messages))))
       ;; Oldest remaining should be msg-11 (14 - 3 = 11)
       (should (equal first-content "msg-11")))))
 
 (ert-deftest magent-test-session-empty ()
   "Test freshly created session has no messages."
   (let ((session (magent-session-create)))
-    (should (= (length (magent-session-messages session)) 0))
-    (should (null (magent-session-get-messages session)))))
+    (should (= (length (magent-test--session-transcript session)) 0))
+    (should (null (magent-test--session-transcript session)))))
 
 (ert-deftest magent-test-session-content-to-string ()
   "Test content coercion for different content types."
@@ -1283,14 +1428,14 @@
   (let ((blocks (list (list (cons 'type "image")))))
     (should (equal (magent-session--content-to-string blocks) ""))))
 
-(ert-deftest magent-test-session-to-gptel-prompt-list ()
+(ert-deftest magent-test-session-provider-context ()
   "Test conversion from session messages to gptel prompt list."
   (require 'magent-session)
   (let ((session (magent-session-create)))
-    (magent-session-add-message session 'user "What is Emacs?")
-    (magent-session-add-message session 'assistant "A text editor.")
-    (magent-session-add-message session 'user "Tell me more.")
-    (let ((prompt-list (magent-session-to-gptel-prompt-list session)))
+    (magent-test--record-session-entry session 'user "What is Emacs?")
+    (magent-test--record-session-entry session 'assistant "A text editor.")
+    (magent-test--record-session-entry session 'user "Tell me more.")
+    (let ((prompt-list (magent-test--provider-context session)))
       (should (= (length prompt-list) 3))
       (should (equal (car (nth 0 prompt-list)) 'prompt))
       (should (equal (cdr (nth 0 prompt-list)) "What is Emacs?"))
@@ -1303,17 +1448,17 @@
   "Each supported consumer asks for a named session projection."
   (require 'magent-session)
   (let ((session (magent-session-create :id "context-views")))
-    (magent-session-add-message session 'user "Question")
-    (magent-session-add-message session 'assistant "Answer")
+    (magent-test--record-session-entry session 'user "Question")
+    (magent-test--record-session-entry session 'assistant "Answer")
     (should
      (equal (magent-session-context-view session 'provider)
-            (magent-session-to-gptel-prompt-list session)))
+            (magent-test--provider-context session)))
     (should
      (equal (magent-session-context-view session 'compaction)
             (magent-session-context-view session 'provider)))
     (should
      (equal (magent-session-context-view session 'transcript)
-            (magent-session-get-messages session)))
+            (magent-test--session-transcript session)))
     (let ((ledger (magent-session-context-view session 'ledger))
           (audit (magent-session-context-view session 'audit)))
       (should (equal (cdr (assq 'session-id ledger)) "context-views"))
@@ -1325,16 +1470,16 @@
       (should (vectorp (cdr (assq 'journal audit)))))
     (should-error (magent-session-context-view session 'implicit))))
 
-(ert-deftest magent-test-session-to-gptel-prompt-list-keeps-structured-tool ()
+(ert-deftest magent-test-session-provider-context-keeps-structured-tool ()
   "Test structured tool messages are included in gptel prompt list."
   (require 'magent-session)
   (let ((session (magent-session-create)))
-    (magent-session-add-message session 'user "Run ls")
-    (magent-session-add-tool-message
+    (magent-test--record-session-entry session 'user "Run ls")
+    (magent-test--record-tool-entry
      session "call_1" "bash" '(:command "ls")
      (magent-test-tool-result "file1.txt\nfile2.txt"))
-    (magent-session-add-message session 'assistant "Here are the files.")
-    (let ((prompt-list (magent-session-to-gptel-prompt-list session)))
+    (magent-test--record-session-entry session 'assistant "Here are the files.")
+    (let ((prompt-list (magent-test--provider-context session)))
       (should (= (length prompt-list) 3))
       (should (equal (nth 0 prompt-list) '(prompt . "Run ls")))
       (should (equal (nth 1 prompt-list)
@@ -1345,16 +1490,16 @@
       (should (equal (nth 2 prompt-list)
                      '(response . "Here are the files."))))))
 
-(ert-deftest magent-test-session-to-gptel-prompt-list-json-sanitizes-tool-args ()
+(ert-deftest magent-test-session-provider-context-json-sanitizes-tool-args ()
   "Test tool data reused in gptel prompts is safe for `json-serialize'."
   (require 'magent-session)
   (let ((session (magent-session-create)))
-    (magent-session-add-message session 'user "Run tool")
-    (magent-session-add-tool-message
+    (magent-test--record-session-entry session 'user "Run tool")
+    (magent-test--record-tool-entry
      session "call_1" 'emacs_eval
      '(:sexp "(+ 20 22)" :tool emacs_eval :values [emacs_eval nil])
      (magent-test-tool-result "42"))
-    (let* ((prompt-list (magent-session-to-gptel-prompt-list session))
+    (let* ((prompt-list (magent-test--provider-context session))
            (tool (cdr (nth 1 prompt-list)))
            (args (plist-get tool :args)))
       (should (equal (plist-get tool :name) "emacs_eval"))
@@ -1381,47 +1526,36 @@
            '(:optional nil :missing :null :name "value"))
           '(:optional :null :name "value"))))
 
-(ert-deftest magent-test-session-to-gptel-prompt-list-skips-legacy-tool-string ()
-  "Test old string-only tool messages are skipped in gptel prompt list."
-  (require 'magent-session)
-  (let ((session (magent-session-create)))
-    (magent-session-add-message session 'user "Run ls")
-    (magent-session-add-message session 'tool "file1.txt\nfile2.txt")
-    (magent-session-add-message session 'assistant "Here are the files.")
-    (should (equal (magent-session-to-gptel-prompt-list session)
-                   '((prompt . "Run ls")
-                     (response . "Here are the files."))))))
-
-(ert-deftest magent-test-session-to-gptel-prompt-list-drops-non-reusable-turns ()
+(ert-deftest magent-test-session-provider-context-drops-non-reusable-turns ()
   "Test empty and failed assistant turns do not leak into prompt reuse."
   (require 'magent-session)
   (let ((session (magent-session-create)))
-    (magent-session-add-message session 'user "emacs 有几个 buffer")
-    (magent-session-add-message session 'assistant "")
+    (magent-test--record-session-entry session 'user "emacs 有几个 buffer")
+    (magent-test--record-session-entry session 'assistant "")
     (should (eq (magent-thread-turn-status
                  (car (magent-thread-turns
                        (magent-session-thread-ledger session))))
                 'completed))
-    (magent-session-add-message session 'user "magent 有几个 skills")
-    (magent-session-add-message
+    (magent-test--record-session-entry session 'user "magent 有几个 skills")
+    (magent-test--record-session-entry
      session 'assistant
      "Error: provider request failed.")
-    (magent-session-add-message session 'user "emacs 有几个 实例")
-    (should (equal (magent-session-to-gptel-prompt-list session)
+    (magent-test--record-session-entry session 'user "emacs 有几个 实例")
+    (should (equal (magent-test--provider-context session)
                    '((prompt . "emacs 有几个 实例"))))))
 
-(ert-deftest magent-test-session-to-gptel-prompt-list-keeps-completed-turns ()
+(ert-deftest magent-test-session-provider-context-keeps-completed-turns ()
   "Test completed turns remain even when a later turn failed."
   (require 'magent-session)
   (let ((session (magent-session-create)))
-    (magent-session-add-message session 'user "What is Emacs?")
-    (magent-session-add-message session 'assistant "A text editor.")
-    (magent-session-add-message session 'user "magent 有几个 skills")
-    (magent-session-add-message
+    (magent-test--record-session-entry session 'user "What is Emacs?")
+    (magent-test--record-session-entry session 'assistant "A text editor.")
+    (magent-test--record-session-entry session 'user "magent 有几个 skills")
+    (magent-test--record-session-entry
      session 'assistant
      "Error: provider request failed.")
-    (magent-session-add-message session 'user "Tell me more.")
-    (should (equal (magent-session-to-gptel-prompt-list session)
+    (magent-test--record-session-entry session 'user "Tell me more.")
+    (should (equal (magent-test--provider-context session)
                    '((prompt . "What is Emacs?")
                      (response . "A text editor.")
                      (prompt . "Tell me more."))))))
@@ -1460,21 +1594,6 @@
     (magent-session-set-agent session "build")
     (should (equal (magent-session-agent session) "build"))))
 
-(ert-deftest magent-test-session-summarize ()
-  "Test session summarize produces output."
-  (require 'magent-session)
-  (let ((session (magent-session-create)))
-    ;; Empty session
-    (should (null (magent-session-summarize session)))
-    ;; With messages
-    (magent-session-add-message session 'user "Hello")
-    (magent-session-add-message session 'assistant "Hi!")
-    (let ((summary (magent-session-summarize session)))
-      (should (stringp summary))
-      (should (string-match-p "Session Summary:" summary))
-      (should (string-match-p "\\[USER\\]" summary))
-      (should (string-match-p "\\[ASSISTANT\\]" summary)))))
-
 (ert-deftest magent-test-session-prompt-history-starts-at-last-compaction ()
   "Test completed compaction turns replace older model-visible history."
   (require 'magent-session)
@@ -1495,7 +1614,7 @@
                 '((compaction . t)))
       (add-turn "new question" "new answer" '(:source runtime-queue)))
     (should
-     (equal (magent-session-to-gptel-prompt-list session)
+     (equal (magent-test--provider-context session)
             '((prompt . "compact this")
               (response . "continuation summary")
               (prompt . "new question")
@@ -1519,7 +1638,7 @@
     (magent-thread-fail-turn
      thread (magent-thread-turn-id compact) "provider failed")
     (should
-     (equal (magent-session-to-gptel-prompt-list session)
+     (equal (magent-test--provider-context session)
             '((prompt . "old question")
               (response . "old answer"))))))
 
@@ -1536,11 +1655,11 @@
   (require 'magent-session)
   (magent-session-reset)
   (let ((s1 (magent-session-get)))
-    (magent-session-add-message s1 'user "test")
+    (magent-test--record-session-entry s1 'user "test")
     (magent-session-reset)
     (let ((s2 (magent-session-get)))
       (should-not (eq s1 s2))
-      (should (= (length (magent-session-messages s2)) 0)))))
+      (should (= (length (magent-test--session-transcript s2)) 0)))))
 
 (ert-deftest magent-test-session-reset-clears-capability-local-overrides ()
   "Test session reset clears local capability toggles."
@@ -1738,7 +1857,7 @@
          (should (= gptel-temperature 1.0))
          (should (eq gptel-model 'default-model)))))))
 
-(ert-deftest magent-test-agent-process-records-runtime-inheritance ()
+(ert-deftest magent-test-agent-run-turn-records-runtime-inheritance ()
   "Test request context records inherited runtime sampling settings."
   (require 'magent-agent)
   (let* ((backend (gptel-make-openai "inherited" :key "key"))
@@ -1783,7 +1902,7 @@
               ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
               ((symbol-function 'magent-skills-get-instruction-prompts)
                (lambda (_skills) nil)))
-      (magent-agent-process
+      (magent-test--run-turn
        "inspect"
        nil
        agent
@@ -1813,7 +1932,7 @@
                       'agent)
                      'ask)))))
 
-(ert-deftest magent-test-agent-process-normalizes-request-context-skills ()
+(ert-deftest magent-test-agent-run-turn-normalizes-request-context-skills ()
   "Inherited and capability skills share one normalized request-state value."
   (require 'magent-agent)
   (require 'magent-capability)
@@ -1845,13 +1964,13 @@
               ((symbol-function 'magent-lifecycle-events-begin-turn)
                (lambda (_title) 'turn))
               ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
-      (magent-agent-process
+      (magent-test--run-turn
        "inspect" nil agent nil nil nil resolution nil nil request-state))
     (should (equal captured-skills '("parent-skill" "auto-skill")))
     (should (equal (magent-request-context-skill-names request-state)
                    '("parent-skill" "auto-skill")))))
 
-(ert-deftest magent-test-agent-process-startup-error-respects-context-ownership ()
+(ert-deftest magent-test-agent-run-turn-startup-error-respects-context-ownership ()
   "Startup errors close owned contexts and preserve inherited contexts."
   (require 'magent-agent)
   (let* ((gptel-backend (gptel-make-openai "startup" :key "key"))
@@ -1883,8 +2002,6 @@
                (lambda (context status &optional detail)
                  (push (list context status detail) ended)))
               ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
-              ((symbol-function 'magent-capability-resolve-for-turn)
-               (lambda (&rest _args) nil))
               ((symbol-function 'magent-memory-system-message)
                (lambda (&rest _args) nil))
               ((symbol-function 'magent-tools-get-gptel-tools-for-permission)
@@ -1897,10 +2014,10 @@
                #'ignore)
               ((symbol-function 'magent-log) #'ignore))
       (should-error
-       (magent-agent-process
+       (magent-test--run-turn
         "owned" nil agent nil nil nil nil nil nil owned-state))
       (should-error
-       (magent-agent-process
+       (magent-test--run-turn
         "inherited" nil agent nil inherited-event nil nil nil nil
         inherited-state)))
     (should (= (length ended) 1))
@@ -1917,7 +2034,7 @@
     (should (equal (nreverse exposed-permissions)
                    (list request-permission agent-permission)))))
 
-(ert-deftest magent-test-agent-process-system-prompt-includes-scope-root ()
+(ert-deftest magent-test-agent-run-turn-system-prompt-includes-scope-root ()
   "Test project-scoped runtime turns tell the model the current repo root."
   (require 'magent-agent)
   (require 'magent-capability)
@@ -1954,7 +2071,7 @@
               ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore)
               ((symbol-function 'magent-skills-get-instruction-prompts)
                (lambda (_skills) nil)))
-      (magent-agent-process
+      (magent-test--run-turn
        "summarize this repo"
        nil
        agent
@@ -2562,7 +2679,7 @@
       nil
       "/tmp/project"))))
 
-(ert-deftest magent-test-agent-process-keeps-streaming-for-tool-requests ()
+(ert-deftest magent-test-agent-run-turn-keeps-streaming-for-tool-requests ()
   "Test tool-enabled requests still use streaming provider sampling."
   (require 'magent-agent)
   (let* ((backend (gptel-make-openai "tools" :key "key"))
@@ -2592,7 +2709,7 @@
                (lambda (_title) 'turn))
               ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
       (magent-session-reset)
-      (magent-agent-process "use a tool" nil agent))
+      (magent-test--run-turn "use a tool" nil agent))
     (let ((request (magent-agent-loop-request captured-loop)))
       (should (magent-llm-request-tools request))
       (should (magent-llm-request-stream request)))))
@@ -3055,7 +3172,7 @@
   (should (eq (magent-agent-file--parse-mode "subagent") 'subagent))
   (should (eq (magent-agent-file--parse-mode "all") 'all))
   (should (eq (magent-agent-file--parse-mode "PRIMARY") 'primary))
-  (should (eq (magent-agent-file--parse-mode "unknown") 'all)))
+  (should-error (magent-agent-file--parse-mode "unknown")))
 
 (ert-deftest magent-test-agent-file-load-from-temp ()
   "Test loading an agent from a temporary file."
@@ -3172,7 +3289,7 @@
 (ert-deftest magent-test-skills-descriptors-are-frontend-neutral ()
   "Descriptors expose instruction skills without requiring a default prompt."
   (require 'magent-skills)
-  (let ((magent-skills--registry nil)
+  (let* ((magent-skills--registry nil)
         (magent-skills--scope-catalog (make-hash-table :test #'equal))
         (magent-runtime--active-project-scope nil)
         (project-root (make-temp-file "magent-skill-project-" t)))
@@ -3277,22 +3394,22 @@
          ;; Deliberately choose reverse-lexical directory names so a global
          ;; pathname sort would produce the wrong winner.
          (builtin-dir (expand-file-name "z-builtin" root))
-         (legacy-dir (expand-file-name "y-legacy" root))
+         (user-dir (expand-file-name "y-user" root))
          (canonical-dir (expand-file-name "x-canonical" root))
-         (directories (list builtin-dir legacy-dir canonical-dir))
+         (directories (list builtin-dir user-dir canonical-dir))
          (magent-skills--registry nil)
          (magent-skills--builtin-dir builtin-dir)
-         (magent-skill-directories (list legacy-dir canonical-dir)))
+         (magent-skill-directories (list user-dir canonical-dir)))
     (unwind-protect
         (progn
           (cl-loop for directory in directories
-                   for description in '("builtin" "legacy" "canonical")
+                   for description in '("builtin" "user" "canonical")
                    do
                    (let ((skill-dir (expand-file-name "same-skill" directory)))
                      (make-directory skill-dir t)
                      (with-temp-file (expand-file-name "SKILL.md" skill-dir)
                        (insert (format
-                                "---\nname: same-skill\ndescription: %s\n---\n%s\n"
+                                "---\nname: same-skill\ndescription: %s\ntype: instruction\n---\n%s\n"
                                 description description)))))
           (cl-letf (((symbol-function 'magent-log) #'ignore))
             (magent-skills-load-all directories))
@@ -4647,7 +4764,7 @@
     (let* ((resolution (magent-capability-resolve
                         "Please reorganize this heading"
                         '(:major-mode org-mode :features (org))
-                        nil))
+                        nil (magent-test--all-tool-names)))
            (active (magent-capability-resolution-active-capabilities resolution)))
       (should (= (length active) 1))
       (should (equal (magent-capability-resolution-skill-names resolution)
@@ -4688,7 +4805,7 @@
                         '(:major-mode org-mode
 				      :major-mode-family (org-mode text-mode)
 				      :features (org))
-                        nil))
+                        nil (magent-test--all-tool-names)))
            (active (magent-capability-resolution-active-capabilities resolution)))
       (should (equal (mapcar (lambda (match)
                                (magent-capability-name
@@ -4714,7 +4831,7 @@
                         '(:major-mode org-mode
 				      :major-mode-family (org-mode text-mode)
 				      :features (org))
-                        nil))
+                        nil (magent-test--all-tool-names)))
            (match (car (magent-capability-resolution-matches resolution))))
       (should (eq (magent-capability-match-status match) 'hidden))
       (should-not (magent-capability-resolution-active-capabilities resolution))
@@ -4739,7 +4856,7 @@
                         '(:major-mode org-mode
 				      :major-mode-family (org-mode outline-mode text-mode)
 				      :features (org))
-                        nil))
+                        nil (magent-test--all-tool-names)))
            (match (car (magent-capability-resolution-matches resolution))))
       (should (eq (magent-capability-match-status match) 'hidden))
       (should-not (plist-get (magent-capability-match-details match) :enabled)))))
@@ -4792,7 +4909,7 @@
 				   :major-mode-family (org-mode outline-mode text-mode)
 				   :file-path "/tmp/COMMIT_EDITMSG"
 				   :features (org))
-                     nil))))
+                     nil (magent-test--all-tool-names)))))
       (should (string-match-p "Auto capabilities: org-structure" summary))
       (should (string-match-p "Suggested: git-workflow" summary)))))
 
@@ -4814,7 +4931,7 @@
                        '(:major-mode org-mode
 				     :major-mode-family (org-mode text-mode)
 				     :features (org))
-                       '("manual-skill"))))
+                       '("manual-skill") (magent-test--all-tool-names))))
       (should-not (magent-capability-resolution-active-capabilities resolution))
       (should (equal (magent-capability-resolution-skill-names resolution)
                      '("manual-skill"))))))
@@ -4839,7 +4956,7 @@
 				      :file-path "/tmp/notes.org"
 				      :file-extension "org"
 				      :features (org))
-                        nil))
+                        nil (magent-test--all-tool-names)))
            (match (car (magent-capability-resolution-active-capabilities resolution)))
            (contributions (plist-get (magent-capability-match-details match)
                                      :contributions)))
@@ -4872,8 +4989,9 @@
             (magent-capability-resolve
              "Hello there"
              '(:major-mode emacs-lisp-mode
-			   :major-mode-family (emacs-lisp-mode prog-mode)
-			   :features (project))))
+				   :major-mode-family (emacs-lisp-mode prog-mode)
+				   :features (project))
+             nil (magent-test--all-tool-names)))
            (match (car (magent-capability-resolution-matches resolution))))
       (should (= (magent-capability-match-score match) 5))
       (should (eq (magent-capability-match-status match) 'suggested))
@@ -4953,7 +5071,7 @@
                         '(:major-mode org-mode
 				      :major-mode-family (org-mode text-mode)
 				      :features (org))
-                        nil))
+                        nil (magent-test--all-tool-names)))
            (matches (magent-capability-resolution-matches resolution)))
       (should (equal (magent-capability-name
                       (magent-capability-match-capability (car matches)))
@@ -4979,7 +5097,7 @@
                         "Help me commit these changes"
                         '(:major-mode magit-status-mode
 				      :major-mode-family (magit-status-mode magit-mode special-mode fundamental-mode))
-                        nil))
+                        nil (magent-test--all-tool-names)))
            (match (car (magent-capability-resolution-active-capabilities resolution))))
       (should match)
       (should (= (magent-capability-match-score match) 4))
@@ -4999,18 +5117,12 @@
   (should-error (magent-skills--parse-type "unknown")))
 
 (ert-deftest magent-test-skills-parse-tools ()
-  "Test tool spec parsing."
+  "Test canonical YAML-sequence tool parsing."
   (require 'magent-skills)
-  ;; Comma-separated string
-  (should (equal (magent-skills--parse-tools "bash, read, write")
-                 '(bash read write)))
-  ;; Single string
-  (should (equal (magent-skills--parse-tools "bash") '(bash)))
-  ;; Symbol
-  (should (equal (magent-skills--parse-tools 'bash) '(bash)))
-  ;; List of strings
   (should (equal (magent-skills--parse-tools '("bash" "read")) '(bash read)))
-  ;; nil
+  (should-error (magent-skills--parse-tools "bash, read, write"))
+  (should-error (magent-skills--parse-tools "bash"))
+  (should-error (magent-skills--parse-tools 'bash))
   (should (null (magent-skills--parse-tools nil))))
 
 (ert-deftest magent-test-skills-load-file-from-temp ()
@@ -5022,7 +5134,7 @@
     (unwind-protect
         (progn
           (with-temp-file skillfile
-            (insert "---\nname: test-skill\ndescription: A test\ntype: instruction\ntools: bash, read\nrequires-project: true\n---\nDo the thing."))
+            (insert "---\nname: test-skill\ndescription: A test\ntype: instruction\ntools: [bash, read]\nrequires-project: true\n---\nDo the thing."))
           (let ((skill (magent-skills-load-file skillfile)))
             (should skill)
             (should (equal (magent-skill-name skill) "test-skill"))
@@ -5102,11 +5214,11 @@
              "name: org-structure\n"
              "description: Structured org editing\n"
              "source: package\n"
-             "package: org\n"
-             "skills: org-structure-workflow\n"
-             "modes: org-mode\n"
-             "features: org\n"
-             "keywords: heading, subtree\n"
+             "source-name: org\n"
+             "capability-skills: [org-structure-workflow]\n"
+             "modes: [org-mode]\n"
+             "features: [org]\n"
+             "prompt-keywords: [heading, subtree]\n"
              "disclosure: active\n"
              "---\n"
              "Use for org structure.\n"))
@@ -5134,13 +5246,13 @@
              "name: project-workflow\n"
              "description: Project workflow helper\n"
              "type: instruction\n"
-             "tools: emacs_eval\n"
+             "tools: [emacs_eval]\n"
              "capability: true\n"
              "source: package\n"
-             "package: project\n"
-             "modes: prog-mode, text-mode\n"
-             "features: project\n"
-             "keywords: project root, project compile\n"
+             "source-name: project\n"
+             "modes: [prog-mode, text-mode]\n"
+             "features: [project]\n"
+             "prompt-keywords: [project root, project compile]\n"
              "disclosure: active\n"
              "---\n"
              "Use project.el state.\n"))
@@ -5164,8 +5276,8 @@
             (should-not (magent-capability-notes capability))))
       (delete-directory tmpdir t))))
 
-(ert-deftest magent-test-capability-load-file-normalizes-list-metadata ()
-  "Test capability file loader normalizes strings, CSV fields, and lists."
+(ert-deftest magent-test-capability-load-file-accepts-sequence-metadata ()
+  "Test capability file loader accepts canonical YAML sequences."
   (require 'magent-capability)
   (let* ((magent-capability--registry nil)
          (tmpdir (make-temp-file "capability-" t))
@@ -5176,11 +5288,11 @@
             (insert
              "---\n"
              "name: package-reload\n"
-             "skills: reload-workflow, diagnose-workflow\n"
-             "modes: emacs-lisp-mode, lisp-interaction-mode\n"
-             "features: emacs-lisp, lisp-mode\n"
-             "files: \"*.el, init.el\"\n"
-             "keywords: reload, package, config\n"
+             "capability-skills: [reload-workflow, diagnose-workflow]\n"
+             "modes: [emacs-lisp-mode, lisp-interaction-mode]\n"
+             "features: [emacs-lisp, lisp-mode]\n"
+             "files: [\"*.el\", init.el]\n"
+             "prompt-keywords: [reload, package, config]\n"
              "---\n"))
           (let ((capability (magent-capability-load-file capfile)))
             (should capability)
@@ -5209,7 +5321,7 @@
              "---\n"
              "name: org-structure\n"
              "source: package\n"
-             "package: org\n"
+             "source-name: org\n"
              "---\n"))
           (let ((capability (magent-capability-load-file capfile)))
             (should capability)
@@ -5232,12 +5344,12 @@
              "---\n"
              "name: package-cap\n"
              "source: package\n"
-             "package: pkg-demo\n"
+             "source-name: pkg-demo\n"
              "family: attacker-family\n"
              "disclosure: active\n"
              "risk: high\n"
-             "skills: project-workflow\n"
-             "keywords: package demo\n"
+             "capability-skills: [project-workflow]\n"
+             "prompt-keywords: [package demo]\n"
              "---\n"))
           (let ((capability (magent-capability-load-file capfile)))
             (should capability)
@@ -5263,8 +5375,8 @@
              "---\n"
              "name: reload-cap\n"
              "description: First description\n"
-             "skills: project-workflow\n"
-             "keywords: first\n"
+             "capability-skills: [project-workflow]\n"
+             "prompt-keywords: [first]\n"
              "---\n"))
           (magent-capability-load-all (list tmpdir))
           (should (equal (magent-capability-description
@@ -5275,8 +5387,8 @@
              "---\n"
              "name: reload-cap\n"
              "description: Updated description\n"
-             "skills: project-workflow\n"
-             "keywords: second\n"
+             "capability-skills: [project-workflow]\n"
+             "prompt-keywords: [second]\n"
              "---\n"))
           (magent-capability-reload)
           (should (equal (magent-capability-description
@@ -5303,7 +5415,7 @@
             (insert
              "---\n"
              "name: reload-cap\n"
-             "skills: project-workflow\n"
+             "capability-skills: [project-workflow]\n"
              "---\n"))
           (magent-capability-load-all (list tmpdir))
           (should (magent-capability-get "reload-cap"))
@@ -5331,8 +5443,8 @@
              "---\n"
              "name: project-cap\n"
              "description: First description\n"
-             "skills: project-workflow\n"
-             "keywords: first\n"
+             "capability-skills: [project-workflow]\n"
+             "prompt-keywords: [first]\n"
              "---\n"))
           (cl-letf (((symbol-function 'magent-log) #'ignore))
             (magent-capability-load-project-scope project-root))
@@ -5344,8 +5456,8 @@
              "---\n"
              "name: project-cap\n"
              "description: Updated description\n"
-             "skills: project-workflow\n"
-             "keywords: second\n"
+             "capability-skills: [project-workflow]\n"
+             "prompt-keywords: [second]\n"
              "---\n"))
           (cl-letf (((symbol-function 'magent-log) #'ignore))
             (magent-capability-reload))
@@ -5403,7 +5515,7 @@
              "---\n"
              "name: project-cap\n"
              "description: Project-local capability\n"
-             "skills: project-workflow\n"
+             "capability-skills: [project-workflow]\n"
              "---\n"))
           (with-temp-buffer
             (setq default-directory project-root)
@@ -5441,7 +5553,7 @@
                         '(:major-mode emacs-lisp-mode
 				      :major-mode-family (emacs-lisp-mode prog-mode)
 				      :features (emacs))
-                        nil))
+                        nil (magent-test--all-tool-names)))
            (active-names (mapcar (lambda (match)
                                    (magent-capability-name
                                     (magent-capability-match-capability match)))
@@ -5458,7 +5570,7 @@
                         '(:major-mode lisp-interaction-mode
 				      :major-mode-family (lisp-interaction-mode emacs-lisp-mode prog-mode)
 				      :features (emacs))
-                        nil))
+                        nil (magent-test--all-tool-names)))
            (active-names (mapcar (lambda (match)
                                    (magent-capability-name
                                     (magent-capability-match-capability match)))
@@ -5476,7 +5588,7 @@
 				      :major-mode-family (emacs-lisp-mode prog-mode)
 				      :file-path "/tmp/init.el"
 				      :features (emacs))
-                        nil))
+                        nil (magent-test--all-tool-names)))
            (active-names (mapcar (lambda (match)
                                    (magent-capability-name
                                     (magent-capability-match-capability match)))
@@ -5493,7 +5605,7 @@
                         '(:major-mode emacs-lisp-mode
 				      :major-mode-family (emacs-lisp-mode prog-mode)
 				      :features (project))
-                        nil))
+                        nil (magent-test--all-tool-names)))
            (active-names (mapcar (lambda (match)
                                    (magent-capability-name
                                     (magent-capability-match-capability match)))
@@ -5510,7 +5622,7 @@
                         '(:major-mode python-mode
 				      :major-mode-family (python-mode prog-mode)
 				      :features (lsp-mode))
-                        nil))
+                        nil (magent-test--all-tool-names)))
            (active-names (mapcar (lambda (match)
                                    (magent-capability-name
                                     (magent-capability-match-capability match)))
@@ -5527,7 +5639,7 @@
                         '(:major-mode fundamental-mode
 				      :major-mode-family (fundamental-mode)
 				      :features (project lsp-mode org magit))
-                        nil))
+                        nil (magent-test--all-tool-names)))
            (active-names (mapcar (lambda (match)
                                    (magent-capability-name
                                     (magent-capability-match-capability match)))
@@ -5667,18 +5779,18 @@
          (root "/tmp/example-repository")
          (time (encode-time 0 48 23 4 6 2026))
          (occupied (expand-file-name "2026-06-04t2348.org" roam-directory))
-         (existing (expand-file-name "legacy-summary.org" roam-directory)))
+         (existing (expand-file-name "existing-summary.org" roam-directory)))
     (unwind-protect
         (cl-letf (((symbol-function 'current-time) (lambda () time)))
           (should
            (equal (magent-repo-summary--note-path
-                   roam-directory "example-repository" root)
+                   roam-directory root)
                   occupied))
           (with-temp-file occupied
             (insert ":PROPERTIES:\n:ID: unrelated\n:END:\n"))
           (should
            (equal (magent-repo-summary--note-path
-                   roam-directory "example-repository" root)
+                   roam-directory root)
                   (expand-file-name "2026-06-04t2349.org" roam-directory)))
           (with-temp-file existing
             (insert (format
@@ -5686,43 +5798,8 @@
                      root)))
           (should
            (equal (magent-repo-summary--note-path
-                   roam-directory "example-repository" root)
+                   roam-directory root)
                   existing)))
-      (delete-directory roam-directory t))))
-
-(ert-deftest magent-test-repo-summary-migrates-legacy-preamble-to-file-node ()
-  "Test updates repair summaries whose property drawer follows Org keywords."
-  (require 'magent-repo-summary)
-  (let* ((repository (magent-test--make-git-repository
-                      "magent-summary-legacy-repository-"))
-         (root (file-truename repository))
-         (name (file-name-nondirectory repository))
-         (roam-directory (make-temp-file "magent-summary-legacy-roam-" t))
-         (magent-org-roam-directory roam-directory)
-         (path (expand-file-name (format "%s-summary.org" name)
-                                 roam-directory))
-         (legacy-id "a20c2e63-87d9-40af-a56d-a52f18f6f15c"))
-    (unwind-protect
-        (progn
-          (with-temp-file path
-            (insert (format
-                     (concat "#+title: %s\n\n:PROPERTIES:\n:ID: %s\n"
-                             ":REPO_PATH: %s\n"
-                             ":LAST_ANALYZED_COMMIT: legacy\n:END:\n\n"
-                             "* Repository Summary\nLegacy summary.\n")
-                     name legacy-id root)))
-          (magent-repo-summary-write
-           repository "full" "Migrated repository summary.")
-          (with-temp-buffer
-            (insert-file-contents path)
-            (org-mode)
-            (goto-char (point-min))
-            (should (looking-at ":PROPERTIES:\n"))
-            (should (equal (org-id-get) legacy-id))
-            (should (re-search-forward "^#\\+title: " nil t))
-            (should (re-search-forward "Migrated repository summary" nil t))
-            (should-not (re-search-forward "Legacy summary" nil t))))
-      (delete-directory repository t)
       (delete-directory roam-directory t))))
 
 (ert-deftest magent-test-repo-summary-creates-new-note-through-org-roam ()
@@ -5817,31 +5894,11 @@
       (delete-directory repository t)
       (delete-directory plain-directory t))))
 
-(ert-deftest magent-test-tool-result-rejects-runtime-legacy-strings ()
-  "Test runtime consumers reject unstructured legacy tool results."
+(ert-deftest magent-test-tool-result-rejects-unstructured-strings ()
+  "Test runtime consumers reject unstructured tool results."
   (should-error
    (magent-tool-result-require "ordinary output")
    :type 'wrong-type-argument))
-
-(ert-deftest magent-test-tool-result-migrates-persisted-legacy-text ()
-  "Test persisted legacy strings migrate losslessly at the import boundary."
-  (dolist (text '("Error: explicit failure"
-                  "Error reading file: missing"
-                  "HTTP error: connection failed"
-                  "Command timed out with no output"))
-    (let ((result (magent-tool-result-migrate-legacy
-                   text "test-tool" "call-1")))
-      (should (magent-tool-result-p result))
-      (should (eq (magent-tool-result-status-value result) 'failed))
-      (should-not (magent-tool-result-success-p result))
-      (should (equal (magent-tool-result-output-string result) text))
-      (should (eq (plist-get (magent-tool-result-metadata result)
-                             :migrated-from)
-                  'legacy-string))))
-  (let ((result (magent-tool-result-migrate-legacy "ordinary output")))
-    (should (magent-tool-result-success-p result))
-    (should (equal (magent-tool-result-output-string result)
-                   "ordinary output"))))
 
 (defun magent-test--run-bash (command &optional timeout)
   "Run Magent bash COMMAND and return its single callback result."
@@ -6070,7 +6127,7 @@
          (item (magent-thread-record-tool-result
                 thread (magent-thread-turn-id turn) "call-9" "bash" nil result))
          (session (magent-session-create :thread thread))
-         (prompt (magent-session-to-gptel-prompt-list
+         (prompt (magent-test--provider-context
                   session (magent-thread-turn-id turn)))
          (prompt-tool (cdr (cadr prompt))))
     (should (eq (magent-thread-item-status item) 'failed))
@@ -6147,28 +6204,26 @@
       (cl-letf (((symbol-function 'magent-agent-registry-get)
                  (lambda (_name) agent))
                 ((symbol-function 'magent-lifecycle-events-create-subagent-context)
-                 (lambda (title parent)
+                 (lambda (title parent _audit-context)
                    (list :title title :parent parent)))
                 ((symbol-function 'magent-lifecycle-events-stop-subagent)
                  (lambda (context)
                    (setq stopped context)))
-                ((symbol-function 'magent-agent-process)
-                 (lambda (prompt callback agent-info skill-names event-context
-                                 request-context capability-resolution ui-callback
-                                 request-live-p request-state)
+                ((symbol-function 'magent-agent-run-turn)
+                 (lambda (&rest args)
+                   (let ((request-state (plist-get args :request-context)))
                    (setq captured
-                         (list :prompt prompt
-                               :agent agent-info
-                               :skill-names skill-names
-                               :event-context event-context
-                               :request-context request-context
-                               :capability-resolution capability-resolution
-                               :ui-callback ui-callback
-                               :request-live-p request-live-p
+                         (list :prompt (plist-get args :prompt)
+                               :agent (plist-get args :agent)
+                               :event-context
+                               (magent-request-context-event-context request-state)
+                               :request-context (plist-get args :context)
+                               :capability-resolution
+                               (plist-get args :capability-resolution)
                                :request-state request-state))
-                   (funcall callback
+                   (funcall (plist-get args :on-complete)
                             (magent-execution-result-completed "child answer"))
-                   child-loop))
+                   child-loop)))
                 ((symbol-function 'magent-agent-loop-abort)
                  (lambda (loop)
                    (setq aborted loop))))
@@ -6272,7 +6327,7 @@
           (magent-agent-job--runtimes (make-hash-table :test #'equal)))
       (cl-letf (((symbol-function 'magent-agent-registry-get)
                  (lambda (_name) agent))
-                ((symbol-function 'magent-agent-process)
+                ((symbol-function 'magent-agent-run-turn)
                  (lambda (&rest _args)
                    (setq started t))))
         (magent-tools--spawn-agent
@@ -6314,15 +6369,12 @@
       (cl-letf (((symbol-function 'magent-agent-registry-get)
                  (lambda (_name) agent))
                 ((symbol-function 'magent-lifecycle-events-create-subagent-context)
-                 (lambda (title parent)
+                 (lambda (title parent _audit-context)
                    (list :title title :parent parent)))
                 ((symbol-function 'magent-lifecycle-events-stop-subagent) #'ignore)
-                ((symbol-function 'magent-agent-process)
-                 (lambda (_prompt callback _agent-info _skill-names
-                                  _event-context _request-context
-                                  _capability-resolution _text-callback
-                                  _request-live-p _request-state)
-                   (funcall callback
+                ((symbol-function 'magent-agent-run-turn)
+                 (lambda (&rest args)
+                   (funcall (plist-get args :on-complete)
                             (magent-execution-result-failed
                              "Request timed out after 5 seconds"))
                    nil)))
@@ -6405,19 +6457,17 @@
               :approval-session parent-session))
             (magent-agent-job--runtimes runtime-table))
         (cl-letf (((symbol-function 'magent-lifecycle-events-create-subagent-context)
-                   (lambda (title parent)
+                   (lambda (title parent _audit-context)
                      (list :title title :parent parent)))
                   ((symbol-function 'magent-lifecycle-events-stop-subagent) #'ignore)
-                  ((symbol-function 'magent-agent-process)
-                   (lambda (prompt callback _agent-info _skill-names
-                                   _event-context _request-context
-                                   _capability-resolution _text-callback
-                                   _request-live-p _request-state)
+                  ((symbol-function 'magent-agent-run-turn)
+                   (lambda (&rest args)
+                     (let ((prompt (plist-get args :prompt)))
                      (push prompt captured-prompts)
-                     (funcall callback
+                     (funcall (plist-get args :on-complete)
                               (magent-execution-result-completed
                                (concat "reply: " prompt)))
-                     nil))
+                     nil)))
                   ((symbol-function 'magent-agent-loop-abort)
                    (lambda (loop) (setq aborted loop))))
           (magent-tools--list-agents
@@ -7391,7 +7441,7 @@
        (magent-tool-orchestrator-create
         :permission '((bash . ask))
         :run-tool-function
-        (lambda (_tool-spec cb arg-values)
+        (lambda (_tool-spec cb arg-values _resource-identity)
           (setq tool-ran (car arg-values))
           (funcall cb (magent-test-tool-result "ok")))
         :args-to-plist-function (lambda (_args-spec arg-values) arg-values)
@@ -7425,7 +7475,7 @@
        (magent-tool-orchestrator-create
         :permission '((bash . ask))
         :run-tool-function
-        (lambda (tool-spec cb arg-values)
+        (lambda (tool-spec cb arg-values _resource-identity)
           (setq tool-ran t)
           (funcall cb (apply (gptel-tool-function tool-spec) arg-values)))
         :args-to-plist-function (lambda (_args-spec arg-values) arg-values)
@@ -7457,7 +7507,7 @@
        (magent-tool-orchestrator-create
         :permission '((bash . ask))
         :run-tool-function
-        (lambda (_tool-spec cb arg-values)
+        (lambda (_tool-spec cb arg-values _resource-identity)
           (setq tool-ran (car arg-values))
           (funcall cb (magent-test-tool-result "ok")))
         :args-to-plist-function (lambda (_args-spec arg-values) arg-values)
@@ -7493,7 +7543,7 @@
         :permission '((emacs_eval . allow) (* . allow))
         :request-context context
         :run-tool-function
-        (lambda (_tool-spec callback arg-values)
+        (lambda (_tool-spec callback arg-values _resource-identity)
           (setq tool-ran (car arg-values))
           (funcall callback (magent-test-tool-result "42")))
         :args-to-plist-function (lambda (_spec values) values)
@@ -7529,7 +7579,7 @@
        (magent-tool-orchestrator-create
         :permission '((bash . ask))
         :run-tool-function
-        (lambda (tool-spec cb arg-values)
+        (lambda (tool-spec cb arg-values _resource-identity)
           (setq tool-ran t)
           (funcall cb (apply (gptel-tool-function tool-spec) arg-values)))
         :args-to-plist-function (lambda (_args-spec arg-values) arg-values)
@@ -7563,7 +7613,7 @@
              (magent-tool-orchestrator-create
               :permission '((bash . ask))
               :run-tool-function
-              (lambda (_tool-spec cb arg-values)
+              (lambda (_tool-spec cb arg-values _resource-identity)
                 (setq tool-ran (car arg-values))
                 (funcall cb (magent-test-tool-result "ok")))
               :args-to-plist-function (lambda (_args-spec arg-values) arg-values)
@@ -7597,7 +7647,7 @@
        (magent-tool-orchestrator-create
         :permission '((bash . deny) (emacs_eval . deny) (* . deny))
         :run-tool-function
-        (lambda (tool callback _args)
+        (lambda (tool callback _args _resource-identity)
           (push (gptel-tool-name tool) runs)
           (funcall callback
                    (magent-test-tool-result (gptel-tool-name tool)))))
@@ -8679,7 +8729,7 @@
            (magent-tool-orchestrator-create
             :permission '((bash . ask))
             :run-tool-function
-            (lambda (_tool-spec cb arg-values)
+            (lambda (_tool-spec cb arg-values _resource-identity)
               (funcall cb
                        (magent-test-tool-result
                         (format "ran %s" (car arg-values)))))
@@ -8917,8 +8967,8 @@
     (unwind-protect
         (progn
           (magent-session-activate (file-truename (directory-file-name project-root)))
-          (magent-session-add-message (magent-session-get) 'user "hello")
-          (magent-session-save)
+          (magent-test--record-session-entry (magent-session-get) 'user "hello")
+          (magent-test--save-current-session)
           (let* ((storage-dir (expand-file-name
                                (concat "projects/" (secure-hash 'sha1
                                                                 (file-truename
@@ -8937,8 +8987,8 @@
       (delete-directory magent-session-directory t)
       (delete-directory project-root t))))
 
-(ert-deftest magent-test-session-save-global-uses-legacy-directory ()
-  "Test global sessions still save directly under `magent-session-directory'."
+(ert-deftest magent-test-session-save-global-uses-current-directory ()
+  "Test global sessions save under the dedicated global directory."
   (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
          (magent-session--scoped-sessions (make-hash-table :test #'equal))
          (magent-session--current-scope 'global)
@@ -8946,13 +8996,16 @@
     (unwind-protect
         (progn
           (magent-session-activate 'global)
-          (magent-session-add-message (magent-session-get) 'user "hello")
-          (magent-session-save)
-          (should (= (length (directory-files magent-session-directory nil "\\.json$")) 1)))
+          (magent-test--record-session-entry (magent-session-get) 'user "hello")
+          (magent-test--save-current-session)
+          (should (= (length (magent-test--session-files
+                              (expand-file-name "global"
+                                                magent-session-directory)))
+                     1)))
       (delete-directory magent-session-directory t))))
 
 (ert-deftest magent-test-action-session-saves-outside-normal-session-list ()
-  "Test Action sessions use actions/ and ignore old Command data."
+  "Test Action sessions use actions/ and stay out of conversation listings."
   (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
          (magent-action-session-directory nil)
          (magent-session--scoped-sessions (make-hash-table :test #'equal))
@@ -8960,15 +9013,9 @@
          (magent--current-session nil)
          (session (magent-session-create))
          (id (magent-session-get-id session))
-         (scope (magent-session-action-scope id "memory-init" 'global))
-         (legacy-directory
-          (expand-file-name "commands/memory-init" magent-session-directory))
-         (legacy-file (expand-file-name "legacy.json" legacy-directory)))
+         (scope (magent-session-action-scope id "memory-init" 'global)))
     (unwind-protect
         (progn
-          (make-directory legacy-directory t)
-          (with-temp-file legacy-file
-            (insert "{\"kind\":\"internal-command\"}"))
           (dolist (entry '((kind . "action")
                            (action . "memory-init")
                            (status . "completed")
@@ -8977,8 +9024,8 @@
             (magent-session-set-metadata-value session (car entry) (cdr entry)))
           (setq magent--current-session session
                 magent-session--current-scope scope)
-          (magent-session-add-message session 'user "run memory init")
-          (magent-session-save)
+          (magent-test--record-session-entry session 'user "run memory init")
+          (magent-test--save-current-session)
           (let* ((action-files
                   (magent-session-list-action-files "memory-init"))
                  (file (car action-files))
@@ -8987,8 +9034,6 @@
                  (loaded-session (plist-get loaded :session)))
             (should (= (length action-files) 1))
             (should (string-match-p "/actions/memory-init/" file))
-            (should (file-exists-p legacy-file))
-            (should-not (member legacy-file action-files))
             (should-not (member file (magent-session-list-files)))
             (should (equal (plist-get meta :kind) "action"))
             (should (equal (plist-get meta :action) "memory-init"))
@@ -9009,10 +9054,10 @@
         (progn
           (magent-session-activate 'global)
           (let ((session (magent-session-get)))
-            (magent-session-add-message session 'user "hello")
+            (magent-test--record-session-entry session 'user "hello")
             (magent-permission-set-session-override 'bash 'allow session)
-            (magent-session-save))
-          (let* ((files (directory-files magent-session-directory t "\\.json$"))
+            (magent-test--save-current-session))
+          (let* ((files (magent-test--session-files magent-session-directory))
                  (loaded (magent-session-read-file (car files)))
                  (loaded-session (plist-get loaded :session)))
             (should (eq (magent-session-approval-override loaded-session 'bash)
@@ -9029,17 +9074,17 @@
         (progn
           (magent-session-activate 'global)
           (let ((session (magent-session-get)))
-            (magent-session-add-message session 'user "Run ls")
-            (magent-session-add-tool-message
+            (magent-test--record-session-entry session 'user "Run ls")
+            (magent-test--record-tool-entry
              session "call_1" "bash" '(:command "ls")
              (magent-test-tool-result "ok"))
-            (magent-session-save))
-          (let* ((files (directory-files magent-session-directory t "\\.json$"))
+            (magent-test--save-current-session))
+          (let* ((files (magent-test--session-files magent-session-directory))
                  (loaded (magent-session-read-file (car files)))
                  (loaded-session (plist-get loaded :session))
-                 (messages (magent-session-get-messages loaded-session)))
+                 (messages (magent-test--session-transcript loaded-session)))
             (should (= (length messages) 2))
-            (should (equal (magent-msg-content (nth 1 messages))
+            (should (equal (magent-test--transcript-content (nth 1 messages))
                            '(:id "call_1"
 				 :name "bash"
 				 :args (:command "ls")
@@ -9056,22 +9101,22 @@
         (progn
           (magent-session-activate 'global)
           (let ((session (magent-session-get)))
-            (magent-session-add-message session 'user "Run tool")
-            (magent-session-add-tool-message
+            (magent-test--record-session-entry session 'user "Run tool")
+            (magent-test--record-tool-entry
              session "call_1" 'emacs_eval
              '(:sexp "(+ 20 22)" :tool emacs_eval :values [emacs_eval nil])
              (magent-test-tool-result "42"))
-            (magent-session-save))
-          (let* ((files (directory-files magent-session-directory t "\\.json$"))
+            (magent-test--save-current-session))
+          (let* ((files (magent-test--session-files magent-session-directory))
                  (loaded (magent-session-read-file (car files)))
                  (loaded-session (plist-get loaded :session))
-                 (messages (magent-session-get-messages loaded-session)))
-            (should (equal (magent-msg-content (nth 1 messages))
+                 (messages (magent-test--session-transcript loaded-session)))
+            (should (equal (magent-test--transcript-content (nth 1 messages))
                            '(:id "call_1"
 				 :name "emacs_eval"
-				 :args (:sexp "(+ 20 22)"
-					      :tool "emacs_eval"
-					      :values ("emacs_eval" nil))
+				     :args (:sexp "(+ 20 22)"
+						      :tool "emacs_eval"
+						      :values ["emacs_eval" :null])
 				 :result "42")))))
       (delete-directory magent-session-directory t))))
 
@@ -9130,7 +9175,7 @@
         (progn
           (magent-session-activate 'global)
           (let ((session (magent-session-get)))
-            (magent-session-add-message session 'user "spawn child")
+            (magent-test--record-session-entry session 'user "spawn child")
             (magent-session-add-agent-job
              session
              (magent-agent-job-create
@@ -9144,8 +9189,8 @@
               :updated-at 120.0
               :transcript '(((role . "assistant") (content . "found it")))
               :result "found it"))
-            (magent-session-save))
-          (let* ((files (directory-files magent-session-directory t "\\.json$"))
+            (magent-test--save-current-session))
+          (let* ((files (magent-test--session-files magent-session-directory))
                  (loaded (magent-session-read-file (car files)))
                  (loaded-session (plist-get loaded :session))
                  (job (magent-session-agent-job loaded-session "agent-1")))
@@ -9184,23 +9229,26 @@
         (let ((magent-tools--request-context parent-context)
               (magent-agent-job--runtimes (make-hash-table :test #'equal)))
           (magent-session-install 'global parent-session)
-          (magent-session-add-message parent-session 'user "spawn child")
+          (magent-test--record-session-entry parent-session 'user "spawn child")
           (cl-letf (((symbol-function 'magent-agent-registry-get)
                      (lambda (_name) agent))
                     ((symbol-function 'magent-lifecycle-events-create-subagent-context)
-                     (lambda (_title _parent) 'child-context))
+                     (lambda (_title _parent _audit-context) 'child-context))
                     ((symbol-function 'magent-lifecycle-events-stop-subagent) #'ignore)
-                    ((symbol-function 'magent-agent-process)
-                     (lambda (prompt callback _agent-info _skill-names
-                                     _event-context _request-context
-                                     _capability-resolution _text-callback
-                                     _request-live-p request-state)
-                       (magent-session-add-message
+                    ((symbol-function 'magent-agent-run-turn)
+                     (lambda (&rest args)
+                       (let* ((prompt (plist-get args :prompt))
+                              (request-state
+                               (plist-get args :request-context)))
+                       (setq child-callback (plist-get args :on-complete))
+                       (magent-test--record-session-entry
+                        (magent-request-context-session request-state)
+                        'user prompt)
+                       (magent-test--record-session-entry
                         (magent-request-context-session request-state)
                         'assistant
                         (concat "child saw " prompt))
-                       (setq child-callback callback)
-                       nil))
+                       nil)))
                     ((symbol-function 'magent-lifecycle-events-emit)
                      (lambda (type &rest props)
                        (when (eq type 'agent-job-event)
@@ -9215,7 +9263,7 @@
             (funcall child-callback
                      (magent-execution-result-completed "child answer"))
             (magent-session--flush-deferred-saves))
-          (let* ((files (directory-files magent-session-directory t "\\.json$"))
+          (let* ((files (magent-test--session-files magent-session-directory))
                  (loaded (magent-session-read-file (car files)))
                  (loaded-session (plist-get loaded :session))
                  (job (car (magent-session-agent-jobs loaded-session))))
@@ -9224,7 +9272,9 @@
             (should (eq (magent-agent-job-status job) 'completed))
             (should (equal (magent-agent-job-result job) "child answer"))
             (should (equal (magent-agent-job-transcript job)
-                           '(((role . "assistant")
+                           '(((role . "user")
+                              (content . "inspect"))
+                             ((role . "assistant")
                               (content . "child saw inspect")))))
             (should (assoc 'completed ui-events))))
       (delete-directory magent-session-directory t))))
@@ -9615,8 +9665,8 @@
                             '(:name "line_count" :type integer :optional t))
                 :function #'ignore))
          (session (magent-session-create :id "session-dsml-invalid-args"))
-         (loop (magent-agent-loop-create
-                :session session
+         (loop (magent-test--loop-create-for-session
+                session "Read file"
                 :request (magent-llm-request-create :tools (list tool))))
          outcome)
     (magent-agent-loop-apply-event loop event)
@@ -9626,8 +9676,8 @@
       :run-tool-function (lambda (&rest _args) (error "should not run")))
      (lambda (result) (setq outcome result)))
     (should (eq (plist-get outcome :status) 'failed))
-    (let* ((message (car (magent-session-get-messages session)))
-           (content (magent-msg-content message))
+    (let* ((message (magent-test--latest-tool-transcript session))
+           (content (magent-test--transcript-content message))
            (result (plist-get content :result)))
       (should (string-match-p "unknown argument: end_line" result))
       (should (string-match-p
@@ -10166,17 +10216,18 @@
   "Test agent loop records model-visible tool results in session."
   (require 'magent-agent-loop)
   (let* ((session (magent-session-create :id "session-1"))
-         (loop (magent-agent-loop-create :session session)))
+         (loop (magent-test--loop-create-for-session
+                session "Read README")))
     (magent-agent-loop-record-tool-result
      loop nil '(:path "README.org") '(:id "call-1" :name "read_file")
      (magent-test-tool-result "content"))
-    (let* ((messages (magent-session-get-messages session))
-           (message (car messages))
-           (content (magent-msg-content message))
+    (let* ((message (magent-test--latest-tool-transcript session))
+           (content (magent-test--transcript-content message))
            (thread (magent-session-thread-ledger session))
            (turn (car (magent-thread-turns thread)))
-           (item (car (magent-thread-turn-items turn))))
-      (should (eq (magent-msg-role message) 'tool))
+           (item (cl-find 'tool (magent-thread-turn-items turn)
+                          :key #'magent-thread-item-type)))
+      (should (eq (magent-test--transcript-role message) 'tool))
       (should (equal (plist-get content :id) "call-1"))
       (should (equal (plist-get content :name) "read_file"))
       (should (equal (plist-get content :args) '(:path "README.org")))
@@ -10203,8 +10254,8 @@
                    :status 'failed :success nil :exit-code 7
                    :output payload :error payload))
                 :async nil))
-         (loop (magent-agent-loop-create
-                :session session
+         (loop (magent-test--loop-create-for-session
+                session "Run large command"
                 :request-context context
                 :request (magent-llm-request-create :tools (list tool))))
          provider-result
@@ -10280,7 +10331,8 @@
   "Test tool approval metadata is preserved in ledger tool items."
   (require 'magent-agent-loop)
   (let* ((session (magent-session-create :id "session-approval"))
-         (loop (magent-agent-loop-create :session session)))
+         (loop (magent-test--loop-create-for-session
+                session "Read with approval")))
     (magent-agent-loop-record-tool-result
      loop nil '(:path "README.org")
      '(:id "call-1"
@@ -10290,7 +10342,8 @@
      (magent-test-tool-result "content"))
     (let* ((thread (magent-session-thread-ledger session))
            (turn (car (magent-thread-turns thread)))
-           (item (car (magent-thread-turn-items turn))))
+           (item (cl-find 'tool (magent-thread-turn-items turn)
+                          :key #'magent-thread-item-type)))
       (should (equal (magent-thread-item-metadata item)
                      '(:source "tool-result"
 			       :approval-decision "allow"
@@ -10316,8 +10369,8 @@
                   (magent-test-tool-result (format "read %s" path)))
                 :async nil))
          (request (magent-llm-request-create :tools (list tool)))
-         (loop (magent-agent-loop-create
-                :session session
+         (loop (magent-test--loop-create-for-session
+                session "Read README"
                 :request request))
          done)
     (magent-agent-loop-apply-event
@@ -10330,16 +10383,16 @@
       :permission (magent-permission-defaults)
       :request-context request-context
       :run-tool-function
-      (lambda (tool-spec cb arg-values)
+      (lambda (tool-spec cb arg-values _resource-identity)
         (funcall cb (apply (gptel-tool-function tool-spec) arg-values)))
       :file-arg-index-function (lambda (_args-spec) 0)
       :args-to-plist-function (lambda (_args-spec arg-values) arg-values)
       :summarize-function (lambda (arg-values _args-spec) (car arg-values)))
      (lambda (&optional _result) (setq done t)))
     (should done)
-    (let* ((message (car (magent-session-get-messages session)))
-           (content (magent-msg-content message)))
-      (should (eq (magent-msg-role message) 'tool))
+    (let* ((message (magent-test--latest-tool-transcript session))
+           (content (magent-test--transcript-content message)))
+      (should (eq (magent-test--transcript-role message) 'tool))
       (should (equal (plist-get content :id) "call-1"))
       (should (equal (plist-get content :name) "read_file"))
       (should (equal (plist-get content :args)
@@ -10358,8 +10411,8 @@
                  :args nil
                  :function #'ignore
                  :async nil))
-         (loop (magent-agent-loop-create
-                :session session
+         (loop (magent-test--loop-create-for-session
+                session "Use missing tool"
                 :request (magent-llm-request-create :tools (list known))))
          done)
     (magent-agent-loop-apply-event
@@ -10373,9 +10426,9 @@
                            (error "should not run")))
      (lambda (&optional _result) (setq done t)))
     (should done)
-    (let* ((message (car (magent-session-get-messages session)))
-           (content (magent-msg-content message)))
-      (should (eq (magent-msg-role message) 'tool))
+    (let* ((message (magent-test--latest-tool-transcript session))
+           (content (magent-test--transcript-content message)))
+      (should (eq (magent-test--transcript-role message) 'tool))
       (should (equal (plist-get content :name) "missing_tool"))
       (should (string-match-p
                "tool 'missing_tool' not found"
@@ -10390,14 +10443,13 @@
                    :prompt '((prompt . "old"))
                    :system "system"
                    :stream t))
-         (loop (magent-agent-loop-create
-                :session session
+         (loop (magent-test--loop-create-for-session
+                session "Run tool"
                 :request request
                 :sampler (lambda (sample-request)
                            (setq sampled-prompt
                                  (magent-llm-request-prompt sample-request))
                            'continued))))
-    (magent-session-add-message session 'user "Run tool")
     (magent-agent-loop-record-tool-result
      loop nil '(:path "README.org") '(:id "call-1" :name "read_file")
      (magent-test-tool-result "content"))
@@ -10799,7 +10851,9 @@
          (other-project-dir (expand-file-name
                              (concat "projects/" (secure-hash 'sha1 other-project))
                              magent-session-directory))
-         (global-file (expand-file-name "session-20260316-100000.json" magent-session-directory))
+         (global-file (expand-file-name
+                       "session-20260316-100000.json"
+                       (expand-file-name "global" magent-session-directory)))
          (project-file (expand-file-name "session-20260317-100000.json" project-dir))
          (other-project-file (expand-file-name "session-20260315-100000.json" other-project-dir))
          (older-time (date-to-time "2026-03-16 10:00:00"))
@@ -10807,18 +10861,15 @@
          (oldest-time (date-to-time "2026-03-15 10:00:00")))
     (unwind-protect
         (progn
-          (make-directory project-dir t)
-          (make-directory other-project-dir t)
-          (with-temp-file global-file
-            (insert "{\"scope\":\"global\",\"summary-title\":\"Global chat\"}"))
-          (with-temp-file project-file
-            (insert (format
-                     "{\"scope\":\"project\",\"project-root\":\"%s\",\"summary-title\":\"Project work item\"}"
-                     project-root)))
-          (with-temp-file other-project-file
-            (insert (format
-                     "{\"scope\":\"project\",\"project-root\":\"%s\",\"summary-title\":\"Other project item\"}"
-                     other-project)))
+          (magent-test--write-session-fixture
+           magent-session-directory "session-20260316-100000"
+           'global "Global chat")
+          (magent-test--write-session-fixture
+           magent-session-directory "session-20260317-100000"
+           project-root "Project work item")
+          (magent-test--write-session-fixture
+           magent-session-directory "session-20260315-100000"
+           other-project "Other project item")
           (set-file-times global-file older-time)
           (set-file-times project-file newer-time)
           (set-file-times other-project-file oldest-time)
@@ -10835,26 +10886,28 @@
       (delete-directory project-root t)
       (delete-directory other-project t))))
 
-(ert-deftest magent-test-session-list-files-sorts-within-group-by-session-time ()
-  "Test files inside one group are ordered newest-to-oldest by session time."
+(ert-deftest magent-test-session-list-files-sorts-within-group-by-mtime ()
+  "Test files inside one group are ordered newest-to-oldest by mtime."
   (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (global-directory (expand-file-name "global" magent-session-directory))
          (newer-file (expand-file-name "session-20260317-120000.json"
-                                       magent-session-directory))
+                                       global-directory))
          (older-file (expand-file-name "session-20260317-110000.json"
-                                       magent-session-directory))
+                                       global-directory))
          (newer-mtime (encode-time 0 0 1 1 1 2020))
          (older-mtime (encode-time 0 0 1 1 1 2030)))
     (unwind-protect
         (progn
-          (with-temp-file newer-file
-            (insert "{\"scope\":\"global\",\"summary-title\":\"Newer session\"}"))
-          (with-temp-file older-file
-            (insert "{\"scope\":\"global\",\"summary-title\":\"Older session\"}"))
-          ;; Reverse mtimes so the test catches accidental mtime-based sorting.
+          (magent-test--write-session-fixture
+           magent-session-directory "session-20260317-120000"
+           'global "Newer session")
+          (magent-test--write-session-fixture
+           magent-session-directory "session-20260317-110000"
+           'global "Older session")
           (set-file-times newer-file newer-mtime)
           (set-file-times older-file older-mtime)
           (should (equal (magent-session-list-files)
-                         (list newer-file older-file))))
+                         (list older-file newer-file))))
       (delete-directory magent-session-directory t))))
 
 (ert-deftest magent-test-session-list-files-caches-metadata-while-sorting ()
@@ -10867,10 +10920,11 @@
          (project-dir (expand-file-name
                        (concat "projects/" (secure-hash 'sha1 project-root))
                        magent-session-directory))
+         (global-directory (expand-file-name "global" magent-session-directory))
          (global-file-a (expand-file-name "session-20260317-100000.json"
-                                          magent-session-directory))
+                                          global-directory))
          (global-file-b (expand-file-name "session-20260317-090000.json"
-                                          magent-session-directory))
+                                          global-directory))
          (project-file-a (expand-file-name "session-20260317-120000.json"
                                            project-dir))
          (project-file-b (expand-file-name "session-20260317-110000.json"
@@ -10882,22 +10936,21 @@
           (symbol-function 'magent-session--read-file-metadata)))
     (unwind-protect
         (progn
-          (make-directory project-dir t)
-          (dolist (file (list global-file-a global-file-b))
-            (with-temp-file file
-              (insert "{\"scope\":\"global\",\"summary-title\":\"Global\"}")))
-          (dolist (file (list project-file-a project-file-b))
-            (with-temp-file file
-              (insert
-               (format
-                "{\"scope\":\"project\",\"project-root\":\"%s\",\"summary-title\":\"Project\"}"
-                project-root))))
+          (dolist (id '("session-20260317-100000"
+                        "session-20260317-090000"))
+            (magent-test--write-session-fixture
+             magent-session-directory id 'global "Global"))
+          (dolist (id '("session-20260317-120000"
+                        "session-20260317-110000"))
+            (magent-test--write-session-fixture
+             magent-session-directory id project-root "Project"))
           (setq magent-session--current-scope project-root)
           (cl-letf (((symbol-function 'magent-session--read-file-metadata)
                      (lambda (file)
                        (cl-incf read-count)
                        (funcall original-read file))))
-            (should (equal (magent-session-list-files) files))
+            (should (equal (sort (magent-session-list-files) #'string<)
+                           (sort (copy-sequence files) #'string<)))
             (should (<= read-count (length files)))))
       (delete-directory magent-session-directory t)
       (delete-directory project-root t))))
@@ -10921,16 +10974,12 @@
           (symbol-function 'magent-session--read-file-metadata)))
     (unwind-protect
         (progn
-          (make-directory directory-a t)
-          (make-directory directory-b t)
-          (with-temp-file file-a
-            (insert (format
-                     "{\"scope\":\"project\",\"project-root\":%S}"
-                     project-a)))
-          (with-temp-file file-b
-            (insert (format
-                     "{\"scope\":\"project\",\"project-root\":%S}"
-                     project-b)))
+          (magent-test--write-session-fixture
+           magent-session-directory "session-20260718-120000"
+           project-a "Project A")
+          (magent-test--write-session-fixture
+           magent-session-directory "session-20260718-130000"
+           project-b "Project B")
           (cl-letf (((symbol-function 'magent-session--read-file-metadata)
                      (lambda (file)
                        (push file read-files)
@@ -10945,13 +10994,12 @@
 (ert-deftest magent-test-session-summary-title-has-one-canonical-projection ()
   "Test live and saved titles share explicit-title and message fallback rules."
   (let ((explicit
-         (magent-session-create
-          :metadata '((title . "  Explicit\n title  "))
-          :messages '(((role . user) (content . "First prompt")))))
+         (magent-test--session-with-transcript
+          "explicit" '((user "First prompt"))
+          '((title . "  Explicit\n title  "))))
         (derived
-         (magent-session-create
-          :messages '(((role . system) (content . "Ignore"))
-                      ((role . user) (content . "  First\n prompt  "))))))
+         (magent-test--session-with-transcript
+          "derived" '((user "  First\n prompt  ")))))
     (should (equal (magent-session-summary-title explicit) "Explicit title"))
     (should (equal (magent-session-summary-title derived) "First prompt"))))
 
@@ -11141,20 +11189,20 @@
     (unwind-protect
         (progn
           (magent-session-activate 'global)
-          (magent-session-add-message (magent-session-get) 'user "global")
+          (magent-test--record-session-entry (magent-session-get) 'user "global")
           (magent-session-activate project-root)
-          (magent-session-add-message (magent-session-get) 'user "project")
+          (magent-test--record-session-entry (magent-session-get) 'user "project")
           (magent-session-reset)
           (should-not (gethash project-root magent-session--scoped-sessions))
           (should (gethash 'global magent-session--scoped-sessions))
           (magent-session-activate 'global)
-          (should (equal (magent-msg-content
-                          (car (magent-session-get-messages (magent-session-get))))
+          (should (equal (magent-test--transcript-content
+                          (car (magent-test--session-transcript (magent-session-get))))
                          "global")))
       (delete-directory project-root t))))
 
-(ert-deftest magent-test-agent-process-emits-turn-events ()
-  "Test `magent-agent-process' emits turn lifecycle and text events."
+(ert-deftest magent-test-agent-run-turn-emits-turn-events ()
+  "Test `magent-agent-run-turn' emits turn lifecycle and text events."
   (require 'magent-lifecycle-events)
   (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
         (gptel-model 'gpt-4o-mini)
@@ -11167,7 +11215,7 @@
       (unwind-protect
           (progn
             (magent-lifecycle-events-add-sink (lambda (event) (push event captured)))
-            (magent-agent-process "Hello" #'ignore))
+            (magent-test--run-turn "Hello" #'ignore))
         (magent-lifecycle-events-clear-sinks)))
     (should (cl-find-if (lambda (event)
                           (eq (plist-get event :type) 'turn-start))
@@ -11186,8 +11234,8 @@
                                (eq (plist-get event :status) 'completed)))
                         captured))))
 
-(ert-deftest magent-test-agent-process-resolves-capability-skills ()
-  "Test `magent-agent-process' merges capability-derived skills."
+(ert-deftest magent-test-agent-run-turn-resolves-capability-skills ()
+  "Test `magent-agent-run-turn' merges capability-derived skills."
   (require 'magent-capability)
   (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
         (gptel-model 'gpt-4o-mini)
@@ -11212,7 +11260,7 @@
                  (let ((callback (plist-get kwargs :callback)))
                    (funcall callback "Hello" nil)
                    (funcall callback t (list :content "Hello"))))))
-      (magent-agent-process
+      (magent-test--run-turn
        "Please reorganize this heading"
        #'ignore
        nil
@@ -11221,7 +11269,7 @@
        '(:major-mode org-mode :features (org))))
     (should (equal captured-skill-names '("manual-skill" "auto-skill")))))
 
-(ert-deftest magent-test-agent-process-dedupes-explicit-and-capability-skills ()
+(ert-deftest magent-test-agent-run-turn-dedupes-explicit-and-capability-skills ()
   "Test diagnosis-style explicit skills and capability skills are deduplicated."
   (require 'magent-capability)
   (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
@@ -11236,7 +11284,7 @@
                  (let ((callback (plist-get kwargs :callback)))
                    (funcall callback "Hello" nil)
                    (funcall callback t (list :content "Hello"))))))
-      (magent-agent-process
+      (magent-test--run-turn
        "Diagnose why this hook is not running"
        #'ignore
        nil
@@ -11248,8 +11296,8 @@
     (should (equal captured-skill-names
                    '("emacs-runtime-inspection" "emacs-hook-debugging")))))
 
-(ert-deftest magent-test-agent-process-emits-capability-resolution-event ()
-  "Test `magent-agent-process' emits capability resolution metadata."
+(ert-deftest magent-test-agent-run-turn-emits-capability-resolution-event ()
+  "Test `magent-agent-run-turn' emits capability resolution metadata."
   (require 'magent-capability)
   (require 'magent-lifecycle-events)
   (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
@@ -11277,7 +11325,7 @@
       (unwind-protect
           (progn
             (magent-lifecycle-events-add-sink (lambda (event) (push event captured)))
-            (magent-agent-process
+            (magent-test--run-turn
              "Please reorganize this heading"
              #'ignore
              nil nil nil
@@ -11321,7 +11369,7 @@
                  (:request-handlers . nil))
        :request '((:method . "initialize"))
        :on-success (lambda (value) (setq response value))
-       :on-failure (lambda (err &optional _raw) (setq failure err))))
+       :on-failure (lambda (err) (setq failure err))))
     (should-not failure)
     (should (= (map-elt response 'protocolVersion)
                magent-acp-protocol-version))
@@ -11332,7 +11380,7 @@
   "ACP exposes every instruction skill as an explicit skill command."
   (require 'magent-acp)
   (require 'magent-action-controls)
-  (let ((magent-skills--registry nil)
+  (let* ((magent-skills--registry nil)
         (magent-skills--scope-catalog (make-hash-table :test #'equal))
         (magent-action--registry nil))
     (magent-action-controls-register)
@@ -11363,7 +11411,7 @@
 (ert-deftest magent-test-acp-available-commands-lists-all-bundled-slash-commands ()
   "Test ACP available commands expose every bundled Elisp command."
   (require 'magent-acp)
-  (let ((magent-action--registry nil)
+  (let* ((magent-action--registry nil)
         (magent-skills--registry nil)
         (magent-skills--scope-catalog (make-hash-table :test #'equal)))
     (magent-test--register-builtin-commands-only)
@@ -11558,7 +11606,7 @@
 (ert-deftest magent-test-acp-slash-command-resolves-by-session-scope ()
   "Test ACP dispatch resolves same-name commands in the session project."
   (require 'magent-acp)
-  (let ((magent-action--registry nil)
+  (let* ((magent-action--registry nil)
         (magent-action--sequence 0)
         (project-a (magent-runtime-session-create
                     :id "session-a" :scope "/tmp/project-a"))
@@ -11627,7 +11675,7 @@
        '((:method . "session/new")
          (:params . ((cwd . "/tmp"))))
        (lambda (value) (setq response value))
-       (lambda (err &optional _raw) (setq failure err))))
+       (lambda (err) (setq failure err))))
     (should-not failure)
     (should (equal (map-elt response 'sessionId) "session-1"))
     (should (equal (map-elt notification 'method) "session/update"))
@@ -11765,7 +11813,7 @@
      thread (magent-thread-turn-id turn) "Review\n[Attached: example.txt]"
      nil (list :content-blocks blocks))
     (let ((prompt (cdr (assq 'prompt
-                             (magent-session-to-gptel-prompt-list session)))))
+                             (magent-test--provider-context session)))))
       (should (string-match-p "Review" prompt))
       (should (string-match-p "URI: file:///tmp/example.txt" prompt))
       (should (string-match-p "resource body" prompt))
@@ -11798,14 +11846,13 @@
             (magent-thread-record-message
              thread (magent-thread-turn-id turn) 'assistant "Reviewed.")
             (magent-thread-complete-turn thread (magent-thread-turn-id turn))
-            (magent-session-refresh-projections session)
-            (magent-session-save))
-          (let* ((file (car (directory-files
-                             magent-session-directory t "\\.json$")))
+            (magent-test--save-current-session))
+          (let* ((file (car (magent-test--session-files
+                             magent-session-directory)))
                  (loaded (plist-get (magent-session-read-file file) :session))
                  (prompt (cdr (assq
                                'prompt
-                               (magent-session-to-gptel-prompt-list loaded)))))
+                               (magent-test--provider-context loaded)))))
             (should (string-match-p "URI: file:///tmp/example.txt" prompt))
             (should (string-match-p "persisted body" prompt))
             (should-not (string-match-p "Attached: example.txt" prompt))))
@@ -11814,17 +11861,19 @@
 (ert-deftest magent-test-acp-session-prompt-forwards-structured-context ()
   "Test ACP submission stores blocks and exposes local resource paths."
   (require 'magent-acp)
-  (let ((runtime-session (magent-runtime-session-create :id "session-1"))
+  (let* ((runtime-session (magent-runtime-session-create
+                           :id "session-1" :scope 'global))
+         (client (magent-test--acp-client-for-runtime runtime-session))
         submitted response failure)
     (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
-               (lambda (_session-id) runtime-session))
+               (lambda (_session-id _scope) runtime-session))
               ((symbol-function 'magent-runtime-submit)
                (lambda (session prompt &rest args)
                  (setq submitted (list session prompt args))
                  (funcall (plist-get args :on-complete)
                           'completed (magent-execution-result-completed "ok")))))
       (magent-acp--handle-request
-       '((:notification-handlers . nil) (:request-handlers . nil))
+       client
        '((:method . "session/prompt")
          (:params . ((sessionId . "session-1")
                      (prompt . [((type . "text") (text . "Review"))
@@ -11833,7 +11882,7 @@
                                   . ((uri . "file:///tmp/example.txt")
                                      (text . "body"))))]))))
        (lambda (value) (setq response value))
-       (lambda (err &optional _raw) (setq failure err))))
+       (lambda (err) (setq failure err))))
     (should-not failure)
     (should (equal (cadr submitted)
                    "Review\n[Attached: file:///tmp/example.txt]"))
@@ -11848,13 +11897,14 @@
 (ert-deftest magent-test-acp-session-prompt-selects-skill-as-normal-turn ()
   "ACP `/$skill' keeps raw input while explicitly selecting the skill."
   (require 'magent-acp)
-  (let ((magent-skills--registry nil)
+  (let* ((magent-skills--registry nil)
         (magent-skills--scope-catalog (make-hash-table :test #'equal))
         (runtime-session
          (magent-runtime-session-create
           :id "session-1"
           :scope 'global
           :pending-skills '("existing-skill")))
+        (client (magent-test--acp-client-for-runtime runtime-session))
         submitted response failure)
     (magent-skills-register
      (magent-skill-create
@@ -11862,7 +11912,7 @@
       :description "Review code."
       :type 'instruction))
     (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
-               (lambda (session-id)
+               (lambda (session-id _scope)
                  (and (equal session-id "session-1") runtime-session)))
               ((symbol-function 'magent-runtime-submit)
                (lambda (session prompt &rest args)
@@ -11872,7 +11922,7 @@
                           'completed (magent-execution-result-completed "ok"))
                  "submission-1")))
       (magent-acp--handle-request
-       '((:notification-handlers . nil) (:request-handlers . nil))
+       client
        '((:method . "session/prompt")
          (:params . ((sessionId . "session-1")
                      (prompt
@@ -11883,7 +11933,7 @@
                            . ((uri . "file:///tmp/example.txt")
                               (text . "body"))))]))))
        (lambda (value) (setq response value))
-       (lambda (err &optional _raw) (setq failure err))))
+       (lambda (err) (setq failure err))))
     (should-not failure)
     (should (eq (car submitted) runtime-session))
     (should
@@ -11906,23 +11956,24 @@
 (ert-deftest magent-test-acp-session-prompt-rejects-unknown-skill-command ()
   "Unknown `/$skill' input fails before an ordinary model submission."
   (require 'magent-acp)
-  (let ((magent-skills--registry nil)
+  (let* ((magent-skills--registry nil)
         (magent-skills--scope-catalog (make-hash-table :test #'equal))
         (runtime-session
          (magent-runtime-session-create :id "session-1" :scope 'global))
+        (client (magent-test--acp-client-for-runtime runtime-session))
         submitted response failure)
     (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
-               (lambda (_session-id) runtime-session))
+               (lambda (_session-id _scope) runtime-session))
               ((symbol-function 'magent-runtime-submit)
                (lambda (&rest _args) (setq submitted t))))
       (magent-acp--handle-request
-       '((:notification-handlers . nil) (:request-handlers . nil))
+       client
        '((:method . "session/prompt")
          (:params . ((sessionId . "session-1")
                      (prompt . [((type . "text")
                                  (text . "/$missing"))]))))
        (lambda (value) (setq response value))
-       (lambda (err &optional _raw) (setq failure err))))
+       (lambda (err) (setq failure err))))
     (should-not submitted)
     (should-not response)
     (should failure)
@@ -11932,13 +11983,14 @@
 (ert-deftest magent-test-acp-command-answer-preserves-resource-context ()
   "Test a terminal Answer retains ACP resources and request context."
   (require 'magent-acp)
-  (let ((magent-action--registry nil)
+  (let* ((magent-action--registry nil)
         (magent-action--active-invocations (make-hash-table :test #'eq))
         (runtime-session
          (magent-runtime-session-create
           :id "session-1"
           :scope "/tmp/project"
           :magent-session (magent-session-create)))
+        (client (magent-test--acp-client-for-runtime runtime-session))
         submitted response failure)
     (magent-action-register
      "review" :description "Review"
@@ -11950,7 +12002,7 @@
          :append-argument-p t))
      :source-layer 'package)
     (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
-               (lambda (session-id)
+               (lambda (session-id _scope)
                  (and (equal session-id "session-1") runtime-session)))
               ((symbol-function 'magent-runtime-submit)
                (lambda (session prompt &rest args)
@@ -11959,7 +12011,7 @@
                           'completed (magent-execution-result-completed "ok"))
                  "submission-1")))
       (magent-acp--handle-request
-       '((:notification-handlers . nil) (:request-handlers . nil))
+       client
        '((:method . "session/prompt")
          (:params . ((sessionId . "session-1")
                      (prompt
@@ -11970,7 +12022,7 @@
                               (mimeType . "text/plain")
                               (text . "resource body"))))]))))
        (lambda (value) (setq response value))
-       (lambda (err &optional _raw) (setq failure err))))
+       (lambda (err) (setq failure err))))
     (should-not failure)
     (should (eq (car submitted) runtime-session))
     (should
@@ -11997,12 +12049,13 @@
 (ert-deftest magent-test-acp-command-answer-prepends-buffer-snapshots ()
   "Test Answer buffers precede frontend resources and stay immutable."
   (require 'magent-acp)
-  (let ((magent-action--registry nil)
+  (let* ((magent-action--registry nil)
         (magent-action--active-invocations (make-hash-table :test #'eq))
         (runtime-session
          (magent-runtime-session-create
           :id "session-1" :scope 'global
           :magent-session (magent-session-create)))
+        (client (magent-test--acp-client-for-runtime runtime-session))
         submitted response failure)
     (with-temp-buffer
       (rename-buffer " *magent-acp-context*")
@@ -12017,7 +12070,7 @@
                "Inspect" "Inspect resources."
              :buffers (list context-buffer))))
         (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
-                   (lambda (_session-id) runtime-session))
+                   (lambda (_session-id _scope) runtime-session))
                   ((symbol-function 'magent-runtime-submit)
                    (lambda (session prompt &rest args)
                      (setq submitted (list session prompt args))
@@ -12025,7 +12078,7 @@
                               'completed (magent-execution-result-completed "ok"))
                      "submission-1")))
           (magent-acp--handle-request
-           '((:notification-handlers . nil) (:request-handlers . nil))
+           client
            '((:method . "session/prompt")
              (:params . ((sessionId . "session-1")
                          (prompt
@@ -12035,7 +12088,7 @@
                                . ((uri . "file:///tmp/frontend.txt")
                                   (text . "frontend body"))))]))))
            (lambda (value) (setq response value))
-           (lambda (err &optional _raw) (setq failure err))))
+           (lambda (err) (setq failure err))))
         (insert " changed after submission")
         (should-not failure)
         (should (eq (car submitted) runtime-session))
@@ -12066,15 +12119,16 @@
         (magent-action--active-invocations (make-hash-table :test #'eq)))
     (magent-test--register-builtin-commands-only)
     (dolist (name magent-test--builtin-slash-command-names)
-      (let ((runtime-session
+      (let* ((runtime-session
              (magent-runtime-session-create
               :id "session-1"
               :scope "/tmp/project"
               :magent-session (magent-session-create)
               :pending-skills '("existing-skill")))
+            (client (magent-test--acp-client-for-runtime runtime-session))
             submitted response failure)
         (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
-                   (lambda (session-id)
+                   (lambda (session-id _scope)
                      (and (equal session-id "session-1")
                           runtime-session)))
                   ((symbol-function 'magent-runtime-submit)
@@ -12091,15 +12145,14 @@
                        emacs_read emacs_eval emacs_eval_live
                        read_tool_output write_repo_summary))))
           (magent-acp--handle-request
-           '((:notification-handlers . nil)
-             (:request-handlers . nil))
+           client
            `((:method . "session/prompt")
              (:params . ((sessionId . "session-1")
                          (prompt . [((type . "text")
                                      (text . ,(format "/%s focus on tests"
                                                       name)))]))))
            (lambda (value) (setq response value))
-           (lambda (err &optional _raw) (setq failure err))))
+           (lambda (err) (setq failure err))))
         (should-not failure)
         (should (eq (car submitted) runtime-session))
         (should (equal (cadr submitted)
@@ -12113,12 +12166,13 @@
 (ert-deftest magent-test-acp-session-prompt-leaves-unknown-slash-command-unchanged ()
   "Test unknown slash commands are submitted as normal prompt text."
   (require 'magent-acp)
-  (let ((runtime-session (magent-runtime-session-create
-                          :id "session-1"
-                          :pending-skills '("existing-skill")))
+  (let* ((runtime-session (magent-runtime-session-create
+                           :id "session-1" :scope 'global
+                           :pending-skills '("existing-skill")))
+         (client (magent-test--acp-client-for-runtime runtime-session))
         submitted response failure)
     (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
-               (lambda (session-id)
+               (lambda (session-id _scope)
                  (and (equal session-id "session-1")
                       runtime-session)))
               ((symbol-function 'magent-runtime-submit)
@@ -12127,14 +12181,13 @@
                  (funcall (plist-get args :on-complete)
                           'completed (magent-execution-result-completed "ok")))))
       (magent-acp--handle-request
-       '((:notification-handlers . nil)
-         (:request-handlers . nil))
+       client
        '((:method . "session/prompt")
          (:params . ((sessionId . "session-1")
                      (prompt . [((type . "text")
                                  (text . "/unknown focus on tests"))]))))
        (lambda (value) (setq response value))
-       (lambda (err &optional _raw) (setq failure err))))
+       (lambda (err) (setq failure err))))
     (should-not failure)
     (should (eq (car submitted) runtime-session))
     (should (equal (cadr submitted) "/unknown focus on tests"))
@@ -12146,19 +12199,20 @@
   "Test /compact invokes runtime compaction and forwards its completion."
   (require 'magent-acp)
   (require 'magent-action-controls)
-  (let ((magent-action--registry nil)
+  (let* ((magent-action--registry nil)
         (magent-action--active-invocations (make-hash-table :test #'eq))
         (magent-session-directory (make-temp-file "magent-compact-" t))
         (runtime-session
          (magent-runtime-session-create
           :id "session-1" :scope 'global
           :magent-session (magent-session-create)))
+        (client (magent-test--acp-client-for-runtime runtime-session))
         compact-args response failure)
     (unwind-protect
         (progn
           (magent-action-controls-register)
           (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
-                     (lambda (_session-id) runtime-session))
+                     (lambda (_session-id _scope) runtime-session))
                     ((symbol-function 'magent-runtime-session-compact)
                      (lambda (session &rest args)
                        (setq compact-args (cons session args))
@@ -12166,14 +12220,13 @@
                                 'completed
                                 (magent-execution-result-completed "summary")))))
             (magent-acp--handle-request
-             '((:notification-handlers . nil)
-               (:request-handlers . nil))
+             client
              '((:method . "session/prompt")
                (:params . ((sessionId . "session-1")
                            (prompt . [((type . "text")
                                        (text . "/compact keep decisions"))]))))
              (lambda (value) (setq response value))
-             (lambda (err &optional _raw) (setq failure err))))
+             (lambda (err) (setq failure err))))
           (should-not failure)
           (should (eq (car compact-args) runtime-session))
           (should (equal (plist-get (cdr compact-args) :instruction)
@@ -12189,11 +12242,16 @@
 (ert-deftest magent-test-acp-session-prompt-does-not-run-memory-slash-locally ()
   "Test memory slash text is submitted as a normal prompt."
   (require 'magent-acp)
-  (let ((runtime-session (magent-runtime-session-create
-                          :id "session-1"))
-        submitted response failure notifications)
+  (let* ((runtime-session (magent-runtime-session-create
+                           :id "session-1" :scope 'global))
+         notifications
+         (client
+          (magent-test--acp-client-for-runtime
+           runtime-session
+           (list (lambda (value) (push value notifications)))))
+         submitted response failure)
     (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
-               (lambda (session-id)
+               (lambda (session-id _scope)
                  (and (equal session-id "session-1")
                       runtime-session)))
               ((symbol-function 'magent-runtime-submit)
@@ -12203,33 +12261,31 @@
                           'completed
                           "ok"))))
       (magent-acp--handle-request
-       `((:notification-handlers
-          . (,(lambda (value) (push value notifications))))
-         (:request-handlers . nil))
+       client
        '((:method . "session/prompt")
          (:params . ((sessionId . "session-1")
                      (prompt . [((type . "text")
                                  (text . "/magent-memory-clear"))]))))
        (lambda (value) (setq response value))
-       (lambda (err &optional _raw) (setq failure err))))
+       (lambda (err) (setq failure err))))
     (should-not failure)
     (should (equal submitted
                    (list runtime-session "/magent-memory-clear")))
     (should (equal (map-elt response 'stopReason) "end_turn"))
     (should-not notifications)))
 
-(ert-deftest magent-test-acp-call-failure-supports-rest-wrapper ()
-  "Test ACP failures preserve two-argument callbacks through wrapper layers."
+(ert-deftest magent-test-acp-call-failure-uses-current-callback-contract ()
+  "Test ACP failures call the current one-argument callback contract."
   (require 'magent-acp)
   (let (received)
     (magent-acp--call-failure
      (magent-acp--wrap-callback
       '((:context-buffer . nil))
       nil
-      (lambda (err raw-message)
-        (setq received (list err raw-message))))
+      (lambda (err)
+        (setq received err)))
      'test-error)
-    (should (equal received '(test-error nil)))))
+    (should (eq received 'test-error))))
 
 (ert-deftest magent-test-acp-notify-runs-in-client-context-buffer ()
   "Test ACP notifications run in the agent-shell client buffer."
@@ -12270,15 +12326,15 @@
 (ert-deftest magent-test-acp-session-prompt-responds-after-runtime-completes ()
   "Test ACP prompt requests remain pending until the runtime turn completes."
   (require 'magent-acp)
-  (let* ((runtime-session (magent-runtime-session-create :id "session-1"))
-         (client '((:notification-handlers . nil)
-                   (:request-handlers . nil)))
+  (let* ((runtime-session (magent-runtime-session-create
+                           :id "session-1" :scope 'global))
+         (client (magent-test--acp-client-for-runtime runtime-session))
          success failure submitted-prompt complete)
     (cl-letf (((symbol-function 'run-at-time)
                (lambda (_secs _repeat fn &rest args)
                  (apply fn args)))
               ((symbol-function 'magent-acp--runtime-session-by-id)
-               (lambda (session-id)
+               (lambda (session-id _scope)
                  (and (equal session-id "session-1")
                       runtime-session)))
               ((symbol-function 'magent-runtime-submit)
@@ -12294,7 +12350,7 @@
                      (prompt . [((type . "text")
                                  (text . "hello"))]))))
        :on-success (lambda (value) (setq success value))
-       :on-failure (lambda (err &optional _raw) (setq failure err))))
+       :on-failure (lambda (err) (setq failure err))))
     (should-not failure)
     (should (equal submitted-prompt "hello"))
     (should complete)
@@ -12328,16 +12384,16 @@
   "Test deferred ACP prompt callbacks run in the buffer supplied by acp.el."
   (require 'magent-acp)
   (let* ((buffer (generate-new-buffer "*magent-acp-test*"))
-         (runtime-session (magent-runtime-session-create :id "session-1"))
-         (client '((:notification-handlers . nil)
-                   (:request-handlers . nil)))
+         (runtime-session (magent-runtime-session-create
+                           :id "session-1" :scope 'global))
+         (client (magent-test--acp-client-for-runtime runtime-session))
          complete callback-buffer)
     (unwind-protect
         (cl-letf (((symbol-function 'run-at-time)
                    (lambda (_secs _repeat fn &rest args)
                      (apply fn args)))
                   ((symbol-function 'magent-acp--runtime-session-by-id)
-                   (lambda (session-id)
+                   (lambda (session-id _scope)
                      (and (equal session-id "session-1")
                           runtime-session)))
                   ((symbol-function 'magent-runtime-submit)
@@ -12443,9 +12499,8 @@
                           (push notification notifications))))
                    (:request-handlers . nil)))
          (session
-          (magent-session-create
-           :id "session-1"
-           :messages '(((role . user) (content . "  Startup\n delay  ")))))
+          (magent-test--session-with-transcript
+           "session-1" '((user "  Startup\n delay  "))))
          (runtime-session
           (magent-runtime-session-create
            :id "session-1"
@@ -12609,7 +12664,7 @@
          (runtime-session (magent-runtime-session-create :id "session-1"))
          response)
     (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
-               (lambda (session-id)
+               (lambda (session-id _scope)
                  (and (equal session-id "session-1")
                       runtime-session)))
               ((symbol-function 'magent-runtime-session-agent-name)
@@ -12633,7 +12688,7 @@
   (let* ((runtime-session (magent-runtime-session-create :id "session-1"))
          response)
     (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
-               (lambda (session-id)
+               (lambda (session-id _scope)
                  (and (equal session-id "session-1")
                       runtime-session)))
               ((symbol-function 'magent-runtime-session-agent-name)
@@ -12658,7 +12713,7 @@
   (require 'magent-acp)
   (let ((runtime-session (magent-runtime-session-create :id "session-1")))
     (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
-               (lambda (_session-id) runtime-session))
+               (lambda (_session-id _scope) runtime-session))
               ((symbol-function 'magent-runtime-session-agent-name)
                (lambda (_session) "build"))
               ((symbol-function 'magent-agent-registry-primary-agents)
@@ -12898,19 +12953,22 @@
 (ert-deftest magent-test-agent-shell-prepares-prompt-skills-for-runtime ()
   "Test queued prompt skills are applied to the runtime session."
   (require 'magent-agent-shell)
-  (let ((buffer (generate-new-buffer "*magent-skill-runtime*"))
-        (runtime-session (magent-runtime-session-create :id "session-1")))
+  (let* ((buffer (generate-new-buffer "*magent-skill-runtime*"))
+         (runtime-session (magent-runtime-session-create
+                           :id "session-1" :scope 'global))
+         (client (magent-test--acp-client-for-runtime runtime-session)))
     (unwind-protect
         (progn
           (with-current-buffer buffer
             (setq major-mode 'agent-shell-mode)
             (setq-local agent-shell--state
-                        '((:agent-config . ((:identifier . magent)))
+                        `((:agent-config . ((:identifier . magent)))
+                          (:client . ,client)
                           (:session . ((:id . "session-1")))))
             (setq-local magent-agent-shell--prompt-skill-queue
                         '((:prompt "hello" :skills ("init")))))
           (cl-letf (((symbol-function 'magent-runtime-session-from-id)
-                     (lambda (session-id &optional _scope)
+                     (lambda (session-id _scope)
                        (and (equal session-id "session-1")
                             runtime-session))))
             (magent-agent-shell--prepare-command-skills "hello" buffer))
@@ -13111,12 +13169,14 @@
            :scope 'global
            :magent-session old-session
            :pending-skills '("review")))
-         (persisted (expand-file-name "session-1.json"
-                                      magent-session-directory))
+         (persisted (expand-file-name
+                     "session-1.json"
+                     (magent-session--scope-storage-directory 'global)))
          cancelled overrides-cleared)
     (unwind-protect
         (progn
-          (magent-session-add-message old-session 'user "old context")
+          (magent-test--record-session-entry old-session 'user "old context")
+          (make-directory (file-name-directory persisted) t)
           (with-temp-file persisted (insert "old transcript"))
           (cl-letf (((symbol-function 'magent-runtime-cancel)
                      (lambda (session)
@@ -13136,7 +13196,7 @@
             (should (equal (magent-session-id new-session) "session-1"))
             (should (eq (magent-session-agent new-session) agent))
             (should (= (magent-session-max-history new-session) 42))
-            (should-not (magent-session-messages new-session))
+            (should-not (magent-test--session-transcript new-session))
             (should-not
              (magent-runtime-session-pending-skills runtime-session))
             (should-not (file-exists-p persisted))
@@ -13886,7 +13946,7 @@
             (insert "---\n"
                     "name: project-capability\n"
                     "description: Project-local capability\n"
-                    "skills: project-skill\n"
+                    "capability-skills: [project-skill]\n"
                     "---\n"
                     "Use for project scope.\n"))
           (with-temp-buffer
@@ -13964,13 +14024,13 @@
         (payload (make-string 200 ?x)))
     (unwind-protect
         (progn
-          (magent-session-add-message session 'user "Run tool")
-          (magent-session-add-tool-message
+          (magent-test--record-session-entry session 'user "Run tool")
+          (magent-test--record-tool-entry
            session "call-1" "emacs_eval" '(:sexp "(big)")
            (magent-test-tool-result payload))
-          (let* ((tool-msg (cadr (magent-session-get-messages session)))
-                 (result (plist-get (magent-msg-content tool-msg) :result))
-                 (prompt (magent-session-to-gptel-prompt-list session))
+          (let* ((tool-msg (cadr (magent-test--session-transcript session)))
+                 (result (plist-get (magent-test--transcript-content tool-msg) :result))
+                 (prompt (magent-test--provider-context session))
                  (prompt-tool (cdr (cadr prompt))))
             (should (string-prefix-p (make-string 40 ?x) result))
             (should (string-match-p "Tool result truncated" result))
@@ -13995,8 +14055,8 @@
          result-id page denied spill-file read-file-page-budget)
     (unwind-protect
         (progn
-          (magent-session-add-message session 'user "Run large tool")
-          (magent-session-add-tool-message
+          (magent-test--record-session-entry session 'user "Run large tool")
+          (magent-test--record-tool-entry
            session "call-spill" "bash" '(:command "large")
            (magent-test-tool-result payload))
           (let* ((thread (magent-session-thread-ledger session))
@@ -14256,13 +14316,13 @@
         (progn
           (magent-session-activate 'global)
           (let ((session (magent-session-get)))
-            (magent-session-add-message session 'user "hello")
-            (magent-session-add-tool-message
+            (magent-test--record-session-entry session 'user "hello")
+            (magent-test--record-tool-entry
              session "call-1" "grep" '(:pattern "hello")
              (magent-test-tool-result "match"))
-            (magent-session-add-message session 'assistant "done")
-            (magent-session-save))
-          (let* ((files (directory-files magent-session-directory t "\\.json$"))
+            (magent-test--record-session-entry session 'assistant "done")
+            (magent-test--save-current-session))
+          (let* ((files (magent-test--session-files magent-session-directory))
                  (loaded (magent-session-read-file (car files)))
                  (loaded-session (plist-get loaded :session))
                  (thread (magent-session-thread loaded-session))
@@ -14275,8 +14335,8 @@
             (should (equal (magent-thread-item-call-id tool) "call-1"))
             (should (eq (magent-thread-item-status tool) 'completed))
             (should (equal (magent-thread-item-output tool) "match"))
-            (should (equal (mapcar #'magent-msg-role
-                                   (magent-session-get-messages loaded-session))
+            (should (equal (mapcar #'magent-test--transcript-role
+                                   (magent-test--session-transcript loaded-session))
                            '(user tool assistant)))))
       (delete-directory magent-session-directory t))))
 
@@ -14313,14 +14373,14 @@
           (magent-session-activate 'global)
           (let ((session (magent-session-get)))
             (dotimes (index 8)
-              (magent-session-add-message
+              (magent-test--record-session-entry
                session 'user (format "message-%d" index)))
             (should (> (length (magent-thread-journal
                                 (magent-session-thread-ledger session)))
                        magent-session-journal-max-events))
-            (magent-session-save))
-          (let* ((file (car (directory-files
-                             magent-session-directory t "\\.json\\'")))
+            (magent-test--save-current-session))
+          (let* ((file (car (magent-test--session-files
+                             magent-session-directory)))
                  (json-object-type 'alist)
                  (json-array-type 'list)
                  (data (with-temp-buffer
@@ -14329,7 +14389,7 @@
                  (journal (cdr (assq 'journal data)))
                  (loaded (magent-session-read-file file)))
             (should (= (length journal) 3))
-            (should (= (length (magent-session-get-messages
+            (should (= (length (magent-test--session-transcript
                                 (plist-get loaded :session)))
                        8))))
       (delete-directory magent-session-directory t))))
@@ -14351,7 +14411,7 @@
      (magent-tool-orchestrator-create
       :permission permission
       :run-tool-function
-      (lambda (tool-spec cb arg-values)
+      (lambda (tool-spec cb arg-values _resource-identity)
         (setq ran t)
         (funcall cb (apply (gptel-tool-function tool-spec) arg-values)))
       :file-arg-index-function (lambda (_args-spec) 0)
@@ -14396,7 +14456,7 @@
               :permission '((write . ask))
               :request-context context
               :run-tool-function
-              (lambda (_tool callback arg-values)
+              (lambda (_tool callback arg-values _resource-identity)
                 (setq executed-path (car arg-values))
                 (funcall callback (magent-test-tool-result "ok")))
               :file-arg-index-function (lambda (_args-spec) 0)
@@ -14511,7 +14571,7 @@
         (progn
           (magent-session-activate 'global)
           (let ((session (magent-session-get)))
-            (magent-session-add-message session 'user "Run tool")
+            (magent-test--record-session-entry session 'user "Run tool")
             (let ((thread (magent-session-thread-ledger session))
                   (turn-id (magent-thread-turn-id
                             (magent-thread-active-turn
@@ -14523,10 +14583,9 @@
                'emacs_eval
                '(:tool emacs_eval :values [emacs_eval nil])
                (magent-test-tool-result "ok")
-               '(:provider gptel :tool emacs_eval))
-              (magent-session-refresh-projections session))
-            (magent-session-save))
-          (let* ((files (directory-files magent-session-directory t "\\.json$"))
+               '(:provider gptel :tool emacs_eval)))
+            (magent-test--save-current-session))
+          (let* ((files (magent-test--session-files magent-session-directory))
                  (loaded (magent-session-read-file (car files)))
                  (loaded-session (plist-get loaded :session))
                  (item (cl-find 'tool
@@ -14556,7 +14615,7 @@
         (progn
           (magent-session-activate 'global)
           (let ((session (magent-session-get)))
-            (magent-session-add-message session 'user "spawn child")
+            (magent-test--record-session-entry session 'user "spawn child")
             (magent-session-add-agent-job
              session
              (magent-agent-job-create
@@ -14574,8 +14633,8 @@
               :error nil
               :metadata '((permission-profile . (agent bash emacs_eval))
                           (model . gpt-4o-mini)))))
-          (magent-session-save))
-      (let* ((files (directory-files magent-session-directory t "\\.json$"))
+          (magent-test--save-current-session))
+      (let* ((files (magent-test--session-files magent-session-directory))
              (loaded (magent-session-read-file (car files)))
              (loaded-session (plist-get loaded :session))
              (job (magent-session-agent-job loaded-session "agent-1")))
@@ -14592,20 +14651,6 @@
           (should (equal (cdr (assq 'model metadata))
                          "gpt-4o-mini")))))
     (delete-directory magent-session-directory t)))
-
-(ert-deftest magent-test-session-live-legacy-messages-migrate-before-projection ()
-  "A live legacy session must not lose messages when its ledger is created."
-  (let* ((messages '(((role . user) (content . "hello"))
-                     ((role . assistant) (content . "hi"))))
-         (session (magent-session-create
-                   :id "legacy-live" :messages (copy-tree messages))))
-    (should-not (magent-session-thread session))
-    (let ((thread (magent-session-thread-ledger session)))
-      (should (eq (plist-get (magent-thread-metadata thread) :migrated-from)
-                  'messages))
-      (should (equal (mapcar #'magent-msg-content
-                             (magent-session-messages session))
-                     '("hello" "hi"))))))
 
 (ert-deftest magent-test-session-explicit-save-does-not-use-ambient-state ()
   "Explicit and deferred saves retain the captured session/scope pair."
@@ -14679,10 +14724,9 @@
           (magent-thread-record-user-message-if-needed
            thread (magent-thread-turn-id turn) "running")
           (magent-session-add-agent-job session job)
-          (magent-session-refresh-projections session)
           (magent-session-save-for-session session 'global)
-          (let* ((file (car (directory-files
-                             magent-session-directory t "\\.json\\'")))
+          (let* ((file (car (magent-test--session-files
+                             magent-session-directory)))
                  (loaded (magent-session-read-file file))
                  (restored (plist-get loaded :session)))
             (magent-session-install 'global restored)
@@ -14720,35 +14764,59 @@
                           'cancelled)))))
       (delete-directory magent-session-directory t))))
 
-(ert-deftest magent-test-session-schema-version-gates-future-files ()
-  "Unversioned legacy sessions load, while future schemas fail clearly."
+(ert-deftest magent-test-session-schema-version-requires-exact-current-format ()
+  "Unversioned and non-current session schemas fail clearly."
   (let* ((directory (make-temp-file "magent-schema-" t))
          (magent-session-directory directory)
-         (legacy (expand-file-name "legacy.json" directory))
+         (unversioned (expand-file-name "unversioned.json" directory))
          (future (expand-file-name "future.json" directory))
          logs)
     (unwind-protect
         (progn
-          (with-temp-file legacy
-            (insert "{\"id\":\"legacy\",\"scope\":\"global\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"context-items\":[{\"type\":\"message\"}],\"buffer-content\":\"retired ui text\"}"))
+          (with-temp-file unversioned
+            (insert (json-encode
+                     (assq-delete-all
+                      'schema-version
+                      (magent-test--current-session-json-data
+                       "unversioned")))))
           (with-temp-file future
-            (insert (format
-                     "{\"id\":\"future\",\"schema-version\":%d,\"scope\":\"global\",\"messages\":[]}"
-                     (1+ magent-session-schema-version))))
-          (let* ((loaded (magent-session-read-file legacy))
-                 (session (plist-get loaded :session)))
-            (should loaded)
-            (should (equal (magent-msg-content
-                            (car (magent-session-messages session)))
-                           "hello")))
+            (insert (json-encode
+                     (magent-test--current-session-json-data
+                      "future" (1+ magent-session-schema-version)))))
           (cl-letf (((symbol-function 'magent-log)
                      (lambda (format-string &rest args)
                        (push (apply #'format format-string args) logs))))
+            (should-not (magent-session-read-file unversioned))
             (should-not (magent-session-read-file future)))
           (should (cl-some (lambda (line)
-                             (string-match-p "newer than supported" line))
+                             (string-match-p
+                              "Unsupported session schema version" line))
                            logs)))
       (delete-directory directory t))))
+
+(ert-deftest magent-test-session-schema-rejects-redundant-messages-field ()
+  "Current session files reject a second persisted conversation projection."
+  (let* ((directory (make-temp-file "magent-schema-fields-" t))
+         (magent-session-directory directory)
+         (file (expand-file-name "redundant.json" directory))
+         (data (append (magent-test--current-session-json-data "redundant")
+                       '((messages . [])))))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert (json-encode data)))
+          (cl-letf (((symbol-function 'magent-log) #'ignore))
+            (should-not (magent-session-read-file file))))
+      (delete-directory directory t))))
+
+(ert-deftest magent-test-ledger-rejects-flat-journal-payload ()
+  "Journal replay accepts only the current nested event payload schema."
+  (let* ((thread (magent-thread-create :id "thread" :session-id "session"))
+         (_turn (magent-thread-queue-turn thread "hello"))
+         (event (magent-thread-event-to-alist
+                 (car (magent-thread-journal thread)))))
+    (setcdr (assq 'payload event) '((input . "hello")))
+    (should-error (magent-thread-event-from-alist event))))
 
 (ert-deftest magent-test-memory-async-commit-preserves-latest-user-notes ()
   "Memory completion re-reads notes edited while the provider is sampling."
@@ -15077,7 +15145,7 @@
             :permission permission
             :request-context context
             :run-tool-function
-            (lambda (_tool cb args)
+            (lambda (_tool cb args _resource-identity)
               (push (car args) ran)
               (funcall cb (magent-test-tool-result "ok")))
             :file-arg-index-function (lambda (_args-spec) 0))
@@ -15343,10 +15411,6 @@
                  :mode 'subagent
                  :color "#aabbcc"
                  :model 'model-x
-                 :options '((style . "strict")
-                            (path . "C:\\tmp")
-                            (count . 2))
-                 :steps 7
                  :permission permission
                  :prompt "Review carefully.")))
     (unwind-protect
@@ -15357,11 +15421,6 @@
                          "Review: #safe"))
           (should (equal (magent-agent-info-color loaded) "#aabbcc"))
           (should (eq (magent-agent-info-model loaded) 'model-x))
-          (should (equal (magent-agent-info-options loaded)
-                         '((style . "strict")
-                           (path . "C:\\tmp")
-                           (count . 2))))
-          (should (= (magent-agent-info-steps loaded) 7))
           (should (equal (magent-agent-info-permission loaded) permission)))
       (delete-directory directory t))))
 
@@ -15401,9 +15460,9 @@
           (make-directory first)
           (make-directory second)
           (with-temp-file (expand-file-name "SKILL.md" first)
-            (insert "---\nname: ordered\ntype: instruction\ncapability: true\ntitle: First Title\nkeywords: first-only\n---\nFirst body."))
+            (insert "---\nname: ordered\ndescription: First skill\ntype: instruction\ncapability: true\ntitle: First Title\nprompt-keywords: [first-only]\n---\nFirst body."))
           (with-temp-file (expand-file-name "SKILL.md" second)
-            (insert "---\nname: ordered\ntype: instruction\ncapability: true\ntitle: Second Title\nkeywords: second-only\n---\nSecond body."))
+            (insert "---\nname: ordered\ndescription: Second skill\ntype: instruction\ncapability: true\ntitle: Second Title\nprompt-keywords: [second-only]\n---\nSecond body."))
           (cl-letf (((symbol-function 'magent-log) #'ignore))
             (magent-skills-load-all (list first second))
             (magent-capability-load-skill-capabilities (list first second)))
@@ -15437,14 +15496,18 @@
           (should (= (hash-table-count magent-agent-registry--agents) 0)))
       (delete-file file))))
 
-(ert-deftest magent-test-agent-file-legacy-tools-allowlist-is-restrictive ()
-  "Legacy comma-list tools enable only the named permission groups."
+(ert-deftest magent-test-agent-file-rejects-retired-tools-field ()
+  "Custom agents reject the retired tools field instead of ignoring it."
   (require 'magent-agent-file)
-  (let ((rules (magent-agent-file--parse-tools
-                '("read_file" "grep"))))
-    (should (eq (magent-permission-resolve rules 'read) 'allow))
-    (should (eq (magent-permission-resolve rules 'grep) 'allow))
-    (should (eq (magent-permission-resolve rules 'bash) 'deny))))
+  (let* ((magent-agent-registry--agents (make-hash-table :test #'equal))
+         (file (make-temp-file "magent-agent-retired-tools-" nil ".md")))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "---\nmode: primary\ntools: [read_file, grep]\n---\n"))
+          (cl-letf (((symbol-function 'magent-log) #'ignore))
+            (should-not (magent-agent-file-load file))))
+      (delete-file file))))
 
 (ert-deftest magent-test-agent-info-symbol-model-overrides-gptel-model ()
   "A file-backed symbol model is applied without changing the backend."
@@ -15506,9 +15569,9 @@
           (with-temp-file agent-source
             (insert "---\nmode: primary\ndescription: linked\n---\nAgent."))
           (with-temp-file skill-source
-            (insert "---\nname: link-skill\ntype: instruction\n---\nSkill."))
+            (insert "---\nname: link-skill\ndescription: Linked skill\ntype: instruction\n---\nSkill."))
           (with-temp-file cap-source
-            (insert "---\nname: link-cap\ntitle: Linked\nskills: link-skill\n---\nCap."))
+            (insert "---\nname: link-cap\ntitle: Linked\ncapability-skills: [link-skill]\n---\nCap."))
           (make-symbolic-link agent-source agent-link)
           (make-symbolic-link skill-source skill-link)
           (make-symbolic-link cap-source cap-link)
@@ -15870,6 +15933,7 @@
         (progn
           (puthash (list "/a" "same") runtime-a magent-runtime-api--sessions)
           (puthash (list "/b" "same") runtime-b magent-runtime-api--sessions)
+          (magent-acp--bind-client-session client runtime-b)
           (cl-letf (((symbol-function 'magent-session-scope-from-directory)
                      (lambda (_directory) "/b"))
                     ((symbol-function 'magent-runtime-submit)
@@ -15884,7 +15948,7 @@
                (:params . ((sessionId . "same")
                            (prompt . [((type . "text") (text . "hello"))]))))
              #'ignore
-             (lambda (err &optional _raw) (setq failure err)))
+             (lambda (err) (setq failure err)))
             (magent-acp--notification-sender
              :client client
              :notification
@@ -15896,12 +15960,10 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest magent-test-agent-shell-runtime-session-uses-buffer-scope ()
-  "Agent-shell resolves duplicate ids with its own buffer's project scope."
+(ert-deftest magent-test-agent-shell-runtime-session-rejects-unbound-buffer ()
+  "Agent-shell does not infer session scope from a buffer directory."
   (require 'magent-agent-shell)
-  (let ((buffer (generate-new-buffer "*magent-agent-shell-scope-test*"))
-        (runtime-b (magent-runtime-session-create :id "same" :scope "/b"))
-        lookup)
+  (let ((buffer (generate-new-buffer "*magent-agent-shell-scope-test*")))
     (unwind-protect
         (progn
           (with-current-buffer buffer
@@ -15910,16 +15972,15 @@
                         '((:agent-config . ((:identifier . magent)))
                           (:session . ((:id . "same"))))))
           (cl-letf (((symbol-function 'magent-session-scope-from-directory)
-                     (lambda (_directory) "/b"))
+                     (lambda (&rest _)
+                       (error "unexpected cwd-derived scope")))
                     ((symbol-function 'magent-runtime-session-from-id)
-                     (lambda (session-id scope)
-                       (setq lookup (list session-id scope))
-                       runtime-b))
+                     (lambda (&rest _)
+                       (error "unexpected unbound runtime lookup")))
                     ((symbol-function 'magent-acp--runtime-session-by-id)
                      (lambda (&rest _args)
-                       (error "unexpected ACP fallback"))))
-            (should (eq (magent-agent-shell--runtime-session buffer) runtime-b)))
-          (should (equal lookup '("same" "/b"))))
+                       (error "unexpected unbound ACP lookup"))))
+            (should-not (magent-agent-shell--runtime-session buffer))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -15969,7 +16030,7 @@
                            (prompt . [((type . "text")
                                        (text . "hello"))]))))
              #'ignore
-             (lambda (err &optional _raw) (setq failure err)))
+             (lambda (err) (setq failure err)))
             (magent-acp--notification-sender
              :client client
              :notification
@@ -16004,7 +16065,7 @@
        '((:method . "session/load")
          (:params . ((sessionId . "candidate") (cwd . "/target"))))
        #'ignore
-       (lambda (err &optional _raw) (setq failure err))))
+       (lambda (err) (setq failure err))))
     (should failure)
     (should-not prepared)))
 
@@ -16101,7 +16162,7 @@
        client
        '((:method . "session/new") (:params . ((cwd . "/same"))))
        (lambda (value) (setq response value))
-       (lambda (err &optional _raw) (setq failure err))))
+       (lambda (err) (setq failure err))))
     (should-not failure)
     (let* ((fresh-runtime
             (magent-runtime-session-from-id
@@ -16199,7 +16260,7 @@
     (should reentrant-error)
     (should-not (magent-runtime-queue-active-submission))
     (should (= (magent-runtime-pending-count runtime) 0))
-    (should-not (magent-session-messages session))))
+    (should-not (magent-test--session-transcript session))))
 
 (ert-deftest magent-test-runtime-clear-refuses-stale-reused-id ()
   "Clearing a stale wrapper cannot delete the registered equal-id session."
@@ -16220,39 +16281,39 @@
   "Unsafe ids cannot escape storage and mismatched files cannot load."
   (let* ((directory (make-temp-file "magent-session-id-" t))
          (magent-session-directory directory)
-         (bad (magent-session-create
-               :id "../escape"
-               :messages '(((role . user) (content . "unsafe")))))
+         (bad (magent-test--session-with-transcript
+               "../escape" '((user "unsafe"))))
          (mismatch (expand-file-name "filename.json" directory))
          (missing (expand-file-name "missing.json" directory))
-         (legacy (expand-file-name "legacy.json" directory))
+         (invalid (expand-file-name "invalid.json" directory))
          logs)
     (unwind-protect
         (progn
           (should-error (magent-session-save-for-session bad 'global)
                         :type 'magent-session-schema-error)
           (with-temp-file mismatch
-            (insert
-             "{\"id\":\"other\",\"schema-version\":5,\"scope\":\"global\",\"messages\":[]}"))
+            (insert (json-encode
+                     (magent-test--current-session-json-data "other"))))
           (with-temp-file missing
-            (insert
-             "{\"schema-version\":5,\"scope\":\"global\",\"messages\":[]}"))
-          (with-temp-file legacy
-            (insert
-             "{\"scope\":\"global\",\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}]}"))
+            (insert (json-encode
+                     (assq-delete-all
+                      'id (magent-test--current-session-json-data "missing")))))
+          (with-temp-file invalid
+            (insert (json-encode
+                     (assq-delete-all
+                      'schema-version
+                      (magent-test--current-session-json-data "invalid")))))
           (cl-letf (((symbol-function 'magent-log)
                      (lambda (format-string &rest args)
                        (push (apply #'format format-string args) logs))))
             (should-not (magent-session-read-file mismatch))
-            (should-not (magent-session-read-file missing)))
+            (should-not (magent-session-read-file missing))
+            (should-not (magent-session-read-file invalid)))
           (should (cl-some
                    (lambda (line)
                      (string-match-p "does not match filename" line))
                    logs))
-          (let ((loaded (magent-session-read-file legacy)))
-            (should loaded)
-            (should (equal (plist-get loaded :id) "legacy")))
-          (should (equal (magent-session-list-files) (list legacy))))
+          (should-not (magent-session-list-files)))
       (delete-directory directory t))))
 
 (ert-deftest magent-test-agent-shell-interrupt-honors-force-argument ()
@@ -16274,38 +16335,10 @@
 (ert-deftest magent-test-runtime-struct-layouts-match-current-contract ()
   "Runtime structs expose the current request and submission contract."
   (require 'magent-agent-loop)
-  (should (= (length (magent-lifecycle-events-context-create)) 5))
-  (should (= (length (magent-request-context-create)) 28))
-  (should (= (length (magent-agent-loop-create)) 19))
-  (should (= (length (magent-runtime-submission-create)) 22)))
-
-(ert-deftest magent-test-live-reload-adopts-preserved-runtime-queue ()
-  "Pre-arbiter active work keeps its lease and queued work starts once."
-  (require 'magent-runtime-queue)
-  (let* ((active
-          (magent-runtime-submission-create
-           :id "pre-reload-active" :status 'running :started-at 1.0))
-         (pending
-          (magent-runtime-submission-create
-           :id "pre-reload-pending" :status 'queued :submitted-at 2.0))
-         (magent-runtime-queue--active active)
-         (magent-runtime-queue--pending (list pending))
-         (magent-runtime-queue--arbiter-active nil)
-         (magent-runtime-queue--arbiter-pending nil)
-         (magent-runtime-queue--submission-starters
-          (make-hash-table :test #'eq :weakness 'key))
-         starts)
-    (magent-runtime-queue--set-submission-starter
-     pending (lambda (_submission) (push 'pending starts)))
-    (magent-runtime-queue--bootstrap-preserved-backends)
-    (should (eq (magent-runtime-queue-active-submission) active))
-    (should (eq (magent-runtime-queue-arbiter-owner) 'runtime))
-    (should-not starts)
-    (should (equal (magent-runtime-queue-finish-active 'completed)
-                   "pre-reload-pending"))
-    (should (equal starts '(pending)))
-    (should (eq (magent-runtime-queue-active-submission) pending))
-    (should-not magent-runtime-queue--pending)))
+  (should (= (length (magent-lifecycle-events-context-create)) 6))
+  (should (= (length (magent-request-context-create)) 29))
+  (should (= (length (magent-agent-loop-create)) 23))
+  (should (= (length (magent-runtime-submission-create)) 23)))
 
 (provide 'magent-test)
 ;;; magent-test.el ends here

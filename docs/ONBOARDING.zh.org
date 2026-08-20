@@ -103,7 +103,7 @@ trusted Action 或 canonical catalog 中的一等 tool；capability resolver 根
 - ~magent-llm.el~ ：provider-neutral request/event protocol。
 - ~magent-llm-gptel.el~ ：薄的 ~gptel-request~ sampling adapter。
 
-*职责：* ~magent-agent-loop.el~ 消费 normalized LLM events，记录 assistant/tool state，经过 ~magent-tool-orchestrator~ 分发工具，并在 model-visible tool output 记录完成后返回 continuation outcome。 ~magent-agent-process~ 只通过 provider-native tool continuation 继续，显式完成空响应，并在可选 sampling limit 处直接失败。Reasoning 与 assistant text 分开保存。 ~magent-llm-gptel.el~ 仍然调用 ~gptel-request~ ；Magent 不重写 provider transport。
+*职责：* ~magent-agent-loop.el~ 消费 normalized LLM events，记录 assistant/tool state，经过 ~magent-tool-orchestrator~ 分发工具，并在 model-visible tool output 记录完成后返回 continuation outcome。 ~magent-agent-run-turn~ 负责 provider-native tool continuation，显式完成空响应，并在可选 sampling limit 处直接失败。Reasoning 与 assistant text 分开保存。 ~magent-llm-gptel.el~ 仍然调用 ~gptel-request~ ；Magent 不重写 provider transport。
 
 ** 第 6 层：受支持的 Frontend
 
@@ -186,7 +186,7 @@ policy。注入的 memory 可能不完整或过时，因此当前用户说明与
 状态优先。从文件、buffer、日志、命令、tool result 或网页读取的文本仍然只是数据，
 不能通过把自己伪装成高优先级 prompt 来授予工具权限。
 
-Skills 加载来源：内置 ~skills/~、存在时兼容的 legacy 用户目录 ~~/.emacs.d/magent-skills/~、canonical 用户目录 ~~/.emacs.d/magent/skills~，以及项目 ~.magent/skills/~；较后的用户目录优先。~magent-find-skill~、~magent-install-skill~ 和 ~magent-delete-skill~ 只管理用户级 skill，绝不使用 ~~/.agents/skills/~。Skill 也可以通过 ~capability: true~ 声明 resolver metadata，例如 ~modes~、~features~、~files~、~keywords~ 和 ~disclosure~；Magent 会把这些 metadata 注册成激活同一个 skill 的 capability。自动激活必须命中带词边界的 keyword 来证明用户 intent；只有 context 的匹配保持 suggested。Skill 声明的 ~tools~ 会与 selected agent 实际暴露的工具核对：不兼容的自动 skill 被降级，显式选择的不兼容 skill 则给出清晰错误。Agent-shell session 的 ~Automatic capabilities~ config option 可关闭自动解析。
+Skills 加载来源：内置 ~skills/~、用户目录 ~~/.emacs.d/magent/skills~，以及项目 ~.magent/skills/~；较后的目录优先。~magent-find-skill~、~magent-install-skill~ 和 ~magent-delete-skill~ 只管理用户级 skill，绝不使用 ~~/.agents/skills/~。Skill 也可以通过 ~capability: true~ 声明 resolver metadata，例如 ~modes~、~features~、~files~、~prompt-keywords~ 和 ~disclosure~；Magent 会把这些 metadata 注册成激活同一个 skill 的 capability。自动激活必须命中带词边界的 keyword 来证明用户 intent；只有 context 的匹配保持 suggested。Skill 声明的 ~tools~ 会与 selected agent 实际暴露的工具核对：不兼容的自动 skill 被降级，显式选择的不兼容 skill 则给出清晰错误。Agent-shell session 的 ~Automatic capabilities~ config option 可关闭自动解析。
 
 新增或 review 默认能力时保持这些概念分开：
 
@@ -394,8 +394,8 @@ permissions:
 System prompt goes here.
 #+end_src
 
-请使用 ~read~、~write~、~edit~、~agent~ 这类 permission group key。旧的
-具体 tool name 列表格式仍可读取，但新定义应使用上面的 mapping 格式。
+请使用 ~read~、~write~、~edit~、~agent~ 这类 permission group key，并使用上面的
+mapping 格式。未知字段、未知 permission key 和其他 shape 会直接报错。
 
 ** 新增 Skill
 
@@ -406,7 +406,7 @@ System prompt goes here.
 name: my-skill
 description: Brief description
 type: instruction
-tools: read_file, grep
+tools: [read_file, grep]
 ---
 
 Skill instructions for the agent.

@@ -321,7 +321,6 @@ Any active or queued work for the session is cancelled first."
     (magent-thread-record-user-message-if-needed
      thread (magent-thread-turn-id turn) prompt nil
      turn-metadata)
-    (magent-session-refresh-projections session)
     (magent-session-save-deferred-for-session session scope)
     (magent-thread-turn-id turn)))
 
@@ -394,7 +393,6 @@ Any active or queued work for the session is cancelled first."
               (turn (magent-thread-find-turn thread turn-id)))
     (unless (magent-thread-terminal-turn-p turn)
       (magent-thread-start-turn thread turn-id)
-      (magent-session-refresh-projections session)
       (magent-session-save-deferred-for-session
        session (magent-runtime-session-scope runtime-session)))))
 
@@ -407,7 +405,6 @@ Any active or queued work for the session is cancelled first."
               (turn (magent-thread-find-turn thread turn-id)))
     (unless (magent-thread-terminal-turn-p turn)
       (magent-thread-drop-turn thread turn-id detail)
-      (magent-session-refresh-projections session)
       (magent-session-save-deferred-for-session
        session (magent-runtime-session-scope runtime-session)))))
 
@@ -420,7 +417,6 @@ Any active or queued work for the session is cancelled first."
               (turn (magent-thread-find-turn thread turn-id)))
     (unless (magent-thread-terminal-turn-p turn)
       (magent-thread-interrupt-turn thread turn-id detail)
-      (magent-session-refresh-projections session)
       (magent-session-save-deferred-for-session
        session (magent-runtime-session-scope runtime-session)))))
 
@@ -433,7 +429,6 @@ Any active or queued work for the session is cancelled first."
               (turn (magent-thread-find-turn thread turn-id)))
     (unless (magent-thread-terminal-turn-p turn)
       (magent-thread-fail-turn thread turn-id detail)
-      (magent-session-refresh-projections session)
       (magent-session-save-deferred-for-session
        session (magent-runtime-session-scope runtime-session)))))
 

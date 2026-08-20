@@ -3,13 +3,13 @@ name: magit-workflow
 title: Magit Workflow
 description: Work with Magit buffers and live Git state inside Emacs.
 type: instruction
-tools: emacs_read, emacs_eval_live, bash
+tools: ["emacs_read", "emacs_eval_live", "bash"]
 capability: true
 source: package
-package: magit
-modes: magit-status-mode, magit-diff-mode, magit-revision-mode
-features: magit
-keywords: magit, stage, unstage, hunk, commit, stash, rebase, status, branch
+source-name: magit
+modes: ["magit-status-mode", "magit-diff-mode", "magit-revision-mode"]
+features: ["magit"]
+prompt-keywords: ["magit", "stage", "unstage", "hunk", "commit", "stash", "rebase", "status", "branch"]
 disclosure: active
 risk: medium
 ---

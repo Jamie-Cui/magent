@@ -3,13 +3,14 @@ name: emacs-command-variable-introspection
 title: Emacs Command And Variable Introspection
 description: Inspect Emacs commands, variables, bindings, defaults, and buffer-local values.
 type: instruction
-tools: emacs_read, emacs_eval_live
+tools: ["emacs_read", "emacs_eval_live"]
 capability: true
 family: emacs-introspection
 source: builtin
-feature: emacs
-modes: emacs-lisp-mode, lisp-interaction-mode
-keywords: command, commands, variable, variables, customize, symbol, binding, describe-function, describe-variable
+source-name: emacs
+features: ["emacs"]
+modes: ["emacs-lisp-mode", "lisp-interaction-mode"]
+prompt-keywords: ["command", "commands", "variable", "variables", "customize", "symbol", "binding", "describe-function", "describe-variable"]
 disclosure: active
 risk: low
 ---

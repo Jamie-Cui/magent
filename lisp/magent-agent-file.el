@@ -22,19 +22,10 @@
 (require 'magent-log)
 (require 'magent-permission)
 
-(defconst magent-agent-file--tool-permission-aliases
-  '((read_file . read)
-    (emacs_read . read)
-    (read_tool_output . read)
-    (write_file . write)
-    (write_repo_summary . write)
-    (edit_file . edit)
-    (spawn_agent . agent)
-    (send_agent_message . agent)
-    (wait_agent . agent)
-    (list_agents . agent)
-    (close_agent . agent))
-  "Tool-name aliases accepted in legacy custom agent permissions.")
+(defconst magent-agent-file--frontmatter-keys
+  '(:description :mode :hidden :temperature :top-p :effort :color :model
+    :permissions)
+  "Supported custom-agent frontmatter keys.")
 
 (defun magent-agent-file--agent-dir (&optional directory)
   "Get the agent directory for DIRECTORY or project root."
@@ -54,11 +45,18 @@
 (defun magent-agent-file--parse-mode (mode-str)
   "Parse mode string MODE-STR to symbol.
 Returns \\='primary, \\='subagent, or \\='all (default)."
-  (pcase (downcase mode-str)
+  (pcase (downcase (format "%s" mode-str))
     ("primary" 'primary)
     ("subagent" 'subagent)
     ("all" 'all)
-    (_ 'all)))
+    (_ (error "Invalid agent mode: %S" mode-str))))
+
+(defun magent-agent-file--validate-frontmatter (frontmatter)
+  "Reject unsupported keys in agent FRONTMATTER."
+  (cl-loop for (key _value) on frontmatter by #'cddr
+           unless (memq key magent-agent-file--frontmatter-keys)
+           do (error "Unsupported agent frontmatter key: %s" key))
+  frontmatter)
 
 (defun magent-agent-file--mapping-p (value)
   "Return non-nil when VALUE is a keyword plist or an alist."
@@ -92,15 +90,12 @@ Returns \\='primary, \\='subagent, or \\='all (default)."
                ((symbolp key) (symbol-name key))
                ((stringp key) key)
                (t nil))))
-    (and name (downcase (subst-char-in-string ?- ?_ name)))))
+    (and name (downcase name))))
 
 (defun magent-agent-file--permission-key (key)
   "Return canonical permission key for KEY, or signal an error."
   (let* ((name (magent-agent-file--key-name key))
-         (symbol (and name (intern name)))
-         (canonical (or (cdr (assq symbol
-                                   magent-agent-file--tool-permission-aliases))
-                        symbol)))
+         (canonical (and name (intern name))))
     (unless (memq canonical (cons '* magent-permission-keys))
       (error "Unknown agent permission key: %S" key))
     canonical))
@@ -114,16 +109,6 @@ Returns \\='primary, \\='subagent, or \\='all (default)."
     (unless (memq action '(allow deny ask))
       (error "Invalid agent permission action: %S" value))
     action))
-
-(defun magent-agent-file--legacy-permission-entry (value)
-  "Parse one legacy README-style permission VALUE."
-  (unless (and (stringp value)
-               (string-match
-                "\\`[[:space:]]*(\\([^[:space:].()]+\\)[[:space:]]*\\.[[:space:]]*\\(allow\\|deny\\|ask\\))[[:space:]]*\\'"
-                value))
-    (error "Invalid legacy agent permission entry: %S" value))
-  (cons (magent-agent-file--permission-key (match-string 1 value))
-        (magent-agent-file--permission-action (match-string 2 value))))
 
 (defun magent-agent-file--parse-permission-rule (value)
   "Parse one permission rule VALUE."
@@ -143,60 +128,22 @@ Returns \\='primary, \\='subagent, or \\='all (default)."
     (magent-agent-file--permission-action value)))
 
 (defun magent-agent-file--parse-permissions (permission-config)
-  "Parse canonical or legacy PERMISSION-CONFIG into permission rules.
-
-The canonical format is a YAML mapping from permission groups to
-`allow', `deny', `ask', or a nested file-pattern mapping.  The legacy
-README list form, such as \='(read_file . allow), is also accepted.
-Invalid explicit permission data signals an error instead of falling
-back to the permission system's default-allow behavior."
-  (cond
-   ((magent-agent-file--mapping-p permission-config)
-    (let ((entries (magent-agent-file--mapping-entries permission-config)))
-      (unless entries
-        (error "Agent permissions mapping is empty"))
-      (let (seen rules)
-        (dolist (entry entries)
-          (let ((key (magent-agent-file--permission-key (car entry))))
-            (when (memq key seen)
-              (error "Duplicate normalized agent permission key: %s" key))
-            (push key seen)
-            (push (cons key
-                        (magent-agent-file--parse-permission-rule (cdr entry)))
-                  rules)))
-        (nreverse rules))))
-   ((and (listp permission-config) permission-config)
-    (mapcar #'magent-agent-file--legacy-permission-entry permission-config))
-   (t
-   (error "Agent permissions must be a non-empty mapping or list"))))
-
-(defun magent-agent-file--parse-tools (tools-config)
-  "Parse legacy TOOLS-CONFIG into a permission profile.
-Boolean mappings override the historical allow-all profile.  A string,
-symbol, or list is treated as an explicit allowlist."
-  (cond
-   ((magent-agent-file--mapping-p tools-config)
-    (unless (magent-agent-file--mapping-entries tools-config)
-      (error "Legacy agent tools mapping is empty"))
-    (let ((rules (mapcar (lambda (key) (cons key 'allow))
-                         magent-permission-keys)))
-      (dolist (entry (magent-agent-file--mapping-entries tools-config))
-        (unless (memq (cdr entry) '(t nil))
-          (error "Legacy agent tool value must be boolean: %S" (cdr entry)))
+  "Parse canonical PERMISSION-CONFIG into permission rules."
+  (unless (magent-agent-file--mapping-p permission-config)
+    (error "Agent permissions must be a non-empty mapping"))
+  (let ((entries (magent-agent-file--mapping-entries permission-config)))
+    (unless entries
+      (error "Agent permissions mapping is empty"))
+    (let (seen rules)
+      (dolist (entry entries)
         (let ((key (magent-agent-file--permission-key (car entry))))
-          (setf (alist-get key rules) (if (cdr entry) 'allow 'deny))))
-      rules))
-   ((or (stringp tools-config) (symbolp tools-config)
-        (and (listp tools-config) tools-config))
-    (let* ((values (if (listp tools-config)
-                       tools-config
-                     (list tools-config)))
-           (keys (mapcar #'magent-agent-file--permission-key values)))
-      (cons (cons '* 'deny)
-            (mapcar (lambda (key) (cons key 'allow))
-                    (delete-dups keys)))))
-   (t
-    (error "Legacy agent tools must be a boolean mapping or allowlist"))))
+          (when (memq key seen)
+            (error "Duplicate agent permission key: %s" key))
+          (push key seen)
+          (push (cons key
+                      (magent-agent-file--parse-permission-rule (cdr entry)))
+                rules)))
+      (nreverse rules))))
 
 (defun magent-agent-file--parse-model (value)
   "Parse model frontmatter VALUE."
@@ -206,24 +153,9 @@ symbol, or list is treated as an explicit allowlist."
    ((stringp value) (intern value))
    (t (error "Agent model must be a string or symbol: %S" value))))
 
-(defun magent-agent-file--parse-options (value)
-  "Parse agent options mapping VALUE into an alist."
-  (when value
-    (unless (magent-agent-file--mapping-p value)
-      (error "Agent options must be a mapping"))
-    (mapcar (lambda (entry)
-              (cons (intern (or (magent-agent-file--key-name (car entry))
-                                (error "Invalid agent option key: %S"
-                                       (car entry))))
-                    (cdr entry)))
-            (magent-agent-file--mapping-entries value))))
-
 (defun magent-agent-file--frontmatter-effort (frontmatter)
   "Return normalized effort option from agent FRONTMATTER."
-  (magent-effort-normalize-option
-   (or (plist-get frontmatter :effort)
-       (plist-get frontmatter :reasoning-effort)
-       (plist-get frontmatter :model-reasoning-effort))))
+  (magent-effort-normalize-option (plist-get frontmatter :effort)))
 
 (defun magent-agent-file-load (filepath)
   "Load an agent from FILEPATH.
@@ -235,18 +167,12 @@ Returns the agent info if successful, nil otherwise."
              (name (file-name-base filepath))
              (source-scope (magent-agent-file--scope-for-file filepath)))
         (when frontmatter
+          (magent-agent-file--validate-frontmatter frontmatter)
           (let* ((mode-str (plist-get frontmatter :mode))
                  (permission
-                  (cond
-                   ((plist-member frontmatter :permissions)
+                  (when (plist-member frontmatter :permissions)
                     (magent-agent-file--parse-permissions
-                     (plist-get frontmatter :permissions)))
-                   ((plist-member frontmatter :permission)
-                    (magent-agent-file--parse-permissions
-                     (plist-get frontmatter :permission)))
-                   ((plist-member frontmatter :tools)
-                    (magent-agent-file--parse-tools
-                     (plist-get frontmatter :tools)))))
+                     (plist-get frontmatter :permissions))))
                  (agent-info (magent-agent-info-create
                               :name name
                               :description (plist-get frontmatter :description)
@@ -261,9 +187,6 @@ Returns the agent info if successful, nil otherwise."
                               :model (magent-agent-file--parse-model
                                       (plist-get frontmatter :model))
                               :prompt (when (> (length body) 0) body)
-                              :options (magent-agent-file--parse-options
-                                        (plist-get frontmatter :options))
-                              :steps (plist-get frontmatter :steps)
                               :permission permission
                               :file-path filepath
                               :source-layer (if source-scope 'project 'builtin)
@@ -329,14 +252,6 @@ Returns number of agents loaded."
                       "\n")))
         (insert " " (magent-agent-file--yaml-scalar (cdr entry)) "\n")))))
 
-(defun magent-agent-file--insert-options (options)
-  "Insert canonical YAML for OPTIONS into the current buffer."
-  (when options
-    (insert "options:\n")
-    (dolist (entry options)
-      (insert "  " (magent-agent-file--yaml-key (car entry)) ": "
-              (magent-agent-file--yaml-scalar (cdr entry)) "\n"))))
-
 (defun magent-agent-file--serializable-model (model)
   "Return the model id from MODEL for custom agent frontmatter."
   (cond
@@ -387,13 +302,6 @@ Returns the filepath if successful."
       (when-let* ((model (magent-agent-file--serializable-model
                           (magent-agent-info-model agent-info))))
         (insert "model: " (magent-agent-file--yaml-scalar model) "\n"))
-      (when (magent-agent-info-steps agent-info)
-        (insert "steps: "
-                (magent-agent-file--yaml-scalar
-                 (magent-agent-info-steps agent-info))
-                "\n"))
-      (magent-agent-file--insert-options
-       (magent-agent-info-options agent-info))
       (magent-agent-file--insert-permissions
        (magent-agent-info-permission agent-info))
       (insert "---\n\n")

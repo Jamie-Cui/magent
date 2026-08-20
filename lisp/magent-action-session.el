@@ -43,7 +43,8 @@
                 (magent-action-invocation-session invocation)
                 magent-session--current-scope
                 (magent-action-invocation-scope invocation))
-          (magent-session-save))
+          (magent-session-save-for-session
+           magent--current-session magent-session--current-scope))
       (setq magent--current-session previous-session
             magent-session--current-scope previous-scope))))
 
@@ -81,7 +82,6 @@
            (magent-thread-start-turn thread (magent-thread-turn-id turn))
            (setf (magent-action-invocation-turn-id invocation)
                  (magent-thread-turn-id turn))
-           (magent-session-refresh-projections session)
            (magent-action-session--save invocation)
            (magent-thread-turn-id turn))))))
 
@@ -107,7 +107,6 @@
                     :action-invocation-id
                     (magent-action-invocation-id invocation)
                     :step-type (magent-action-step-type step)))))
-       (magent-session-refresh-projections session)
        (magent-action-session--save invocation)
        (magent-thread-item-id item)))))
 
@@ -157,7 +156,6 @@
                :output output :metadata metadata)))
            (setf (magent-action-invocation-current-submission-id invocation)
                  nil)
-           (magent-session-refresh-projections session)
            (magent-action-session--save invocation)))))))
 
 (defun magent-action-session-finalize-workflow-turn
@@ -176,7 +174,6 @@
              ('completed (magent-thread-complete-turn thread turn-id))
              ('cancelled (magent-thread-interrupt-turn thread turn-id message))
              (_ (magent-thread-fail-turn thread turn-id message)))
-           (magent-session-refresh-projections session)
            (magent-action-session--save invocation)))))))
 
 (defun magent-action-session-record-tool
@@ -196,7 +193,6 @@
         thread turn-id call-id name args result
         (append metadata (list :source 'magent-action))
         magent-session--current-scope)
-       (magent-session-refresh-projections session)
        (magent-action-session--save invocation)))))
 
 (defun magent-action-session-record-message
@@ -214,7 +210,6 @@
        (magent-thread-record-message
         thread turn-id role content phase
         (append metadata (list :source 'magent-action)))
-       (magent-session-refresh-projections session)
        (magent-action-session--save invocation)))))
 
 (defun magent-action-session--session-id (invocation)
@@ -333,7 +328,6 @@ When CANCELLABLE-ONLY is non-nil, omit invocations without owned work."
                 (_
                  (magent-thread-fail-turn
                   thread (magent-thread-turn-id turn) result-text)))
-              (magent-session-refresh-projections parent)
               (magent-session-save-deferred-for-session
                parent parent-scope 0)))
         (setq magent--current-session previous-session
@@ -369,7 +363,6 @@ When CANCELLABLE-ONLY is non-nil, omit invocations without owned work."
              ('completed (magent-thread-complete-turn thread turn-id))
              ('cancelled (magent-thread-interrupt-turn thread turn-id message))
              (_ (magent-thread-fail-turn thread turn-id message))))
-         (magent-session-refresh-projections session)
          (magent-action-session--save invocation))))
     (magent-action-session--record-parent-breadcrumb invocation status message)
     (magent-action-session-untrack invocation)

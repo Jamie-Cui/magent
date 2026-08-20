@@ -89,8 +89,8 @@ Each entry is a cons cell of the form (FILE . JSONL-LINE).")
 
 (defun magent-audit-enable ()
   "Enable persistent audit logging hooks."
-  ;; Registration is idempotent.  Reassert it even when the compatibility
-  ;; flag is already set so live reloads and dynamically rebound hook lists
+  ;; Registration is idempotent.  Reassert it even when the enabled flag is
+  ;; already set so live reloads and dynamically rebound hook lists
   ;; cannot leave auditing nominally enabled but disconnected.
   (magent-lifecycle-events-add-sink #'magent-audit--event-sink)
   (add-hook 'magent-approval-state-change-functions
