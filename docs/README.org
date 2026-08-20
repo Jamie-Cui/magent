@@ -19,6 +19,7 @@ Welcome to the Magent documentation. Magent is an Emacs Lisp AI coding agent wit
 - [[file:AGENT_JOBS.html][AGENT_JOBS.org]] — Durable child-agent job lifecycle, tool surface, persistence, UI, and boundaries
 - [[file:UI_BACKENDS.html][UI_BACKENDS.org]] — Supported agent-shell + ACP flow and frontend development boundary
 - [[file:DOCTOR.html][DOCTOR.org]] — Safe Doctor probe API, trust boundary, redaction, sessions, and cancellation
+- [[file:PTC_MULTI_MODEL_PLAN.zh.html][PTC_MULTI_MODEL_PLAN.zh.org]] — Chinese implementation plan for PTC, ~run_code~, and multi-model phases in one agent loop
 
 ** Contribution
 - [[file:CONTRIBUTING.html][CONTRIBUTING.org]] — Contribution guidelines, code style, testing, and PR process

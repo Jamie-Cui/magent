@@ -3,7 +3,7 @@ name: magit-workflow
 title: Magit Workflow
 description: Work with Magit buffers and live Git state inside Emacs.
 type: instruction
-tools: emacs_eval, bash
+tools: emacs_read, emacs_eval_live, bash
 capability: true
 source: package
 package: magit

@@ -3,7 +3,7 @@ name: emacs-runtime-inspection
 title: Emacs Runtime Inspection
 description: Inspect live Emacs runtime state such as buffers, variables, hooks, keymaps, features, warnings, and backtraces.
 type: instruction
-tools: emacs_eval
+tools: emacs_read, emacs_eval_live
 capability: true
 source: builtin
 feature: emacs
@@ -15,7 +15,7 @@ risk: low
 
 # Emacs Runtime Inspection
 
-Use `emacs_eval` to inspect the running Emacs session when behavior depends on live state. Check relevant buffers, variables, active modes, loaded features, hooks, keymaps, messages, warnings, and backtraces before proposing a fix.
+Use `emacs_read` for supported live-state queries. Request `emacs_eval_live` only when the fixed operations cannot inspect the required state. Check relevant buffers, active modes, loaded features, hooks, keymaps, messages, warnings, and backtraces before proposing a fix.
 
 Prefer read-only inspection first. When changing state, make the mutation explicit and reversible.
 

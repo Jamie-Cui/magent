@@ -665,17 +665,20 @@ Each handler runs inside the CLIENT's context buffer (via
                         (magent-runtime-session-from-id session-id scope)))
              (magent-acp--notify-session-info client runtime-session))))))))
 
-(defun magent-acp--permission-options ()
-  "Return ACP permission options supported by agent-shell."
-  [((optionId . "allow_once")
-    (kind . "allow_once")
-    (name . "Allow"))
-   ((optionId . "allow_always")
-    (kind . "allow_always")
-    (name . "Always allow"))
-   ((optionId . "reject_once")
-    (kind . "reject_once")
-    (name . "Reject"))])
+(defun magent-acp--permission-options (&optional approval-policy)
+  "Return ACP permission options for APPROVAL-POLICY."
+  (vconcat
+   (append
+    '(((optionId . "allow_once")
+       (kind . "allow_once")
+       (name . "Allow")))
+    (unless (eq approval-policy 'once-only)
+      '(((optionId . "allow_always")
+         (kind . "allow_always")
+         (name . "Always allow"))))
+    '(((optionId . "reject_once")
+       (kind . "reject_once")
+       (name . "Reject"))))))
 
 (defun magent-acp--approval-provider (client session-id)
   "Return Magent approval provider backed by ACP CLIENT."
@@ -693,7 +696,8 @@ Each handler runs inside the CLIENT's context buffer (via
                                 (plist-get request :perm-key)))
                       (status . "pending")
                       (rawInput . ,(magent-acp--raw-input-object args))))
-         (options . ,(magent-acp--permission-options)))))))
+         (options . ,(magent-acp--permission-options
+                      (plist-get request :approval-policy))))))))
 
 (defun magent-acp--permission-decision (response)
   "Return Magent approval decision from ACP permission RESPONSE."

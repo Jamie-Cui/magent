@@ -475,10 +475,17 @@
   (magent-live-test--kill-magent-test-buffers)
   (magent-session-activate 'global))
 
-(defun magent-live-test--submit-prompt (prompt)
-  "Submit PROMPT through the supported runtime and return its session."
+(defun magent-live-test--allow-once (request)
+  "Resolve test approval REQUEST as one invocation only."
+  (magent-approval-resolve-request
+   (plist-get request :request-id) 'allow-once))
+
+(defun magent-live-test--submit-prompt (prompt &optional approval-provider)
+  "Submit PROMPT through the supported runtime and return its session.
+APPROVAL-PROVIDER is captured in the request for asynchronous tool calls."
   (let ((runtime-session (magent-runtime-session-current)))
-    (magent-runtime-submit runtime-session prompt)
+    (magent-runtime-submit runtime-session prompt
+                           :approval-provider approval-provider)
     runtime-session))
 
 (defun magent-live-test--async-real-kind (selector)
@@ -522,7 +529,8 @@ return that path."
                      "Use the emacs_eval tool exactly once to evaluate this "
                      "Emacs Lisp form: (+ 20 22). After the tool result, "
                      "reply exactly MAGENT_TOOL_OK=42 and no other text. "
-                     "Do not answer from memory; call the tool."))))
+                     "Do not answer from memory; call the tool.")
+                    #'magent-live-test--allow-once)))
             (_ (error "Unknown async live diagnostic kind: %S" kind)))
           (magent-live-test--write-async-status
            file 'running
@@ -703,8 +711,8 @@ return that path."
                                  (lambda (tool)
                                    (equal (gptel-tool-name tool) "emacs_eval"))
                                  gptel-tools))
-                               (args '(:sexp "(length (buffer-list))"
-                                             :reason "count live buffers"))
+                               (args '(:sexp "(+ 20 22)"
+                                             :reason "verify child eval"))
                                (raw-call (list :id "call_live_1"
                                                :name "emacs_eval"
                                                :args args))
@@ -732,7 +740,9 @@ return that path."
                            (funcall callback nil
                                     (list :error "unexpected extra request")))))))
                    nil)))
-        (magent-live-test--submit-prompt "count live buffers")
+        (magent-live-test--submit-prompt
+         "evaluate in a disposable child"
+         #'magent-live-test--allow-once)
         (magent-live-test--wait-until
          (lambda ()
            (when (not (magent-runtime-processing-p))
@@ -759,8 +769,7 @@ return that path."
           (should tool-msg)
           (should (equal (plist-get tool-content :id) "call_live_1"))
           (should (equal (plist-get tool-content :name) "emacs_eval"))
-          (should (string-match-p "\\`[0-9]+\\'"
-                                  (plist-get tool-content :result))))))))
+          (should (equal (plist-get tool-content :result) "42")))))))
 
 (ert-deftest magent-live-test-command-answer-snapshots-live-buffer ()
   "Run a terminal Answer Step with one immutable live-buffer resource."
@@ -849,7 +858,8 @@ return that path."
                    "Emacs Lisp form: (+ 20 22). After the tool result, "
                    "reply exactly MAGENT_TOOL_OK=42 and no other text. "
                    "Do not answer from memory; call the tool.")))
-      (magent-live-test--submit-prompt prompt)
+      (magent-live-test--submit-prompt
+       prompt #'magent-live-test--allow-once)
       (let ((response (magent-live-test--wait-for-assistant 180)))
         (should (string-match-p "MAGENT_TOOL_OK=42" response))
         (let* ((messages (magent-session-get-messages (magent-session-get)))

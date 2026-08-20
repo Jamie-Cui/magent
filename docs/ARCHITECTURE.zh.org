@@ -24,7 +24,7 @@ Magent 是一个 Emacs-native 的 AI coding agent。它的核心设计判断是�
 
 ** Emacs Runtime
 
-Emacs 不只是宿主进程。Magent 依赖活的编辑器状态：buffer、major mode、project root、timer、process、URL、JSON、 ~special-mode~ 和用户安装的包。 ~emacs_eval~ 很关键，因为它让 agent 能检查当前编辑器，而不是只能读磁盘文件。
+Emacs 不只是宿主进程。Magent 依赖活的编辑器状态：buffer、major mode、project root、timer、process、URL、JSON、 ~special-mode~ 和用户安装的包。固定形状、受信任的 live inspection 通过 ~emacs_read~ 完成；任意 ~emacs_eval~ 默认在一次性的 child Emacs 中运行，只有单独命名的 ~emacs_eval_live~ 会在用户正在运行的 Emacs 中执行任意代码。
 
 ** Provider Plumbing
 
@@ -68,30 +68,62 @@ manifest 和 package data recipe。
 
 持久化真相源是 ~thread -> turn -> item~ ledger。 ~magent-ledger.el~ 定义状态对象、状态转移和 journal events， ~magent-runtime-api.el~ 创建用户 submission， ~magent-runtime-queue.el~ 调度实际执行， ~magent-session.el~ 以原子替换方式保存 materialized ~snapshot~ 和内存 append-only ~journal~ 的有界尾部。snapshot 记录 ~last-event-seq~，因此保留的旧事件可供检查，但恢复时不会重复 replay。
 
-旧的 ~messages~ 仍作为 gptel prompt reuse 和迁移所需的 projection，但不是 UI 的 canonical source of truth。
+旧的 ~messages~ 只保留为兼容 projection 和迁移输入。Consumer 必须显式选择
+~ledger~、~transcript~、~provider~、~compaction~ 或 ~audit~ context view；这些
+view 不能互相冒充 canonical state。
 
 ** 工具、权限与审计
 
-~magent-tools.el~ 通过单一 canonical catalog 暴露 15 个 ~gptel-tool~ ：
+~magent-tools.el~ 通过单一 canonical catalog 暴露 17 个 ~gptel-tool~ ：
 
-- ~read_file~ 、 ~read_buffer~ 、 ~write_file~ 、 ~write_repo_summary~ 、 ~edit_file~
+- ~read_file~ 、 ~write_file~ 、 ~write_repo_summary~ 、 ~edit_file~
 - ~grep~ 、 ~glob~ 、 ~bash~
-- ~emacs_eval~
+- ~emacs_read~ 、 ~emacs_eval~ 、 ~emacs_eval_live~ 、 ~read_tool_output~
 - ~spawn_agent~ 、 ~send_agent_message~ 、 ~wait_agent~ 、 ~list_agents~ 、 ~close_agent~
 - ~web_search~
 
-~read_file~ 始终读取磁盘上已保存的内容； ~read_buffer~ 只读取已经存在的
-file-visiting buffer（包括未保存修改），不会打开文件或回退到磁盘。二者共用
-~read~ permission key。文件写入遇到 dirty visiting buffer 会拒绝执行；clean
-visiting buffer 通过 Emacs 修改并保存，没有 visiting buffer 时则原子替换磁盘文件。
+~read_file~ 强制指定 ~source=disk~ 或 ~source=live-buffer~。live-buffer source
+只读取已经存在的 file-visiting buffer（包括未保存修改），不会打开文件或回退到
+磁盘。读取和 grep 会返回 SHA-256 revision；~write_file~ 与 ~edit_file~ 必须携带
+expected revision（创建文件时用 ~absent~），并拒绝 stale disk state 和 dirty
+visiting buffer。Clean visiting buffer 通过 Emacs 修改并保存，没有 visiting buffer
+时则原子替换磁盘文件。
+
+~emacs_read~ 只接受固定、受限的 live-state operation，不接受 Elisp form 或任意
+function name。~emacs_eval~ 每次启动新的 ~emacs -Q --batch~ 进程，因此被执行代码
+中的 ~kill-emacs~ 或死循环不会杀死、卡住 parent Emacs。这只是进程级故障隔离，不是
+OS sandbox；child 仍保有当前用户的文件、进程和网络权限。~emacs_eval_live~ 保留对
+live buffer 和 package state 的任意访问，也仍可能卡死或崩溃主 Emacs。两个任意 eval
+tool 都使用不可 bypass 的 once-only approval，不接受 session-wide allow。内置
+~build~ 和 ~general~ 可以暴露 live eval，受限内置 agent 不暴露。~/authority~ 会
+显示当前 agent 的精确工具暴露、decision source、resource rules、approval policy
+和 execution boundary。
 
 Catalog 是 tool name、implementation 和 permission key 的唯一事实来源。普通
 request 选择 ~:all~；Action 的 agent Step 通过 ~:tools~ 传入 exact allowlist，
 随后再应用 agent permission。所有 implementation 都返回结构化
 ~magent-tool-result~；只有 provider boundary 会转换为文本，历史 session 字符串
-只在导入时迁移。~glob~ 使用有界的 event-loop slices。
+只在导入时迁移。过大的 model-visible result 在中心位置截断，完整结果写入当前
+session 私有、带 TTL/quota 的 spill，只能凭 opaque id 通过 ~read_tool_output~ 分页
+读取。spill identity 同时包含精确 runtime scope 与 session id；分页使用从 1
+开始的字符偏移，因此超长单行也能完整取回。~glob~ 使用有界的 event-loop slices。
 
 ~magent-tool-orchestrator.el~ 负责权限解析、必要时请求 approval、执行工具、写 audit，再把结果交回 loop。 ~magent-permission.el~ 的解析顺序是：精确 tool 规则、file-pattern 规则、wildcard fallback，最后 default allow。
+
+*** Breaking tool migration
+
+这个 catalog 刻意不提供 compatibility alias：
+
+- 把 ~read_buffer(path, ...)~ 改为
+  ~read_file(path, source="live-buffer", ...)~。
+- 每个 ~read_file~ 调用现在都必须显式设置 ~source~。
+- ~write_file~ 和 ~edit_file~ 必须携带前一次 ~read_file~ 或 ~grep~ 返回的
+  ~expected_revision~；只有创建新路径时使用 ~absent~。
+- 以前用 ~emacs_eval~ 查询 live state 的代码应改用固定的 ~emacs_read~
+  operation。任意 live 行为必须明确使用 ~emacs_eval_live~ 并逐次批准；
+  ~emacs_eval~ 现在表示一次性 child-process evaluation。
+- Custom Action 的 ~:tools~ allowlist 和 skill tool 声明必须使用新名称；exact
+  tool resolution 会直接拒绝未知旧名称。
 
 * 请求生命周期
 
@@ -120,7 +152,7 @@ request 选择 ~:all~；Action 的 agent Step 通过 ~:tools~ 传入 exact allow
 #+caption: Magent functional layers
 [[file:assets/img/diagrams/functional-layers.svg]]
 
-从功能面看，Magent 可以按四条主线使用。第一条是 coding assistant：读代码、搜代码、改文件、跑测试、解释错误、生成 commit/PR 风格总结。第二条是 Emacs runtime assistant：通过 ~emacs_eval~ 查询 buffer、mode、window、project、Magit、Org、LSP 等活状态。第三条是 agent workflow：用 skills、capabilities 和 child-agent jobs 固化或拆分任务。第四条是 explicit Action workflow：从 agent-shell slash input 或已暴露的 ~M-x~ command wrapper 调用同一个 registered Action。Action 可以复用当前 conversation，也可以创建 isolated durable session；Doctor 和 Memory 是内置的 isolated 示例。
+从功能面看，Magent 可以按四条主线使用。第一条是 coding assistant：读代码、搜代码、改文件、跑测试、解释错误、生成 commit/PR 风格总结。第二条是 Emacs runtime assistant：普通 live inspection 使用 ~emacs_read~，只有显式批准的任意 live operation 才使用 ~emacs_eval_live~。第三条是 agent workflow：用 skills、capabilities 和 child-agent jobs 固化或拆分任务。第四条是 explicit Action workflow：从 agent-shell slash input 或已暴露的 ~M-x~ command wrapper 调用同一个 registered Action。Action 可以复用当前 conversation，也可以创建 isolated durable session；Doctor 和 Memory 是内置的 isolated 示例。
 
 因此 Magent 的功能设计不只是“一个聊天框和若干工具”。它把 Emacs 工作流切成可被 agent 调用、审计、恢复并投影回 UI 的动作。
 

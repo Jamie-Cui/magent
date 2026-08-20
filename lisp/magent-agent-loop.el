@@ -316,7 +316,7 @@ being normalized into structured tool calls."
                  cmd magent-agent-loop--tool-input-summary-max-length
                  nil nil "...")
               "?"))
-           ((member name '("read_file" "read_buffer" "write_file" "edit_file"))
+           ((member name '("read_file" "write_file" "edit_file"))
             (or (plist-get args :path) "?"))
            ((string= name "write_repo_summary")
             (or (plist-get args :scope)
@@ -469,6 +469,18 @@ across Magent's own serial tool queue without claiming OS-level isolation."
             ((complete
               (result)
               (let* ((result (magent-tool-result-require result name call-id))
+                     (session (and request-context
+                                   (magent-request-context-session
+                                    request-context)))
+                     (thread (and session
+                                  (magent-session-thread-ledger session)))
+                     (result (if thread
+                                 (magent-thread-project-tool-result-for-model
+                                  result thread
+                                  (and request-context
+                                       (magent-request-context-scope
+                                        request-context)))
+                               result))
                      (status (magent-tool-result-status-value result))
                      (output (magent-tool-result-output-string result)))
                 (setf (magent-agent-loop-tool-queue-busy queue) nil)
@@ -716,13 +728,20 @@ across Magent's own serial tool queue without claiming OS-level isolation."
    :audit-function #'magent-agent-loop-audit-permission-decision
    :file-arg-index-function #'magent-agent-loop-find-file-arg-index
    :args-to-plist-function #'magent-agent-loop-args-to-plist
-   :summarize-function #'magent-agent-loop-summarize-args))
+   :summarize-function #'magent-agent-loop-summarize-args
+   :prepare-result-function
+   (lambda (result)
+     (if-let* ((session (magent-agent-loop-session loop))
+               (thread (magent-session-thread-ledger session)))
+         (magent-thread-project-tool-result-for-model
+          result thread
+          (and request-context
+               (magent-request-context-scope request-context)))
+       result))))
 
-(defun magent-agent-loop-record-tool-result
-    (loop tool-spec arg-values raw-call result)
-  "Record TOOL-SPEC RESULT for LOOP's session and return LOOP.
-ARG-VALUES are stored as the model-visible tool arguments.  RAW-CALL can
-carry provider-specific ids and names."
+(defun magent-agent-loop--record-tool-result
+    (loop tool-spec arg-values raw-call result projected-p)
+  "Record RESULT for LOOP, respecting whether it is already PROJECTED-P."
   (when-let* ((session (magent-agent-loop-session loop)))
     (let* ((thread (magent-session-thread-ledger session))
            (turn-id (magent-agent-loop--ensure-turn-id loop thread))
@@ -730,8 +749,13 @@ carry provider-specific ids and names."
                         (plist-get raw-call :call-id)
                         (and (fboundp 'magent-lifecycle-events-generate-id)
                              (magent-lifecycle-events-generate-id))
-                        "tool-call")))
-      (magent-thread-record-tool-result
+                        "tool-call"))
+           (record-function
+            (if projected-p
+                #'magent-thread-record-projected-tool-result
+              #'magent-thread-record-tool-result)))
+      (funcall
+       record-function
        thread
        turn-id
        call-id
@@ -741,6 +765,20 @@ carry provider-specific ids and names."
        (magent-agent-loop--tool-result-metadata raw-call))
       (magent-session-refresh-projections session)))
   loop)
+
+(defun magent-agent-loop-record-tool-result
+    (loop tool-spec arg-values raw-call result)
+  "Record TOOL-SPEC RESULT for LOOP's session and return LOOP.
+ARG-VALUES are stored as the model-visible tool arguments.  RAW-CALL can
+carry provider-specific ids and names."
+  (magent-agent-loop--record-tool-result
+   loop tool-spec arg-values raw-call result nil))
+
+(defun magent-agent-loop-record-projected-tool-result
+    (loop tool-spec arg-values raw-call result)
+  "Record already model-projected tool RESULT for LOOP's session."
+  (magent-agent-loop--record-tool-result
+   loop tool-spec arg-values raw-call result t))
 
 (defun magent-agent-loop--tool-args (event)
   "Return tool arguments from normalized tool-call EVENT."
@@ -1062,7 +1100,7 @@ request after model-visible tool output has been recorded."
                (magent-tool-orchestrator-done-callback orchestrator)))
           (setf (magent-tool-orchestrator-result-callback orchestrator)
                 (lambda (tool-spec arg-values raw-call result)
-                  (magent-agent-loop-record-tool-result
+                  (magent-agent-loop-record-projected-tool-result
                    loop tool-spec arg-values raw-call result)
                   (when base-result-callback
                     (funcall base-result-callback

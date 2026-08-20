@@ -23,6 +23,7 @@ Magent 把同一个 Action registry 投影为两类用户可见的 command 入�
 /summarize src/session 的持久化与 replay
 /fix 重点检查失败的 session persistence test
 /compact 保留准确的文件名和未解决的失败
+/authority
 /skills
 /$code-review 重点检查 queue
 #+end_example
@@ -41,6 +42,7 @@ instruction skill；skill 不存在或在当前 scope 不可用时，会在提�
 | ~/summarize~ | 把项目总结到 org-roam            | 创建或更新一个 canonical Org note |
 | ~/test~    | 运行并解释相关测试                  | 运行聚焦测试；适当时可修复范围内失败 |
 | ~/compact~ | 总结当前对话                        | 用续接摘要替换较早的模型上下文 |
+| ~/authority~ | 查看实际工具权限 | 不请求 provider，显示暴露状态、规则/override 来源、approval policy 和 execution boundary |
 | ~/skills~ | 列出当前 session scope 的 instruction skills | 本地发现，不请求 provider |
 | ~/doctor~ | 诊断 Magent 和当前 runtime | 使用有界 probes 和一次脱敏、无工具请求 |
 | ~/memory-init~ | 建立 Emacs profile memory | 在独立 Action session 中确认并执行 |
@@ -52,6 +54,12 @@ instruction skill；skill 不存在或在当前 scope 不可用时，会在提�
 使用隐藏且不带 tools 的 compaction agent 生成续接摘要。成功后，后续 turn 会复用
 该摘要而不是更早的模型上下文；当前 agent-shell buffer 中的可见 transcript 仍然
 保留。Compaction 失败时不会改变之前的上下文。
+
+** ~/authority~
+
+返回当前 session agent 的有效 catalog view。每一行显示 permission key、最终
+decision、tool 是否暴露、rule 或 session override 来源、resource sub-rules、
+approval policy，以及执行发生在 host、child Emacs 还是 live Emacs。
 
 ** ~/explain~
 
@@ -155,7 +163,7 @@ org-roam capture 约定 ~YYYY-MM-DDtHHMM.org~。后续运行通过 file-level
       :skills '("code-review")
       :agent 'build
       :append-argument-p t
-      :tools '(read_file read_buffer grep bash))))
+      :tools '(read_file grep bash read_tool_output))))
 
 (magent-action-register
  "my-review"

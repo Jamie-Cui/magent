@@ -3,7 +3,7 @@ name: emacs-config-reload
 title: Emacs Config Reload Workflow
 description: Reload Emacs configuration safely and diagnose stale package or variable state after configuration changes.
 type: instruction
-tools: emacs_eval
+tools: emacs_read, emacs_eval_live
 capability: true
 family: emacs-config
 source: builtin

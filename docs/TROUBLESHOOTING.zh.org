@@ -271,8 +271,34 @@ make EMACSCLIENT="emacsclient -s magent-live-test" test-live-smoke
   errexit，但启用 pipefail；需要 fail-fast 串联时使用 ~&&~ 或显式
   ~set -e~ 。 ~rg ... | head~ 一类限流 pipeline 可能因 SIGPIPE 失败，
   应优先使用工具原生 limit 参数。
-- emacs_eval：检查 Lisp 语法错误。
+- ~emacs_read~：确认固定 operation、target 有效，且 origin buffer 仍存在。
+- ~emacs_eval~：检查语法和 child-process diagnostics。它每次启动新的
+  ~emacs -Q --batch~，看不到 live buffer 或用户已加载的 package。
+- ~emacs_eval_live~：timeout 只属于 best effort；阻塞的 C primitive 或进程级
+  failure 仍可能卡死、崩溃 live Emacs。
 - grep：确认 ripgrep 已安装： ~which rg~ 。
+
+*** 模型返回的 Elisp 卡死或崩溃 Emacs
+
+*问题：* 任意 form 不结束、触发 fatal error 或调用 ~kill-emacs~。
+
+*诊断：*
+
+1. 运行 ~/authority~，确认实际选择了哪条 eval boundary。
+2. 查询 live buffer、mode、symbol、binding、hook 和 project state 时优先使用
+   ~emacs_read~。
+3. 确认普通任意代码使用 ~emacs_eval~，其 result metadata 为
+   ~execution=child-process~。
+
+*解决：*
+
+- 任意 evaluation 默认留在 ~emacs_eval~。Parent 持有 timeout，并在 timeout 或
+  cancellation 时删除一次性 child。
+- 只有任务确实需要修改 live package/buffer state 时才使用 ~emacs_eval_live~。
+  每次调用都必须重新批准；~magent-bypass-permission~ 和已保存的 session allow
+  都不能跳过。
+- 这个边界隔离 Emacs process failure，不隔离 host authority；代码仍以当前用户
+  身份访问文件、进程和网络。
 
 *** Child-agent 行为不符合预期
 
@@ -307,6 +333,9 @@ mode。
 - 或 customize： ~(setq magent-bypass-permission t)~ 。
 - 或在 agent-shell buffer 中运行 ~M-x agent-shell-set-session-mode~ ，选择权限合适的
   agent。
+
+Bypass 不会跳过 ~emacs_eval~ 或 ~emacs_eval_live~ 的 once-only approval；agent
+规则中的 deny 也仍会让 tool 不可用。
 
 *** Session not saving
 

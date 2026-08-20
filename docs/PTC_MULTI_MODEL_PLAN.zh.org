@@ -1,0 +1,979 @@
+#+title: Magent PTC 与单 Loop 多模型优化计划
+#+magent_lang: zh
+#+magent_permalink: /PTC_MULTI_MODEL_PLAN.zh.html
+#+options: toc:3 num:nil
+
+#+begin_quote
+状态：规划中，尚未实现。
+
+本文是 PTC（Programmatic Tool Calling）、~run_code~ nested executor，以及
+单个 agent loop 内多模型分阶段执行的 source of truth。它描述目标架构、破坏性
+变更、迁移、实施顺序和验收门槛，不代表当前 Magent 已经具备这些行为。
+
+最后更新：2026-08-14。
+#+end_quote
+
+* 决策摘要
+
+Magent 将把一次用户 turn 拆成一个或多个显式的 *sampling epoch*。每个 epoch
+在发起模型请求前重新解析：
+
+- 当前 phase；
+- 本 epoch 使用的 agent profile；
+- backend、model、temperature、top-p 和 reasoning effort；
+- 有效能力集；
+- 工具 presentation（~native~、~code~ 或 ~both~）；
+- 完整 system prompt 和 provider wire tools。
+
+第一批只实现两个 loop policy：
+
+- ~single~：保持当前单 agent、单模型语义；
+- ~plan-execute~：plan phase 使用一个 agent profile，~finish_plan~ 成功后，
+  execute phase 在同一个 turn、同一个 session、同一个 Magent agent loop 中使用
+  另一个 agent profile。
+
+Agent profile 复用现有 ~magent-agent-info~。因此 phase 不再另造一套 model、
+prompt、permission 和 tool 配置：plan agent 与 execute agent 自己拥有这些数据。
+根 session 的 active agent identity 不改变，phase agent 只是该 epoch 的执行
+profile。
+
+PTC 不是另一套工具系统。一个 canonical tool spec 先经过 permission、Action
+exact allowlist 和 phase profile 得到有效能力集，再投影成：
+
+#+begin_src text
+有效能力集
+    |
+    +-- native wire projection --> gptel tools
+    |
+    +-- code wire projection ----> 只发送 run_code
+    |                                 |
+    |                                 +-- 可选 Code Runtime
+    |                                      |
+    |                                      +-- nested executor
+    |                                           +-- permission / approval
+    |                                           +-- audit / cancellation
+    |                                           +-- canonical tool value
+    |
+    +-- SDK projection ----------> system prompt 中的稳定工具 SDK
+#+end_src
+
+~gptel-request~ 继续拥有 provider、HTTP 和 SSE plumbing；agent-shell + ACP 继续是
+唯一支持的 conversational frontend；本计划不引入 Codex sandbox、seatbelt、
+bubblewrap 或 shell isolation。
+
+* 目标与非目标
+
+** 必须实现
+
+1. 一个普通 Magent turn 可以在多个 sampling epoch 中使用不同 backend/model。
+2. ~plan-execute~ 在 plan 与 execute 之间使用显式、可审计的结构化边界，不解析
+   自由文本猜测 phase。
+3. 每个 epoch 的模型路由、system prompt、有效能力集和 wire projection 都可从
+   session ledger 重建。
+4. provider-native continuation 只可在 route、phase、system 和 wire tools 都未
+   改变时复用；否则必须从 ledger 创建新的 ~gptel-request~。
+5. native 与 code projection 必须来自同一个有效能力集，不能各自维护工具名单。
+6. ~run_code~ 内的每个 nested call 必须重新经过 permission、approval、audit 和
+   cancellation；批准外层 ~run_code~ 不能替代对子工具的授权。
+7. nested call 返回 lossless canonical JSON value；provider 文本和 UI 展示是该
+   value 的渲染，不是 canonical value 本身。
+8. legacy session 必须单向、无损加载；不能伪造历史请求中原本没有记录的模型、
+   system 或 tool schema。
+9. ~native~ 模式和当前单模型 agent 的行为在未启用新 policy 时保持等价。
+
+** 本轮明确不做
+
+- 不实现任意 phase graph、可编程 routing DSL 或每个 tool call 单独选模型。
+- 不实现模型 ensemble、投票、speculative execution 或自动 fallback model。
+- 不让 model 自己选择任意 backend/model；route 是 trusted Elisp policy。
+- 不把 Action Workflow 的多个 runtime turn 冒充为一个 agent loop。
+- 不重写 gptel transport，也不复制 gptel 的 provider registry、鉴权或流处理。
+- 不把 Code Runtime 描述为安全沙箱；它只提供进程生命周期、取消和资源上限。
+- nested executor v1 不并行执行子调用。只有 benchmark 证明串行是瓶颈且工具具备
+  明确 concurrency-safety contract 后，才增加 bounded scheduler。
+- 不先支持多语言 runtime。首个 backend 使用无第三方依赖的 JavaScript/Node
+  subprocess；runtime seam 保留替换能力，但不提前实现 Python、container 或
+  persistent REPL。
+
+* 术语与不变量
+
+** 有效能力集
+
+有效能力集是某个 epoch 中 agent 真正可以调用的 semantic tools。解析顺序固定：
+
+1. canonical tool catalog；
+2. Action Step 的 exact ~:tools~ allowlist（普通 turn 为 ~:all~）；
+3. root agent 的 permission ceiling；
+4. phase agent 的 permission rules；
+5. request/session 级 permission override；
+6. 必需 control tool 的 preflight。
+
+Root 与 phase permission 对同一调用取更严格的结果（~deny~ > ~ask~ >
+~allow~）。Phase profile 可以收窄 root agent 的权限，不能因为换 model/profile 而扩大
+用户选中 agent 的权限上限。
+
+Presentation 只能改变这些工具怎样暴露给模型，不能扩大集合。
+
+** Wire projection
+
+Wire projection 是“发送给 provider 的 tool schema 视图”：
+
+- ~native~：有效能力集被投影为 gptel tools；
+- ~code~：provider 只看到 ~run_code~；
+- ~both~：provider 同时看到 native tools 和 ~run_code~。
+
+~code~ 模式中没有直接发送的 native tool schema，但 nested executor 仍持有同一
+有效能力快照。模型即使伪造 native tool call，也不能绕过该投影和 executor。
+
+** SDK projection
+
+SDK projection 是由 canonical argument/output schema 生成的稳定声明和使用说明，
+作为 system prompt 的一个确定性 section 发送。它是模型写 program 的接口说明，
+不是 provider tool schema，也不执行任何调用。
+
+** Sampling epoch
+
+Sampling epoch 是一次模型采样及其终止原因：assistant completion、tool-call batch、
+provider error 或 cancellation。它比 turn 小，比单个 streamed chunk 大。每个 epoch
+有单独的 route/header/usage/phase，但仍属于同一个 ledger turn。
+
+Provider/adapter 对同一个逻辑请求的 retry 是该 epoch 的另一个 attempt，不重新解析
+phase、route、prompt 或 tools。Tool result 后的 provider continuation 则是新的 epoch。
+这样 UI 或配置在 retry 中途变化时，只能影响下一 epoch，不能撕裂当前请求。
+
+** Phase
+
+Phase 是 trusted loop policy 的有限状态。v1 仅有：
+
+#+begin_src text
+single
+
+plan --finish_plan approved--> execute
+#+end_src
+
+~plan-execute~ 的每个新 turn 从 ~plan~ 开始。execute completion 结束 turn；turn
+取消、失败或进程退出不会把未完成 phase 带到下一个用户 turn。
+
+** 请求可重建性
+
+“可重建”指能从 pinned Magent version、session ledger 和当前 gptel 配置恢复 Magent
+交给 gptel 的逻辑请求：prompt history、system、canonical wire schemas、model route
+和 sampling metadata。API key、HTTP header、provider server-side defaults 和原始 SSE
+字节不进入 session。
+
+* 当前实现与缺口
+
+| 领域 | 当前行为 | 缺口 |
+|---+---+---|
+| Model route | ~magent-agent-process~ 在 turn 开始时解析一次 backend/model | 后续 sampling 无法换模型 |
+| Prompt/tools | system 和 request tools 在 loop 创建前冻结 | phase 变化不能重组 prompt/projection |
+| Continuation | 有 continuation 就优先恢复 provider FSM | 不能检查下一 epoch 是否已经换 route/header |
+| Request persistence | ledger 保存 turn/message/tool，未保存完整请求 header | 无法解释某次 sampling 看到了哪个 model/system/tools |
+| Tool catalog | canonical source 是 ~gptel-tool~ structs | native projection、SDK 和 nested executor 缺少共同 domain spec |
+| Tool result | ~magent-tool-result~ 以 rendered output 为中心 | nested program 缺少 schema-validated canonical value |
+| Tool queue | outer tool call 由 loop 串行 queue 驱动 | ~run_code~ 若把 nested call 排回同一 queue 会自锁 |
+| Actions | 不同 Agent Steps 可选不同 agent | 是多个 runtime turn，不满足单 loop 多模型 |
+| Frontend | observer 已有 turn/tool/text events | 缺少 epoch route/phase 的诊断投影 |
+
+* dsh 参考与取舍
+
+本计划借鉴本地 =~/proj/deepseek-harness= checkout 中四个已经落地的机制：
+
+1. =packages/core/agent/src/model-selection.ts= 在 prompt assembly 时快照 selection，使 prompt 变量和
+   request route 属于同一个 step。
+2. =packages/core/agent-loop/src/agent.ts= 在每个 step 构造 frozen request，并在 route/system/tools 改变时记录完整
+   ~request/header~。
+3. =packages/plan/plan-mode/src/index.ts= 用 ~exit_plan_mode(plan)~ 建立显式 review boundary，批准后的状态直到下一
+   pre-step 才生效，因此不会撕裂当前 tool batch。
+4. =.agents/notes/implemented/feature/2026-06-15-code-mode.md= 将 native/code/both 定义为一个 tool registry 的不同
+   presentation，并让 nested dispatch 重新经过完整 tool pipeline。
+
+Magent 不复制 dsh 的 Cordis event microkernel、plugin taxonomy、sandbox policy、
+多语言 runtime 和 bounded parallel sub-dispatch。应复用的是 request/phase/tool
+contract，不是其框架结构。
+
+dsh 当前也没有内置的“plan mode 自动选择 plan model、退出后自动选择 execute
+model”产品 policy；它提供的是足够组合出该行为的 per-step primitive。本计划在
+Magent 中直接交付一个有限的 ~plan-execute~ policy。
+
+* 方案比较
+
+** 方案 A：用 Action Workflow 串联两个 Agent Steps
+
+优点是几乎不改 agent loop；现有 Workflow 已能让两个 Step 使用不同 agent。
+
+拒绝原因：它产生两个 runtime submission/turn，continuation、tool history、取消和
+最终 assistant ownership 都被 Workflow 边界切开，不满足“一次 agent loop”。它仍
+可用于实现前的 benchmark prototype，但不是目标架构。
+
+** 方案 B：在 loop 中硬编码 plan-model/execute-model
+
+优点是代码量最少。
+
+拒绝原因：loop 会同时拥有 phase policy、agent 配置、route、prompt 和 tools；未来
+任何第二种 policy 都会复制分支。custom agent 还会得到一套平行于现有 agent 的
+model/permission 配置。
+
+** 方案 C：per-epoch request builder + 具体 plan-execute controller
+
+这是选定方案：
+
+- loop 只拥有 epoch 生命周期、调用 request builder、continuation 判定和终止；
+- ~magent-agent.el~ 根据 sampling context 和 phase agent 构造完整请求；
+- ~plan-execute~ controller 只拥有有限 phase transition；
+- tool presentation 只拥有有效能力集到 provider/SDK 的投影；
+- orchestrator 只拥有 permission/approval/audit/execution。
+
+该方案比 B 多一个 request-builder seam，但这个 seam 已有两个真实调用时机：初始
+sample 与 tool-result 后续 sample；并且它直接消除当前散落在闭包中的 request
+重建知识，因此边界成立。
+
+* 目标数据合约
+
+以下名字是计划中的 Elisp contract；实施时可以调整私有 helper 名称，但不能改变
+字段语义和不变量。
+
+** Canonical tool spec
+
+新增 ~magent-tool-spec~，至少包含：
+
+#+begin_src elisp
+(:name "read_file"
+ :description "..."
+ :parameters <canonical JSON schema>
+ :output <canonical lossless-JSON schema>
+ :permission-key read
+ :file-argument "path"
+ :execute #'magent-tools--read-file)
+#+end_src
+
+约束：
+
+- name 唯一，~run_code~ 与 ~finish_plan~ 是 reserved names；
+- parameters/output 必须是 ~magent-json-safe-value~ 可接受的值；
+- native gptel tool、SDK declaration、argument validation、nested binding 和 audit
+  name 全部从该 spec 派生；
+- permission key 和 file argument identity 不再由平行表维护；
+- catalog 保持确定性顺序，SDK 再按 name 排序以获得 byte-stable 输出。
+
+** Canonical tool result
+
+破坏性替换现有 result 含义，消除 ~success~ 与 ~status~ 的重复真值：
+
+#+begin_src elisp
+(:status completed | failed
+ :value <JsonValue>          ; completed 时必需
+ :content "provider/UI text"
+ :error (:code "..." :message "...")
+ :metadata <JsonValue>)
+#+end_src
+
+- ~value~ 是 nested SDK binding 的返回值，并按 tool output schema 校验；
+- ~content~ 是 native provider、ledger transcript 和 UI 的 bounded rendering；
+- failed result 在 nested runtime 中成为可捕获的 ~ToolCallError~，而不是成功返回一段
+  以 ~Error:~ 开头的字符串；
+- provider boundary 只接收 ~content~，不自行重新解释 ~value~；
+- legacy persisted output string 在导入时保留为 ~content~，并以同一 string 作为
+  legacy ~value~，因此迁移不丢字节。
+
+** Model route
+
+Runtime ~magent-model-route~：
+
+#+begin_src elisp
+(:backend <gptel backend object>
+ :model <symbol>
+ :temperature <number-or-nil>
+ :top-p <number-or-nil>
+ :effort <normalized effort-or-nil>)
+#+end_src
+
+Durable route 不序列化 backend object，只记录：
+
+#+begin_src elisp
+(:backend-name "..."
+ :model "..."
+ :temperature ...
+ :top-p ...
+ :effort "...")
+#+end_src
+
+Route 解析优先级：
+
+1. request-context 对当前 phase 的显式 route override；
+2. phase agent 的 model/sampling fields；
+3. root agent 的 model/sampling fields；
+4. gptel default values。
+
+Session effort option 是用户对整个 turn 的显式 override，应用到所有 phase；它不
+改变各 phase 的 backend/model。
+
+** Sampling context 与 request header
+
+Request builder 接收 immutable sampling context：
+
+#+begin_src elisp
+(:index 1
+ :reason initial | tool-result | phase-transition
+ :phase plan | execute | single
+ :profile-agent "plan"
+ :previous-header-id "..."
+ :turn-id "..."
+ :request-context <magent-request-context>)
+#+end_src
+
+返回一个完整 ~magent-llm-request~ 和 canonical header：
+
+#+begin_src elisp
+(:phase "plan"
+ :profile-agent "plan"
+ :route <durable route>
+ :presentation "native"
+ :effective-tools ["read_file" "grep" "finish_plan"]
+ :system "..."
+ :wire-tools [<canonical schema> ...]
+ :metadata (...))
+#+end_src
+
+Builder 必须先解析并冻结 phase profile/route，再组装 system prompt 和 tool
+presentation；prompt 中出现的 model/phase 变量来自同一份 snapshot。Builder 返回后
+修改 agent、session option 或 gptel default，不能改变已经开始的 epoch。
+
+v1 在每个 ~sample~ ledger item 中保存完整 header，优先保证简单、独立重建。实现后
+必须测量 session 文件增长；只有数据证明重复 header 是实际问题时，才改为
+content-addressed header + sample reference，不能先实现 delta codec。
+
+** Loop policy
+
+~magent-agent-info~ 新增：
+
+- ~tool-presentation~：~native~、~code~ 或 ~both~，默认 ~native~；
+- ~loop-policy~：~single~ 或一个 validated ~plan-execute~ spec。
+
+~plan-execute~ spec 只包含：
+
+#+begin_src elisp
+(:kind plan-execute
+ :plan-agent "plan"
+ :execute-agent "build")
+#+end_src
+
+模型、prompt、permission、temperature 和 tool presentation 从引用的 agent 读取，
+不在 policy 中重复。file-backed agent frontmatter 对应：
+
+#+begin_src yaml
+loop-policy: plan-execute
+plan-agent: plan
+execute-agent: build
+tool-presentation: native
+#+end_src
+
+上例中的 ~tool-presentation~ 属于该 agent 自己。若希望 plan/native、execute/code，
+就在 ~plan~ agent 与 ~build~ agent 的各自定义中配置，不在 root policy 再声明一次。
+
+Phase profile 的 ~loop-policy~ 不递归执行；controller 只读取它的 model、sampling、
+prompt、permission 和 presentation。Root agent 可以安全地把自己作为 execute-agent，
+上例不会形成第二层 loop。
+
+File-backed agent 的 ~model~ 继续表示当前 gptel backend 下的 model id。跨 provider
+profile 使用 Elisp 创建的 ~magent-agent-info~，其 model 可以是现有
+~(BACKEND . MODEL)~ 形式。本计划不为此复制一个 Magent backend registry；只有
+gptel 提供稳定的 public backend lookup 后，才考虑把 backend name 加入 frontmatter。
+
+解析失败必须发生在 provider sampling 之前：unknown agent、agent mode 不适用、
+无可用 model、code presentation 缺 runtime、Action exact tools 缺少
+~finish_plan~，都直接令 turn startup 失败。
+
+* 请求与 phase 流程
+
+** Single policy
+
+#+begin_src text
+turn start
+  -> build epoch header from root agent
+  -> sample
+  -> tool batch? execute + record -> build next epoch
+  -> assistant completion -> turn complete
+#+end_src
+
+未启用新配置时，这条路径必须和当前行为等价。
+
+** Plan-execute policy
+
+#+begin_src text
+turn start
+  -> phase=plan, profile=plan-agent
+  -> sample plan model
+  -> read/explore tools ...
+  -> finish_plan({plan})
+       -> permission/approval
+       -> record exact plan
+       -> mark execute transition pending
+  -> current native batch / run_code program settles
+  -> append deferred approved-plan context
+  -> build a fresh execute epoch
+       phase=execute, profile=execute-agent
+       never reuse plan provider continuation
+  -> execute tools ...
+  -> assistant completion -> turn complete
+#+end_src
+
+~finish_plan~ 的 output value：
+
+#+begin_src json
+{"approved": true, "plan": "# ..."}
+#+end_src
+
+规则：
+
+- plan 必须是非空 string；标题格式属于 prompt guidance，不作为安全校验；
+- permission=~ask~ 时复用现有 approval provider；allow 支持无人值守执行；deny
+  返回 structured failure 并留在 plan phase；
+- 一个 turn 只能有一个 pending/committed finish；重复调用失败；
+- transition 在完整 tool batch 或外层 ~run_code~ settle 前不可生效；
+- 批次中 ~finish_plan~ 之后的 nested calls 仍使用 plan phase 的有效能力快照；
+- approved plan 作为 model-visible、source-attributed context 记录一次，execute
+  model 不需要解析 nested audit event 或从 JavaScript source 中提取 plan；
+- plan 是模型生成并经用户批准的数据，不是 system instruction，不能授予权限；
+- plan model 若直接 assistant-complete 而未调用 ~finish_plan~，turn 以
+  ~plan-not-finished~ 失败，不发隐藏 recovery request，也不偷偷切 execute model；
+- execute phase 的 assistant completion 才是正常 terminal answer。
+
+** Provider continuation 判定
+
+当前 Magent 在 tool batch 后只要有 continuation 就优先调用。改造后顺序必须变为：
+
+1. tool batch 完成；
+2. apply pending phase transition；
+3. 构建下一 epoch 的 header；
+4. 比较 continuation origin 与新 header；
+5. 只有完全兼容才调用 continuation，否则清除 continuation 并发起 fresh
+   ~gptel-request~。
+
+兼容 fingerprint 至少覆盖：
+
+- backend runtime identity；
+- model；
+- phase；
+- rendered system prompt；
+- ordered canonical wire schemas；
+- temperature、top-p、effort 及影响 provider request 的 metadata。
+
+Phase 变化一律视为不兼容，即使两个 phase 恰好配置成同一 model。这样不会让旧
+provider FSM 忽略新的 phase prompt 或 approved-plan context。
+
+* PTC 与 nested executor
+
+** Projection ownership
+
+新增 ~magent-tool-presentation.el~，唯一职责是把一个已经解析好的有效能力集投影成：
+
+#+begin_src elisp
+(:wire-tools <gptel tools>
+ :wire-schemas <canonical JSON values>
+ :system-section <SDK string-or-nil>
+ :nested-capabilities <immutable tool-spec vector>)
+#+end_src
+
+它不读取 permission、不执行工具、不选择 model。~magent-agent.el~ 在每个 epoch
+依次调用能力解析、presentation 和 prompt assembly。
+
+~both~ 仅用于兼容与 benchmark，不作为默认值。它会同时支付 native schema 和
+SDK token，不能无数据宣称更优。
+
+** SDK 生成
+
+首版 SDK 使用 JavaScript-compatible TypeScript declarations，program 本身写普通
+JavaScript async body：
+
+#+begin_src typescript
+interface ToolArgsMap { /* generated */ }
+interface ToolOutputMap { /* generated */ }
+declare const tools: {
+  [K in keyof ToolArgsMap]:
+    (args: ToolArgsMap[K]) => Promise<ToolOutputMap[K]>;
+};
+#+end_src
+
+要求：
+
+- 名称按字典序生成；非法 JavaScript identifier 使用 quoted key；
+- description 进入 JSDoc，所有动态文本正确转义；
+- 不支持的 schema construct 降级为 ~unknown~，runtime validation 仍是权威；
+- SDK 固定说明来自 ~prompts/~ 下的 Org prompt 并登记
+  ~prompts/manifest.txt~；generated declarations 不进入 manifest；
+- SDK 明确说明 v1 nested calls 串行、mutating/reading 都不能假定并行；
+- effective set 为空时不暴露无意义的 ~run_code~。
+
+** Reentrant nested executor
+
+不能把 nested call 放回 outer ~run_code~ 正在占用的串行 loop queue，否则 outer
+等待 code、code 等待 nested、nested 又等待 outer 释放 queue，形成自锁。
+
+~magent-tool-orchestrator.el~ 增加一个执行单个 canonical tool spec 的 reentrant
+入口。native batch 与 nested executor 共享同一 permission/approval/audit core，
+但调度器不同：
+
+- native provider batch 使用 loop queue；
+- ~run_code~ 内部使用 run-owned serial nested queue，直接调用 orchestrator core；
+- nested executor 不调用 provider callback，也不启动新的 agent loop；
+- ~run_code~ 不出现在自己的 nested capability snapshot 中，禁止递归；
+- 每个 nested call 生成 child call id，并记录 outer call id、epoch id 和 depth；
+- outer cancellation abort runtime、未开始的 nested calls 和可取消的 active call；
+- outer settle 后到达的 callback 必须丢弃，不能修改 ledger 或文件；
+- approval 可异步等待，但不得占住 Emacs 主线程；
+- nested result 的 deferred contexts 在 outer ~run_code~ result 记录之后按提交顺序
+  追加，保持 provider call/result adjacency。
+
+** Code Runtime seam
+
+新增 ~magent-code-runtime.el~，最小 public contract：
+
+#+begin_src elisp
+(run CODE BINDING-NAMES CALL-BINDING CALLBACK SIGNAL LIMITS)
+#+end_src
+
+逻辑输入/输出：
+
+#+begin_src text
+input:
+  code, visible binding names, cwd, cancellation, limits
+
+worker -> host:
+  call {id, name, arguments}
+  log  {level, values}
+  done {value}
+  fail {kind, message}
+
+host -> worker:
+  result {id, value}
+  error  {id, code, message, toolName}
+#+end_src
+
+首个 backend：
+
+- 每个 ~run_code~ 启动一个短生命周期 Node subprocess；
+- 使用项目打包的固定 bootstrap 和逐行 JSON protocol；
+- 不依赖 npm package，不维护 persistent REPL；
+- code 作为 ~AsyncFunction~ body 执行，支持 top-level ~await~ 和 ~return~；
+- host 提供 ~tools~ bindings 与 bounded console capture；
+- protocol 拒绝 unknown message、duplicate id、不可表示 JSON、超限 line/output；
+- wall timeout、combined output cap 和 cancellation kill 都由 host 强制；
+- working directory 使用 request project root；环境只保留启动 Node 所需的最小值；
+- code mode preflight 找不到兼容 runtime 时，在 provider sampling 前失败；native
+  模式完全不依赖 Node。
+
+该 subprocess 不是安全边界。即使 bootstrap 限制常用 global，也不能声称能抵抗
+恶意 JavaScript 或 Node escape。其信任姿态等同现有 ~bash~ tool：真正的控制来自
+Magent permission、approval 和用户选择是否启用 code presentation。
+
+* Ledger、持久化与 UI-neutral 观测
+
+** Sample item
+
+每次 sampling 创建一个非 surface ~sample~ item：
+
+#+begin_src elisp
+(:type sample
+ :status in-progress | completed | failed | cancelled
+ :phase plan | execute | single
+ :metadata (:index 1
+            :attempts 1
+            :header <canonical full header>
+            :continuation fresh | provider-native
+            :stop-reason ...
+            :usage ...))
+#+end_src
+
+现有 legacy message projection 只读取 ~message~ 与 ~tool~ item，因此 sample item
+不会进入 provider conversation。ACP replay 默认忽略它；P0 observability 通过
+session inspector、~*magent-log*~ 和 UI-neutral observer events 提供，不伪装成
+tool call 或 assistant thought。
+
+Observer 新增：
+
+- ~sample-start~：epoch id/index、phase、profile agent、backend/model、presentation；
+- ~sample-end~：status、usage、stop reason、continuation kind；
+- ~phase-transition~：from/to、trigger call id、approved-plan item id。
+
+只有 ACP/agent-shell 出现合适的标准展示形状时才增加视觉 projection；核心不能为
+临时 UI 伪造协议事件。
+
+** Session migration
+
+Session snapshot version 单向升级。迁移规则：
+
+1. 旧 snapshot、journal、messages 和 tool strings 原样加载；
+2. 旧 turn 没有 sample item 时标记 ~legacy-request-unattributed~，不猜 model/system；
+3. 第一次新 sampling 写入完整 header，reason 为 ~resume~；
+4. legacy tool output string 迁移为相同字节的 ~content~ 和 string ~value~；
+5. 下一次保存只写新格式，不写双格式 compatibility shadow；
+6. 遇到不能无损表达的旧值时停止迁移并报告 session id/field，不静默丢弃。
+
+Request context 是 runtime object，不需要磁盘迁移。其 frozen scalar
+backend/model/temperature/top-p 将替换为 per-phase route override 和当前 epoch
+reference；audit snapshot 仍冻结 root agent/session attribution，并额外记录 phase
+profile，避免 UI 中途切 agent 后重标历史。
+
+* 模块改动地图
+
+| 文件 | 计划改动 |
+|---+---|
+| ~lisp/magent-tool-spec.el~（新） | canonical tool/result schema、validation、JSON contract |
+| ~lisp/magent-tools.el~ | 15 个工具迁移为 specs；实现返回 canonical value/content |
+| ~lisp/magent-tool-presentation.el~（新） | native/code/both projection、SDK generation、~run_code~ spec |
+| ~lisp/magent-code-runtime.el~（新） | runtime seam、Node process driver、JSON protocol |
+| ~runtime/magent-code-worker.mjs~（新） | 固定 worker bootstrap；必须纳入 package recipe |
+| ~lisp/magent-tool-orchestrator.el~ | spec-based permission flow、execute-one reentrant core、nested lineage |
+| ~lisp/magent-agent-loop.el~ | sampling epoch、request builder、sample item、continuation compatibility |
+| ~lisp/magent-agent.el~ | per-epoch route/capability/prompt assembly、single/plan-execute controller |
+| ~lisp/magent-llm.el~ | model route、canonical header、request/epoch structs |
+| ~lisp/magent-llm-gptel.el~ | continuation origin metadata；仍只负责 gptel adapter |
+| ~lisp/magent-runtime.el~ | request context 的 route override、epoch/phase controller reference |
+| ~lisp/magent-agent-info.el~ | ~tool-presentation~ 与 validated ~loop-policy~ |
+| ~lisp/magent-agent-file.el~ | 新 frontmatter parse/save；unknown/invalid values fail loud |
+| ~lisp/magent-ledger.el~ | sample item helpers、migration metadata；不新增平行 event store |
+| ~lisp/magent-session.el~ | snapshot version migration、sample/header JSON round-trip |
+| ~lisp/magent-acp.el~ | observer passthrough和 replay 忽略规则；不新增 frontend |
+| ~prompts/runtime/*.org~ | plan/execute policy 与 code SDK 固定说明，更新 manifest |
+| ~test/magent-test.el~ | unit、loop、migration、projection、runtime 与 regression tests |
+| ~Makefile~ / CI / melpazoid recipe | 新 Elisp module 与 runtime asset 的 compile/package coverage |
+| ~docs/ARCHITECTURE*.org~ / ~AGENT_WORKFLOW*.org~ | 实现完成后把稳定结论并入正式双语文档 |
+
+新 module 只保留三个，因为它们有独立变化和失败边界：canonical contract、tool
+presentation、optional code runtime。Model route 和 phase 不再拆额外 registry；它们
+分别留在既有 LLM request 与 agent orchestration owner 中。
+
+* 实施里程碑
+
+每个里程碑必须独立可合并、测试全绿，不保留“新旧系统同时决定行为”的中间态。
+
+** M0：基线与不可变测试
+
+目标：先冻结当前 single/native 行为和可比较指标。
+
+任务：
+
+- 为无 tool、单 tool、连续三次 tool、provider continuation、Action exact tools、
+  child agent 建立 deterministic fixtures；
+- 记录 request count、prompt/tool schema、turn/item 投影、session JSON 大小；
+- 增加一个两个 mock gptel backend 的 test harness；
+- 记录当前 ~make compile~、~make lint~、~make test-unit~、~make test~ 结果。
+
+退出门槛：fixtures 能检测 system/tools/model 在后续 sample 被意外改变，且当前 main
+行为全绿。
+
+** M1：Canonical tool contract
+
+目标：在行为仍为 native 的前提下，让工具定义和值不再依赖 gptel struct。
+
+任务：
+
+- 引入 ~magent-tool-spec~ 和严格 schema validation；
+- 迁移 15 个工具，native projection 生成与当前等价的 gptel tools；
+- 合并 permission key、file arg identity 和 schema source；
+- 将 result 分成 canonical ~value~ 与 rendered ~content~；
+- 更新 ledger/session legacy string migration；
+- 删除旧的并行 permission/schema maps，不保留 compatibility wrapper。
+
+退出门槛：native request tool schemas 与基线语义等价；所有实现只返回新 result；
+invalid output 在 provider callback 前失败。
+
+** M2：Per-epoch request 与多模型基础
+
+目标：同一 turn 的后续 sample 可以安全换 route/header。
+
+任务：
+
+- loop 从持有 frozen request 改为持有 request builder；
+- 每个 sample 重新解析 route、system、effective tools；
+- 写入 durable sample item/full header；
+- continuation 记录 origin header 并按 fingerprint 复用或丢弃；
+- observer/log 显示 epoch、backend/model 与 fresh/continuation；
+- 单模型 policy 走新路径，删除旧 ~request-for-current-session~ 保留字段的合约。
+
+退出门槛：mock backend 在一个 turn 内得到 A→B route 序列；A 的 continuation 不会
+在 B 上调用；single/native fixtures 不变。
+
+** M3：Native plan-execute 纵向切片
+
+目标：先隔离验证 phase/model switching，不混入 Code Runtime 风险。
+
+任务：
+
+- 加入 validated ~loop-policy~、phase agent resolution 和 ~finish_plan~；
+- plan/execute runtime prompt 使用 Org resources；
+- 实现 approval、pending transition、approved-plan context 与 failure semantics；
+- 添加两个 mock models：plan model 调 read + finish，execute model 调 write + final；
+- 覆盖 deny、revision after denied approval、direct completion、duplicate finish、cancel。
+
+退出门槛：一个 ledger turn 中按顺序记录 plan sample、finish tool、phase transition、
+execute sample 和 final assistant；没有第二个 runtime submission。
+
+** M4：Reentrant nested executor
+
+目标：在没有 Node runtime 前先证明 nested permission pipeline 不死锁。
+
+任务：
+
+- 从 orchestrator 提取 spec-based execute-one core；
+- 建立 run-owned serial nested queue 和 immutable capability snapshot；
+- 增加 parent/child call correlation、deferred context 和 late-callback fence；
+- 使用 fake in-process Code Runtime 覆盖成功、失败、ask、deny、cancel、递归拒绝；
+- 明确 outer ~run_code~ permission 与每个 nested permission 是两次独立决策。
+
+退出门槛：fake program 能连续调用三个工具并 settle；审批等待期间 Emacs event loop
+仍可推进；取消后无 ledger/file late mutation。
+
+** M5：Code presentation 与 Node runtime
+
+目标：交付可选 ~code~ / ~both~ projection。
+
+任务：
+
+- 实现稳定 SDK 生成和 ~run_code~ wire schema；
+- 实现 Node worker JSON protocol、limits、output capture 和 process cleanup；
+- 将 nested value/error 映射为 program result/~ToolCallError~；
+- 打包 runtime asset，更新 source manifest、melpazoid recipe 和覆盖测试；
+- code/both 缺 runtime 时做 request preflight failure；native 无 Node 时照常工作。
+
+退出门槛：真实 Node subprocess 完成组合读取、条件分支和返回；code wire 只有
+~run_code~；both 同时包含两种 projection；打包后的安装副本可以找到 worker。
+
+** M6：多模型 × PTC 集成
+
+目标：每个 phase 可以独立选择 agent/model/presentation。
+
+任务：
+
+- 覆盖 plan/native → execute/code；
+- 覆盖 plan/code 中 nested ~finish_plan~ 及 approved-plan deferred context；
+- 确认 phase switch 总是 fresh request，并准确记录两份 header；
+- 验证 Action exact tools、skills tool requirements 和 permission intersections；
+- 验证 child agent、isolated Action、Doctor 均未获得隐式 Code Runtime。
+
+退出门槛：一个真实或 deterministic mock turn 中，plan model 与 execute model
+不同，execute model 只看到 ~run_code~，但 nested executor 只能调用 execute phase
+有效能力集。
+
+** M7：性能、live smoke 与文档收口
+
+目标：用数据决定默认建议，而不是先假设 PTC 一定节省成本。
+
+任务：
+
+- 运行下面的 benchmark matrix；
+- isolated daemon 中执行 non-tool、native tool、multi-step、plan-execute、code mode；
+- 检查 ~*magent-log*~、~*Messages*~、session JSON 和取消；
+- 更新正式双语 ARCHITECTURE/AGENT_WORKFLOW/ONBOARDING/AGENTS；
+- 将本文状态改为 implemented 或拆出仍未完成的明确 backlog。
+
+退出门槛：全部 CI/build/package/live gates 通过，且没有未归属的兼容路径。
+
+* 测试与验收矩阵
+
+** Unit tests
+
+- tool spec name/schema/output validation；
+- native gptel projection 与 SDK escaping/order；
+- canonical JSON roots：null、boolean、number、string、array、object；
+- non-JSON、duplicate key/ID、oversized protocol/output failure；
+- route precedence 与 durable serialization；
+- policy validation、unknown/cyclic phase agent；
+- header equality/fingerprint 和 continuation decision；
+- session v1→v2 legacy migration 与二次加载幂等。
+
+** Loop integration tests（mock gptel）
+
+| 场景 | 预期 |
+|---+---|
+| single/no tools | 一个 sample，当前行为等价 |
+| single/tool continuation | header 相同则 continuation |
+| system/tools 改变 | fresh request，写新 header |
+| model A→B | fresh request，assistant source 分别记录 A/B |
+| plan finish denied | 留在 plan，模型收到 structured error |
+| plan finish approved | 下一 epoch execute，plan continuation 不执行 |
+| plan direct completion | turn failed: ~plan-not-finished~ |
+| cancellation before switch | sample/tool cancelled，无 execute request |
+| cancellation after switch | execute sample cancelled，无 late mutation |
+| provider retry | 同 epoch/phase/header；不得读取中途 UI model change |
+
+** Tool/Code Runtime integration tests
+
+- code wire 只含 ~run_code~；伪造 native direct call 返回 unknown/denied；
+- nested allow/ask/deny 都经过 audit；
+- Action exact allowlist 外工具既不进 SDK，也不能 nested dispatch；
+- run_code 不能递归调用自己；
+- 三个串行 nested calls 不死锁；
+- program catch ~ToolCallError~ 后可以继续；
+- wall timeout kill worker，并 settle pending nested calls；
+- output/log cap 保留一个明确 terminal diagnostic；
+- worker exit、invalid JSON protocol、duplicate settle fail closed；
+- approved plan context 在 outer result 后出现，顺序可重建；
+- process dispose 后无存活 worker 和 callback。
+
+** Persistence/UI tests
+
+- sample item/full header JSON round-trip；
+- replay 不把 sample item 投影进 provider messages；
+- legacy session 所有原始 message/tool content 字节保留；
+- observer sequence：sample-start → tool events → sample-end → phase-transition；
+- audit record 带 epoch/phase/profile/parent-child call ids；
+- agent-shell 普通 transcript 不出现伪造 tool/thought 卡片。
+
+** Build 与 packaging gates
+
+每个 Elisp 实现里程碑至少运行：
+
+#+begin_src sh
+make compile
+make lint
+make test-unit
+#+end_src
+
+跨 loop/runtime 或打包里程碑运行：
+
+#+begin_src sh
+make test
+make coverage
+#+end_src
+
+新增 production Elisp、prompt 或 runtime asset 时同步更新：
+
+- ~magent.el~ lazy bootstrap/dependency graph；
+- ~prompts/manifest.txt~；
+- ~.github/workflows/melpazoid.yml~ recipe；
+- production source manifest 与对应 regression tests；
+- coverage loader。
+
+melpazoid 必须使用新 staged package 和当前 checker，在 ~--network=none~ 下完成
+packaged ~load~。仅 source checkout compile 不能证明 worker/prompt asset 已被打包。
+
+** Live Emacs gates
+
+按照 ~AGENTS.md~ 使用隔离 daemon，不触碰主 Emacs：
+
+1. reload 当前 checkout，并确认 source summary 指向该 checkout；
+2. 清 session；
+3. ~你好~：single/no-tool；
+4. ~帮我看下 emacs 里面有多少 buffer~：native ~emacs_eval~；
+5. 一个三工具组合任务：code/nested executor；
+6. 一个 plan-agent → execute-agent 任务：不同 model；
+7. 在 plan approval、nested tool 和 provider stream 三个位置分别 cancel；
+8. 检查 active agent-shell buffer、~*magent-log*~、~*Messages*~ 和 session JSON。
+
+真实 provider 验证不要求把 key 写入 fixture；使用本机已有 gptel 配置。若没有两个
+可用模型，correctness gate 用两个 mock backend，live smoke 用同 backend 两个 model
+或只验证 fresh request boundary，并明确记录限制。
+
+* Benchmark 计划
+
+** Workloads
+
+1. 单次读取并回答；
+2. 三个独立只读查询；
+3. 读取 → 条件判断 → 第二次读取；
+4. 搜索 → 编辑 → 测试；
+5. plan → 批准 → 多步 execute；
+6. nested tool failure 后 program recovery；
+7. 大 tool output 和长 session。
+
+** 组合矩阵
+
+| Loop policy | Presentation | Model |
+|---+---+---|
+| single | native | baseline model |
+| single | code | baseline model |
+| single | both | baseline model |
+| plan-execute | native/native | plan model + execute model |
+| plan-execute | native/code | plan model + execute model |
+| plan-execute | code/code | plan model + execute model |
+
+** 采集指标
+
+- task success / artifact correctness；
+- provider sampling request 数；
+- native/nested tool 调用数；
+- input/output/reasoning tokens（provider 提供时）；
+- total wall time、approval wait、tool time、model time；
+- continuation 命中与因 header/phase 改变而 fresh request 的次数；
+- system + wire schema/SDK 字节；
+- session JSON 增长；
+- cancellation settlement latency；
+- worker peak/残留进程（可观测时）。
+
+Correctness、权限和可恢复性是发布 gate；token/latency 是选择默认 presentation 的
+证据。只有至少三个独立 tool operation 的 workload 才适合评价 PTC round-trip
+收益；单 tool 任务不预期 code mode 更快。
+
+* 失败语义
+
+| 失败 | 行为 |
+|---+---|
+| unknown phase agent / missing model | provider sampling 前 fail turn |
+| code/both 无 runtime | provider sampling 前 fail turn |
+| invalid tool args/output | structured tool failure；body 不执行或 value 不返回 |
+| nested permission deny | ~ToolCallError~；program 可 catch；audit 必须记录 |
+| approval provider 失败 | fail closed，不执行 tool |
+| ~finish_plan~ deny | 留在 plan phase |
+| plan 未 finish 就 completion | turn failed，无隐藏请求 |
+| incompatible continuation | 静默丢弃 continuation，fresh request；log reason |
+| worker protocol violation | kill worker，outer ~run_code~ failed |
+| cancellation | abort provider/runtime/nested queue；late callbacks ignored |
+| session migration 不可无损 | 停止加载并报告，不覆盖原文件 |
+
+错误必须靠近 owner：route/preflight 在 request builder；schema/result 在 tool contract；
+permission 在 orchestrator；worker/protocol 在 Code Runtime；turn terminal state在 loop。
+
+* 破坏性变更与删除清单
+
+本计划明确允许 project-owned breaking change，优先删除旧合约而不是长期双轨：
+
+- 删除“一个 request object 冻结整个 turn route/system/tools”的 loop contract；
+- 删除 ~magent-agent-loop-request-for-current-session~ 保留旧 header 字段的职责；
+- canonical catalog 不再以 ~gptel-tool~ struct 作为 domain source；gptel tool 只是
+  native projection；
+- tool result 不再以一个 string 同时承担 canonical value、error 和 UI content；
+- request context 不再用一个 frozen backend/model scalar 控制所有 epoch；
+- 不提供旧 result constructor 或旧 loop continuation 的 compatibility wrapper；
+- session 只做一次无损 v1→v2 migration，不长期双写 old/new sample state。
+
+不会顺便删除与本目标无关的 ~options~、~steps~ 或其他历史字段；它们若要清理，应
+由独立变更证明范围和迁移。Breaking-change 授权不是扩大任务范围的理由。
+
+* Definition of Done
+
+全部条件同时满足才算完成：
+
+- [ ] 一个 session/turn/loop 的 sample 记录显示 plan model 与 execute model 不同；
+- [ ] ~finish_plan~ 是唯一 plan→execute 自动转换路径；
+- [ ] phase 转换不会发生在同一 tool batch 或同一 ~run_code~ 中途；
+- [ ] 旧 provider continuation 不会跨 phase/model/header 复用；
+- [ ] native/code/both 来自同一个 effective capability set；
+- [ ] nested calls 全部经过 permission、approval、audit、cancellation；
+- [ ] code mode 中 direct native hallucination 不能执行；
+- [ ] canonical JSON value 与 provider/UI content 分离并通过 schema validation；
+- [ ] legacy session 单向无损迁移，失败不覆盖；
+- [ ] ordinary single/native、Action、child-agent、Doctor 路径无行为回归；
+- [ ] compile、lint、unit、live smoke、coverage、melpazoid 全绿；
+- [ ] benchmark 数据已记录，默认建议有证据；
+- [ ] 稳定架构结论已并入双语正式文档，本文状态已更新。
+
+* 开放问题与决策时点
+
+以下问题不阻塞 M0–M3，必须在指定里程碑用 prototype/measurement 决定：
+
+1. *完整 header 每 sample 的磁盘成本*：M2 后测量；只有实际过大才引入
+   content-addressed dedup。
+2. *Node 最低版本*：M5 prototype 根据所用标准 API 决定；优先普通 JavaScript 和
+   无 npm dependency，不为 TypeScript stripping 强抬版本。
+3. *Nested concurrency*：M7 benchmark 证明串行是主要瓶颈、并且 tool spec 有可靠
+   concurrency-safety metadata 后另立设计；不塞入 v1。
+4. *Agent-shell phase 可视化*：先交付 UI-neutral events 和 session inspector；只有
+   ACP 有不歪曲语义的标准 update 时再增加 visual projection。
+5. *Plan review richer feedback*：v1 使用现有 approval。若真实使用证明需要
+   “keep planning + free-text feedback”，再设计独立 review interaction；不把 permission
+   approval 扩成通用问答系统。
+
+这些问题不能通过宽泛 config 或通用 plugin hook提前“解决”。每个扩展必须由第二个
+真实 consumer、失败证据或 benchmark 证明必要性。

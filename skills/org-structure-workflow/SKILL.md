@@ -3,7 +3,7 @@ name: org-structure-workflow
 title: Org Structure Workflow
 description: Work with org-mode headings, subtrees, drawers, lists, todo keywords, and source blocks as structured editor objects.
 type: instruction
-tools: emacs_eval, read_file, read_buffer, edit_file
+tools: emacs_read, emacs_eval_live, read_file, edit_file
 capability: true
 source: package
 package: org
@@ -21,4 +21,4 @@ Treat Org files as structured documents. Preserve heading hierarchy, drawers, pr
 
 Prefer org-mode APIs for subtree movement, heading inspection, and agenda semantics when live Emacs context is available.
 
-Use `read_buffer` for unsaved Org text and `read_file` for saved disk state.
+Use `read_file` with `source=live-buffer` for unsaved Org text and `source=disk` for saved disk state.

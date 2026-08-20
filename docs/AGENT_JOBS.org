@@ -90,7 +90,7 @@ but saved job metadata, result/error state, and transcripts remain persisted.
 This lifecycle intentionally preserves Magent's Emacs-native workflow:
 
 - live Emacs buffers
-- ~emacs_eval~
+- isolated ~emacs_eval~, trusted ~emacs_read~, and explicit ~emacs_eval_live~
 - agent-shell UI
 - project-scoped sessions
 - gptel transport

@@ -40,7 +40,8 @@
    :permission (magent-permission-merge
                 (magent-permission-defaults)
                 (magent-permission-from-config
-                 '((edit
+                 '((emacs_eval_live . deny)
+                   (edit
                     ("*" . deny)
                     (".magent/plan/*.md" . allow)))))))
 

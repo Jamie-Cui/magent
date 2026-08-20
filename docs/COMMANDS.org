@@ -24,6 +24,7 @@ Type a slash command as the prompt in the Magent agent-shell buffer:
 /summarize src/session persistence and replay
 /fix focus on the failing session persistence test
 /compact preserve exact filenames and remaining failures
+/authority
 /skills
 /$code-review focus on the queue
 #+end_example
@@ -44,6 +45,7 @@ provider submission.
 | ~/summarize~ | Summarize the project into org-roam   | Creates or updates one canonical Org note |
 | ~/test~    | Run and interpret relevant tests        | Runs focused tests; may fix an in-scope failure when appropriate |
 | ~/compact~ | Summarize the current conversation      | Replaces older model context with a continuation summary |
+| ~/authority~ | Show effective tool authority | Reports exposure, rule/override source, approval policy, and execution boundary without a provider request |
 | ~/skills~  | List instruction skills in this session scope | Local, provider-free discovery |
 | ~/doctor~  | Diagnose Magent and current runtime state | Uses bounded probes and one sanitized tool-free request |
 | ~/memory-init~ | Build Emacs profile memory | Uses an isolated Action session and confirmation |
@@ -56,6 +58,13 @@ Uses the hidden, tool-free compaction agent to produce a continuation summary.
 After it succeeds, future turns reuse that summary instead of the older model
 context. The visible transcript remains available in the current agent-shell
 buffer. A failed compaction leaves the previous context unchanged.
+
+** ~/authority~
+
+Returns the effective catalog view for the current session agent. Each row
+shows the permission key, final decision, whether the tool is exposed, the
+rule or session-override source, resource sub-rules, approval policy, and
+whether execution happens in the host, a child Emacs, or the live Emacs.
 
 ** ~/explain~
 
@@ -166,7 +175,7 @@ command. The bundled one-turn prompt Actions are data entries in
       :skills '("code-review")
       :agent 'build
       :append-argument-p t
-      :tools '(read_file read_buffer grep bash))))
+      :tools '(read_file grep bash read_tool_output))))
 
 (magent-action-register
  "my-review"

@@ -3,7 +3,7 @@ name: emacs-hook-debugging
 title: Emacs Hook, Keymap, And Advice Debugging
 description: Diagnose Emacs hook ordering, key binding shadowing, remaps, and advice-related behavior.
 type: instruction
-tools: emacs_eval
+tools: emacs_read, emacs_eval_live
 capability: true
 family: emacs-debugging
 source: builtin

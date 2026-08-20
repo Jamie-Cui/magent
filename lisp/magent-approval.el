@@ -162,12 +162,22 @@ closures, tool arguments, or prompt/command bodies."
      (when audit-context
        (list :audit-context audit-context)))))
 
+(defun magent-approval-normalize-decision (request decision)
+  "Normalize provider DECISION against REQUEST's approval policy."
+  (if (and (eq (plist-get request :approval-policy) 'once-only)
+           (eq decision 'allow-session))
+      'allow-once
+    decision))
+
 (defun magent-approval-resolve-request (request-id decision)
   "Resolve REQUEST-ID with DECISION and invoke its callback.
 Return non-nil when a pending request was found."
   (when-let* ((entry (gethash request-id magent-approval--pending-requests)))
     (unless (memq decision magent-approval--decisions)
       (error "Invalid Magent approval decision: %S" decision))
+    (setq decision
+          (magent-approval-normalize-decision
+           (plist-get entry :request) decision))
     (let* ((callback (plist-get entry :callback))
            (provider (plist-get entry :provider))
            (completed-entry (list :request
@@ -237,20 +247,25 @@ Returns the assigned request id."
   "Request local approval for REQUEST, then resolve it."
   (let* ((request-id (plist-get request :request-id))
          (tool-name (plist-get request :tool-name))
+         (once-only (eq (plist-get request :approval-policy) 'once-only))
          (summary (plist-get request :summary))
          (timer
           (run-at-time
            0 nil
-           (lambda (request-id tool-name summary)
+           (lambda (request-id tool-name summary once-only)
              (magent-approval--local-forget-prompt-timer request-id)
              (when (magent-approval-pending-request request-id)
                (let* ((summary (or summary ""))
-                      (prompt (format "magent: allow %s%s? [y]es/[n]o/[A]lways/[D]eny always: "
+                      (prompt (format (if once-only
+                                          "magent: allow %s%s once? [y]es/[n]o/[D]eny always: "
+                                        "magent: allow %s%s? [y]es/[n]o/[A]lways/[D]eny always: ")
                                       tool-name
                                       (if (string-empty-p summary)
                                           ""
                                         (format " (%s)" summary))))
-                      (choice (read-char-choice prompt '(?y ?n ?A ?D))))
+                      (choice (read-char-choice
+                               prompt
+                               (if once-only '(?y ?n ?D) '(?y ?n ?A ?D)))))
                  (magent-approval-resolve-request
                   request-id
                   (pcase choice
@@ -258,7 +273,7 @@ Returns the assigned request id."
                     (?n 'deny-once)
                     (?A 'allow-session)
                     (?D 'deny-session))))))
-           request-id tool-name summary)))
+           request-id tool-name summary once-only)))
     (when timer
       (puthash request-id timer magent-approval--local-prompt-timers))))
 

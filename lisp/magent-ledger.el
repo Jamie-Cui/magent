@@ -14,9 +14,11 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'seq)
 (require 'subr-x)
 (require 'magent-config)
 (require 'magent-json)
+(require 'magent-log)
 (require 'magent-protocol)
 
 (defconst magent-thread-statuses
@@ -1149,8 +1151,149 @@ suffix.  Successful output keeps its prefix as before."
        preview-length
        omitted))))
 
-(defun magent-thread--model-visible-tool-result (result)
-  "Return structured RESULT bounded for model-visible tool history."
+(defun magent-tool-output-spill--safe-id (value kind)
+  "Return VALUE when it is a safe opaque KIND identifier."
+  (unless (and (stringp value)
+               (string-match-p
+                "\\`[[:alnum:]][[:alnum:]_.-]*\\'" value))
+    (error "Invalid tool output %s: %S" kind value))
+  value)
+
+(defun magent-tool-output-spill--scope-key (scope)
+  "Return a filesystem-safe identity key for exact session SCOPE."
+  (if (eq scope 'global)
+      "global"
+    (format "scope-%s"
+            (secure-hash 'sha256
+                         (prin1-to-string
+                          (magent-json-safe-value scope))))))
+
+(defun magent-tool-output-spill--ensure-private-directory (directory)
+  "Create DIRECTORY and restrict it to the current user."
+  (make-directory directory t)
+  (set-file-modes directory #o700)
+  directory)
+
+(defun magent-tool-output-spill--directory (scope session-id)
+  "Return the private spill directory for exact SCOPE and SESSION-ID."
+  (let* ((root
+          (magent-tool-output-spill--ensure-private-directory
+           (expand-file-name "tool-results/v2" magent-session-directory)))
+         (scope-directory
+          (magent-tool-output-spill--ensure-private-directory
+           (expand-file-name
+            (magent-tool-output-spill--scope-key scope) root)))
+         (directory
+          (expand-file-name
+           (magent-tool-output-spill--safe-id session-id "session id")
+           scope-directory)))
+    (magent-tool-output-spill--ensure-private-directory directory)))
+
+(defun magent-tool-output-spill--files (directory)
+  "Return regular spill files in DIRECTORY."
+  (seq-filter #'file-regular-p
+              (directory-files directory t "\\`[^.]" t)))
+
+(defun magent-tool-output-spill--cleanup-directory (directory)
+  "Apply TTL and session quota to an existing spill DIRECTORY."
+  (let ((now (float-time)))
+    (dolist (file (magent-tool-output-spill--files directory))
+      (when (> (- now (float-time (file-attribute-modification-time
+                                   (file-attributes file))))
+               magent-tool-output-spill-ttl)
+        (delete-file file)))
+    (let* ((files
+            (sort (magent-tool-output-spill--files directory)
+                  (lambda (left right)
+                    (time-less-p
+                     (file-attribute-modification-time (file-attributes left))
+                     (file-attribute-modification-time (file-attributes right))))))
+           (total (apply #'+ (mapcar #'file-attribute-size
+                                     (mapcar #'file-attributes files)))))
+      (while (and files (> total magent-tool-output-spill-session-max-bytes))
+        (let* ((file (pop files))
+               (size (file-attribute-size (file-attributes file))))
+          (delete-file file)
+          (setq total (- total size)))))))
+
+(defun magent-tool-output-spill-cleanup (scope session-id)
+  "Apply TTL and session quota to spilled results for SCOPE and SESSION-ID."
+  (magent-tool-output-spill--cleanup-directory
+   (magent-tool-output-spill--directory scope session-id)))
+
+(defun magent-tool-output-spill-put (scope session-id body)
+  "Persist full tool result BODY for SCOPE and SESSION-ID and return metadata.
+Return nil when BODY alone exceeds the configured session quota."
+  (let ((bytes (string-bytes body)))
+    (when (<= bytes magent-tool-output-spill-session-max-bytes)
+      (let* ((directory (magent-tool-output-spill--directory scope session-id))
+             (result-id (magent-protocol-generate-id "result"))
+             (target (expand-file-name (concat result-id ".txt") directory))
+             (temporary (make-temp-file
+                         (expand-file-name ".magent-result-" directory))))
+        (unwind-protect
+            (progn
+              (with-temp-buffer
+                (insert body)
+                (let ((coding-system-for-write 'utf-8-unix))
+                  (write-region (point-min) (point-max) temporary nil 'silent)))
+              (set-file-modes temporary #o600)
+              (rename-file temporary target t)
+              (setq temporary nil)
+              (magent-tool-output-spill-cleanup scope session-id)
+              (list :result-id result-id
+                    :original-characters (length body)
+                    :bytes bytes
+                    :sha256 (secure-hash 'sha256 body)))
+          (when (and temporary (file-exists-p temporary))
+            (delete-file temporary)))))))
+
+(defun magent-tool-output-spill-file (scope session-id result-id)
+  "Return the existing spill file for SCOPE, SESSION-ID, and RESULT-ID."
+  (magent-tool-output-spill-cleanup scope session-id)
+  (let* ((directory (magent-tool-output-spill--directory scope session-id))
+         (safe-result (magent-tool-output-spill--safe-id result-id "result id"))
+         (path (expand-file-name (concat safe-result ".txt") directory)))
+    (unless (and (file-regular-p path)
+                 (file-in-directory-p path directory))
+      (error "tool_result_not_found: %s" result-id))
+    path))
+
+(defvar magent-tool-output-spill--startup-cleaned nil
+  "Non-nil after stale spill directories were swept in this Emacs.")
+
+(defun magent-tool-output-spill-cleanup-all ()
+  "Sweep expired spilled results for every stored session once."
+  (unless magent-tool-output-spill--startup-cleaned
+    (setq magent-tool-output-spill--startup-cleaned t)
+    (let* ((root (expand-file-name "tool-results" magent-session-directory))
+           (v2-root (expand-file-name "v2" root)))
+      (when (file-directory-p v2-root)
+        (dolist (scope-directory (directory-files v2-root t "\\`[^.]" t))
+          (when (file-directory-p scope-directory)
+            (dolist (session-directory
+                     (directory-files scope-directory t "\\`[^.]" t))
+              (when (file-directory-p session-directory)
+                (condition-case nil
+                    (magent-tool-output-spill--cleanup-directory
+                     session-directory)
+                  (error nil)))))))
+      ;; Pre-v2 result ids intentionally do not migrate because they omitted
+      ;; exact scope and therefore cannot be attributed safely.
+      (when (file-directory-p root)
+        (dolist (legacy (directory-files root t "\\`[^.]" t))
+          (when (and (file-directory-p legacy)
+                     (not (equal (file-truename legacy)
+                                 (file-truename v2-root))))
+            (condition-case nil
+                (delete-directory legacy t)
+              (error nil))))))))
+
+(defun magent-thread-project-tool-result-for-model
+    (result &optional thread scope)
+  "Return a new model-visible projection of structured RESULT.
+When THREAD is non-nil, spill oversized full output under exact SCOPE before
+truncating it.  RESULT itself is not changed."
   (setq result (magent-tool-result-require result))
   (let* ((status (magent-tool-result-status-value result))
          (failed-p (not (eq status 'completed)))
@@ -1169,16 +1312,72 @@ suffix.  Successful output keeps its prefix as before."
                               (or (magent-tool-result-exit-code result)
                                   "unavailable"))))
          (max-length magent-tool-result-model-max-length)
+         ;; This tool already returns an explicit bounded character page.
+         ;; Re-projecting it would replace a usable cursor page with another
+         ;; spill id when users configure a very small global result limit.
+         (bounded-page-p
+          (member (magent-tool-result-name result)
+                  '("read_tool_output" read_tool_output)))
+         (oversized-p
+          (and (not bounded-page-p)
+               (numberp max-length)
+               (> max-length 0)
+               (> (length body) max-length)))
+         spill
+         spill-error
          (bounded-body
-          (if (and (numberp max-length)
-                   (> max-length 0)
-                   (> (length body) max-length))
+          (if oversized-p
               (magent-thread--truncate-model-visible-tool-result-body
                body failed-p max-length)
             (if failed-p body safe-result))))
-    (if failed-p
-        (concat header bounded-body)
-      bounded-body)))
+    (when (and thread oversized-p)
+      (condition-case err
+          (setq spill
+                (magent-tool-output-spill-put
+                 (or scope (magent-thread-scope thread) 'global)
+                 (magent-thread-session-id thread)
+                 body))
+        (error
+         (setq spill-error t)
+         (magent-log
+          "WARN tool result spill failed for session %s: %s"
+          (magent-thread-session-id thread)
+          (error-message-string err)))))
+    (when spill
+      (setq bounded-body
+            (format "%s\n\n[Full tool result available as %s via read_tool_output.]"
+                    bounded-body (plist-get spill :result-id))))
+    (when spill-error
+      (setq bounded-body
+            (format "%s\n\n[Full tool result unavailable: spill storage failed.]"
+                    bounded-body)))
+    (let ((visible (if failed-p (concat header bounded-body) bounded-body))
+          (metadata (copy-sequence (magent-tool-result-metadata result))))
+      (when spill
+        (setq metadata (plist-put metadata :spill spill)))
+      (when spill-error
+        (setq metadata (plist-put metadata :spill-error t)))
+      (magent-tool-result-create
+       :call-id (magent-tool-result-call-id result)
+       :name (magent-tool-result-name result)
+       :output visible
+       :success (eq status 'completed)
+       :status status
+       :error (and failed-p visible)
+       :exit-code (magent-tool-result-exit-code result)
+       :metadata metadata))))
+
+(defun magent-thread-bound-tool-result-for-model (result thread &optional scope)
+  "Mutate RESULT to its model-visible projection for THREAD and SCOPE."
+  (let ((projected
+         (magent-thread-project-tool-result-for-model result thread scope)))
+    (setf (magent-tool-result-output result)
+          (magent-tool-result-output projected)
+          (magent-tool-result-error result)
+          (magent-tool-result-error projected)
+          (magent-tool-result-metadata result)
+          (magent-tool-result-metadata projected))
+    result))
 
 (defun magent-thread-record-message
     (thread turn-id role content &optional phase metadata)
@@ -1251,14 +1450,14 @@ fail the item with a terminal journal event containing the final content."
       (magent-thread--update-timestamp thread now)))
   item)
 
-(defun magent-thread-record-tool-result
+(defun magent-thread-record-projected-tool-result
     (thread turn-id call-id name args result &optional metadata)
-  "Record a merged tool call/result lifecycle item in THREAD."
+  "Record already model-projected RESULT as a tool lifecycle item in THREAD."
   (let* ((safe-name (magent-json-safe-name name))
          (safe-args (magent-json-safe-tool-args args))
          (normalized (magent-tool-result-require result safe-name call-id))
          (status (magent-tool-result-status-value normalized))
-         (safe-result (magent-thread--model-visible-tool-result normalized))
+         (safe-result (magent-tool-result-output-string normalized))
          (result-metadata
           (append
            (when (magent-tool-result-exit-code normalized)
@@ -1289,6 +1488,15 @@ fail the item with a terminal journal event containing the final content."
        :output safe-result
        :metadata result-metadata))
     item))
+
+(defun magent-thread-record-tool-result
+    (thread turn-id call-id name args result &optional metadata scope)
+  "Project and record a merged tool call/result lifecycle item in THREAD.
+SCOPE overrides THREAD's scope for private spill storage."
+  (magent-thread-record-projected-tool-result
+   thread turn-id call-id name args
+   (magent-thread-project-tool-result-for-model result thread scope)
+   metadata))
 
 (provide 'magent-ledger)
 ;;; magent-ledger.el ends here
