@@ -35,7 +35,6 @@
                   "magent-capability" t t)
 (declare-function magent-capability-resolution-to-plist "magent-capability")
 (declare-function magent-capability-resolve "magent-capability")
-(declare-function magent-capability-resolve-for-turn "magent-capability")
 (declare-function magent-skills-get-instruction-prompts "magent-skills")
 (declare-function magent-skills-missing-tools "magent-skills")
 (declare-function magent-skills-dedupe-names "magent-skills")
@@ -118,7 +117,6 @@ idempotent so higher-level runtime error handling may safely repeat it."
         (when (eq (magent-thread-item-status item) 'in-progress)
           (magent-thread-fail-item thread item detail)))
       (magent-thread-fail-turn thread turn-id detail)
-      (magent-session-refresh-projections session)
       (condition-case err
           (magent-session-save-deferred-for-session
            session request-scope)
@@ -165,11 +163,11 @@ receives the same instruction-provenance and permission invariants."
                            runtime-policy))
                "\n\n")))
 
-(defun magent-agent-process
+(defun magent-agent--execute-turn
     (user-prompt &optional callback agent-info skill-names event-context
                  request-context capability-resolution text-callback request-live-p
                  request-state)
-  "Process USER-PROMPT through the AI agent using the Magent loop.
+  "Execute USER-PROMPT through the Magent-owned agent loop.
 CALLBACK is called with one final `magent-execution-result'.
 AGENT-INFO is the agent to use (defaults to session agent or registry default).
 SKILL-NAMES is a list of skill name strings to activate for this request.
@@ -234,13 +232,14 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                  (state-turn
                   (and state-turn-id
                        (magent-thread-find-turn thread state-turn-id))))
-            (if state-turn
-                (progn
-                  (magent-thread-record-user-message-if-needed
-                   thread state-turn-id user-prompt nil
-                   (list :source 'agent-process))
-                  (magent-session-refresh-projections session))
-              (magent-session-add-message session 'user user-prompt))
+            (unless state-turn
+              (setq state-turn
+                    (magent-thread-create-turn
+                     thread user-prompt nil (list :source 'agent-run-turn))
+                    state-turn-id (magent-thread-turn-id state-turn)))
+            (magent-thread-record-user-message-if-needed
+             thread state-turn-id user-prompt nil
+             (list :source 'agent-run-turn))
             (let* ((active-turn (magent-thread-active-turn
                                  (magent-session-thread-ledger session)))
                    (turn-id
@@ -253,8 +252,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                       turn-id))))
     (let* ((current-turn-id (and request-state
                                  (magent-request-context-turn-id request-state)))
-           (prompt-list (magent-session-to-gptel-prompt-list
-                         session current-turn-id))
+           (prompt-list (magent-session-context-view
+                         session 'provider current-turn-id))
            (agent-role-msg (magent-agent-info-prompt agent))
            (request-project-root
             (magent-agent--request-project-root request-context request-state))
@@ -455,7 +454,6 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                         thread item
                         :content (magent-thread-item-content item)
                         :metadata (magent-thread-item-metadata item))
-                       (magent-session-refresh-projections session)
                        (magent-session-save-deferred-for-session
                         session request-scope))
                      (setq reasoning-item nil)))
@@ -496,7 +494,6 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                 (magent-thread-fail-turn
                                  thread turn-id message))))
                            (setq assistant-item item)
-                           (magent-session-refresh-projections session)
                            (condition-case err
                                (magent-session-save-for-session
                                 session request-scope)
@@ -504,9 +501,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                               (magent-log
                                "ERROR immediate session save failed: %s"
                                (error-message-string err)))))
-                       (when (eq status 'completed)
-                         (magent-session-add-message
-                          session 'assistant transcript)))))
+                       (error "Turn %s is missing from its session ledger"
+                              turn-id))))
                   (emit-request-start
                    ()
                    (magent-lifecycle-events-emit
@@ -561,7 +557,6 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                    (when assistant-item
                      (setf (magent-thread-item-content assistant-item)
                            (copy-tree sample-assistant-content-before))
-                     (magent-session-refresh-projections session)
                      (magent-session-save-deferred-for-session
                       session request-scope)))
                   (continue-turn
@@ -769,7 +764,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
 
 (cl-defun magent-agent-run-turn
     (&key session prompt agent skills context observer request-context
-          approval-provider on-complete request-live-p)
+          approval-provider capability-resolution on-complete request-live-p)
   "Run one Magent turn for SESSION with PROMPT.
 This is the UI-neutral execution entry point.  OBSERVER receives
 Magent-native request events through REQUEST-CONTEXT.  ON-COMPLETE is
@@ -799,14 +794,14 @@ called with one final `magent-execution-result'."
           (or (magent-request-context-ui-visibility request-context)
               'none)
           (magent-request-context-live-p request-context) live-p)
-    (magent-agent-process
+    (magent-agent--execute-turn
      prompt
      on-complete
      agent
      skills
      nil
      context
-     nil
+     capability-resolution
      nil
      live-p
      request-context)))

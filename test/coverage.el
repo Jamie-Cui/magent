@@ -159,9 +159,6 @@
   (when (boundp 'magent-skills--builtin-dir)
     (setq magent-skills--builtin-dir
           (expand-file-name "skills" magent-coverage--root-directory)))
-  (when (boundp 'magent-capability--builtin-dir)
-    (setq magent-capability--builtin-dir
-          (expand-file-name "capabilities" magent-coverage--root-directory)))
   (dolist (file magent-coverage--test-files)
     (load (expand-file-name file magent-coverage--root-directory) nil t))
   (let* ((stats (ert-run-tests-batch t))

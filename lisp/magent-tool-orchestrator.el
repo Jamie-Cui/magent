@@ -71,25 +71,11 @@
     (funcall fn tool-spec arg-values decision source
              (magent-tool-orchestrator-request-context orchestrator))))
 
-(defun magent-tool-orchestrator--accepts-arity-p (function arity)
-  "Return non-nil when FUNCTION accepts ARITY arguments."
-  (pcase-let ((`(,minimum . ,maximum) (func-arity function)))
-    (and (<= minimum arity)
-         (or (eq maximum 'many)
-             (null maximum)
-             (and (numberp maximum) (>= maximum arity))))))
-
 (defun magent-tool-orchestrator--run
     (orchestrator tool-spec cb arg-values &optional resource-identity)
   "Run TOOL-SPEC through ORCHESTRATOR."
   (let ((function (magent-tool-orchestrator-run-tool-function orchestrator)))
-    ;; The fourth argument is a compatible extension: legacy/test runners that
-    ;; accept the historical three arguments continue to work, while the agent
-    ;; loop carries the frozen identity to the actual dequeue point.
-    (if (and resource-identity
-             (magent-tool-orchestrator--accepts-arity-p function 4))
-        (funcall function tool-spec cb arg-values resource-identity)
-      (funcall function tool-spec cb arg-values))))
+    (funcall function tool-spec cb arg-values resource-identity)))
 
 (defun magent-tool-orchestrator--finish-one
     (orchestrator tool-spec arg-values raw-call result)

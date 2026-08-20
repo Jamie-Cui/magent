@@ -93,6 +93,8 @@ If CONTROLLER is already aborted, run CLEANUP immediately."
   sampler
   session
   request-context
+  event-context
+  owns-event-context-p
   turn-id
   abort-controller
   tool-queue
@@ -100,51 +102,20 @@ If CONTROLLER is already aborted, run CLEANUP immediately."
   request-timeout-timer
   status
   text-chunks
+  sample-text-chunks
   reasoning-chunks
   tool-calls
+  tool-continuation
   usage
   stop-reason
   error
   result
   metadata)
 
-(defvar magent-agent-loop--event-contexts
-  (make-hash-table :test #'eq :weakness 'key)
-  "Lifecycle contexts keyed by loop identity without changing struct layout.")
-
-(defvar magent-agent-loop--context-ownership
-  (make-hash-table :test #'eq :weakness 'key)
-  "Lifecycle ownership markers keyed by loop identity.")
-
-(defvar magent-agent-loop--tool-continuations
-  (make-hash-table :test #'eq :weakness 'key)
-  "Provider continuation callbacks keyed by loop identity.")
-
-(defvar magent-agent-loop--sample-text-chunks
-  (make-hash-table :test #'eq :weakness 'key)
-  "Current provider sample text chunks keyed by loop identity.")
-
-(defun magent-agent-loop-tool-continuation (loop)
-  "Return LOOP's pending provider continuation, if any."
-  (gethash loop magent-agent-loop--tool-continuations))
-
 (defun magent-agent-loop-set-tool-continuation (loop continuation)
   "Set LOOP's pending provider CONTINUATION and return it."
-  (if continuation
-      (puthash loop continuation magent-agent-loop--tool-continuations)
-    (remhash loop magent-agent-loop--tool-continuations))
+  (setf (magent-agent-loop-tool-continuation loop) continuation)
   continuation)
-
-(defun magent-agent-loop-event-context (loop)
-  "Return LOOP's captured lifecycle context, if any."
-  (gethash loop magent-agent-loop--event-contexts))
-
-(defun magent-agent-loop-owns-event-context-p (loop)
-  "Return non-nil when LOOP owns its lifecycle context.
-Loops created before this metadata existed retain the historical owned
-behavior, which is safe because lifecycle completion is idempotent."
-  (let ((marker (gethash loop magent-agent-loop--context-ownership 'missing)))
-    (if (eq marker 'missing) t (eq marker 'owned))))
 
 (defun magent-agent-loop-create (&rest args)
   "Create a `magent-agent-loop' from keyword ARGS.
@@ -154,30 +125,24 @@ SAMPLER is a function called with REQUEST by `magent-agent-loop-start'."
   (let ((sampler (plist-get args :sampler)))
     (when (and sampler (not (functionp sampler)))
       (error "Agent loop sampler is not callable: %S" sampler))
-    (let ((loop
-           (magent-agent-loop--create
-            :request (plist-get args :request)
-            :sampler sampler
-            :session (plist-get args :session)
-            :request-context (plist-get args :request-context)
-            :turn-id (plist-get args :turn-id)
-            :abort-controller (or (plist-get args :abort-controller)
-                                  (magent-agent-loop-abort-controller-create))
-            :tool-queue (or (plist-get args :tool-queue)
-                            (magent-agent-loop-tool-queue-create))
-            :status (or (plist-get args :status) 'created)
-            :text-chunks nil
-            :reasoning-chunks nil
-            :tool-calls nil
-            :metadata (plist-get args :metadata))))
-      (puthash loop (plist-get args :event-context)
-               magent-agent-loop--event-contexts)
-      (puthash loop
-               (if (plist-get args :owns-event-context-p)
-                   'owned
-                 'inherited)
-               magent-agent-loop--context-ownership)
-      loop)))
+    (magent-agent-loop--create
+     :request (plist-get args :request)
+     :sampler sampler
+     :session (plist-get args :session)
+     :request-context (plist-get args :request-context)
+     :event-context (plist-get args :event-context)
+     :owns-event-context-p (and (plist-get args :owns-event-context-p) t)
+     :turn-id (plist-get args :turn-id)
+     :abort-controller (or (plist-get args :abort-controller)
+                           (magent-agent-loop-abort-controller-create))
+     :tool-queue (or (plist-get args :tool-queue)
+                     (magent-agent-loop-tool-queue-create))
+     :status (or (plist-get args :status) 'created)
+     :text-chunks nil
+     :sample-text-chunks nil
+     :reasoning-chunks nil
+     :tool-calls nil
+     :metadata (plist-get args :metadata))))
 
 (defun magent-agent-loop-text (loop)
   "Return accumulated assistant text for LOOP."
@@ -188,28 +153,26 @@ SAMPLER is a function called with REQUEST by `magent-agent-loop-start'."
   "Return assistant text accumulated for LOOP's current provider sample."
   (apply #'concat
          (nreverse
-          (copy-sequence
-           (gethash loop magent-agent-loop--sample-text-chunks)))))
+          (copy-sequence (magent-agent-loop-sample-text-chunks loop)))))
 
 (defun magent-agent-loop-begin-sample (loop)
   "Start a new provider sample for LOOP.
 Turn-wide text remains available through \`magent-agent-loop-text', while the
 terminal result is reset to the text produced by the new sample."
-  (remhash loop magent-agent-loop--sample-text-chunks)
-  (setf (magent-agent-loop-result loop) nil)
+  (setf (magent-agent-loop-sample-text-chunks loop) nil
+        (magent-agent-loop-result loop) nil)
   loop)
 
 (defun magent-agent-loop-discard-sample-text (loop)
   "Discard LOOP's current sample text from its turn transcript.
 This is used when textual tool syntax was streamed as assistant text before
 being normalized into structured tool calls."
-  (let ((count (length
-                (gethash loop magent-agent-loop--sample-text-chunks))))
+  (let ((count (length (magent-agent-loop-sample-text-chunks loop))))
     (when (> count 0)
       (setf (magent-agent-loop-text-chunks loop)
             (nthcdr count (magent-agent-loop-text-chunks loop)))))
-  (remhash loop magent-agent-loop--sample-text-chunks)
-  (setf (magent-agent-loop-result loop) nil)
+  (setf (magent-agent-loop-sample-text-chunks loop) nil
+        (magent-agent-loop-result loop) nil)
   loop)
 
 (defun magent-agent-loop-reasoning (loop)
@@ -243,10 +206,7 @@ being normalized into structured tool calls."
     ('text-delta
      (let ((text (or (magent-llm-event-text event) "")))
        (push text (magent-agent-loop-text-chunks loop))
-       (puthash loop
-                (cons text
-                      (gethash loop magent-agent-loop--sample-text-chunks))
-                magent-agent-loop--sample-text-chunks))
+       (push text (magent-agent-loop-sample-text-chunks loop)))
      (setf (magent-agent-loop-status loop) 'streaming))
     ('reasoning-delta
      (push (or (magent-llm-event-text event) "")
@@ -601,15 +561,14 @@ across Magent's own serial tool queue without claiming OS-level isolation."
   "Record a started tool item for LOOP."
   (when-let* ((session (magent-agent-loop-session loop))
               (thread (magent-session-thread-ledger session))
-              (turn-id (magent-agent-loop--ensure-turn-id loop thread)))
+              (turn-id (magent-agent-loop--require-turn-id loop thread)))
     (magent-thread-start-item
      thread turn-id 'tool
      :id call-id
      :call-id call-id
      :name name
      :input args-plist
-     :metadata (list :source 'tool-dispatch))
-    (magent-session-refresh-projections session)))
+     :metadata (list :source 'tool-dispatch))))
 
 (defun magent-agent-loop--tool-result-metadata (raw-call)
   "Return ledger metadata extracted from RAW-CALL."
@@ -620,20 +579,14 @@ across Magent's own serial tool queue without claiming OS-level isolation."
               (append metadata (list key (plist-get raw-call key))))))
     metadata))
 
-(defun magent-agent-loop--ensure-turn-id (loop thread)
-  "Return LOOP's current turn id, creating a synthetic turn in THREAD if needed."
+(defun magent-agent-loop--require-turn-id (loop thread)
+  "Return LOOP's current turn id, requiring it to exist in THREAD."
   (let ((turn-id (or (magent-agent-loop-turn-id loop)
                      (and (magent-agent-loop-request-context loop)
                           (magent-request-context-turn-id
-                           (magent-agent-loop-request-context loop)))
-                     (and (magent-thread-active-turn thread)
-                          (magent-thread-turn-id
-                           (magent-thread-active-turn thread))))))
-    (unless turn-id
-      (let ((turn (magent-thread-create-turn
-                   thread nil nil (list :synthetic t
-                                         :source 'agent-loop-tool))))
-        (setq turn-id (magent-thread-turn-id turn))))
+                           (magent-agent-loop-request-context loop))))))
+    (unless (and turn-id (magent-thread-find-turn thread turn-id))
+      (error "Agent loop requires an existing ledger turn"))
     (setf (magent-agent-loop-turn-id loop) turn-id)
     (when (magent-agent-loop-request-context loop)
       (setf (magent-request-context-turn-id
@@ -720,8 +673,7 @@ across Magent's own serial tool queue without claiming OS-level isolation."
   (magent-tool-orchestrator-create
    :permission permission
    :request-context request-context
-   :run-tool-function (lambda (tool-spec callback arg-values
-                               &optional resource-identity)
+   :run-tool-function (lambda (tool-spec callback arg-values resource-identity)
                         (magent-agent-loop-run-tool
                          loop request-context tool-spec callback arg-values
                          resource-identity))
@@ -744,7 +696,7 @@ across Magent's own serial tool queue without claiming OS-level isolation."
   "Record RESULT for LOOP, respecting whether it is already PROJECTED-P."
   (when-let* ((session (magent-agent-loop-session loop)))
     (let* ((thread (magent-session-thread-ledger session))
-           (turn-id (magent-agent-loop--ensure-turn-id loop thread))
+           (turn-id (magent-agent-loop--require-turn-id loop thread))
            (call-id (or (plist-get raw-call :id)
                         (plist-get raw-call :call-id)
                         (and (fboundp 'magent-lifecycle-events-generate-id)
@@ -762,8 +714,7 @@ across Magent's own serial tool queue without claiming OS-level isolation."
        (magent-agent-loop--tool-name tool-spec raw-call)
        (magent-agent-loop--tool-args-plist tool-spec arg-values raw-call)
        result
-       (magent-agent-loop--tool-result-metadata raw-call))
-      (magent-session-refresh-projections session)))
+       (magent-agent-loop--tool-result-metadata raw-call))))
   loop)
 
 (defun magent-agent-loop-record-tool-result
@@ -1139,9 +1090,8 @@ session, the existing request prompt is reused."
       (error "Agent loop requires a magent-llm-request"))
     (magent-llm-request-create
      :prompt (if-let* ((session (magent-agent-loop-session loop)))
-                 (magent-session-to-gptel-prompt-list
-                  session
-                  (magent-agent-loop-turn-id loop))
+                 (magent-session-context-view
+                  session 'provider (magent-agent-loop-turn-id loop))
                (magent-llm-request-prompt request))
      :system (magent-llm-request-system request)
      :tools (magent-llm-request-tools request)
@@ -1237,7 +1187,6 @@ provider request has emitted no event for `magent-request-timeout' seconds."
               (magent-thread-interrupt-turn thread turn-id "User aborted")
               (setq changed t)))
           (when changed
-            (magent-session-refresh-projections session)
             (magent-session-save-deferred-for-session
              session
              (when-let* ((request-context

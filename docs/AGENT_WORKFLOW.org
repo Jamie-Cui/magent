@@ -3,10 +3,9 @@
 #+magent_alt_url: /AGENT_WORKFLOW.zh.html
 #+options: toc:nil num:nil
 
-Magent now models the agent loop as an explicit ~thread -> turn -> item~
-ledger. This is the source of truth for agent workflow state. Legacy
-session ~messages~ remain as a derived projection for gptel prompt
-construction and migration.
+Magent models the agent loop as an explicit ~thread -> turn -> item~ ledger.
+This is the sole source of truth for agent workflow state. Transcript and
+provider context are named read-only projections of that ledger.
 
 * Codex Alignment
 
@@ -123,7 +122,7 @@ Persistence is ~snapshot + journal~.
   thread, turns, and items so resume does not need to replay from the
   beginning every time.
 
-Session JSON now writes both:
+Session JSON schema v6 writes both:
 
 #+begin_src json
 {
@@ -132,11 +131,9 @@ Session JSON now writes both:
 }
 #+end_src
 
-Older ~messages~ are kept as a projection for gptel prompt reuse and
-migration. On load, Magent prefers replaying
-~snapshot + journal~; if
-those fields are absent, it migrates legacy ~messages~ into a thread
-ledger.
+Loading requires the exact current schema, including ~snapshot + journal~.
+Unknown fields, missing nested ledger fields, and other schema versions are
+rejected rather than converted.
 
 Replay semantics:
 
@@ -154,7 +151,7 @@ is a bounded recovery tail. The two are not interchangeable.
    user message item immediately.
 3. When the submission actually starts, ~magent-runtime-api.el~ transitions the
    turn to ~in-progress~.
-4. ~magent-agent-process~ reuses that turn/user item idempotently instead
+4. ~magent-agent-run-turn~ reuses that turn/user item idempotently instead
    of duplicating the user message.
 5. ~magent-agent-loop~ consumes normalized LLM events.
 6. Text and reasoning deltas update materialized in-progress items in
@@ -165,7 +162,7 @@ is a bounded recovery tail. The two are not interchangeable.
 8. Tool dispatch starts ~tool~ items, records approval metadata when
    available, and updates those same items to ~completed~ or ~failed~.
 9. Tool output returns a continuation outcome such as ~tool-output~;
-   ~magent-agent-process~ owns the decision to rebuild the prompt from
+   ~magent-agent-run-turn~ owns the decision to rebuild the prompt from
    session history and start the next sampling request.  This keeps tool
    execution separate from turn continuation policy.
 10. An empty provider completion records ~empty-completion~ metadata and
@@ -227,8 +224,8 @@ areas:
   item statuses because the Emacs session file is the durable source of
   truth.
 - Codex rollout history stores response items and turn context items.
-  Magent stores a ledger ~snapshot + journal~; ~messages~ is the only
-  derived projection retained for gptel prompt reuse and migration.
+  Magent stores a ledger ~snapshot + journal~ and derives explicit transcript,
+  provider, compaction, and audit views for their respective consumers.
 - Codex provider/model plumbing is native to codex-core. Magent keeps
   ~gptel-request~ as the provider transport and normalizes gptel events
   before the Magent-owned loop consumes them.

@@ -3,7 +3,7 @@
 #+magent_alt_url: /AGENT_WORKFLOW.html
 #+options: toc:nil num:nil
 
-Magent 现在把 agent loop 建模为显式的 ~thread -> turn -> item~ ledger。这个 ledger 是 agent workflow state 的 source of truth。旧 session ~messages~ 仍然保留，但只作为 gptel prompt construction 和迁移的 derived projection。
+Magent 现在把 agent loop 建模为显式的 ~thread -> turn -> item~ ledger。这个 ledger 是 agent workflow state 的唯一事实来源。Provider prompt、transcript、compaction 和 audit 都是按需生成的命名 projection，不会作为第二份持久化状态。
 
 * Codex 对齐
 
@@ -77,9 +77,9 @@ Tool call 和 tool result 是同一个 item lifecycle，不是两条持久记录
 (:type tool :status completed :output "...")
 #+end_src
 
-这和旧的 ~tool-call~ + ~tool-output~ 分裂不同。为了 prompt reuse，Magent 仍会把 completed tool item 投影成 gptel historical ~(tool . PLIST)~ 形状。
+Tool item 在 provider prompt projection 中会转换成 gptel 所需的历史 ~(tool . PLIST)~ 形状。
 
-如果模型请求工具而结果稍后到达，Magent 按 ~call-id~ 更新同一个 item。如果旧路径只记录了 tool result，loop 会创建 synthetic turn，让 item 仍然有 durable turn parent。
+如果模型请求工具而结果稍后到达，Magent 按 ~call-id~ 更新同一个 item。所有 tool result 都必须归属于显式的当前 turn。
 
 * 持久化
 
@@ -88,7 +88,7 @@ Tool call 和 tool result 是同一个 item lifecycle，不是两条持久记录
 - ~journal~ ：内存中的 append-only event log，记录 ~turn-queued~ 、 ~turn-started~ 、 ~item-started~ 、 ~item-completed~ 、 ~turn-completed~ 等生命周期事件。Session 文件只保留由 ~magent-session-journal-max-events~ 控制的最近有界尾部；tool/permission 审计由 ~magent-audit.el~ 单独负责。
 - ~snapshot~ ：materialized full thread state。它保存当前 thread、turns 和 items，避免每次 resume 都从头 replay。
 
-Session JSON 同时写入两者：
+当前 session schema（version 6）同时写入两者：
 
 #+begin_src json
 {
@@ -97,7 +97,7 @@ Session JSON 同时写入两者：
 }
 #+end_src
 
-旧 ~messages~ 是 prompt reuse 和迁移用的 projection。加载时，Magent 优先 replay ~snapshot + journal~ ；若不存在则把 legacy ~messages~ 迁移成 thread ledger。
+加载器只接受完整、字段精确的 version 6 ~snapshot + journal~。缺少 ledger、版本不同、字段未知或嵌套 shape 无效的文件都会被拒绝；没有旧格式迁移或双写路径。
 
 Replay 语义：
 
@@ -112,12 +112,12 @@ Replay 语义：
 1. UI submission 进入 ~magent-runtime-api.el~ 。
 2. ~magent-runtime-api.el~ 创建 queued ledger turn，并立即记录 completed user message item。
 3. submission 真正开始时， ~magent-runtime-api.el~ 把 turn 转成 ~in-progress~ 。
-4. ~magent-agent-process~ 幂等复用该 turn/user item，不重复写用户消息。
+4. ~magent-agent-run-turn~ 幂等复用该 turn/user item，不重复写用户消息。
 5. ~magent-agent-loop~ 消费 normalized LLM events。
 6. Text 和 reasoning deltas 更新 snapshot 中 materialized in-progress items，但不会为每个 chunk 追加 journal event；terminal item event 携带最终内容。
 7. Tool-call events 累积到 provider-neutral ~tool-call-batch-end~ 。
 8. Tool dispatch 启动 ~tool~ items，记录 approval metadata，并把同一 item 更新为 ~completed~ 或 ~failed~ 。
-9. Tool output 返回 ~tool-output~ 等 continuation outcome； ~magent-agent-process~ 决定是否从 session history 重建 prompt 并继续 sampling。
+9. Tool output 返回 ~tool-output~ 等 continuation outcome； ~magent-agent-run-turn~ 决定是否从 session ledger 重建 prompt 并继续 sampling。
 10. Provider 明确完成但 assistant text 为空时，Magent 记录 ~empty-completion~ metadata 并结束本轮，不再请求模型。
 11. Assistant completion 记录 assistant message item，并完成 turn。
 12. Abort、failure 和 dropped queued submissions 分别把 turn 转成 ~interrupted~ 、 ~failed~ 或 ~dropped~ ；aborted turn 下的 in-progress items 标记为 ~cancelled~ 。

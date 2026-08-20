@@ -121,24 +121,24 @@ Bypass ignores rules and overrides, while once-only tools still ask."
    ;; More specific patterns must come before less specific ones.
    (cons 'read
          (list
-          (cons '* magent-permission-allow)
           (cons "*.env.example" magent-permission-allow)
           (cons "*.env" magent-permission-deny)
-          (cons "*.env.*" magent-permission-deny)))
+          (cons "*.env.*" magent-permission-deny)
+          (cons '* magent-permission-allow)))
    ;; File write requires confirmation, .env files denied
    (cons 'write
          (list
-          (cons '* magent-permission-ask)
           (cons "*.env.example" magent-permission-allow)
           (cons "*.env" magent-permission-deny)
-          (cons "*.env.*" magent-permission-deny)))
+          (cons "*.env.*" magent-permission-deny)
+          (cons '* magent-permission-ask)))
    ;; File edit: allowed by default, .env files denied
    (cons 'edit
          (list
-          (cons '* magent-permission-allow)
           (cons "*.env.example" magent-permission-allow)
           (cons "*.env" magent-permission-deny)
-          (cons "*.env.*" magent-permission-deny)))))
+          (cons "*.env.*" magent-permission-deny)
+          (cons '* magent-permission-allow)))))
 
 ;;; Permission resolution
 
@@ -306,32 +306,22 @@ depth."
       (string-match-p regexp (file-name-nondirectory normalized-file)))))
 
 (defun magent-permission--check-file-rules (rules file &optional project-root)
-  "Check if FILE matches any rule in RULES.
-RULES is an alist of (pattern . permission).
-Specific patterns are checked first; the wildcard \\='* or \"*\" is used as fallback.
+  "Return FILE's first matching decision from ordered RULES.
 Slash-free patterns match FILE's basename.  Patterns containing a slash match
 the canonical full path or its project-relative form when PROJECT-ROOT is
-  supplied.  Specific rules keep list-order, first-match semantics.  The bare
-catch-all `*' (as a symbol or string) remains an explicit fallback regardless
-of where it appears, for compatibility with existing Magent profiles."
+supplied.  The bare `*' catch-all participates at its declared position."
   (when (and file (stringp file))
-    (let ((wildcard-permission nil))
-      (catch 'found
-        (dolist (rule rules)
-          (let ((pattern (car rule))
-                (permission (cdr rule)))
-            (cond
-             ;; Save wildcard for fallback (symbol '* or string "*").
-             ((or (eq pattern '*) (equal pattern "*"))
-              (setq wildcard-permission permission))
-
-             ;; All specific rules keep their declared order.
-             ((stringp pattern)
-              (when (magent-permission--resource-pattern-match-p
-                     pattern file project-root)
-                (throw 'found permission))))))
-        ;; No specific match — use wildcard if present, else allow.
-        (or wildcard-permission magent-permission-allow)))))
+    (catch 'found
+      (dolist (rule rules)
+        (let ((pattern (car rule))
+              (permission (cdr rule)))
+          (when (or (eq pattern '*)
+                    (equal pattern "*")
+                    (and (stringp pattern)
+                         (magent-permission--resource-pattern-match-p
+                          pattern file project-root)))
+            (throw 'found permission))))
+      magent-permission-allow)))
 
 ;;; Permission checking
 

@@ -231,12 +231,12 @@ Should match one of the registered agent names."
   :type 'string
   :group 'magent)
 
-(defcustom magent-agent-shell-session-strategy 'new
+(defcustom magent-agent-shell-session-strategy 'prompt
   "Agent Shell session strategy used by Magent buffers.
 The setting applies both to Magent entry commands and to Magent selected from
-the generic agent-shell picker.  The default starts a fresh session immediately,
-avoiding agent-shell's global session picker.  Set this to `prompt' or `latest'
-when Magent should use agent-shell's session selection flow."
+the generic agent-shell picker.  By default, agent-shell prompts to start a new
+session or load a saved session from the current scope.  Set this to `new' to
+start immediately or `latest' to load the most recent session automatically."
   :type '(choice (const :tag "Always start new session" new)
                  (const :tag "Load latest session" latest)
                  (const :tag "Prompt for session" prompt))
@@ -372,7 +372,7 @@ cannot be resolved, bash tool calls fail without affecting other Magent tools."
 (defcustom magent-tool-result-model-max-length 12000
   "Maximum tool output body characters kept in model-visible history.
 Longer bodies are truncated before they are recorded in the session ledger,
-legacy messages, context items, and subsequent gptel prompts.  Structured
+transcript and provider projections, and subsequent gptel prompts.  Structured
 failure status headers are always retained outside this limit."
   :type '(choice (const :tag "Do not truncate tool results" nil)
                  integer)
@@ -414,7 +414,7 @@ this persistence limit."
 
 (defcustom magent-session-save-idle-delay 0.25
   "Idle delay in seconds before UI-triggered session saves run.
-Explicit calls to `magent-session-save' remain synchronous."
+Explicit calls to `magent-session-save-for-session' remain synchronous."
   :type 'number
   :group 'magent)
 

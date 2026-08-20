@@ -193,7 +193,7 @@
                             (push (list scope
                                         :messages
                                         (length
-                                         (magent-session-messages session))
+                                         (magent-session-context-view session 'transcript))
                                         :turns
                                         (length
                                          (magent-thread-turns
@@ -203,8 +203,9 @@
                           magent-session--scoped-sessions)
                  (nreverse scopes)))
           (and (fboundp 'magent-session-get)
-               (magent-session-messages (magent-session-get))
-               (length (magent-session-messages (magent-session-get))))
+               (magent-session-context-view (magent-session-get) 'transcript)
+               (length (magent-session-context-view
+                        (magent-session-get) 'transcript)))
           (and (fboundp 'magent-session-get)
                (magent-session-thread-ledger (magent-session-get))
                (length
@@ -400,25 +401,33 @@
        (string-trim (replace-regexp-in-string "[ \t\n\r]+" " " text))
        (or width 240) nil nil "..."))))
 
+(defsubst magent-live-test--transcript-role (entry)
+  "Return transcript ENTRY's role."
+  (cdr (assq 'role entry)))
+
+(defsubst magent-live-test--transcript-content (entry)
+  "Return transcript ENTRY's content."
+  (cdr (assq 'content entry)))
+
 (defun magent-live-test--latest-assistant-message (messages)
   "Return the newest assistant message from MESSAGES."
-  (cl-find-if (lambda (msg) (eq (magent-msg-role msg) 'assistant))
+  (cl-find-if (lambda (msg) (eq (magent-live-test--transcript-role msg) 'assistant))
               (reverse messages)))
 
 (defun magent-live-test--latest-tool-message (messages &optional name)
   "Return the newest tool message from MESSAGES, optionally matching NAME."
   (cl-find-if
    (lambda (msg)
-     (and (eq (magent-msg-role msg) 'tool)
+     (and (eq (magent-live-test--transcript-role msg) 'tool)
           (or (null name)
-              (equal (plist-get (magent-msg-content msg) :name) name))))
+              (equal (plist-get (magent-live-test--transcript-content msg) :name) name))))
    (reverse messages)))
 
 (defun magent-live-test--turn-state ()
   "Return compact state for the currently running live turn."
   (let* ((session (and (fboundp 'magent-session-get)
                        (ignore-errors (magent-session-get))))
-         (messages (and session (magent-session-get-messages session)))
+         (messages (and session (magent-session-context-view session 'transcript)))
          (last-msg (car (last messages)))
          (assistant-msg (magent-live-test--latest-assistant-message messages))
          (tool-msg (magent-live-test--latest-tool-message messages))
@@ -440,16 +449,16 @@
                            (magent-agent-loop-error loop))
           :message-count (length messages)
           :roles (vconcat (mapcar (lambda (msg)
-                                     (symbol-name (magent-msg-role msg)))
+                                     (symbol-name (magent-live-test--transcript-role msg)))
                                    messages))
-          :last-role (and last-msg (magent-msg-role last-msg))
+          :last-role (and last-msg (magent-live-test--transcript-role last-msg))
           :last-content (magent-live-test--short-text
-                         (and last-msg (magent-msg-content last-msg)))
+                         (and last-msg (magent-live-test--transcript-content last-msg)))
           :assistant (magent-live-test--short-text
                       (and assistant-msg
-                           (magent-msg-content assistant-msg)))
+                           (magent-live-test--transcript-content assistant-msg)))
           :tool (and tool-msg
-                     (let ((content (magent-msg-content tool-msg)))
+                     (let ((content (magent-live-test--transcript-content tool-msg)))
                        (list :name (plist-get content :name)
                              :result (magent-live-test--short-text
                                       (plist-get content :result))))))))
@@ -555,18 +564,18 @@ return that path."
                 (condition-case poll-err
                     (let* ((state (magent-live-test--turn-state))
                            (session (magent-session-get))
-                           (messages (magent-session-get-messages session))
+                           (messages (magent-session-context-view session 'transcript))
                            (assistant-msg
                             (magent-live-test--latest-assistant-message
                              messages))
                            (assistant
                             (and assistant-msg
-                                 (magent-msg-content assistant-msg)))
+                                 (magent-live-test--transcript-content assistant-msg)))
                            (tool-msg
                             (magent-live-test--latest-tool-message
                              messages "emacs_eval"))
                            (tool-content
-                            (and tool-msg (magent-msg-content tool-msg)))
+                            (and tool-msg (magent-live-test--transcript-content tool-msg)))
                            (processing (plist-get state :processing)))
                       (cond
                        ((and (eq kind 'simple)
@@ -618,11 +627,11 @@ return that path."
   (magent-live-test--wait-until
    (lambda ()
      (let* ((session (magent-session-get))
-            (messages (magent-session-get-messages session))
+            (messages (magent-session-context-view session 'transcript))
             (last-msg (car (last messages)))
-            (content (and last-msg (magent-msg-content last-msg))))
+            (content (and last-msg (magent-live-test--transcript-content last-msg))))
        (and (not (magent-runtime-processing-p))
-            (eq (and last-msg (magent-msg-role last-msg)) 'assistant)
+            (eq (and last-msg (magent-live-test--transcript-role last-msg)) 'assistant)
             (stringp content)
             (not (string-empty-p (string-trim content)))
             content)))
@@ -699,7 +708,6 @@ return that path."
           (magent-bypass-permission t)
           (magent-enable-tools '(emacs_eval)))
       (cl-letf (((symbol-function 'magent-capability-capture-context) (lambda () nil))
-                ((symbol-function 'magent-capability-resolve-for-turn) (lambda (&rest _) nil))
                 ((symbol-function 'gptel-request)
                  (lambda (_prompt &rest kwargs)
                    (cl-incf call-count)
@@ -747,25 +755,26 @@ return that path."
          (lambda ()
            (when (not (magent-runtime-processing-p))
              (let* ((session (magent-session-get))
-                    (messages (magent-session-get-messages session))
+                    (messages (magent-session-context-view session 'transcript))
                     (assistant-msg
                      (cl-find-if
                       (lambda (msg)
-                        (eq (magent-msg-role msg) 'assistant))
+                        (eq (magent-live-test--transcript-role msg) 'assistant))
                       (reverse messages))))
                (when assistant-msg
                  (setq final-response
-                       (magent-msg-content assistant-msg))))))
+                       (magent-live-test--transcript-content assistant-msg))))))
          20
          (format "Magent live loop tool turn did not finish: %s"
                  (magent-live-test--debug-state)))
         (should (equal final-response "Checking buffers. Done."))
         (should (= call-count 2))
-        (let* ((messages (magent-session-get-messages (magent-session-get)))
+        (let* ((messages (magent-session-context-view
+                          (magent-session-get) 'transcript))
                (tool-msg (cl-find-if
-                          (lambda (msg) (eq (magent-msg-role msg) 'tool))
+                          (lambda (msg) (eq (magent-live-test--transcript-role msg) 'tool))
                           messages))
-               (tool-content (magent-msg-content tool-msg)))
+               (tool-content (magent-live-test--transcript-content tool-msg)))
           (should tool-msg)
           (should (equal (plist-get tool-content :id) "call_live_1"))
           (should (equal (plist-get tool-content :name) "emacs_eval"))
@@ -862,14 +871,15 @@ return that path."
        prompt #'magent-live-test--allow-once)
       (let ((response (magent-live-test--wait-for-assistant 180)))
         (should (string-match-p "MAGENT_TOOL_OK=42" response))
-        (let* ((messages (magent-session-get-messages (magent-session-get)))
+        (let* ((messages (magent-session-context-view
+                          (magent-session-get) 'transcript))
                (tool-msg (cl-find-if
                           (lambda (msg)
-                            (and (eq (magent-msg-role msg) 'tool)
-                                 (equal (plist-get (magent-msg-content msg) :name)
+                            (and (eq (magent-live-test--transcript-role msg) 'tool)
+                                 (equal (plist-get (magent-live-test--transcript-content msg) :name)
                                         "emacs_eval")))
                           messages))
-               (tool-content (and tool-msg (magent-msg-content tool-msg))))
+               (tool-content (and tool-msg (magent-live-test--transcript-content tool-msg))))
           (should tool-msg)
           (should (equal (plist-get tool-content :result) "42")))))))
 

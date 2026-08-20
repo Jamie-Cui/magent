@@ -42,8 +42,8 @@
                 (magent-permission-from-config
                  '((emacs_eval_live . deny)
                    (edit
-                    ("*" . deny)
-                    (".magent/plan/*.md" . allow)))))))
+                    (".magent/plan/*.md" . allow)
+                    ("*" . deny)))))))
 
 (defun magent-agent-builtins--general ()
   "Create the general agent (multi-step subagent)."

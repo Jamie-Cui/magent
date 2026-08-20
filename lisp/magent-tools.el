@@ -31,11 +31,10 @@
 (require 'magent-runtime)
 (require 'magent-session)
 
-(declare-function magent-agent-process "magent-agent")
+(declare-function magent-agent-run-turn "magent-agent")
 (declare-function magent-agent-loop-abort "magent-agent-loop")
 (declare-function magent-agent-loop-p "magent-agent-loop" t t)
 
-(defvar magent-lifecycle-events--subagent-audit-context)
 
 ;;; Tool implementations
 
@@ -1470,7 +1469,8 @@ result containing combined stdout and stderr plus the process exit status."
 (defun magent-tools--persist-parent-session (&optional session scope)
   "Schedule persistence of SESSION for SCOPE after job state changes."
   (when (and session
-             (or (magent-session-get-messages session)
+             (or (magent-thread-turns
+                  (magent-session-thread-ledger session))
                  (magent-session-agent-jobs session)))
     (magent-session-save-deferred-for-session
      session (or scope (magent-tools--parent-scope)))))
@@ -1598,13 +1598,13 @@ parent and child instead of flattening them to one decision per tool."
 (defun magent-tools--agent-job-transcript (session)
   "Return a compact transcript for child SESSION."
   (mapcar
-   (lambda (msg)
-     `((role . ,(symbol-name (magent-msg-role msg)))
-       (content . ,(let ((content (magent-msg-content msg)))
+   (lambda (entry)
+     `((role . ,(symbol-name (cdr (assq 'role entry))))
+       (content . ,(let ((content (cdr (assq 'content entry))))
                      (if (stringp content)
                          content
                        (format "%S" content))))))
-   (magent-session-get-messages session)))
+   (magent-session-context-view session 'transcript)))
 
 (defun magent-tools--agent-job-status-string (job)
   "Return JOB status as a string."
@@ -1677,12 +1677,11 @@ Return the child loop handle when startup succeeds."
                     (format "Agent %s: %s" agent-name task-name)
                   (format "Agent %s" agent-name)))
          (subagent-context
-          (let ((magent-lifecycle-events--subagent-audit-context
-                 (magent-request-context-audit-snapshot parent-context)))
-            (magent-lifecycle-events-create-subagent-context
-             title
-             (and parent-context
-                  (magent-request-context-event-context parent-context)))))
+          (magent-lifecycle-events-create-subagent-context
+           title
+           (and parent-context
+                (magent-request-context-event-context parent-context))
+           (magent-request-context-audit-snapshot parent-context)))
          (effective-permission
           (magent-tools--effective-child-permission parent-context agent))
          (child-request-context
@@ -1742,8 +1741,14 @@ Return the child loop handle when startup succeeds."
     (condition-case err
         (progn
           (setq child-loop
-                (magent-agent-process
-                 prompt
+                (magent-agent-run-turn
+                 :session child-session
+                 :prompt prompt
+                 :agent agent
+                 :context
+                 (magent-request-context-origin-context child-request-context)
+                 :request-context child-request-context
+                 :on-complete
                  (lambda (response)
                    (magent-lifecycle-events-stop-subagent subagent-context)
                    (let* ((success (magent-execution-result-success-p response))
@@ -1758,15 +1763,7 @@ Return the child loop handle when startup succeeds."
                       (if failed 'failed 'completed)
                       job text parent-context parent-scope nil)
                      (magent-tools--persist-parent-session
-                      parent-session parent-scope)))
-                 agent
-                 nil
-                 subagent-context
-                 (magent-request-context-origin-context child-request-context)
-                 nil
-                 nil
-                 nil
-                 child-request-context))
+                      parent-session parent-scope)))))
           (magent-agent-job-put-runtime
            (magent-agent-job-id job)
            (list :session child-session

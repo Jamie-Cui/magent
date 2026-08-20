@@ -40,27 +40,6 @@
   exit-code
   metadata)
 
-(defun magent-tool-result-migrate-legacy (value &optional name call-id)
-  "Losslessly migrate legacy tool VALUE into a structured result.
-This function is for persisted legacy session import only; runtime tool
-execution must produce `magent-tool-result' values directly."
-  (let ((status
-         (if (and (stringp value)
-                  (or (string-match-p "\\`Error\\b" value)
-                      (string-match-p "\\`HTTP error\\b" value)
-                      (string-match-p "\\`Command timed out\\b" value)))
-             'failed
-           'completed)))
-    (magent-tool-result-create
-     :call-id call-id
-     :name name
-     :output (if (stringp value) value (magent-json-safe-value value))
-     :success (eq status 'completed)
-     :status status
-     :error (and (eq status 'failed)
-                 (if (stringp value) value (format "%s" value)))
-     :metadata (list :migrated-from 'legacy-string))))
-
 (defun magent-tool-result-require (value &optional name call-id)
   "Validate and complete structured tool result VALUE.
 NAME and CALL-ID fill missing request identity fields."

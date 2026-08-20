@@ -47,7 +47,8 @@ through these stages: understand intent -> write SKILL.md -> test in Emacs -> it
 ---
 name: skill-name
 description: When to trigger and what this skill does
-tools: bash, read        # optional: tools this skill needs
+type: instruction
+tools: [bash, read]      # optional: tools this skill needs
 requires-project: true   # optional: reject the skill in global sessions
 capability: true         # optional: auto-activate this instruction skill by context
 ---
@@ -66,15 +67,15 @@ multi-step workflow should register a first-class action; project-local
 Markdown remains data-only.
 
 **capability metadata**: Instruction skills can also declare `capability: true`
-plus fields such as `modes`, `features`, `files`, `keywords`, `disclosure`, and
-`risk`.  Magent uses those fields to auto-activate the skill when the current
+plus fields such as `modes`, `features`, `files`, `prompt-keywords`,
+`disclosure`, and `risk`.  List-valued fields use YAML sequences.  Magent uses
+those fields to auto-activate the skill when the current
 buffer or prompt matches the context.  Keep this metadata on the skill when the
 capability only exists to activate that same skill.
 
 ## Skill Locations
 
 - User global: `magent/skills/<name>/SKILL.md` under `user-emacs-directory`
-- Legacy user global: `magent-skills/<name>/SKILL.md` under `user-emacs-directory`
 - Project-local: `.magent/skills/<name>/SKILL.md`
 
 Place each skill in its own subdirectory named after the skill.
@@ -460,11 +461,7 @@ If SKILL-NAMES is a list, only include those skills."
   "Directory containing built-in skills bundled with magent.")
 
 (defcustom magent-skill-directories
-  (let ((new-dir (expand-file-name "magent/skills" user-emacs-directory))
-        (old-dir (expand-file-name "magent-skills" user-emacs-directory)))
-    (append (when (file-directory-p old-dir)
-              (list old-dir))
-            (list new-dir)))
+  (list (expand-file-name "magent/skills" user-emacs-directory))
   "List of directories to scan for skill files.
 Each directory can contain subdirectories with SKILL.md files.
 Later directories take precedence over earlier directories when skill
@@ -476,6 +473,22 @@ names collide.  The final entry is the canonical installation target."
   "Name of the skill definition file."
   :type 'string
   :group 'magent)
+
+(defconst magent-skills--frontmatter-keys
+  '(:name :description :type :tools :requires-project
+    :capability :title :family :source :source-name :capability-skills
+    :modes :features :files :prompt-keywords :disclosure :risk)
+  "Supported SKILL.md frontmatter keys.")
+
+(defun magent-skills--validate-frontmatter (frontmatter)
+  "Reject unsupported or incomplete skill FRONTMATTER."
+  (cl-loop for (key _value) on frontmatter by #'cddr
+           unless (memq key magent-skills--frontmatter-keys)
+           do (error "Unsupported skill frontmatter key: %s" key))
+  (dolist (key '(:name :description :type))
+    (unless (plist-member frontmatter key)
+      (error "Skill frontmatter is missing required key: %s" key)))
+  frontmatter)
 
 (defun magent-skills-definition-directories (&optional scope)
   "Return skill definition directories for static loading and SCOPE.
@@ -519,20 +532,17 @@ directory if it exists."
 
 (defun magent-skills--parse-tools (tools-spec)
   "Parse TOOLS-SPEC to list of tool symbols.
-TOOLS-SPEC can be a string, symbol, or list."
+TOOLS-SPEC must be a YAML sequence when present."
   (cond
    ((null tools-spec) nil)
-   ((stringp tools-spec)
-    (if (string-match-p "," tools-spec)
-        (mapcar (lambda (tool) (intern (string-trim tool)))
-                (split-string tools-spec "," t))
-      (list (intern tools-spec))))
-   ((symbolp tools-spec) (list tools-spec))
    ((listp tools-spec)
     (mapcar (lambda (tool)
-              (if (stringp tool) (intern tool) tool))
+              (cond
+               ((stringp tool) (intern tool))
+               ((symbolp tool) tool)
+               (t (error "Invalid skill tool name: %S" tool))))
             tools-spec))
-   (t nil)))
+   (t (error "Skill tools must be a YAML sequence"))))
 
 (defun magent-skills-load-file (filepath)
   "Load a skill from FILEPATH.
@@ -543,6 +553,7 @@ Returns the skill if successful, nil otherwise."
              (body (plist-get definition :body))
              (source (magent-skills--classify-source filepath)))
         (when frontmatter
+          (magent-skills--validate-frontmatter frontmatter)
           (let* ((name (or (plist-get frontmatter :name)
                            (file-name-nondirectory
                             (directory-file-name

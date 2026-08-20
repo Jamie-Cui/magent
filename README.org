@@ -160,9 +160,10 @@ command is required.  To start using Magent:
 
 1. Visit a file in the project you want Magent to work on.
 2. Run ~M-x magent-start~.  Magent opens or reuses the project-local
-   agent-shell buffer through its in-process ACP adapter.  You can also run
-   ~M-x agent-shell~ and select Magent after registering the configuration as
-   shown in the installation examples above.
+   agent-shell buffer through its in-process ACP adapter.  A new buffer prompts
+   you to start a new session or load a saved session from that project.  You
+   can also run ~M-x agent-shell~ and select Magent after registering the
+   configuration as shown in the installation examples above.
 3. Type a prompt at the bottom of the agent-shell buffer and press ~RET~ to
    submit it.  Assistant responses, reasoning, tool calls, and permission
    requests are streamed into the same buffer.
@@ -187,6 +188,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-max-sampling-requests~                 | ~0~                                   | Continuation budget; reaching it fails the turn directly, and 0 disables the guard             |
 | ~magent-default-agent~                         | ~"build"~                           | Default agent for new sessions                                                                 |
 | ~magent-default-effort~                        | ~nil~                                 | Default reasoning effort; nil/auto uses provider default                                       |
+| ~magent-agent-shell-session-strategy~          | ~prompt~                              | Prompt to start new or load a saved session; also supports ~new~ and ~latest~                     |
 | ~magent-skill-directories~                     | ~user-emacs-directory/magent/skills/~ | Ordered user skill roots; later entries override earlier entries                               |
 | ~magent-load-custom-agents~                    | ~t~                                   | Load custom agents from ~.magent/agent/*.md~                                                     |
 | ~magent-enable-audit-log~                      | ~t~                                   | Persist compact audit logs for permission and sensitive actions                                |
@@ -410,12 +412,9 @@ The YAML frontmatter supports:
 - ~temperature~: Override default temperature
 - ~effort~: Override reasoning effort: ~auto~, ~minimal~, ~low~, ~medium~, ~high~, or ~xhigh~
 - ~model~: Override default model
-- ~options~: Compatibility metadata retained as a mapping; it is not sent to the provider
-- ~steps~: Compatibility metadata retained from older agent definitions
 - ~permissions~: Mapping of permission groups to ~allow~, ~deny~, ~ask~, or nested file-pattern rules
 
-The older YAML list form using entries such as ~(read_file . allow)~ remains
-read-compatible, but new and saved definitions use the mapping above.
+Unknown frontmatter fields and non-canonical permission keys are rejected.
 
 * Available Tools
 

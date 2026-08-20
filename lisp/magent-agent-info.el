@@ -34,10 +34,6 @@ Fields:
 - COLOR: Optional display color for UI
 - MODEL: Optional model specification (providerID . modelID)
 - PROMPT: Optional custom system prompt
-- OPTIONS: Compatibility metadata retained from older definitions; it is not
-  sent to the provider
-- STEPS: Compatibility metadata from older agent definitions; it no longer
-  imposes a tool-call loop limit
 - PERMISSION: Permission ruleset for tool access control
 - FILE-PATH: Backing file path for file-defined agents
 - SOURCE-LAYER: One of \\='builtin or \\='project
@@ -53,8 +49,6 @@ Fields:
   color
   model
   prompt
-  (options nil)
-  steps
   (permission nil)
   file-path
   (source-layer 'builtin)

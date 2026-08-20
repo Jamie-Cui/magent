@@ -58,7 +58,7 @@
 ;;
 ;; Usage:
 ;;   M-x magent-start                    - Open or reuse the project session
-;;   M-x magent-agent-shell-start        - Start a fresh Magent session
+;;   M-x magent-agent-shell-start        - Start a new Magent shell
 ;;   M-x magent-agent-shell-prompt-region - Send the selected region
 ;;   M-x magent-agent-shell-ask-at-point - Ask about the symbol at point
 ;;

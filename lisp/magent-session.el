@@ -29,9 +29,8 @@
 ;;; Session state structure
 
 (cl-defstruct (magent-session
-               (:constructor magent-session-create)
+  (:constructor magent-session-create)
                (:copier nil))
-  (messages nil)             ; List of messages in chronological order
   (max-history magent-max-history)
   (id nil)
   (agent nil)
@@ -39,16 +38,6 @@
   (agent-jobs nil)           ; Durable child-agent job state
   (thread nil)               ; Canonical thread/turn/item ledger
   (metadata nil))            ; Top-level session metadata alist
-
-;;; Message helpers
-
-(defsubst magent-msg-role (msg)
-  "Return the role symbol of message MSG."
-  (cdr (assq 'role msg)))
-
-(defsubst magent-msg-content (msg)
-  "Return the content of message MSG (string or content-block list)."
-  (cdr (assq 'content msg)))
 
 (defun magent-session--tool-content-p (content)
   "Return non-nil when CONTENT is a structured tool-call result."
@@ -184,13 +173,14 @@ When VALUE is nil, remove KEY.  Return SESSION metadata."
          magent-session-summary-title-max-width
          nil nil "...")))))
 
-(defun magent-session--summary-title-from-messages (messages)
-  "Derive a brief summary title from session MESSAGES."
+(defun magent-session--summary-title-from-thread (thread)
+  "Derive a brief summary title from THREAD."
   (catch 'title
-    (dolist (msg messages)
-      (let ((role (cdr (assq 'role msg)))
-            (content (cdr (assq 'content msg))))
-        (when (member role '(user assistant "user" "assistant"))
+    (dolist (item (and thread (magent-thread-all-items thread)))
+      (let ((role (magent-thread-item-role item))
+            (content (magent-thread-item-content item)))
+        (when (and (eq (magent-thread-item-type item) 'message)
+                   (memq role '(user assistant)))
           (when-let* ((title (magent-session--clean-summary-title
                              (magent-session--content-to-string content))))
             (throw 'title title)))))
@@ -202,8 +192,8 @@ When VALUE is nil, remove KEY.  Return SESSION metadata."
     (error "Expected a Magent session, got: %S" session))
   (or (magent-session--clean-summary-title
        (magent-session--metadata-string session 'title))
-      (magent-session--summary-title-from-messages
-       (magent-session-messages session))))
+      (magent-session--summary-title-from-thread
+       (magent-session-thread-ledger session))))
 
 ;;; Thread ledger projection
 
@@ -226,133 +216,23 @@ When VALUE is nil, remove KEY.  Return SESSION metadata."
         (let* ((id (or (magent-session-id session)
                        (magent-session-get-id session)))
                (scope (magent-session--scope-for-thread session))
-               (messages (magent-session-messages session))
                (thread
-                (if messages
-                    (magent-session--thread-from-messages
-                     messages id scope (list :live-migration t))
-                  (magent-thread-create
-                   :id id
-                   :session-id id
-                   :scope scope
-                   :status 'idle
-                   :metadata (append (list :source 'magent)
-                                     (and (magent-session-metadata session)
-                                          (list :session-metadata
-                                                (magent-session-metadata
-                                                 session))))))))
-          (setf (magent-session-thread session) thread)
-          thread))))
-
-(defun magent-session--message-item-from-legacy (role content turn-id)
-  "Return a completed ledger message item from legacy ROLE CONTENT."
-  (magent-thread-item-create
-   :turn-id turn-id
-   :type 'message
-   :status 'completed
-   :role role
-   :content content
-   :completed-at (float-time)))
-
-(defun magent-session--tool-item-from-legacy (content turn-id)
-  "Return a completed ledger tool item from legacy CONTENT."
-  (let* ((safe-name (magent-json-safe-name (plist-get content :name)))
-         (safe-args (magent-json-safe-tool-args (plist-get content :args)))
-         (safe-result (magent-session--content-to-string content))
-         (call-id (or (plist-get content :id)
-                      (magent-protocol-generate-id "tool"))))
-    (magent-thread-item-create
-     :id call-id
-     :turn-id turn-id
-     :type 'tool
-     :status (if (magent-tool-result-success-p safe-result) 'completed 'failed)
-     :name safe-name
-     :call-id call-id
-     :input safe-args
-     :output safe-result
-     :error (and (not (magent-tool-result-success-p safe-result)) safe-result)
-     :completed-at (float-time)
-     :metadata (list :legacy t))))
-
-(defun magent-session--thread-from-messages
-    (messages id scope &optional metadata)
-  "Build a thread ledger from legacy MESSAGES for ID and SCOPE."
-  (let ((thread (magent-thread-create
+                (magent-thread-create
                  :id id
                  :session-id id
                  :scope scope
                  :status 'idle
-                 :metadata (append (list :migrated-from 'messages)
-                                   metadata)))
-        current-turn)
-    (dolist (msg messages)
-      (let ((role (magent-msg-role msg))
-            (content (magent-msg-content msg)))
-        (cond
-         ((eq role 'user)
-          (let ((turn (magent-thread-turn-create
-                       :thread-id id
-                       :status 'completed
-                       :input (magent-session--content-to-string content)
-                       :started-at (float-time)
-                       :completed-at (float-time)
-                       :duration-ms 0
-                       :metadata (list :legacy t))))
-            (setq current-turn turn)
-            (setf (magent-thread-turn-items turn)
-                  (list (magent-session--message-item-from-legacy
-                         role content
-                         (magent-thread-turn-id turn))))
-            (setf (magent-thread-turns thread)
-                  (nconc (magent-thread-turns thread) (list turn)))
-            (unless (magent-thread-preview thread)
-              (setf (magent-thread-preview thread)
-                    (magent-session--content-to-string content)))))
-         ((eq role 'tool)
-          (when (and current-turn
-                     (magent-session--tool-content-p content))
-            (setf (magent-thread-turn-items current-turn)
-                  (nconc (magent-thread-turn-items current-turn)
-                         (list (magent-session--tool-item-from-legacy
-                                content
-                                (magent-thread-turn-id current-turn)))))))
-         ((eq role 'assistant)
-          (unless current-turn
-            (setq current-turn
-                  (magent-thread-turn-create
-                   :thread-id id
-                   :status 'completed
-                   :started-at (float-time)
-                   :completed-at (float-time)
-                   :duration-ms 0
-                   :metadata (list :legacy t)))
-            (setf (magent-thread-turns thread)
-                  (nconc (magent-thread-turns thread)
-                         (list current-turn))))
-          (setf (magent-thread-turn-items current-turn)
-                (nconc (magent-thread-turn-items current-turn)
-                       (list (magent-session--message-item-from-legacy
-                              role content
-                              (magent-thread-turn-id current-turn)))))
-	          (setf (magent-thread-turn-status current-turn)
-	                (if (magent-session--assistant-response-error-p content)
-	                    'failed
-	                  'completed)
-	                (magent-thread-turn-completed-at current-turn) (float-time)
-	                (magent-thread-turn-duration-ms current-turn) 0)))))
-    thread))
-
-(defun magent-session-refresh-projections (session)
-  "Refresh SESSION's message projection from its thread ledger."
-  (when (and session (magent-session-thread session))
-    (setf (magent-session-messages session)
-          (magent-thread-messages (magent-session-thread session)))))
+                 :metadata (append (list :source 'magent)
+                                   (and (magent-session-metadata session)
+                                        (list :session-metadata
+                                              (magent-session-metadata
+                                               session)))))))
+          (setf (magent-session-thread session) thread)
+          thread))))
 
 (defun magent-session-thread-ledger (session)
-  "Return SESSION's canonical thread ledger and refresh projections."
-  (let ((thread (magent-session--ensure-thread session)))
-    (magent-session-refresh-projections session)
-    thread))
+  "Return SESSION's canonical thread ledger."
+  (magent-session--ensure-thread session))
 
 ;;; Session management
 
@@ -378,8 +258,18 @@ This is either the symbol `global' or a normalized project root path.")
 (defvar magent-session--pending-saves nil
   "Deferred saves as (SESSION . SCOPE) pairs awaiting the shared idle timer.")
 
-(defconst magent-session-schema-version 5
+(defconst magent-session-schema-version 6
   "Current schema version written to session JSON files.")
+
+(defconst magent-session--json-fields
+  '(id schema-version kind action status title parent-session-id metadata
+    scope project-root summary-title snapshot journal agent-jobs
+    approval-overrides)
+  "Fields accepted by the current session JSON schema.")
+
+(defconst magent-session--required-json-fields
+  '(id schema-version scope snapshot journal agent-jobs approval-overrides)
+  "Fields required by the current session JSON schema.")
 
 (define-error 'magent-session-schema-error
   "Unsupported or invalid Magent session schema")
@@ -409,18 +299,62 @@ This is either the symbol `global' or a normalized project root path.")
    (file-name-sans-extension (file-name-nondirectory filepath))))
 
 (defun magent-session--validate-schema-version (value)
-  "Return persisted schema VALUE after validating compatibility.
-Missing versions denote the original legacy schema."
-  (let ((version (or value 1)))
-    (unless (and (integerp version) (> version 0))
+  "Return VALUE when it is the current session schema version."
+  (unless (equal value magent-session-schema-version)
+    (signal 'magent-session-schema-error
+            (list (format "Unsupported session schema version: %S (expected %d)"
+                          value magent-session-schema-version))))
+  value)
+
+(defun magent-session--validate-json-fields (data)
+  "Reject unknown or missing fields in session JSON DATA."
+  (unless (and (listp data) (cl-every #'consp data))
+    (signal 'magent-session-schema-error
+            (list "Session JSON root must be an object")))
+  (let ((keys (mapcar #'car data)))
+    (when (/= (length keys) (length (delete-dups (copy-sequence keys))))
       (signal 'magent-session-schema-error
-              (list (format "Invalid session schema version: %S" value))))
-    (when (> version magent-session-schema-version)
+              (list "Session JSON contains duplicate fields"))))
+  (dolist (entry data)
+    (unless (memq (car entry) magent-session--json-fields)
       (signal 'magent-session-schema-error
-              (list (format
-                     "Session schema %d is newer than supported schema %d"
-                     version magent-session-schema-version))))
-    version))
+              (list (format "Unsupported session field: %S" (car entry))))))
+  (dolist (field magent-session--required-json-fields)
+    (unless (assq field data)
+      (signal 'magent-session-schema-error
+              (list (format "Session is missing required field: %s" field)))))
+  data)
+
+(defun magent-session--approval-override-from-alist (entry)
+  "Return one current-format approval override from ENTRY."
+  (unless (and (listp entry)
+               (= (length entry) 2)
+               (assq 'tool entry)
+               (assq 'decision entry)
+               (cl-every (lambda (field)
+                           (memq (car field) '(tool decision)))
+                         entry))
+    (signal 'magent-session-schema-error
+            (list (format "Invalid approval override fields: %S" entry))))
+  (let ((tool (cdr (assq 'tool entry)))
+        (decision (cdr (assq 'decision entry))))
+    (unless (and (stringp tool) (not (string-empty-p tool)))
+      (signal 'magent-session-schema-error
+              (list (format "Invalid approval override tool: %S" tool))))
+    (unless (member decision '("allow" "deny"))
+      (signal 'magent-session-schema-error
+              (list (format "Invalid approval override decision: %S"
+                            decision))))
+    (cons (intern tool) (intern decision))))
+
+(defun magent-session--validate-json-state (data)
+  "Validate all nested current-format persistence objects in DATA."
+  (magent-thread-snapshot-from-alist (cdr (assq 'snapshot data)))
+  (mapc #'magent-thread-event-from-alist (cdr (assq 'journal data)))
+  (mapc #'magent-agent-job-from-alist (cdr (assq 'agent-jobs data)))
+  (mapc #'magent-session--approval-override-from-alist
+        (cdr (assq 'approval-overrides data)))
+  data)
 
 (defun magent-session--persisted-journal (thread)
   "Return the bounded journal tail persisted for THREAD."
@@ -485,6 +419,10 @@ Returns a normalized project root string or the symbol `global'."
 
 (defun magent-session-set-approval-override (session perm-key decision)
   "Persist DECISION for PERM-KEY in SESSION and return the override alist."
+  (unless (symbolp perm-key)
+    (error "Approval override key must be a symbol: %S" perm-key))
+  (unless (memq decision '(allow deny))
+    (error "Approval override decision must be allow or deny: %S" decision))
   (when session
     (let ((overrides (assq-delete-all perm-key
                                       (copy-sequence
@@ -543,8 +481,7 @@ selected agent, and history limit so runtime UI handles remain valid."
                   (concat id ".json")
                   (magent-session--scope-storage-directory target-scope)))))
       (magent-session--cancel-deferred-save-for-session session target-scope)
-      (setf (magent-session-messages session) nil
-            (magent-session-approval-overrides session) nil
+      (setf (magent-session-approval-overrides session) nil
             (magent-session-agent-jobs session) nil
             (magent-session-thread session) nil
             (magent-session-metadata session) nil)
@@ -560,7 +497,7 @@ selected agent, and history limit so runtime UI handles remain valid."
   session)
 
 (defun magent-session-reset ()
-  "Reset the current session, clearing all messages and permission overrides."
+  "Reset the current session, clearing its ledger and permission overrides."
   (let ((session magent--current-session))
     (when session
       (magent-session-clear-approval-overrides session)))
@@ -576,7 +513,7 @@ selected agent, and history limit so runtime UI handles remain valid."
    ((magent-session-action-scope-p scope)
     (magent-session-action-directory (plist-get scope :action)))
    ((eq scope 'global)
-    magent-session-directory)
+    (expand-file-name "global" magent-session-directory))
    (t
     (expand-file-name
      (concat "projects/" (secure-hash 'sha1 scope))
@@ -587,9 +524,18 @@ selected agent, and history limit so runtime UI handles remain valid."
   (let ((path (file-truename filepath))
         (project-prefix (file-name-as-directory
                          (expand-file-name "projects" magent-session-directory))))
-    (if (string-prefix-p project-prefix path)
-        (file-name-directory (directory-file-name path))
-      'global)))
+    (cond
+     ((string-prefix-p project-prefix path)
+      (file-name-directory (directory-file-name path)))
+     ((string-prefix-p
+       (file-name-as-directory
+        (expand-file-name "global" magent-session-directory))
+       path)
+      'global)
+     (t
+      (signal 'magent-session-schema-error
+              (list (format "Session file is outside a current storage scope: %s"
+                            filepath)))))))
 
 (defun magent-session--file-scope-kind (filepath)
   "Return the symbolic scope kind for FILEPATH."
@@ -598,22 +544,8 @@ selected agent, and history limit so runtime UI handles remain valid."
     'project))
 
 (defun magent-session--file-display-time (filepath)
-  "Return FILEPATH's logical session time.
-Prefer the timestamp embedded in `session-YYYYMMDD-HHMMSS' filenames.
-Fall back to the file modification time for legacy filenames."
-  (let ((name (file-name-sans-extension (file-name-nondirectory filepath))))
-    (if (string-match
-         "session-\\([0-9]\\{4\\}\\)\\([0-9]\\{2\\}\\)\\([0-9]\\{2\\}\\)-\\([0-9]\\{2\\}\\)\\([0-9]\\{2\\}\\)\\([0-9]\\{2\\}\\)"
-         name)
-        (encode-time
-         (string-to-number (match-string 6 name))
-         (string-to-number (match-string 5 name))
-         (string-to-number (match-string 4 name))
-         (string-to-number (match-string 3 name))
-         (string-to-number (match-string 2 name))
-         (string-to-number (match-string 1 name)))
-      (file-attribute-modification-time
-       (file-attributes filepath)))))
+  "Return FILEPATH's modification time."
+  (file-attribute-modification-time (file-attributes filepath)))
 
 (defun magent-session--sort-files-by-time (files)
   "Return FILES sorted by logical session time, newest first."
@@ -653,18 +585,18 @@ Fall back to the file modification time for legacy filenames."
                       :array-type 'list
                       :null-object nil
                       :false-object :json-false))
-               (schema-version
+               (_fields (magent-session--validate-json-fields data))
+               (_schema-version
                 (magent-session--validate-schema-version
                  (cdr (assq 'schema-version data))))
+               (_state (magent-session--validate-json-state data))
                (file-id (magent-session--file-id filepath))
                (raw-id (cdr (assq 'id data)))
                (_required-id
-                (when (and (> schema-version 1) (null raw-id))
+                (unless raw-id
                   (signal 'magent-session-schema-error
-                          (list "Versioned session is missing its id"))))
-               (id (if raw-id
-                       (magent-session-validate-id raw-id)
-                     file-id))
+                          (list "Session is missing its id"))))
+               (id (magent-session-validate-id raw-id))
                (_matching-id
                 (when (and raw-id (not (equal id file-id)))
                   (signal
@@ -680,12 +612,22 @@ Fall back to the file modification time for legacy filenames."
                (metadata (cdr (assq 'metadata data)))
                (scope-name (cdr (assq 'scope data)))
                (project-root (cdr (assq 'project-root data)))
-               (summary-title (or (magent-session--clean-summary-title
-                                   title)
+               (_snapshot
+                (unless (assq 'snapshot data)
+                  (signal 'magent-session-schema-error
+                          (list "Session is missing its ledger snapshot"))))
+               (_scope
+                (unless (member scope-name '("global" "project"))
+                  (signal 'magent-session-schema-error
+                          (list (format "Invalid session scope: %S" scope-name)))))
+               (_project-root
+                (when (and (equal scope-name "project")
+                           (not (stringp project-root)))
+                  (signal 'magent-session-schema-error
+                          (list "Project session is missing project-root"))))
+               (summary-title (or (magent-session--clean-summary-title title)
                                   (magent-session--clean-summary-title
-                                   (cdr (assq 'summary-title data)))
-                                  (magent-session--summary-title-from-messages
-                                   (cdr (assq 'messages data))))))
+                                   (cdr (assq 'summary-title data))))))
           (list :valid t
                 :id id
                 :scope (if (equal scope-name "project") 'project 'global)
@@ -789,50 +731,11 @@ Fall back to the file modification time for legacy filenames."
                (magent-session--file-display-time a))))))))
 
 (defun magent-session--format-display-timestamp (filepath)
-  "Return a display timestamp for session FILEPATH.
-Prefer the timestamp embedded in `session-YYYYMMDD-HHMMSS' filenames.
-Fall back to the file modification time for legacy filenames."
+  "Return a display timestamp for session FILEPATH."
   (format-time-string "%Y-%m-%d %H:%M:%S"
                       (magent-session--file-display-time filepath)))
 
 ;;; Session persistence
-
-(defun magent-session--msg-to-alist (msg)
-  "Convert MSG to a JSON-serializable alist with string role."
-  (let ((role (magent-msg-role msg))
-        (content (magent-msg-content msg)))
-    `((role . ,(symbol-name role))
-      (content . ,(if (and (eq role 'tool)
-                           (magent-session--tool-content-p content))
-                      `((id . ,(plist-get content :id))
-                        (name . ,(magent-json-safe-name
-                                  (plist-get content :name)))
-                        (args-json . ,(magent-json-encode
-                                       (magent-json-safe-tool-args
-                                        (plist-get content :args))))
-                        (result . ,(plist-get content :result)))
-                    (magent-session--content-to-string content))))))
-
-(defun magent-session--alist-to-msg (alist)
-  "Reconstruct a session message from JSON-decoded ALIST."
-  (let ((role (intern (cdr (assq 'role alist))))
-        (content (cdr (assq 'content alist))))
-    `((role . ,role)
-      (content . ,(if (and (eq role 'tool)
-                           (listp content))
-                      (let* ((args-json (cdr (assq 'args-json content)))
-                             (args (when (and (stringp args-json)
-                                              (> (length args-json) 0))
-                                     (let ((json-object-type 'plist)
-                                           (json-array-type 'list))
-                                       (ignore-errors
-                                         (json-read-from-string args-json))))))
-                        (list :id (cdr (assq 'id content))
-                              :name (magent-json-safe-name
-                                     (cdr (assq 'name content)))
-                              :args args
-                              :result (cdr (assq 'result content))))
-                    content)))))
 
 (defun magent-session-save-for-session (session scope)
   "Synchronously save SESSION for explicit SCOPE as <session-id>.json.
@@ -842,14 +745,12 @@ temporarily rebinds the ambient current session or scope."
     (error "Expected a Magent session, got: %S" session))
   (unless scope
     (error "An explicit session scope is required"))
-  (magent-session-thread-ledger session)
-  (when (or (magent-session-messages session)
-            (magent-session-agent-jobs session))
+  (let ((thread (magent-session-thread-ledger session)))
+    (when (or (magent-thread-turns thread)
+              (magent-session-agent-jobs session))
       (let ((storage-dir (magent-session--scope-storage-directory scope)))
         (make-directory storage-dir t)
-        (let* ((messages (magent-session-messages session))
-               (thread (magent-session-thread session))
-               (id (magent-session-get-id session))
+        (let* ((id (magent-session-get-id session))
                (filepath (expand-file-name (concat id ".json") storage-dir))
                (origin-scope (magent-session--origin-scope-for-session
                               session scope))
@@ -887,9 +788,7 @@ temporarily rebinds the ambient current session or scope."
                            `((project-root . ,origin-scope)))
                        ,@(when summary-title
                            `((summary-title . ,summary-title)))
-                       (messages . ,(vconcat (mapcar #'magent-session--msg-to-alist messages)))
-                       (snapshot . ,(and thread
-                                         (magent-thread-snapshot-to-alist thread)))
+                       (snapshot . ,(magent-thread-snapshot-to-alist thread))
                        (journal . ,(vconcat
                                     (mapcar #'magent-thread-event-to-alist
                                             (magent-session--persisted-journal
@@ -901,16 +800,9 @@ temporarily rebinds the ambient current session or scope."
                        (approval-overrides . ,(vconcat approval-overrides)))))
           (magent-session--write-json-atomic filepath data)
           (remhash filepath magent-session--metadata-cache)
-          (magent-log "INFO session saved to %s (%d messages) scope=%s"
-                      id (length messages) scope)
-          filepath))))
-
-(defun magent-session-save ()
-  "Save the ambient current session to disk.
-Compatibility wrapper around `magent-session-save-for-session'."
-  (when magent--current-session
-    (magent-session-save-for-session
-     magent--current-session magent-session--current-scope)))
+          (magent-log "INFO session saved to %s (%d turns) scope=%s"
+                      id (length (magent-thread-turns thread)) scope)
+          filepath)))))
 
 (defun magent-session-save-deferred-for-session (session &optional scope delay)
   "Schedule SESSION to be saved for SCOPE after Emacs is idle.
@@ -971,16 +863,18 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
         (let* ((json-object-type 'alist)
                (json-array-type 'list)
                (data (json-read))
-               (schema-version
+               (_fields (magent-session--validate-json-fields data))
+               (_schema-version
                 (magent-session--validate-schema-version
                  (cdr (assq 'schema-version data))))
+               (_state (magent-session--validate-json-state data))
                (file-id (magent-session--file-id filepath))
                (raw-id (cdr (assq 'id data)))
                (_required-id
-                (when (and (> schema-version 1) (null raw-id))
+                (unless raw-id
                   (signal 'magent-session-schema-error
-                          (list "Versioned session is missing its id"))))
-               (id (magent-session-validate-id (or raw-id file-id)))
+                          (list "Session is missing its id"))))
+               (id (magent-session-validate-id raw-id))
                (_matching-id
                 (when (and raw-id (not (equal id file-id)))
                   (signal
@@ -996,7 +890,6 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
                (metadata-raw (cdr (assq 'metadata data)))
                (scope-name (cdr (assq 'scope data)))
                (project-root (cdr (assq 'project-root data)))
-               (msgs-raw (cdr (assq 'messages data)))
                (snapshot-raw (cdr (assq 'snapshot data)))
                (journal-raw (cdr (assq 'journal data)))
                (jobs-raw (cdr (assq 'agent-jobs data)))
@@ -1004,24 +897,24 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
                (scope (pcase scope-name
                         ("project"
                          (or (magent-session--normalize-project-root project-root)
-                             (magent-session--infer-file-scope filepath)))
+                             (signal 'magent-session-schema-error
+                                     (list "Project session is missing project-root"))))
                         ("global" 'global)
-                        (_ (magent-session--infer-file-scope filepath))))
-               (messages (mapcar #'magent-session--alist-to-msg msgs-raw))
+                        (_ (signal 'magent-session-schema-error
+                                   (list (format "Invalid session scope: %S"
+                                                 scope-name))))))
+               (_snapshot-required
+                (unless snapshot-raw
+                  (signal 'magent-session-schema-error
+                          (list "Session is missing its ledger snapshot"))))
                (thread
-                (if snapshot-raw
-                    (magent-thread-replay
-                     snapshot-raw
-                     (mapcar #'magent-thread-event-from-alist journal-raw))
-                  (magent-session--thread-from-messages
-                   messages id scope (list :loaded-from filepath))))
+                (magent-thread-replay
+                 snapshot-raw
+                 (mapcar #'magent-thread-event-from-alist journal-raw)))
                (agent-jobs (mapcar #'magent-agent-job-from-alist jobs-raw))
                (approval-overrides
-                (mapcar
-                 (lambda (entry)
-                   (cons (intern (cdr (assq 'tool entry)))
-                         (intern (cdr (assq 'decision entry)))))
-                 approval-raw))
+                (mapcar #'magent-session--approval-override-from-alist
+                        approval-raw))
                (metadata (append metadata-raw
                                  (delq nil
                                        `((kind . ,kind)
@@ -1034,11 +927,9 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
                (session (magent-session-create
                          :id id
                          :metadata metadata
-                         :messages messages
                          :agent-jobs agent-jobs
                          :approval-overrides approval-overrides
                          :thread thread)))
-          (magent-session-refresh-projections session)
           (puthash session filepath magent-session--loaded-sessions)
           (list :scope scope
                 :session session
@@ -1058,8 +949,6 @@ Return the number of thread, item, and child-job lifecycle objects changed."
     (dolist (job (magent-session-agent-jobs session))
       (when (magent-agent-job-reconcile-after-restart job reason)
         (cl-incf changed)))
-    (when (> changed 0)
-      (magent-session-refresh-projections session))
     changed))
 
 (defun magent-session-install (scope session)
@@ -1133,80 +1022,18 @@ current scope, clear it so Magent falls back to the default agent."
   "Set the agent for SESSION to AGENT."
   (setf (magent-session-agent session) agent))
 
-;;; Message management
-
-(defun magent-session-add-message (session role content)
-  "Add a message to SESSION.
-ROLE is either \\='user, \\='assistant, or \\='tool.
-CONTENT can be a string or a list of content blocks."
-  (let* ((thread (magent-session--ensure-thread session))
-         (turn (magent-thread-active-turn thread)))
-    (pcase role
-      ('user
-       (unless turn
-         (setq turn
-               (magent-thread-create-turn
-                thread
-                (magent-session--content-to-string content))))
-       (unless (magent-thread-turn-input turn)
-         (setf (magent-thread-turn-input turn)
-               (magent-session--content-to-string content)))
-       (magent-thread-record-message
-        thread (magent-thread-turn-id turn) 'user content))
-      ('assistant
-       (unless turn
-         (setq turn
-               (magent-thread-create-turn
-                thread nil nil (list :synthetic t))))
-       (magent-thread-record-message
-        thread (magent-thread-turn-id turn) 'assistant content)
-       (if (magent-session--assistant-response-error-p content)
-           (magent-thread-fail-turn
-            thread (magent-thread-turn-id turn)
-            (magent-session--content-to-string content))
-         (magent-thread-complete-turn
-          thread (magent-thread-turn-id turn))))
-      ('tool
-       (unless turn
-         (setq turn
-               (or (car (last (magent-thread-turns thread)))
-                   (magent-thread-create-turn
-                    thread nil nil (list :synthetic t)))))
-       (when (magent-session--tool-content-p content)
-         (let ((call-id
-                (or (plist-get content :id)
-                    (magent-protocol-generate-id "tool"))))
-           (magent-thread-record-tool-result
-            thread
-            (magent-thread-turn-id turn)
-            call-id
-            (plist-get content :name)
-            (plist-get content :args)
-            (magent-tool-result-migrate-legacy
-             (plist-get content :result)
-             (plist-get content :name)
-             call-id)
-            (list :legacy-message t))))))
-    (magent-session-refresh-projections session)
-    (when (> (length (magent-session-messages session))
-             (+ (magent-session-max-history session) 10))
-      (magent-session--trim-history session)))
-  session)
-
 (defun magent-session--trim-history (session)
-  "Trim SESSION messages to max-history limit."
-  (let* ((messages (magent-session-messages session))
-         (count (length messages))
+  "Trim SESSION's ledger to its message-item history limit."
+  (let* ((thread (magent-session-thread-ledger session))
+         (count (cl-count 'message (magent-thread-all-items thread)
+                          :key #'magent-thread-item-type))
          (max (magent-session-max-history session))
          (to-remove (- count max)))
     (when (> to-remove 0)
-      (when-let* ((thread (magent-session-thread session)))
-        (setf (magent-thread-turns thread)
-              (magent-session--trim-thread-turns
-               (magent-thread-turns thread)
-               max))
-        (magent-session-refresh-projections session))
-      (magent-log "INFO Trimmed session history: removed %d old messages" to-remove))))
+      (setf (magent-thread-turns thread)
+            (magent-session--trim-thread-turns
+             (magent-thread-turns thread) max))
+      (magent-log "INFO trimmed %d old ledger messages" to-remove))))
 
 (defun magent-session--trim-thread-turns (turns max-messages)
   "Trim TURNS so the last MAX-MESSAGES message items remain.
@@ -1241,41 +1068,6 @@ message boundary."
             (when kept
               (setf (magent-thread-turn-items turn) (nreverse kept))
               (push turn trimmed))))))))
-
-(defun magent-session-add-tool-message (session id name args result)
-  "Add a structured tool result message to SESSION.
-ID is the provider tool-call id, NAME is the tool name, ARGS is the
-tool argument plist, and RESULT is the model-visible tool result."
-  (setq result (magent-tool-result-require result name id))
-  (magent-session-add-message
-   session 'tool
-   (list :id id
-         :name (magent-json-safe-name name)
-         :args (magent-json-safe-tool-args args)
-         :result (magent-tool-result-output-string result))))
-
-(defun magent-session-get-messages (session)
-  "Get all messages from SESSION in chronological order."
-  (magent-session-refresh-projections session)
-  (magent-session-messages session))
-
-;;; Session display
-
-(defun magent-session-summarize (session)
-  "Create a summary of SESSION messages.
-Returns a condensed version of the conversation."
-  (let ((messages (magent-session-get-messages session)))
-    (when messages
-      (with-temp-buffer
-        (insert "Session Summary:\n\n")
-        (dolist (msg (last messages 20))
-          (let ((role (magent-msg-role msg))
-                (content (magent-msg-content msg)))
-            (insert (format "[%s] " (upcase (symbol-name role))))
-            (insert (truncate-string-to-width
-                     (magent-session--content-to-string content) 80 nil nil "..."))
-            (insert "\n\n")))
-        (buffer-string)))))
 
 ;;; gptel prompt list conversion
 
@@ -1370,9 +1162,8 @@ Returns a condensed version of the conversation."
                   (magent-thread-item-id item))
           :name (magent-json-safe-name
                  (magent-thread-item-name item))
-          :args (magent-json-safe-tool-args
-                 (magent-thread--tool-input-plist
-                  (magent-thread-item-input item)))
+          :args (magent-thread-tool-input-plist
+                 (magent-thread-item-input item))
           :result (if (stringp output)
                       output
                     (format "%s" output)))))
@@ -1498,8 +1289,8 @@ sampling request."
 (defun magent-session-context-view
     (session kind &optional current-turn-id)
   "Return explicit context view KIND for SESSION.
-LEDGER is the complete materialized snapshot, TRANSCRIPT is the UI/legacy
-message projection, PROVIDER is provider-shaped replay, COMPACTION is the
+LEDGER is the complete materialized snapshot, TRANSCRIPT is the UI-facing
+ledger projection, PROVIDER is provider-shaped replay, COMPACTION is the
 bounded model replay used as summarizer input, and AUDIT contains the durable
 snapshot plus the bounded journal tail."
   (unless (memq kind magent-session-context-view-kinds)
@@ -1507,7 +1298,7 @@ snapshot plus the bounded journal tail."
   (let ((thread (magent-session-thread-ledger session)))
     (pcase kind
       ('ledger (and thread (magent-thread-snapshot-to-alist thread)))
-      ('transcript (and thread (magent-thread-messages thread)))
+      ('transcript (and thread (magent-thread-transcript thread)))
       ((or 'provider 'compaction)
        (magent-session--provider-context-view session current-turn-id))
       ('audit
@@ -1516,12 +1307,6 @@ snapshot plus the bounded journal tail."
               (journal . ,(vconcat
                             (mapcar #'magent-thread-event-to-alist
                                     (magent-thread-journal thread))))))))))
-
-(defun magent-session-to-gptel-prompt-list (session &optional current-turn-id)
-  "Return SESSION's explicit provider context view.
-This compatibility name remains the provider request boundary; callers that
-need another projection must use `magent-session-context-view'."
-  (magent-session-context-view session 'provider current-turn-id))
 
 (provide 'magent-session)
 ;;; magent-session.el ends here

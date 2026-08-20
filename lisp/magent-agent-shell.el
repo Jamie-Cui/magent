@@ -156,16 +156,12 @@ Return Magent's identifier for use as `agent-shell-preferred-agent-config'."
         (when-let* ((session-id (map-nested-elt agent-shell--state
                                                 '(:session :id))))
           (let* ((client (map-elt agent-shell--state :client))
-                 (scope
-                  (or (and client
-                           (magent-acp--client-session-scope
-                            client session-id))
-                      ;; Compatibility fallback for an agent-shell client that
-                      ;; survived a source reload before scope bindings existed.
-                      (magent-session-scope-from-directory
-                       default-directory))))
-          (or (magent-runtime-session-from-id session-id scope)
-                (magent-acp--runtime-session-by-id session-id scope))))))))
+                 (scope (and client
+                             (magent-acp--client-session-scope
+                              client session-id))))
+          (when scope
+            (or (magent-runtime-session-from-id session-id scope)
+                (magent-acp--runtime-session-by-id session-id scope)))))))))
 
 (defun magent-agent-shell--set-runtime-pending-skills
     (runtime-session skills)
@@ -420,7 +416,7 @@ after clearing the stale state."
 
 ;;;###autoload
 (defun magent-agent-shell-start ()
-  "Start a fresh Magent agent-shell buffer."
+  "Start a new Magent agent-shell buffer."
   (interactive)
   (magent-agent-shell--with-config
     (agent-shell-start :config (magent-agent-shell-make-config))))

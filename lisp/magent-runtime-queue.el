@@ -30,6 +30,7 @@
   observer
   approval-provider
   on-complete
+  starter
   scope
   status
   submitted-at
@@ -39,21 +40,6 @@
   handle
   detail
   finalized)
-
-(defvar magent-runtime-queue--submission-starters
-  (make-hash-table :test #'eq :weakness 'key)
-  "Per-submission starters kept outside the stable submission struct.")
-
-(defun magent-runtime-submission-starter (submission)
-  "Return the request-local starter captured for SUBMISSION."
-  (gethash submission magent-runtime-queue--submission-starters))
-
-(defun magent-runtime-queue--set-submission-starter (submission starter)
-  "Associate STARTER with SUBMISSION without changing its struct layout."
-  (if starter
-      (puthash submission starter magent-runtime-queue--submission-starters)
-    (remhash submission magent-runtime-queue--submission-starters))
-  starter)
 
 (defvar magent-runtime-queue--active nil
   "Currently running `magent-runtime-submission'.")
@@ -80,15 +66,11 @@
 (defvar magent-runtime-queue--arbiter-pending nil
   "Global FIFO of backend-neutral execution tickets.")
 
-(defvar magent-runtime-queue--arbiter-bootstrap-complete nil
-  "Non-nil after preserved pre-arbiter backend state has been adopted.")
-
 (defvar magent-runtime-queue--arbiter-ticket-adapters
   (make-hash-table :test #'eq :weakness 'key)
   "Backend callbacks keyed by arbiter ticket.
 Callbacks keep the runtime queue independent of backend-specific token types.")
 
-(declare-function magent-runtime-api--start-submission "magent-runtime-api")
 (declare-function magent-runtime-session-magent-session
                   "magent-runtime-api" t t)
 
@@ -108,67 +90,6 @@ Callbacks keep the runtime queue independent of backend-specific token types.")
                 (gethash ticket magent-runtime-queue--arbiter-ticket-adapters)
                 key)))
     (funcall function)))
-
-(defun magent-runtime-queue--runtime-bootstrap-ticket (submission active-p)
-  "Return an arbiter ticket for preserved runtime SUBMISSION.
-ACTIVE-P means the backend request is already running and must not restart."
-  (magent-runtime-arbiter-ticket-create
-   :owner 'runtime
-   :token submission
-   :id (magent-runtime-submission-id submission)
-   :starter
-   (if active-p
-       #'ignore
-     (lambda ()
-       (setq magent-runtime-queue--pending
-             (delq submission magent-runtime-queue--pending))
-       (magent-runtime-queue--start
-        submission
-        (or (magent-runtime-submission-starter submission)
-            (and (fboundp 'magent-runtime-api--start-submission)
-                 #'magent-runtime-api--start-submission)))))
-   :rollback
-   (unless active-p
-     (lambda (err)
-       (setq magent-runtime-queue--pending
-             (delq submission magent-runtime-queue--pending))
-       (magent-runtime-queue--rollback-start submission err)))))
-
-(defun magent-runtime-queue--ticket-time (ticket active-p)
-  "Return a sortable timestamp for preserved TICKET.
-Use started time for ACTIVE-P tickets and submitted time otherwise."
-  (let ((token (magent-runtime-arbiter-ticket-token ticket)))
-    (or (if active-p
-            (magent-runtime-submission-started-at token)
-          (magent-runtime-submission-submitted-at token))
-        most-positive-fixnum)))
-
-(defun magent-runtime-queue--bootstrap-preserved-backends ()
-  "Create global lease tickets for runtime state preserved across reload."
-  (when (and (null magent-runtime-queue--arbiter-active)
-             (null magent-runtime-queue--arbiter-pending))
-    (let (active-tickets pending-tickets)
-      (when magent-runtime-queue--active
-        (push (magent-runtime-queue--runtime-bootstrap-ticket
-               magent-runtime-queue--active t)
-              active-tickets))
-      (dolist (submission magent-runtime-queue--pending)
-        (push (magent-runtime-queue--runtime-bootstrap-ticket submission nil)
-              pending-tickets))
-      (setq active-tickets
-            (sort active-tickets
-                  (lambda (left right)
-                    (< (magent-runtime-queue--ticket-time left t)
-                       (magent-runtime-queue--ticket-time right t))))
-            pending-tickets
-            (sort pending-tickets
-                  (lambda (left right)
-                    (< (magent-runtime-queue--ticket-time left nil)
-                       (magent-runtime-queue--ticket-time right nil)))))
-      (when active-tickets
-        (setq magent-runtime-queue--arbiter-active (pop active-tickets)))
-      (setq magent-runtime-queue--arbiter-pending
-            (append active-tickets pending-tickets)))))
 
 (defun magent-runtime-queue--arbiter-ticket-live-p (ticket)
   "Return non-nil when TICKET still belongs to its backend queue."
@@ -257,7 +178,7 @@ synchronously finalized it, or (error . ERR) after rolling it back."
     (and started (magent-runtime-arbiter-ticket-id started))))
 
 (defun magent-runtime-queue--arbiter-reconcile ()
-  "Discard stale tickets left by reloads/tests and resume the global FIFO."
+  "Discard inactive tickets and resume the global FIFO."
   (unless (and magent-runtime-queue--arbiter-active
                (magent-runtime-queue--arbiter-ticket-live-p
                 magent-runtime-queue--arbiter-active))
@@ -409,7 +330,7 @@ runtime session wrapper."
       (error "Runtime submission has no starter: %s"
              (magent-runtime-submission-id submission)))
     (setq magent-runtime-queue--active submission)
-    (magent-runtime-queue--set-submission-starter submission effective-starter)
+    (setf (magent-runtime-submission-starter submission) effective-starter)
     (setf (magent-runtime-submission-status submission) 'running
           (magent-runtime-submission-started-at submission) (float-time))
     (funcall effective-starter submission)))
@@ -435,7 +356,7 @@ Return SUBMISSION's id."
           (magent-protocol-generate-id "submission")))
   (setf (magent-runtime-submission-status submission) 'queued
         (magent-runtime-submission-submitted-at submission) (float-time))
-  (magent-runtime-queue--set-submission-starter submission starter)
+  (setf (magent-runtime-submission-starter submission) starter)
   (setq magent-runtime-queue--pending
         (nconc magent-runtime-queue--pending (list submission)))
   (magent-runtime-queue-arbitrate
@@ -468,12 +389,6 @@ started."
       (let ((disposition
              (magent-runtime-queue-arbiter-finish
               'runtime finished before-advance)))
-        ;; Preserve completion semantics across live reloads from versions that
-        ;; predate the backend-neutral arbiter.
-        (unless disposition
-          (when before-advance
-            (funcall before-advance))
-          (setq disposition (magent-runtime-queue-kick)))
         (unless (eq disposition 'handled)
           disposition)))))
 
@@ -541,20 +456,6 @@ The comparison is by exact session object identity.  This is used by session
                 (magent-runtime-queue--ticket-session-object ticket))
         (cl-pushnew (magent-runtime-arbiter-ticket-owner ticket)
                     owners :test #'eq)))
-    ;; Preserve session-busy behavior across a live reload from a version
-    ;; predating arbiter tickets.  Only runtime state can exist without a
-    ;; backend adapter now.
-    (when (or (and magent-runtime-queue--active
-                   (eq session
-                       (magent-runtime-queue--submission-session-object
-                        magent-runtime-queue--active)))
-              (cl-some
-               (lambda (submission)
-                 (eq session
-                     (magent-runtime-queue--submission-session-object
-                      submission)))
-               magent-runtime-queue--pending))
-      (cl-pushnew 'runtime owners :test #'eq))
     (nreverse owners)))
 
 (defun magent-runtime-queue-session-busy-p (session)
@@ -566,13 +467,6 @@ The comparison is by exact session object identity.  This is used by session
   (magent-runtime-queue--arbiter-reconcile)
   (magent-runtime-queue--ticket-session-object
    magent-runtime-queue--arbiter-active))
-
-;; `defvar' preserves old backend tokens during a source reload.  Adopt them
-;; exactly once after all queue helpers are defined, before any new submission
-;; can mistake the absence of an arbiter ticket for an idle executor.
-(unless magent-runtime-queue--arbiter-bootstrap-complete
-  (setq magent-runtime-queue--arbiter-bootstrap-complete t)
-  (magent-runtime-queue--bootstrap-preserved-backends))
 
 (provide 'magent-runtime-queue)
 ;;; magent-runtime-queue.el ends here

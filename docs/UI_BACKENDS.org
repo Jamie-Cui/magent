@@ -55,7 +55,8 @@ explicit command registration and invocation belong in ~magent-action.el~.
 
 - ~magent-agent-shell-session-strategy~ selects the supported frontend's new,
   latest, or prompt-based session flow for both Magent entry commands and
-  Magent selected from the generic agent-shell picker.
+  Magent selected from the generic agent-shell picker.  It defaults to ~prompt~,
+  offering new and saved sessions from the current scope.
 
 * Development Boundary
 

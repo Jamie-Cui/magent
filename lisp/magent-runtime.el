@@ -116,13 +116,8 @@ wins; when all functions return nil, scope is derived from
   submission-id
   live-p
   event-context
+  audit-context
   abort-controller)
-
-(defvar magent-request-context--audit-contexts
-  (make-hash-table :test #'eq :weakness 'key)
-  "Frozen scalar audit snapshots keyed by request-context identity.
-Keeping this outside the struct preserves active request objects across a
-source reload from older Magent versions.")
 
 (defun magent-request-context--copy-audit-snapshot (snapshot)
   "Return an independent scalar copy of audit SNAPSHOT."
@@ -131,13 +126,6 @@ source reload from older Magent versions.")
              append (list key (if (stringp value)
                                   (copy-sequence value)
                                 value)))))
-
-(defun magent-request-context--set-audit-context (context snapshot)
-  "Freeze scalar audit SNAPSHOT for CONTEXT outside the struct layout."
-  (puthash context
-           (magent-request-context--copy-audit-snapshot snapshot)
-           magent-request-context--audit-contexts)
-  context)
 
 (defun magent-request-context-ui-visible-p (context)
   "Return non-nil when CONTEXT should render UI details."
@@ -156,7 +144,7 @@ The returned plist deliberately excludes sessions, callbacks, provider
 objects, and other live runtime state so lifecycle sinks and completed
   approval records cannot retain an entire request graph."
   (when (magent-request-context-p context)
-    (let ((snapshot (gethash context magent-request-context--audit-contexts)))
+    (let ((snapshot (magent-request-context-audit-context context)))
       (unless snapshot
         (let* ((session (magent-request-context-session context))
                (valid-session (and (magent-session-p session) session))
@@ -201,11 +189,12 @@ objects, and other live runtime state so lifecycle sinks and completed
                       (and event-context
                            (magent-lifecycle-events-context-subagent-id
                             event-context))))
-          (magent-request-context--set-audit-context context snapshot)))
+          (setf (magent-request-context-audit-context context)
+                (magent-request-context--copy-audit-snapshot snapshot))))
       ;; Consumers receive their own plist so provider hooks cannot mutate the
       ;; request-owned attribution captured for later lifecycle events.
       (magent-request-context--copy-audit-snapshot
-       (gethash context magent-request-context--audit-contexts)))))
+       (magent-request-context-audit-context context)))))
 
 (defun magent-request-context-notify (context type &rest props)
   "Notify CONTEXT's request-local observer of TYPE with PROPS.
