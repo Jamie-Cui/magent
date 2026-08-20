@@ -2222,6 +2222,41 @@
         (should (file-directory-p
                  (magent-memory-snapshots-directory)))))))
 
+(ert-deftest magent-test-memory-profile-and-snapshots-use-private-modes ()
+  "Memory persistence enforces 0700 directories and 0600 files."
+  (require 'magent-memory)
+  (let* ((memory-dir (file-name-as-directory
+                      (make-temp-file "magent-memory-private-" t)))
+         (magent-memory-directory memory-dir)
+         (file (magent-memory-file))
+         (plan (magent-memory-scan-plan--create
+                :roots nil
+                :entry-files nil
+                :files nil
+                :skipped-sensitive nil
+                :skipped-excluded nil
+                :skipped-budget nil
+                :total-bytes 0
+                :generated-at (current-time)
+                :provider "test"
+                :model "test")))
+    (unwind-protect
+        (progn
+          (set-file-modes memory-dir #o755)
+          (with-temp-file file
+            (insert "old profile\n"))
+          (set-file-modes file #o644)
+          (magent-memory--write-profile
+           plan "* Magent Managed Profile\n" "private note")
+          (let* ((snapshots (magent-memory-snapshots-directory))
+                 (backup (car (directory-files snapshots t "\\.org\\'"))))
+            (should backup)
+            (should (= (logand (file-modes memory-dir) #o777) #o700))
+            (should (= (logand (file-modes snapshots) #o777) #o700))
+            (should (= (logand (file-modes file) #o777) #o600))
+            (should (= (logand (file-modes backup) #o777) #o600))))
+      (delete-directory memory-dir t))))
+
 (ert-deftest magent-test-redaction-removes-labeled-and-unlabeled-secrets ()
   "Test outbound redaction removes secrets while retaining stable ids."
   (require 'magent-redaction)
@@ -12852,7 +12887,8 @@
     (insert "first\n\nthird\n")
     (goto-char (point-min))
     (forward-line 1)
-    (let ((called nil))
+    (let ((called nil)
+          (magent-agent-shell--context-request-p t))
       (should-not
        (magent-agent-shell--get-current-line-context
         (lambda (&rest _args)
@@ -12861,7 +12897,8 @@
         :agent-cwd default-directory))
       (should-not called))
     (goto-char (point-min))
-    (let ((called nil))
+    (let ((called nil)
+          (magent-agent-shell--context-request-p t))
       (should
        (equal
         (magent-agent-shell--get-current-line-context
@@ -12880,7 +12917,8 @@
     (goto-char (point-min))
     (setq buffer-file-name "/ssh:test.invalid:/srv/project/example.el"
           default-directory "/ssh:test.invalid:/srv/project/")
-    (let (context)
+    (let ((magent-agent-shell--context-request-p t)
+          context)
       (cl-letf (((symbol-function 'file-in-directory-p)
                  (lambda (&rest _args)
                    (ert-fail "Remote line context performed file I/O"))))
@@ -12902,7 +12940,8 @@
     (push-mark (line-end-position) t t)
     (setq buffer-file-name "/ssh:test.invalid:/srv/project/example.el"
           default-directory "/ssh:test.invalid:/srv/project/")
-    (let (context)
+    (let ((magent-agent-shell--context-request-p t)
+          context)
       (cl-letf (((symbol-function 'file-in-directory-p)
                  (lambda (&rest _args)
                    (ert-fail "Remote region context performed file I/O"))))
@@ -12915,6 +12954,40 @@
                (regexp-quote buffer-file-name)
                context))
       (should (string-match-p "first remote line" context)))))
+
+(ert-deftest magent-test-agent-shell-context-workaround-is-magent-scoped ()
+  "Remote path handling leaves non-Magent agent-shell backends unchanged."
+  (require 'magent-agent-shell)
+  (let ((magent-shell (generate-new-buffer " *magent-context-shell*"))
+        (other-shell (generate-new-buffer " *other-context-shell*"))
+        (remote-cwd "/ssh:test.invalid:/srv/project/"))
+    (unwind-protect
+        (progn
+          (with-current-buffer magent-shell
+            (setq major-mode 'agent-shell-mode)
+            (setq-local agent-shell--state
+                        '((:agent-config . ((:identifier . magent))))))
+          (with-current-buffer other-shell
+            (setq major-mode 'agent-shell-mode)
+            (setq-local agent-shell--state
+                        '((:agent-config . ((:identifier . other))))))
+          (with-temp-buffer
+            (setq buffer-file-name
+                  "/ssh:test.invalid:/srv/project/example.el")
+            (dolist (case `((,magent-shell . nil)
+                            (,other-shell . ,remote-cwd)))
+              (let (captured-cwd)
+                (magent-agent-shell--context
+                 (lambda (&rest _args)
+                   (magent-agent-shell--get-region-context
+                    (lambda (&rest region-args)
+                      (setq captured-cwd
+                            (plist-get region-args :agent-cwd)))
+                    :agent-cwd remote-cwd))
+                 :shell-buffer (car case))
+                (should (equal captured-cwd (cdr case)))))))
+      (kill-buffer magent-shell)
+      (kill-buffer other-shell))))
 
 (ert-deftest magent-test-agent-shell-send-prompt-queues-skills ()
   "Test agent-shell prompt submission records request-local skills."

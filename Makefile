@@ -8,6 +8,8 @@ COVERAGE_MIN ?= 65
 SOURCE_MANIFEST ?= source-files.txt
 BENCHMARK_CONFIG ?= $(abspath benchmark/config.toml)
 HARBOR_CACHE = $(HOME)/.cache/harbor
+MAGENT_BENCHMARK_OWNER ?= $(realpath .)
+MAGENT_BENCHMARK_OWNER_LABEL = io.magent.benchmark.owner
 
 # Auto-detect dependency paths
 elpa-package-dir = $(shell found=; \
@@ -158,7 +160,9 @@ clean:
 	@echo "Cleaning Harbor benchmark containers and networks..."
 	@set -e; \
 	if command -v "$(DOCKER)" >/dev/null 2>&1 && $(DOCKER) info >/dev/null 2>&1; then \
-		$(DOCKER) ps -a --format '{{.ID}} {{.Names}}' | \
+		$(DOCKER) ps -a \
+			--filter "label=$(MAGENT_BENCHMARK_OWNER_LABEL)=$(MAGENT_BENCHMARK_OWNER)" \
+			--format '{{.ID}} {{.Names}}' | \
 		while read -r id name; do \
 			case "$$name" in \
 				*__env-main-1) \
@@ -166,7 +170,9 @@ clean:
 					$(DOCKER) rm -f "$$id" >/dev/null ;; \
 			esac; \
 		done; \
-		$(DOCKER) network ls --format '{{.ID}} {{.Name}}' | \
+		$(DOCKER) network ls \
+			--filter "label=$(MAGENT_BENCHMARK_OWNER_LABEL)=$(MAGENT_BENCHMARK_OWNER)" \
+			--format '{{.ID}} {{.Name}}' | \
 		while read -r id name; do \
 			case "$$name" in \
 				*__env_default) \

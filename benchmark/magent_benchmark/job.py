@@ -22,6 +22,8 @@ from .profiles import (
 
 
 _LOOPBACK_PROXY_HOSTS = {"127.0.0.1", "localhost", "::1"}
+_OWNER_COMPOSE = Path(__file__).resolve().parents[1] / "docker-compose.owner.yaml"
+_OWNER_VALUE_ENV = "MAGENT_BENCHMARK_OWNER"
 _PROXY_COMPOSE = Path(__file__).resolve().parents[1] / "docker-compose.proxy.yaml"
 _PROXY_VALUE_ENV = "MAGENT_BENCHMARK_CONTAINER_PROXY"
 
@@ -45,6 +47,11 @@ def _container_proxy_url(proxy: str) -> str:
     if port is not None:
         netloc += f":{port}"
     return parsed._replace(netloc=netloc).geturl()
+
+
+def _benchmark_owner() -> str:
+    """Return the canonical checkout root used to label Docker resources."""
+    return str(_OWNER_COMPOSE.resolve().parent.parent)
 
 
 def _agent_config(
@@ -183,18 +190,23 @@ def build_job(
             }
         ],
     }
+    if not _OWNER_COMPOSE.is_file():
+        raise ValueError(f"ownership compose overlay is missing: {_OWNER_COMPOSE}")
+    environment: dict[str, Any] = {
+        "env": {_OWNER_VALUE_ENV: _benchmark_owner()},
+        "extra_docker_compose": [str(_OWNER_COMPOSE)],
+    }
+    job["environment"] = environment
     if proxy:
         container_proxy = _container_proxy_url(proxy)
         if not _PROXY_COMPOSE.is_file():
             raise ValueError(f"proxy compose overlay is missing: {_PROXY_COMPOSE}")
-        job["environment"] = {
-            # Harbor also exposes environment.env to the host-side Compose
-            # process.  Keep the standard proxy names in the Compose overlay
-            # so Docker itself does not try to use a container-only address.
-            "env": {_PROXY_VALUE_ENV: container_proxy},
-            "extra_allowed_hosts": [urlparse(container_proxy).hostname],
-            "extra_docker_compose": [str(_PROXY_COMPOSE)],
-        }
+        # Harbor also exposes environment.env to the host-side Compose
+        # process.  Keep the standard proxy names in the Compose overlay
+        # so Docker itself does not try to use a container-only address.
+        environment["env"][_PROXY_VALUE_ENV] = container_proxy
+        environment["extra_allowed_hosts"] = [urlparse(container_proxy).hostname]
+        environment["extra_docker_compose"].append(str(_PROXY_COMPOSE))
         job["agent_setup_timeout_multiplier"] = 2
     magent = next(agent for agent in job["agents"] if agent.get("import_path"))
     magent.setdefault("kwargs", {}).update(

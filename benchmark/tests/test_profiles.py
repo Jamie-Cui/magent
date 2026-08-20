@@ -155,6 +155,15 @@ def test_auto_effort_does_not_inherit_harbor_codex_high_default(
     config, profile, suite = _config(tmp_path)
     job, _ = build_job(config, profile, suite, "model-x", "smoke")
     assert job["agents"][0]["kwargs"]["reasoning_effort"] is None
+    assert job["environment"]["env"] == {
+        "MAGENT_BENCHMARK_OWNER": str(Path(__file__).resolve().parents[2]),
+    }
+    assert job["environment"]["extra_docker_compose"] == [
+        str(Path(__file__).resolve().parents[1] / "docker-compose.owner.yaml")
+    ]
+    assert JobConfig.model_validate(job).environment.env == {
+        "MAGENT_BENCHMARK_OWNER": str(Path(__file__).resolve().parents[2]),
+    }
 
 
 def test_job_proxy_covers_trial_build_and_runtime_without_fingerprinting_secret(
@@ -169,20 +178,29 @@ def test_job_proxy_covers_trial_build_and_runtime_without_fingerprinting_secret(
     environment = job["environment"]
     container_proxy = "http://host.docker.internal:10808"
     assert environment["env"] == {
+        "MAGENT_BENCHMARK_OWNER": str(Path(__file__).resolve().parents[2]),
         "MAGENT_BENCHMARK_CONTAINER_PROXY": container_proxy,
     }
     assert environment["extra_allowed_hosts"] == ["host.docker.internal"]
     assert environment["extra_docker_compose"] == [
+        str(Path(__file__).resolve().parents[1] / "docker-compose.owner.yaml"),
         str(Path(__file__).resolve().parents[1] / "docker-compose.proxy.yaml")
     ]
     assert job["agent_setup_timeout_multiplier"] == 2
     assert "AgentSetupTimeoutError" in job["retry"]["include_exceptions"]
     assert proxy not in str(fingerprint)
     assert JobConfig.model_validate(job).environment.env == {
+        "MAGENT_BENCHMARK_OWNER": str(Path(__file__).resolve().parents[2]),
         "MAGENT_BENCHMARK_CONTAINER_PROXY": container_proxy,
     }
-    overlay = yaml.safe_load(
+    owner_overlay = yaml.safe_load(
         Path(environment["extra_docker_compose"][0]).read_text()
+    )
+    owner_label = {"io.magent.benchmark.owner": "${MAGENT_BENCHMARK_OWNER}"}
+    assert owner_overlay["services"]["main"]["labels"] == owner_label
+    assert owner_overlay["networks"]["default"]["labels"] == owner_label
+    overlay = yaml.safe_load(
+        Path(environment["extra_docker_compose"][1]).read_text()
     )
     proxy_variables = {
         name: "${MAGENT_BENCHMARK_CONTAINER_PROXY}"
@@ -203,9 +221,13 @@ def test_non_loopback_proxy_uses_the_same_compose_overlay(tmp_path: Path) -> Non
     proxy = "http://proxy.example:8080"
     job, _ = build_job(config, profile, suite, "model-x", "smoke", proxy=proxy)
 
-    assert job["environment"]["env"]["MAGENT_BENCHMARK_CONTAINER_PROXY"] == proxy
+    assert job["environment"]["env"] == {
+        "MAGENT_BENCHMARK_OWNER": str(Path(__file__).resolve().parents[2]),
+        "MAGENT_BENCHMARK_CONTAINER_PROXY": proxy,
+    }
     assert job["environment"]["extra_allowed_hosts"] == ["proxy.example"]
     assert job["environment"]["extra_docker_compose"] == [
+        str(Path(__file__).resolve().parents[1] / "docker-compose.owner.yaml"),
         str(Path(__file__).resolve().parents[1] / "docker-compose.proxy.yaml")
     ]
     assert job["agent_setup_timeout_multiplier"] == 2
@@ -322,9 +344,12 @@ def test_config_driven_prepare_writes_single_harbor_job(tmp_path: Path) -> None:
     assert job["jobs_dir"] == str((tmp_path / "jobs").resolve())
     assert job["agents"][0]["model_name"] == "model-x"
     assert job["agents"][0]["env"]["OPENAI_API_KEY"] == "test-key"
-    assert job["environment"]["env"]["MAGENT_BENCHMARK_CONTAINER_PROXY"] == (
-        "http://host.docker.internal:10808"
-    )
+    assert job["environment"]["env"] == {
+        "MAGENT_BENCHMARK_OWNER": str(Path(__file__).resolve().parents[2]),
+        "MAGENT_BENCHMARK_CONTAINER_PROXY": (
+            "http://host.docker.internal:10808"
+        ),
+    }
     assert "test-key" not in fingerprint.read_text()
     assert "127.0.0.1:10808" not in fingerprint.read_text()
     assert output.stat().st_mode & 0o777 == 0o600
@@ -510,18 +535,36 @@ case "$1" in
     exit 0
     ;;
   ps)
-    printf '%s\n' \
-      'bench-container django__django-13033__trial__env-main-1' \
-      'other-container goods-wiki-api-1'
+    case "$*" in
+      *"label=io.magent.benchmark.owner=$MAKE_TEST_OWNER"*)
+        printf '%s\n' \
+          'bench-container django__django-13033__trial__env-main-1'
+        ;;
+      *)
+        printf '%s\n' \
+          'bench-container django__django-13033__trial__env-main-1' \
+          'foreign-bench rust__rust-123__trial__env-main-1' \
+          'other-container goods-wiki-api-1'
+        ;;
+    esac
     ;;
   rm)
     ;;
   network)
     case "$2" in
       ls)
-        printf '%s\n' \
-          'bench-network django__django-13033__trial__env_default' \
-          'other-network goods-wiki_default'
+        case "$*" in
+          *"label=io.magent.benchmark.owner=$MAKE_TEST_OWNER"*)
+            printf '%s\n' \
+              'bench-network django__django-13033__trial__env_default'
+            ;;
+          *)
+            printf '%s\n' \
+              'bench-network django__django-13033__trial__env_default' \
+              'foreign-network rust__rust-123__trial__env_default' \
+              'other-network goods-wiki_default'
+            ;;
+        esac
         ;;
       rm)
         ;;
@@ -555,7 +598,13 @@ def _run_make_cleanup(
     home: Path,
 ) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
-    environment.update({"HOME": str(home), "MAKE_TEST_LOG": str(log)})
+    environment.update(
+        {
+            "HOME": str(home),
+            "MAKE_TEST_LOG": str(log),
+            "MAKE_TEST_OWNER": str(project.resolve()),
+        }
+    )
     return subprocess.run(
         [
             "make",
@@ -594,6 +643,18 @@ def test_make_clean_and_purge_target_only_benchmark_docker_state(
     calls = log.read_text().splitlines()
     assert "docker rm -f bench-container" in calls
     assert "docker network rm bench-network" in calls
+    assert any(
+        "ps -a --filter "
+        f"label=io.magent.benchmark.owner={project.resolve()}" in call
+        for call in calls
+    )
+    assert any(
+        "network ls --filter "
+        f"label=io.magent.benchmark.owner={project.resolve()}" in call
+        for call in calls
+    )
+    assert not any("foreign-bench" in call for call in calls)
+    assert not any("foreign-network" in call for call in calls)
     assert not any("other-container" in call for call in calls)
     assert not any("other-network" in call for call in calls)
     assert not any(call.startswith("docker image ") for call in calls)

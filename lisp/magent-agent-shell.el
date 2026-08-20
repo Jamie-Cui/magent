@@ -33,6 +33,7 @@
 (defvar shell-maker--request-process)
 
 (declare-function magent--ensure-initialized "magent")
+(declare-function agent-shell--context "agent-shell")
 (declare-function agent-shell--display-buffer "agent-shell")
 (declare-function agent-shell--dwim "agent-shell")
 (declare-function agent-shell--send-command "agent-shell")
@@ -57,6 +58,9 @@
 
 (defvar-local magent-agent-shell--owns-session-strategy-p nil
   "Non-nil when Magent installed the buffer-local session strategy.")
+
+(defvar magent-agent-shell--context-request-p nil
+  "Dynamically non-nil while agent-shell builds context for Magent.")
 
 (defun magent-agent-shell--ensure-loaded ()
   "Load `agent-shell' before using its runtime API."
@@ -310,6 +314,18 @@ Return non-nil when SKILL-NAME is selected after toggling."
     (line-beginning-position)
     (line-end-position))))
 
+(defun magent-agent-shell--context (orig &rest args)
+  "Call ORIG with ARGS under the exact target shell's context ownership."
+  (let ((magent-agent-shell--context-request-p
+         (magent-agent-shell--magent-buffer-p
+          (plist-get args :shell-buffer))))
+    (apply orig args)))
+
+(unless (advice-member-p #'magent-agent-shell--context
+                         'agent-shell--context)
+  (advice-add 'agent-shell--context :around
+              #'magent-agent-shell--context))
+
 (defun magent-agent-shell--get-region-context (orig &rest args)
   "Build region context through ORIG without remote path queries.
 
@@ -319,10 +335,11 @@ TRAMP while agent-shell is starting and deadlock with the in-process
 ACP request.  Keep the full remote file name instead; constructing
 context must not perform remote file I/O."
   (let ((agent-cwd (plist-get args :agent-cwd)))
-    (when (or (and (stringp buffer-file-name)
-                   (file-remote-p buffer-file-name))
-              (and (stringp agent-cwd)
-                   (file-remote-p agent-cwd)))
+    (when (and magent-agent-shell--context-request-p
+               (or (and (stringp buffer-file-name)
+                        (file-remote-p buffer-file-name))
+                   (and (stringp agent-cwd)
+                        (file-remote-p agent-cwd))))
       (setq args (plist-put (copy-sequence args) :agent-cwd nil))))
   (apply orig args))
 
@@ -339,7 +356,9 @@ temporarily activating the current line as a region.  On a blank
 line this creates an empty BOL region, which agent-shell 0.57.1
 formats as an inverted range such as README.org:3-2.  Blank line
 context is not useful for Magent, so skip it."
-  (unless (magent-agent-shell--blank-current-line-p)
+  (if (and magent-agent-shell--context-request-p
+           (magent-agent-shell--blank-current-line-p))
+      nil
     (apply orig args)))
 
 (unless (advice-member-p #'magent-agent-shell--get-current-line-context
