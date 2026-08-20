@@ -48,7 +48,7 @@ through these stages: understand intent -> write SKILL.md -> test in Emacs -> it
 name: skill-name
 description: When to trigger and what this skill does
 type: instruction
-tools: [bash, read]      # optional: tools this skill needs
+tools: [bash, read_file] # optional: exact provider tool names this skill needs
 requires-project: true   # optional: reject the skill in global sessions
 capability: true         # optional: auto-activate this instruction skill by context
 ---

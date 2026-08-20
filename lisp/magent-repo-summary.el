@@ -6,7 +6,7 @@
 
 ;;; Commentary:
 
-;; Deterministic storage for the `/summarize' skill.  The model supplies an
+;; Deterministic storage for the `/summarize' Action.  The model supplies an
 ;; Org fragment; this module owns repository identity, org-roam metadata,
 ;; timestamp filenames, subtree upserts, and atomic writes.
 
