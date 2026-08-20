@@ -64,7 +64,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 
 *关键文件：*
 
-- ~magent-agent.el~ ：核心 agent processing，构造 gptel prompt、应用 overrides、调用 ~gptel-request~ 。
+- ~magent-agent.el~ ：核心 agent processing，构造 gptel prompt、应用 overrides，并启动 Magent-owned loop。
 - ~magent-project-instructions.el~ ：从 project root 到请求相关 resource 有界发现 ~AGENTS.md~ 等 scoped project instructions。
 - ~magent-agent-info.el~ ：agent metadata struct 和 helpers。
 - ~magent-agent-builtins.el~ ：7 个内置 agent definitions。

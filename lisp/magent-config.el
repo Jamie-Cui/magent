@@ -99,7 +99,7 @@ emacs_eval_live, agent, web_search."
   "Directory where Magent writes repository summary notes.
 When nil, use `org-roam-directory' if that variable is bound.  Magent
 does not create this directory automatically; configure it to an existing
-org-roam directory before using the `/summarize' skill."
+org-roam directory before using the `/summarize' Action."
   :type '(choice (const :tag "Use org-roam-directory" nil)
                  (directory :tag "Org-roam directory"))
   :group 'magent)
@@ -107,8 +107,9 @@ org-roam directory before using the `/summarize' skill."
 (defcustom magent-project-root-function nil
   "Function to find project root directory.
 The function should take no arguments and return the project root
-path as a string.  If nil, uses `projectile-project-root' when
-available, or `default-directory'."
+path as a string.  If nil, try `projectile-project-root', then
+`project-current' from project.el, and finally fall back to
+`default-directory'."
   :type '(choice (function :tag "Custom function")
                  (const :tag "Default" nil))
   :group 'magent)
@@ -207,11 +208,13 @@ wire-protocol configuration."
   (symbol-name (magent-effort-option-or-auto effort)))
 
 (defcustom magent-bypass-permission nil
-  "DANGEROUS: Bypass permission checks for all tools.
-When non-nil, all tool calls are executed without confirmation,
-ignoring agent permission rules and user-defined overrides.
-This is a security risk and should only be enabled in trusted
-environments for debugging or automation purposes.
+  "DANGEROUS: Bypass ordinary Magent tool permission checks.
+When non-nil, exposed tools ignore agent permission rules and user-defined
+overrides.  Tools with a once-only approval policy, including `emacs_eval'
+and `emacs_eval_live', still require a fresh confirmation.  This flag does
+not expose globally disabled tools or tools omitted from an Action's exact
+allowlist.  Enable it only in trusted environments for debugging or
+automation.
 
 This variable is the canonical permission bypass flag used by
 `magent-toggle-bypass-permission' and permission checks."

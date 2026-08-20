@@ -99,7 +99,7 @@ Magent directly from Git:
   :after (agent-shell gptel)
   :demand t
   :custom
-  ;; Uncomment to bypass Magent's tool permission checks and approval prompts.
+  ;; Uncomment to bypass ordinary checks; eval tools still require approval.
   ;; (magent-bypass-permission t)
   (magent-default-effort 'xhigh)
   :config
@@ -236,7 +236,7 @@ must appear exactly once in ~prompts/manifest.txt~.
 | ~magent-agent-shell-interrupt~                     | Interrupt the active Magent agent-shell request                  |
 | ~magent-agent-shell-run-command~                   | Select and run a registered slash command                        |
 | ~magent-agent-shell-toggle-skill-for-next-request~ | Toggle a one-shot instruction skill                              |
-| ~magent-toggle-bypass-permission~                  | Toggle permission bypass for tool filtering and approval prompts |
+| ~magent-toggle-bypass-permission~                  | Toggle ordinary permission bypass; once-only eval approval remains |
 
 Prompt text is entered directly in the agent-shell buffer, and Magent streams
 assistant responses, tool activity, permission prompts, and session updates
@@ -277,11 +277,12 @@ and are consumed by the next prompt.
 
 Elisp-native slash commands are registered through the public
 ~magent-action-register~ API and can be selected with
-~M-x magent-agent-shell-run-command~. Agent-shell advertises twelve bundled
+~M-x magent-agent-shell-run-command~. Agent-shell advertises thirteen bundled
 commands: ~/explain~, ~/fix~, ~/init~, ~/review~, ~/summarize~, ~/test~,
-~/compact~, ~/skills~, ~/doctor~, ~/memory-init~, ~/memory-refresh~, and
-~/memory-clear~. The six prompt commands own package Org resources and
-do not activate same-name skills. ~/summarize~ writes one canonical Org note
+~/compact~, ~/authority~, ~/skills~, ~/doctor~, ~/memory-init~,
+~/memory-refresh~, and ~/memory-clear~. The six prompt commands own package
+Org resources and do not activate same-name skills. ~/summarize~ writes one
+canonical Org note
 for the current Git project and accepts an optional path or semantic scope.
 
 Every instruction skill in the exact session scope is advertised as ~/$name~.

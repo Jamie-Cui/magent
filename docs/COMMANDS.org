@@ -11,8 +11,8 @@ Magent has one Action registry projected onto two user-facing command surfaces:
 - *Interactive commands* are ~M-x~ wrappers over Actions that opt into
   interactive exposure.
 
-The bundled package provides twelve slash commands. Doctor and the three Memory
-Actions also expose ~M-x magent-action-run-*~ wrappers and use isolated
+The bundled package provides thirteen slash commands. Doctor and the three
+Memory Actions also expose ~M-x magent-action-run-*~ wrappers and use isolated
 durable sessions.
 
 * Slash Commands

@@ -195,7 +195,7 @@ Custom agents: `.magent/agent/*.md` files with YAML frontmatter + markdown body 
 ---
 name: skill-name
 description: Brief description
-tools: [bash, read]
+tools: [bash, read_file]
 type: instruction        # the only supported type
 requires-project: true   # optional: reject use from a global session
 ---

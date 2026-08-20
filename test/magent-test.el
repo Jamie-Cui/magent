@@ -294,6 +294,7 @@
   "Test the MELPA recipe includes all production libraries and runtime data."
   (let ((workflow (expand-file-name ".github/workflows/melpazoid.yml"
                                     magent-test--root-directory))
+        (expected-files '("lisp/magent*.el" "prompts" "skills"))
         recipe)
     (with-temp-buffer
       (insert-file-contents workflow)
@@ -302,7 +303,16 @@
       (setq recipe (read (match-string 1))))
     (should
      (equal (plist-get (cdr recipe) :files)
-            '("lisp/magent*.el" "prompts" "skills")))
+            expected-files))
+    (dolist (relative-file '("docs/TROUBLESHOOTING.org"
+                             "docs/TROUBLESHOOTING.zh.org"))
+      (with-temp-buffer
+        (insert-file-contents
+         (expand-file-name relative-file magent-test--root-directory))
+        (should (re-search-forward "^(magent[[:space:]]+:fetcher" nil t))
+        (goto-char (match-beginning 0))
+        (should (equal (plist-get (cdr (read (current-buffer))) :files)
+                       expected-files))))
     (should (member "lisp/magent-action-builtins.el"
                     (magent-test-source-files
                      magent-test--root-directory)))))
@@ -331,6 +341,23 @@
 (defconst magent-test--builtin-maintenance-command-names
   '("doctor" "memory-clear" "memory-init" "memory-refresh")
   "Magent-owned isolated workflows exposed as slash commands.")
+
+(ert-deftest magent-test-bundled-command-docs-match-runtime-inventory ()
+  "Test user docs enumerate every bundled slash command and the exact count."
+  (let ((names (append magent-test--builtin-control-command-names
+                       magent-test--builtin-maintenance-command-names
+                       magent-test--builtin-slash-command-names)))
+    (should (= (length names) 13))
+    (dolist (entry '(("README.org" . "thirteen bundled")
+                     ("docs/COMMANDS.org" . "thirteen slash commands")
+                     ("docs/COMMANDS.zh.org" . "13 个 slash commands")))
+      (with-temp-buffer
+        (insert-file-contents
+         (expand-file-name (car entry) magent-test--root-directory))
+        (should (search-forward (cdr entry) nil t))
+        (dolist (name names)
+          (goto-char (point-min))
+          (should (search-forward (format "~/%s~" name) nil t)))))))
 
 (magent-define-workflow magent-test--empty-action-workflow (_invocation)
   "Return immediately for registry and frontend discovery tests."
@@ -1024,12 +1051,12 @@
   (let* ((content
           (concat "---\n"
                   "description: \"Say \\\"hi\\\", then C:\\\\tmp\\nnext\"\n"
-                  "tools: [bash, read]\n"
+                  "tools: [bash, read_file]\n"
                   "---\n"))
          (fm (car (magent-file-loader-parse-frontmatter content))))
     (should (equal (plist-get fm :description)
                    "Say \"hi\", then C:\\tmp\nnext"))
-    (should (equal (plist-get fm :tools) '("bash" "read")))))
+    (should (equal (plist-get fm :tools) '("bash" "read_file")))))
 
 (ert-deftest magent-test-frontmatter-keeps-commas-in-scalar-fields ()
   "Comma-containing scalar fields remain scalar values."
@@ -3412,15 +3439,21 @@
     (should (null magent-skills--registry))))
 
 (ert-deftest magent-test-skills-register-builtin ()
-  "Test code-defined builtin skill registration."
+  "Test code-defined builtin skill registration and canonical tool examples."
   (require 'magent-skills)
+  (require 'magent-tools)
   (let ((magent-skills--registry nil))
     (cl-letf (((symbol-function 'magent-log) #'ignore))
       (magent-skills--register-builtin))
     (should (null (magent-skills-get "emacs")))
     (let ((skill (magent-skills-get "skill-creator")))
       (should skill)
-      (should (eq (magent-skill-type skill) 'instruction)))))
+      (should (eq (magent-skill-type skill) 'instruction))
+      (let ((prompt (magent-skill-prompt skill)))
+        (should (string-match "tools: \\[\\([^]]+\\)\\]" prompt))
+        (dolist (name (split-string (match-string 1 prompt)
+                                    "[[:space:],]+" t))
+          (should (magent-tools-catalog-entry name)))))))
 
 (ert-deftest magent-test-skills-load-order-preserves-directory-precedence ()
   "Test later skill directories override earlier directories deterministically."
@@ -5154,7 +5187,8 @@
 (ert-deftest magent-test-skills-parse-tools ()
   "Test canonical YAML-sequence tool parsing."
   (require 'magent-skills)
-  (should (equal (magent-skills--parse-tools '("bash" "read")) '(bash read)))
+  (should (equal (magent-skills--parse-tools '("bash" "read_file"))
+                 '(bash read_file)))
   (should-error (magent-skills--parse-tools "bash, read, write"))
   (should-error (magent-skills--parse-tools "bash"))
   (should-error (magent-skills--parse-tools 'bash))
@@ -5169,13 +5203,13 @@
     (unwind-protect
         (progn
           (with-temp-file skillfile
-            (insert "---\nname: test-skill\ndescription: A test\ntype: instruction\ntools: [bash, read]\nrequires-project: true\n---\nDo the thing."))
+            (insert "---\nname: test-skill\ndescription: A test\ntype: instruction\ntools: [bash, read_file]\nrequires-project: true\n---\nDo the thing."))
           (let ((skill (magent-skills-load-file skillfile)))
             (should skill)
             (should (equal (magent-skill-name skill) "test-skill"))
             (should (equal (magent-skill-description skill) "A test"))
             (should (eq (magent-skill-type skill) 'instruction))
-            (should (equal (magent-skill-tools skill) '(bash read)))
+            (should (equal (magent-skill-tools skill) '(bash read_file)))
             (should (magent-skill-requires-project skill))
             (should (string-match-p "Do the thing" (magent-skill-prompt skill)))))
       (delete-directory tmpdir t))))

@@ -61,7 +61,7 @@ Manages conversation history, scoped overlays, and runtime state.
 Multi-agent architecture with specialized agents for different tasks.
 
 *Key Files:*
-- ~magent-agent.el~ — Core agent processing: builds gptel prompts, applies overrides, calls ~gptel-request~
+- ~magent-agent.el~ — Core agent processing: builds gptel prompts, applies overrides, and starts the Magent-owned loop
 - ~magent-project-instructions.el~ — Bounded root-to-resource discovery of scoped project instructions such as ~AGENTS.md~
 - ~magent-agent-info.el~ — Agent metadata struct and helpers
 - ~magent-agent-builtins.el~ — 7 built-in agent definitions

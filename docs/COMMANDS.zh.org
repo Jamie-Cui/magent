@@ -11,7 +11,7 @@ Magent 把同一个 Action registry 投影为两类用户可见的 command 入�
 - *Interactive commands* 是选择了 interactive exposure 的 Action spec 对应的
   ~M-x~ wrapper。
 
-当前内置包提供 12 个 slash commands。Doctor 和三个 Memory Action 还提供
+当前内置包提供 13 个 slash commands。Doctor 和三个 Memory Action 还提供
 ~M-x magent-action-run-*~ wrapper，并使用独立 durable session。
 
 * Slash Commands
