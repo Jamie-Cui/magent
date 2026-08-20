@@ -1,0 +1,9 @@
+services:
+  main:
+    labels:
+      io.magent.benchmark.owner: "${MAGENT_BENCHMARK_OWNER}"
+
+networks:
+  default:
+    labels:
+      io.magent.benchmark.owner: "${MAGENT_BENCHMARK_OWNER}"

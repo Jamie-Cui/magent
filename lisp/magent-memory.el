@@ -171,6 +171,48 @@ MESSAGE defaults to a stable cancellation explanation."
   "Return the directory where memory snapshots are stored."
   (expand-file-name "snapshots" magent-memory-directory))
 
+(defun magent-memory--ensure-private-directory (directory)
+  "Create DIRECTORY when needed and enforce mode 0700."
+  (let ((old-default-modes (default-file-modes)))
+    (unwind-protect
+        (progn
+          (set-default-file-modes #o700)
+          (make-directory directory t))
+      (set-default-file-modes old-default-modes)))
+  (set-file-modes directory #o700)
+  directory)
+
+(defun magent-memory--write-private-file (file content)
+  "Write CONTENT to FILE while enforcing mode 0600."
+  (magent-memory--ensure-private-directory (file-name-directory file))
+  (let ((old-default-modes (default-file-modes)))
+    (unwind-protect
+        (progn
+          (set-default-file-modes #o600)
+          (when (file-exists-p file)
+            (set-file-modes file #o600))
+          (with-temp-file file
+            (insert content)))
+      (set-default-file-modes old-default-modes)))
+  (set-file-modes file #o600)
+  file)
+
+(defun magent-memory--copy-private-file (source destination)
+  "Copy SOURCE to DESTINATION while enforcing private ownership modes."
+  (magent-memory--ensure-private-directory
+   (file-name-directory destination))
+  (set-file-modes source #o600)
+  (let ((old-default-modes (default-file-modes)))
+    (unwind-protect
+        (progn
+          (set-default-file-modes #o600)
+          (when (file-exists-p destination)
+            (set-file-modes destination #o600))
+          (copy-file source destination t t nil nil))
+      (set-default-file-modes old-default-modes)))
+  (set-file-modes destination #o600)
+  destination)
+
 (defun magent-memory--json-encode (value)
   "Return VALUE encoded as compact JSON."
   (let ((json-encoding-pretty-print nil))
@@ -750,8 +792,7 @@ Return the backup path or nil."
              (backup (expand-file-name
                       (format "emacs-profile-%s.org" stamp)
                       dir)))
-        (make-directory dir t)
-        (copy-file file backup t t t t)
+        (magent-memory--copy-private-file file backup)
         backup))))
 
 (cl-defun magent-memory--write-profile
@@ -759,7 +800,7 @@ Return the backup path or nil."
   "Write managed memory Org for PLAN.
 MANAGED-ORG is the fixed managed subtree.  USER-NOTES are preserved under
 the user-owned heading.  ACTIVE defaults to t."
-  (make-directory magent-memory-directory t)
+  (magent-memory--ensure-private-directory magent-memory-directory)
   (let* ((file (magent-memory-file))
          (backup (magent-memory--backup-active-file))
          (body (concat
@@ -768,8 +809,7 @@ the user-owned heading.  ACTIVE defaults to t."
                 "\n\n* " magent-memory--user-notes-heading "\n"
                 (string-trim-right (or user-notes ""))
                 "\n")))
-    (with-temp-file file
-      (insert body))
+    (magent-memory--write-private-file file body)
     (list :file file
           :backup backup
           :active active)))

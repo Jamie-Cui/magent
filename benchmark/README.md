@@ -87,8 +87,10 @@ OpenCode 和 Magent 会在 model step 结束时更新 live token；`seen...` 持
 Public-network task 会忽略 agent provider allowlist，因此 wrapper 只过滤 Harbor
 为此逐 trial 重复产生的良性 warning；其他 warning、最终结果表和报告路径仍会正常输出。
 
-项目根目录的 `make clean` 会停止并删除名称匹配 Harbor trial 约定的 benchmark
-容器和网络，同时删除 Elisp 编译产物及本地可重建环境。`make purge` 还会删除
+项目根目录的 `make clean` 会停止并删除同时带有当前 checkout ownership label、且
+名称匹配 Harbor trial 约定的 benchmark 容器和网络，同时删除 Elisp 编译产物及本地
+可重建环境。未带当前 checkout ownership label 的其他 benchmark job 不会被匹配。
+`make purge` 还会删除
 benchmark Docker 镜像和 `~/.cache/harbor` task cache，之后重跑需要重新下载和构建。
 两个命令都保留 `benchmark/config.toml`、`benchmark/jobs/` 和
 `benchmark/reports/`，也不会调用可能影响其他项目的全局 Docker prune。
