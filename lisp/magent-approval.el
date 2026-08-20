@@ -162,12 +162,22 @@ closures, tool arguments, or prompt/command bodies."
      (when audit-context
        (list :audit-context audit-context)))))
 
+(defun magent-approval-normalize-decision (request decision)
+  "Normalize provider DECISION against REQUEST's approval policy."
+  (if (and (eq (plist-get request :approval-policy) 'once-only)
+           (eq decision 'allow-session))
+      'allow-once
+    decision))
+
 (defun magent-approval-resolve-request (request-id decision)
   "Resolve REQUEST-ID with DECISION and invoke its callback.
 Return non-nil when a pending request was found."
   (when-let* ((entry (gethash request-id magent-approval--pending-requests)))
     (unless (memq decision magent-approval--decisions)
       (error "Invalid Magent approval decision: %S" decision))
+    (setq decision
+          (magent-approval-normalize-decision
+           (plist-get entry :request) decision))
     (let* ((callback (plist-get entry :callback))
            (provider (plist-get entry :provider))
            (completed-entry (list :request

@@ -212,6 +212,8 @@ When VALUE is nil, remove KEY.  Return SESSION metadata."
   (or (and session
            (magent-thread-p (magent-session-thread session))
            (magent-thread-scope (magent-session-thread session)))
+      (and (magent-session-action-scope-p magent-session--current-scope)
+           magent-session--current-scope)
       (and session
            (magent-session-metadata-value session 'origin-scope))
       (magent-session--scope-origin magent-session--current-scope)

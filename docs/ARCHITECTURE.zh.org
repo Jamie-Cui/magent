@@ -105,7 +105,8 @@ request 选择 ~:all~；Action 的 agent Step 通过 ~:tools~ 传入 exact allow
 ~magent-tool-result~；只有 provider boundary 会转换为文本，历史 session 字符串
 只在导入时迁移。过大的 model-visible result 在中心位置截断，完整结果写入当前
 session 私有、带 TTL/quota 的 spill，只能凭 opaque id 通过 ~read_tool_output~ 分页
-读取。~glob~ 使用有界的 event-loop slices。
+读取。spill identity 同时包含精确 runtime scope 与 session id；分页使用从 1
+开始的字符偏移，因此超长单行也能完整取回。~glob~ 使用有界的 event-loop slices。
 
 ~magent-tool-orchestrator.el~ 负责权限解析、必要时请求 approval、执行工具、写 audit，再把结果交回 loop。 ~magent-permission.el~ 的解析顺序是：精确 tool 规则、file-pattern 规则、wildcard fallback，最后 default allow。
 

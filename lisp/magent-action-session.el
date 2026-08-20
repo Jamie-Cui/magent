@@ -194,7 +194,8 @@
             (call-id (magent-protocol-generate-id "action-tool")))
        (magent-thread-record-tool-result
         thread turn-id call-id name args result
-        (append metadata (list :source 'magent-action)))
+        (append metadata (list :source 'magent-action))
+        magent-session--current-scope)
        (magent-session-refresh-projections session)
        (magent-action-session--save invocation)))))
 
@@ -321,7 +322,8 @@ When CANCELLABLE-ONLY is non-nil, omit invocations without owned work."
                (list :action-session-id session-id
                      :status (magent-action-session--status-string status))
                result
-               (list :source 'magent-action-breadcrumb))
+               (list :source 'magent-action-breadcrumb)
+               magent-session--current-scope)
               (pcase status
                 ('completed
                  (magent-thread-complete-turn thread (magent-thread-turn-id turn)))

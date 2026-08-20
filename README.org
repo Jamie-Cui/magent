@@ -205,6 +205,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-emacs-read-max-characters~             | ~12000~                               | Maximum structured ~emacs_read~ result size                                                       |
 | ~magent-tool-output-spill-session-max-bytes~   | ~67108864~                            | Maximum retained full tool-result bytes per session                                               |
 | ~magent-tool-output-spill-ttl~                 | ~86400~                               | Lifetime in seconds for spilled full tool results                                                  |
+| ~magent-tool-output-spill-page-characters~     | ~8000~                                | Maximum body characters returned by one ~read_tool_output~ page                                    |
 | ~magent-enable-capabilities~                   | ~t~                                   | Enable contextual capability resolution by default                                             |
 | ~magent-project-instruction-file-names~        | ~("AGENTS.md")~                       | Scoped project instruction filenames discovered from root toward request resources             |
 | ~magent-project-instructions-max-bytes~        | ~65536~                               | Aggregate per-request byte limit for project instructions; nil disables discovery              |
@@ -450,7 +451,8 @@ build profile asks for shell, arbitrary Emacs evaluation, and general file
 writes, while some other side-effecting operations are allowed. File-specific
 deny rules still apply. Permission bypass disables ordinary checks and should
 be used only deliberately, but it cannot suppress the once-only approval on
-~emacs_eval~ and ~emacs_eval_live~.
+~emacs_eval~ and ~emacs_eval_live~. It also cannot re-enable a globally
+disabled tool or add a tool omitted from an Action's exact ~:tools~ allowlist.
 
 Tool availability is controlled by:
 

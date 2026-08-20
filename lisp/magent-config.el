@@ -364,13 +364,8 @@ cannot be resolved, bash tool calls fail without affecting other Magent tools."
   :type 'natnum
   :group 'magent)
 
-(defcustom magent-tool-output-spill-page-lines 200
-  "Maximum lines returned by one read_tool_output page."
-  :type 'natnum
-  :group 'magent)
-
 (defcustom magent-tool-output-spill-page-characters 8000
-  "Target maximum characters returned by one read_tool_output page."
+  "Maximum body characters returned by one read_tool_output page."
   :type 'natnum
   :group 'magent)
 

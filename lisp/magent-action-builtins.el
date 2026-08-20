@@ -25,7 +25,7 @@
      :description
      "Explain the current code, diff, buffer, error, or project context."
      :prompt "actions/explain.org"
-     :tools (read_file grep bash emacs_read emacs_eval))
+     :tools (read_file grep bash emacs_read emacs_eval read_tool_output))
     (:name "fix"
      :title "Fix"
      :description "Diagnose and fix the current bug, failure, or regression."
@@ -138,30 +138,22 @@
              (approval (or (plist-get entry :approval) 'normal))
              (raw-override
               (magent-permission-session-override key session))
-             (override
-              (if (and (eq approval 'once-only)
-                       (eq raw-override 'allow))
-                  nil
-                raw-override))
-             (decision
-              (cond
-               ((not enabled) 'disabled)
-               ((eq rule-decision 'deny) 'deny)
-               ((eq override 'deny) 'deny)
-               ((eq approval 'once-only) 'ask)
-               (override override)
-               (t rule-decision)))
+             (effective
+              (and enabled
+                   (magent-permission-effective-decision
+                    rule-decision approval raw-override)))
+             (decision (if enabled
+                           (plist-get effective :decision)
+                         'disabled))
+             (policy-source (and effective
+                                 (plist-get effective :source)))
              (source
               (cond
                ((not enabled) 'global-disable)
-               ((and override (not (eq rule-decision 'deny)))
-                'session-override)
-               ((and (eq approval 'once-only)
-                     (eq raw-override 'allow))
-                'once-only-ignores-session-allow)
-               ((eq approval 'once-only) 'once-only)
-               (t (magent-action-builtins--authority-rule-source
-                   permission key))))
+               ((eq policy-source 'rule)
+                (magent-action-builtins--authority-rule-source
+                 permission key))
+               (t policy-source)))
              (resource-rules
               (magent-action-builtins--authority-resource-rules
                permission key)))

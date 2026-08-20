@@ -407,12 +407,36 @@ SCOPE and SCOPE-FILES describe a scoped summary."
       (format "Error writing repository summary: %s"
               (error-message-string err))))))
 
+(defun magent-tools--grep-records (output)
+  "Parse NUL-delimited ripgrep OUTPUT into (PATH TAIL) records."
+  (let ((position 0)
+        (output-length (length output))
+        records)
+    (while (< position output-length)
+      (let ((nul (string-match "\0" output position)))
+        (if (null nul)
+            (setq position output-length)
+          (let* ((newline (or (string-match "\n" output (1+ nul))
+                              output-length))
+                 (path (substring output position nul))
+                 (tail (substring output (1+ nul) newline)))
+            (when (string-match-p "\\`[0-9]+:" tail)
+              (push (list path tail) records))
+            (setq position (min output-length (1+ newline)))))))
+    (nreverse records)))
+
+(defun magent-tools--grep-display-output (output)
+  "Render NUL-delimited ripgrep OUTPUT in conventional path:line form."
+  (if-let* ((records (magent-tools--grep-records output)))
+      (mapconcat (lambda (record)
+                   (format "%s:%s" (car record) (cadr record)))
+                 records "\n")
+    output))
+
 (defun magent-tools--grep-revisions (output directory)
   "Return file revision alist parsed from ripgrep OUTPUT in DIRECTORY."
-  (let (paths revisions)
-    (dolist (line (split-string output "\n" t))
-      (when (string-match "\\`\\(.+\\):[0-9]+:" line)
-        (push (match-string 1 line) paths)))
+  (let ((paths (mapcar #'car (magent-tools--grep-records output)))
+        revisions)
     (dolist (path (delete-dups paths))
       (let ((absolute (expand-file-name path directory)))
         (when (file-regular-p absolute)
@@ -450,7 +474,7 @@ CALLBACK is called with matching lines or error message."
                  (target (if directory-p "." resolved))
                  (limit (max 1 magent-grep-max-matches))
                  (args (append
-                        (list "--no-heading" "--with-filename"
+                        (list "--no-heading" "--with-filename" "--null"
                               "--line-number" "--color=never")
                         (unless case-sensitive (list "--ignore-case"))
                         (list "--" pattern target)))
@@ -470,9 +494,10 @@ CALLBACK is called with matching lines or error message."
                            (revisions
                             (magent-tools--grep-revisions
                              trimmed default-directory))
+                           (matches (magent-tools--grep-display-output trimmed))
                            (rendered
                             (magent-tools--format-grep-output
-                             trimmed revisions)))
+                             matches revisions)))
                       (when (buffer-live-p buf)
                         (kill-buffer buf))
                       (funcall
@@ -1028,8 +1053,9 @@ Evaluation runs in the user's context buffer when known
            (condition-case nil
                (find-buffer-visiting (magent-tools--resolve-path target))
              (error nil)))
-      (when-let* ((name (magent-tools--origin-buffer-name)))
-        (get-buffer name))))
+      (and (null target)
+           (when-let* ((name (magent-tools--origin-buffer-name)))
+             (get-buffer name)))))
 
 (defun magent-tools--emacs-read-symbol-name (value)
   "Return a bounded descriptive name for hook VALUE."
@@ -1164,8 +1190,8 @@ Evaluation runs in the user's context buffer when known
       callback
       (format "Error reading Emacs state: %s" (error-message-string err))))))
 
-(defun magent-tools--request-session-id ()
-  "Return the exact current tool request session id."
+(defun magent-tools--request-storage-identity ()
+  "Return exact scope and session id for the current tool request."
   (let ((session
          (or (and magent-tools--request-context
                   (magent-request-context-session magent-tools--request-context))
@@ -1173,27 +1199,91 @@ Evaluation runs in the user's context buffer when known
                   (magent-request-context-approval-session
                    magent-tools--request-context))
              (magent-session-get))))
-    (or (and session (magent-session-id session))
-        (error "No active Magent session id"))))
+    (unless session
+      (error "No active Magent session id"))
+    (list :scope
+          (or (and magent-tools--request-context
+                   (magent-request-context-scope
+                    magent-tools--request-context))
+              (and (magent-session-thread session)
+                   (magent-thread-scope (magent-session-thread session)))
+              (magent-session-current-scope)
+              'global)
+          :session-id (magent-session-id session))))
+
+(defun magent-tools--character-range (start-character character-count)
+  "Validate and normalize a character page request."
+  (when (eq start-character :null)
+    (setq start-character nil))
+  (when (eq character-count :null)
+    (setq character-count nil))
+  (unless (or (null start-character)
+              (and (integerp start-character) (> start-character 0)))
+    (error "start_character must be a positive integer (got %S)"
+           start-character))
+  (unless (or (null character-count)
+              (and (integerp character-count) (> character-count 0)))
+    (error "character_count must be a positive integer (got %S)"
+           character-count))
+  (let ((page-budget (max 1 magent-tool-output-spill-page-characters)))
+    (cons (or start-character 1)
+          (min (or character-count page-budget)
+             page-budget
+             (if (and (numberp magent-tool-result-model-max-length)
+                      (> magent-tool-result-model-max-length 0))
+                 (max 1 (- magent-tool-result-model-max-length 512))
+               most-positive-fixnum)))))
+
+(defun magent-tools--buffer-character-page
+    (start-character character-count metadata)
+  "Return a self-describing character page from the current buffer."
+  (save-restriction
+    (widen)
+    (let* ((total-characters (buffer-size))
+           (begin (min (point-max)
+                       (+ (point-min) (1- start-character))))
+           (end (min (point-max) (+ begin character-count)))
+           (returned (- end begin))
+           (end-character (and (> returned 0)
+                               (+ start-character returned -1)))
+           (has-more (< end (point-max)))
+           (next-character (and has-more (+ start-character returned)))
+           (character-range
+            (if end-character
+                (format "%d-%d" start-character end-character)
+              "none")))
+      (concat
+       (format
+        "[read_tool_output: %s; characters=%s; total_characters=%d; has_more=%s%s]\n"
+        metadata character-range total-characters
+        (if has-more "true" "false")
+        (if next-character
+            (format "; next_start_character=%d" next-character)
+          ""))
+       (buffer-substring-no-properties begin end)))))
 
 (defun magent-tools--read-tool-output
-    (callback result-id &optional start-line line-count)
-  "Read a bounded page from spilled RESULT-ID in the current session."
+    (callback result-id &optional start-character character-count)
+  "Read a bounded character page from spilled RESULT-ID in this session."
   (condition-case err
-      (let* ((session-id (magent-tools--request-session-id))
-             (path (magent-tool-output-spill-file session-id result-id))
-             (range
-              (magent-tools--read-range
-               start-line (or line-count magent-tool-output-spill-page-lines))))
+      (let* ((identity (magent-tools--request-storage-identity))
+             (scope (plist-get identity :scope))
+             (session-id (plist-get identity :session-id))
+             (path (magent-tool-output-spill-file
+                    scope session-id result-id))
+             (range (magent-tools--character-range
+                     start-character character-count)))
         (with-temp-buffer
           (insert-file-contents path)
           (magent-tools--complete
            callback
-           (magent-tools--buffer-page
-            "read_tool_output" (car range) (cdr range)
-            (format "result_id=%s; session_id=%s" result-id session-id)
-            magent-tool-output-spill-page-characters)
-           nil (list :result-id result-id :session-id session-id))))
+           (magent-tools--buffer-character-page
+            (car range) (cdr range)
+            (format "result_id=%s; session_id=%s" result-id session-id))
+           nil (list :result-id result-id :session-id session-id
+                     :scope scope
+                     :start-character (car range)
+                     :character-count (cdr range)))))
     (error
      (magent-tools--fail
       callback
@@ -2110,7 +2200,7 @@ See `magent-agent-loop-filter-display-args'.")
                        :description "The full content to write to the file")
                '(:name "expected_revision"
                        :type string
-                       :description "SHA-256 revision returned by read_file, or absent when creating a new file")
+                       :description "Required. For an existing file, pass the SHA-256 revision returned by read_file. For a new path, pass the literal string \"absent\". Never omit this field.")
                magent-tools--reason-arg)
    :function #'magent-tools--write-file
    :async t
@@ -2264,13 +2354,13 @@ See `magent-agent-loop-filter-display-args'.")
    :args (list '(:name "result_id"
                        :type string
                        :description "Opaque result id from a tool truncation notice")
-               '(:name "start_line"
+               '(:name "start_character"
                        :type integer
-                       :description "One-based line at which to start; defaults to 1"
+                       :description "One-based character at which to start; defaults to 1"
                        :optional t)
-               '(:name "line_count"
+               '(:name "character_count"
                        :type integer
-                       :description "Maximum lines to return; defaults to 200"
+                       :description "Maximum characters to return; capped by Magent's page budget"
                        :optional t)
                magent-tools--reason-arg)
    :function #'magent-tools--read-tool-output

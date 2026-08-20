@@ -79,6 +79,31 @@ permission rules."
   "Return non-nil when Magent should bypass permission checks."
   magent-bypass-permission)
 
+(defun magent-permission-effective-decision
+    (rule-decision approval-policy session-override)
+  "Return the effective permission decision and source.
+RULE-DECISION is the resolved agent/resource rule.  APPROVAL-POLICY is
+`normal' or `once-only'.  SESSION-OVERRIDE is `allow', `deny', or nil.
+Bypass ignores rules and overrides, while once-only tools still ask."
+  (cond
+   ((magent-permission-bypass-p)
+    (if (eq approval-policy 'once-only)
+        (list :decision 'ask :source 'once-only-bypass)
+      (list :decision 'allow :source 'bypass)))
+   ((eq rule-decision 'deny)
+    (list :decision 'deny :source 'rule))
+   ((eq session-override 'deny)
+    (list :decision 'deny :source 'session-override))
+   ((eq approval-policy 'once-only)
+    (list :decision 'ask
+          :source (if (eq session-override 'allow)
+                      'once-only-ignores-session-allow
+                    'once-only)))
+   ((eq session-override 'allow)
+    (list :decision 'allow :source 'session-override))
+   (t
+    (list :decision (or rule-decision 'ask) :source 'rule))))
+
 ;;; Default permissions
 
 (defun magent-permission-defaults ()
