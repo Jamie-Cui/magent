@@ -1,0 +1,127 @@
+name: Bug report
+description: Report a reproducible problem in Magent
+title: "[Bug] "
+labels: ["bug"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a Magent problem. Please provide a minimal
+        reproduction and remove credentials or sensitive provider data.
+
+  - type: checkboxes
+    id: existing-issue
+    attributes:
+      label: Existing issues
+      options:
+        - label: I searched the existing issues for this problem.
+          required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Briefly describe the observable problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include exact versions or commits where possible.
+      value: |
+        - Magent version or commit:
+        - Loaded Magent source path:
+        - Emacs version:
+        - gptel version:
+        - agent-shell version:
+        - acp version:
+        - Operating system:
+        - Provider and model:
+        - Installation method:
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: List the smallest sequence that reliably demonstrates the problem.
+      placeholder: |
+        1. Start Magent with ...
+        2. Submit the prompt ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: prompt
+    attributes:
+      label: Prompt or input
+      description: Include the smallest prompt that reproduces the problem.
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened, including the exact error or terminal state?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: Frequency
+      options:
+        - Always
+        - Intermittently
+        - Once
+        - Unknown
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Suspected area
+      description: Optional; choose Unknown if you are unsure.
+      options:
+        - Unknown
+        - Runtime or agent loop
+        - gptel transport
+        - Tools, permissions, or approvals
+        - Child-agent jobs
+        - Actions
+        - Sessions, ledger, or persistence
+        - ACP or agent-shell
+        - Skills or capabilities
+        - Packaging or CI
+        - Documentation
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostic output
+      description: |
+        Add the smallest relevant excerpt from *Messages*, *Backtrace*,
+        *magent-log*, or an isolated live test. Remove API keys, authorization
+        headers, provider request bodies, and other sensitive data.
+      render: shell
+
+  - type: checkboxes
+    id: sensitive-data
+    attributes:
+      label: Sensitive-data confirmation
+      options:
+        - label: I reviewed all included logs and attachments for credentials and sensitive data.
+          required: true
