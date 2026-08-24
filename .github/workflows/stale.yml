@@ -1,0 +1,34 @@
+name: Close stale issues
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark and close stale issues
+        uses: actions/stale@v11
+        with:
+          days-before-issue-stale: 60
+          days-before-issue-close: 14
+          days-before-pr-stale: -1
+          days-before-pr-close: -1
+          stale-issue-label: stale
+          exempt-issue-labels: never-stale
+          exempt-all-issue-milestones: true
+          remove-issue-stale-when-updated: true
+          close-issue-reason: not_planned
+          stale-issue-message: >-
+            This issue has been automatically marked as stale because it has
+            not had recent activity. It will be closed in 14 days if no
+            further activity occurs. Comment on the issue to keep it open.
+          close-issue-message: >-
+            This issue was automatically closed because it remained inactive
+            for 14 days after being marked stale. If the issue still applies,
+            please reopen it or open a new issue with updated details.
