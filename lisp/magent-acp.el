@@ -184,7 +184,7 @@ the leading slash, so agent-shell displays them as `/$NAME'."
     (sessionCapabilities . ((list . t)
                             (load . t)
                             (resume . t)
-                            (fork . :false)))
+                            (fork)))
     (modes . ,(magent-acp--modes))
     (models . ,(magent-acp--models))
     (authMethods . [])))
@@ -820,10 +820,6 @@ Each handler runs inside the CLIENT's context buffer (via
                          session-id expected-scope)))
         (magent-runtime-load-session-file file))))
 
-(defun magent-acp--runtime-session-for-scope (session-id expected-scope)
-  "Return SESSION-ID restricted to EXPECTED-SCOPE when it is available."
-  (magent-acp--runtime-session-by-id session-id expected-scope))
-
 (defun magent-acp--load-candidate (session-id scope)
   "Return a read-only load candidate for SESSION-ID in exact SCOPE.
 The result contains either `:runtime-session' or `:session'.  Validating it
@@ -923,7 +919,7 @@ does not activate overlays or install a session into the runtime registry."
   (let* ((session-id (map-elt params 'sessionId))
          (mode-id (map-elt params 'modeId))
          (runtime-session
-          (magent-acp--runtime-session-for-scope session-id expected-scope)))
+          (magent-acp--runtime-session-by-id session-id expected-scope)))
     (unless runtime-session
       (error "Unknown session: %s" session-id))
     (magent-runtime-session-set-agent runtime-session mode-id)
@@ -938,7 +934,7 @@ switching semantics."
   (let* ((session-id (map-elt params 'sessionId))
          (model-id (map-elt params 'modelId))
          (runtime-session
-          (magent-acp--runtime-session-for-scope session-id expected-scope))
+          (magent-acp--runtime-session-by-id session-id expected-scope))
          (current-model-id (format "%s" (or (and (boundp 'gptel-model)
                                                  gptel-model)
                                             "gptel"))))
@@ -954,7 +950,7 @@ switching semantics."
          (config-id (map-elt params 'configId))
          (value (map-elt params 'value))
          (runtime-session
-          (magent-acp--runtime-session-for-scope session-id expected-scope)))
+          (magent-acp--runtime-session-by-id session-id expected-scope)))
     (unless runtime-session
       (error "Unknown session: %s" session-id))
     (pcase config-id
@@ -1026,6 +1022,19 @@ switching semantics."
                  (magent-acp--replay-session client runtime-session))
                (magent-acp--session-success
                 client runtime-session on-success))))
+          ("session/fork"
+           (let* ((source-id (map-elt params 'sessionId))
+                  (_ (magent-session-validate-id source-id))
+                  (cwd (map-elt params 'cwd))
+                  (scope (magent-acp--scope-for-cwd cwd))
+                  (source-runtime-session
+                   (magent-runtime-session-from-id source-id scope)))
+             (unless source-runtime-session
+               (error "Unknown live session in requested cwd: %s" source-id))
+             (magent-acp--session-success
+              client
+              (magent-runtime-session-fork source-runtime-session)
+              on-success)))
           ("session/set_mode"
            (let ((session-id (map-elt params 'sessionId)))
              (funcall
@@ -1047,7 +1056,7 @@ switching semantics."
           ("session/prompt"
            (let* ((session-id (map-elt params 'sessionId))
                   (runtime-session
-                   (magent-acp--runtime-session-for-scope
+                   (magent-acp--runtime-session-by-id
                     session-id
                     (magent-acp--request-session-scope client session-id)))
                   (input (magent-acp--prompt-input (map-elt params 'prompt)))
@@ -1163,7 +1172,7 @@ active message running forever)."
        (when-let* ((session-id (map-elt params 'sessionId)))
          (let* ((scope (magent-acp--request-session-scope client session-id))
                 (runtime-session
-                 (magent-acp--runtime-session-for-scope session-id scope)))
+                 (magent-acp--runtime-session-by-id session-id scope)))
            (when runtime-session
              (magent-log "INFO ACP session cancel: session=%s reason=%s"
                          session-id

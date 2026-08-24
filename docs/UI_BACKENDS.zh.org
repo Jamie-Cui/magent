@@ -51,6 +51,19 @@ invocation 则属于 ~magent-action.el~ 。
   该设置都会生效。默认值是 ~prompt~，会列出当前 scope 中的新 session 和已保存
   session。
 
+* Session 生命周期
+
+Magent 实现 ACP ~session/new~、~session/list~、~session/load~、~session/resume~ 和
+~session/fork~。~agent-shell-fork~ 会创建新的 durable session，以 source conversation
+作为初始历史，同时使用完全独立的 ledger。source 与 fork 拥有不同 id，并从创建点起
+独立演进。
+
+Fork 按精确 scope fail closed：请求 cwd 必须解析到 source session 的 scope，source
+也不能拥有 active 或 queued work。selected agent、effort 和 automatic capability
+设置等稳定 frontend option 会被继承；session approval override、child-agent job 和
+one-shot skill 会被显式重置。历史中引用的 spilled tool output 会复制到 fork 自己的
+私有 session storage。
+
 * 开发边界
 
 Frontend-neutral 行为放在 ~magent-runtime-api.el~ ，ACP conversion 放在
@@ -76,3 +89,4 @@ registered Action command projections 与 skill descriptors 展示为两个独�
   per-request agent overrides。
 - ACP session config 暴露 ~Automatic capabilities~ ；关闭后，该 session 后续 turn 不再
   自动解析 contextual capabilities，但显式选择的 instruction skills 仍然生效。
+- 不支持在 active turn 执行期间 fork，也不支持跨 project scope fork。

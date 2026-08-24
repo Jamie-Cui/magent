@@ -137,6 +137,73 @@ queued submission starts."
         (magent-runtime-api--wrap-session session target-scope)
       (magent-runtime-session-register target-scope session))))
 
+(defun magent-runtime-session-fork (source-runtime-session)
+  "Return a detached, durable fork of SOURCE-RUNTIME-SESSION.
+The source must have no active or queued work.  Conversation state and stable
+session options are copied, while approvals, child jobs, and one-shot skills
+start empty.  The fork remains detached from the ambient scope until its first
+submission so the source frontend stays current."
+  (unless (magent-runtime-session-p source-runtime-session)
+    (error "Expected a runtime session, got: %S" source-runtime-session))
+  (magent-runtime-api--assert-session-available source-runtime-session)
+  (let* ((source-session
+          (magent-runtime-session-magent-session source-runtime-session))
+         (scope (magent-runtime-session-scope source-runtime-session)))
+    (unless scope
+      (error "Magent: cannot fork a runtime session without an explicit scope"))
+    (when-let* ((thread (magent-session-thread source-session)))
+      (unless (equal (magent-thread-scope thread) scope)
+        (error "Magent: source thread scope does not match its runtime scope")))
+    (when (magent-runtime-queue-session-busy-p source-session)
+      (user-error "Magent: cannot fork a session with active or queued work"))
+    (let* ((fork-session (magent-session-fork source-session scope))
+           (fork-id (magent-session-get-id fork-session))
+           (source-id (magent-runtime-session-id source-runtime-session))
+           (key (magent-runtime-api--session-key scope fork-id))
+           (spill-ids
+            (magent-thread-spill-result-ids
+             (magent-session-thread source-session)))
+           runtime-session
+           completed)
+      (unless (equal source-id (magent-session-id source-session))
+        (error "Magent: runtime and durable session ids do not match"))
+      (unwind-protect
+          (progn
+            ;; Detached registration cannot steal the source's ambient scope
+            ;; slot or execution lease.  Preflight before creating artifacts.
+            (magent-runtime-session-ensure-registerable
+             scope fork-session t)
+            (magent-tool-output-spill-fork-session
+             scope source-id fork-id spill-ids)
+            (magent-session-save-for-session fork-session scope)
+            (setq runtime-session
+                  (magent-runtime-api--wrap-session fork-session scope))
+            (setf (magent-runtime-session-effort runtime-session)
+                  (magent-runtime-session-effort source-runtime-session)
+                  (magent-runtime-session-pending-skills runtime-session) nil
+                  (magent-runtime-session-metadata runtime-session)
+                  (list :capabilities-enabled
+                        (magent-runtime-session-capabilities-enabled-p
+                         source-runtime-session)))
+            (setq completed t)
+            (magent-log "INFO runtime session forked: %s -> %s scope=%s"
+                        source-id fork-id scope)
+            runtime-session)
+        (unless completed
+          (when (eq (gethash key magent-runtime-api--sessions)
+                    runtime-session)
+            (remhash key magent-runtime-api--sessions))
+          (condition-case err
+              (magent-session-clear fork-session scope)
+            (error
+             (magent-log "WARN failed rolling back fork session %s: %s"
+                         fork-id (error-message-string err))))
+          (condition-case err
+              (magent-tool-output-spill-delete-session scope fork-id)
+            (error
+             (magent-log "WARN failed rolling back fork spills %s: %s"
+                         fork-id (error-message-string err)))))))))
+
 (defun magent-runtime-session-from-id (session-id &optional scope)
   "Return runtime SESSION-ID, optionally restricted to exact SCOPE."
   (if scope

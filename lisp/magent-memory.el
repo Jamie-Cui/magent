@@ -529,14 +529,6 @@ The return value is a plist with `:files', `:sensitive', and `:excluded'."
                (length (magent-memory-scan-plan-skipped-budget plan)))))
      "\n")))
 
-(defun magent-memory-scan-plan-approval-input (plan)
-  "Return raw input alist for approving PLAN."
-  `((roots . ,(vconcat (magent-memory-scan-plan-roots plan)))
-    (files . ,(length (magent-memory-scan-plan-files plan)))
-    (bytes . ,(magent-memory-scan-plan-total-bytes plan))
-    (provider . ,(or (magent-memory-scan-plan-provider plan) "gptel"))
-    (model . ,(or (magent-memory-scan-plan-model plan) ""))))
-
 (defun magent-memory--redact-content (content)
   "Return CONTENT with sensitive-looking lines redacted."
   (magent-redaction-string content t))

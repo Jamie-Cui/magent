@@ -81,9 +81,9 @@ state containers.
 
 ** Tools, Permissions, And Audit
 
-~magent-tools.el~ owns one canonical catalog of 17 ~gptel-tool~ structs:
+~magent-tools.el~ owns one canonical catalog of 16 ~gptel-tool~ structs:
 
-- ~read_file~, ~write_file~, ~write_repo_summary~, ~edit_file~
+- ~read_file~, ~write_file~, ~edit_file~
 - ~grep~, ~glob~, ~bash~
 - ~emacs_read~, ~emacs_eval~, ~emacs_eval_live~, ~read_tool_output~
 - ~spawn_agent~, ~send_agent_message~, ~wait_agent~, ~list_agents~, ~close_agent~
@@ -190,7 +190,7 @@ requirements, and request-local agent/skill selection while inheriting
 frontend request context from the Invocation. Content blocks and canonical
 Action metadata are persisted internally. Trusted packages may own a longer
 asynchronous Invocation without receiving ACP or queue internals. The bundled
-~/explain~, ~/fix~, ~/init~, ~/review~, ~/summarize~, and ~/test~ prompt Actions
+~/explain~, ~/fix~, ~/init~, ~/review~, and ~/test~ prompt Actions
 are data entries in ~magent-action-builtins.el~; their terminal Workflows are
 generated uniformly from Org prompt resources.
 

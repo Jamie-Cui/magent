@@ -11,7 +11,7 @@ Magent has one Action registry projected onto two user-facing command surfaces:
 - *Interactive commands* are ~M-x~ wrappers over Actions that opt into
   interactive exposure.
 
-The bundled package provides thirteen slash commands. Doctor and the three
+The bundled package provides twelve slash commands. Doctor and the three
 Memory Actions also expose ~M-x magent-action-run-*~ wrappers and use isolated
 durable sessions.
 
@@ -21,7 +21,6 @@ Type a slash command as the prompt in the Magent agent-shell buffer:
 
 #+begin_example
 /review
-/summarize src/session persistence and replay
 /fix focus on the failing session persistence test
 /compact preserve exact filenames and remaining failures
 /authority
@@ -30,7 +29,7 @@ Type a slash command as the prompt in the Magent agent-shell buffer:
 #+end_example
 
 Text following a prompt command or ~/compact~ is passed as its argument. The
-six bundled prompt commands reuse the current session and agent without
+five bundled prompt commands reuse the current session and agent without
 activating a same-name skill. An unknown slash command is submitted as ordinary
 prompt text rather than executed locally. The ~/$name~ form is reserved for an
 explicit instruction skill; an unknown or unavailable skill name fails before
@@ -42,7 +41,6 @@ provider submission.
 | ~/fix~     | Diagnose and repair a bug or regression | May edit files and run focused verification |
 | ~/init~    | Create or refresh project ~AGENTS.md~   | May update project instructions after repository inspection |
 | ~/review~  | Review current changes for defects      | Read-only review; leads with findings and test gaps |
-| ~/summarize~ | Summarize the project into org-roam   | Creates or updates one canonical Org note |
 | ~/test~    | Run and interpret relevant tests        | Runs focused tests; may fix an in-scope failure when appropriate |
 | ~/compact~ | Summarize the current conversation      | Replaces older model context with a continuation summary |
 | ~/authority~ | Show effective tool authority | Reports exposure, rule/override source, approval policy, and execution boundary without a provider request |
@@ -115,30 +113,6 @@ skipped checks plus remaining risk.
 
 #+begin_example
 /test run the focused tests for the files changed in this branch
-#+end_example
-
-** ~/summarize~
-
-Inspects the current Git project and writes a single org-roam note whose title
-is exactly the repository name. With no argument it updates ~* Repository
-Summary~ for the whole workspace. Trailing free-form text selects a path or
-semantic scope and upserts one subtree under ~* Scoped Summaries~ in the same
-file. Global sessions are rejected before an LLM turn is created.
-
-The destination is ~magent-org-roam-directory~, or ~org-roam-directory~ when
-the Magent option is nil. The directory must already exist. The writer owns the
-Org ID, repository path, analyzed Git commit, filename, and atomic update. New
-notes are created through the noninteractive Org-roam capture API when it is
-available; the canonical file-level property drawer always precedes Org
-keywords so Org-roam can recognize and index the node. New filenames follow
-~YYYY-MM-DDtHHMM.org~, matching the default Org-roam capture convention.
-Subsequent runs locate the note by its file-level ~REPO_PATH~, so timestamped
-and manually renamed files still receive single-file updates.
-
-#+begin_example
-/summarize
-/summarize only the ACP session lifecycle
-/summarize lisp/magent-session.el
 #+end_example
 
 ** Alternate Invocation And Extension

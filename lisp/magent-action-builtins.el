@@ -43,12 +43,6 @@
      "Review the current changes for defects, risks, and missing tests."
      :prompt "actions/review.org"
      :tools (read_file grep bash read_tool_output))
-    (:name "summarize"
-     :title "Summarize repository"
-     :description
-     "Summarize the current Git project into one canonical Org note."
-     :prompt "actions/summarize.org"
-     :tools (read_file grep glob bash write_repo_summary read_tool_output))
     (:name "test"
      :title "Run tests"
      :description "Run and interpret the relevant project tests."

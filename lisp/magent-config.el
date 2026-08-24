@@ -95,15 +95,6 @@ emacs_eval_live, agent, web_search."
               (const :tag "Search the web" web_search))
   :group 'magent)
 
-(defcustom magent-org-roam-directory nil
-  "Directory where Magent writes repository summary notes.
-When nil, use `org-roam-directory' if that variable is bound.  Magent
-does not create this directory automatically; configure it to an existing
-org-roam directory before using the `/summarize' Action."
-  :type '(choice (const :tag "Use org-roam-directory" nil)
-                 (directory :tag "Org-roam directory"))
-  :group 'magent)
-
 (defcustom magent-project-root-function nil
   "Function to find project root directory.
 The function should take no arguments and return the project root
@@ -222,10 +213,15 @@ This variable is the canonical permission bypass flag used by
   :group 'magent
   :risky t)
 
-(defcustom magent-enable-audit-log t
-  "Enable persistent audit logging for permission and sensitive actions.
-When enabled, Magent writes a compact JSONL audit trail to disk."
-  :type 'boolean
+(defcustom magent-audit 'buffer
+  "Destination for permission and sensitive-action audit records.
+Set this to `buffer' to retain records only in the live audit buffer, which is
+the default.  Set it to a string naming a file to append compact JSONL records
+to that file.  Relative file names are resolved against
+`user-emacs-directory'.  Set it to nil to disable audit recording."
+  :type '(choice (const :tag "Disable audit recording" nil)
+                 (const :tag "Live audit buffer only" buffer)
+                 (file :tag "Append JSONL records to file"))
   :group 'magent)
 
 (defcustom magent-default-agent "build"
@@ -269,27 +265,21 @@ When nil, Action sessions are stored under
                  directory)
   :group 'magent)
 
-(defcustom magent-audit-directory nil
-  "Directory where persistent audit log files are stored.
-When nil, audit logs are written under `magent-session-directory'/audit."
-  :type '(choice (const :tag "Use magent-session-directory/audit" nil)
-                 directory)
-  :group 'magent)
-
 (defcustom magent-audit-buffer-name "*magent-audit*"
   "Name of the buffer used for the Magent audit browser."
   :type 'string
   :group 'magent)
 
 (defcustom magent-audit-preview-length 120
-  "Maximum display width for persisted audit previews."
+  "Maximum display width for normalized audit previews."
   :type 'integer
   :group 'magent)
 
 (defcustom magent-audit-flush-delay 0.25
-  "Idle delay in seconds before queued audit records are flushed to disk.
-Audit writes are batched and deferred so permission and tool event
-handlers do not block the main Emacs thread on every record."
+  "Idle delay before queued file audit records are flushed to disk.
+File writes are batched and deferred so permission and tool event handlers do
+not block the main Emacs thread on every record.  This setting has no effect
+when `magent-audit' is `buffer' or nil."
   :type 'number
   :group 'magent)
 
@@ -302,8 +292,8 @@ When nil or non-positive, show all available audit records."
 
 (defcustom magent-audit-max-records 200
   "Maximum number of audit records rendered in the audit browser.
-Older matching records remain on disk and can be reached by
-widening the time window or lowering filters in future UI
+Older matching records remain in the configured audit destination and can be
+reached by widening the time window or lowering filters in future UI
 extensions."
   :type 'integer
   :group 'magent)

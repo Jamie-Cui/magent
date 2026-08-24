@@ -27,7 +27,6 @@
 (require 'magent-lifecycle-events)
 (require 'magent-permission)
 (require 'magent-protocol)
-(require 'magent-repo-summary)
 (require 'magent-runtime)
 (require 'magent-session)
 
@@ -384,28 +383,6 @@ CALLBACK is called with success message or error."
      (magent-tools--fail
       callback (format "Error writing file: %s" (error-message-string err))))))
 
-(defun magent-tools--write-repo-summary
-    (callback mode content &optional scope scope-files)
-  "Write repository summary CONTENT in MODE and call CALLBACK.
-SCOPE and SCOPE-FILES describe a scoped summary."
-  (condition-case err
-      (let* ((root (magent-tools--request-project-root))
-             (result (magent-repo-summary-write
-                      root mode content scope scope-files)))
-        (magent-tools--complete
-         callback
-         (format "Successfully %s repository summary: %s%s"
-                 (if (plist-get result :created) "created" "updated")
-                 (plist-get result :path)
-                 (if-let* ((scope-id (plist-get result :scope-id)))
-                     (format " (scope %s)" scope-id)
-                   ""))))
-    (error
-     (magent-tools--fail
-      callback
-      (format "Error writing repository summary: %s"
-              (error-message-string err))))))
-
 (defun magent-tools--grep-records (output)
   "Parse NUL-delimited ripgrep OUTPUT into (PATH TAIL) records."
   (let ((position 0)
@@ -580,37 +557,6 @@ CALLBACK is called with matching lines or error message."
                  :output (format "grep failed: %s" (error-message-string err))
                  :error (error-message-string err)))))))
 
-(defun magent-tools--glob-to-regexp (pattern)
-  "Translate glob PATTERN to a regexp with distinct * and ** semantics."
-  (let ((index 0)
-        (length (length pattern))
-        (regexp "\\`"))
-    (while (< index length)
-      (cond
-       ((and (< (+ index 2) length)
-             (eq (aref pattern index) ?*)
-             (eq (aref pattern (1+ index)) ?*)
-             (eq (aref pattern (+ index 2)) ?/))
-        (setq regexp (concat regexp "\\(?:.*/\\)?")
-              index (+ index 3)))
-       ((and (< (1+ index) length)
-             (eq (aref pattern index) ?*)
-             (eq (aref pattern (1+ index)) ?*))
-        (setq regexp (concat regexp ".*")
-              index (+ index 2)))
-       ((eq (aref pattern index) ?*)
-        (setq regexp (concat regexp "[^/]*")
-              index (1+ index)))
-       ((eq (aref pattern index) ??)
-        (setq regexp (concat regexp "[^/]")
-              index (1+ index)))
-       (t
-        (setq regexp (concat regexp
-                             (regexp-quote (char-to-string
-                                            (aref pattern index))))
-              index (1+ index)))))
-    (concat regexp "\\'")))
-
 (defun magent-tools--glob (callback pattern path)
   "Find files matching PATTERN under PATH asynchronously.
 Supports * and ** wildcards.  Traversal is sliced across the Emacs event loop
@@ -636,7 +582,7 @@ and bounded by `magent-glob-max-results' and
                                 (magent-tools--request-project-root))))
              (normalized-pattern
               (string-remove-prefix "./" (subst-char-in-string ?\\ ?/ pattern)))
-             (regexp (magent-tools--glob-to-regexp normalized-pattern))
+             (regexp (magent-permission-glob-to-regexp normalized-pattern))
              (pending (list search-root))
              matches
              (scanned 0)
@@ -2205,33 +2151,6 @@ See `magent-agent-loop-filter-display-args'.")
    :category "magent")
   "gptel-tool struct for write_file.")
 
-(defvar magent-tools--write-repo-summary-tool
-  (gptel-make-tool
-   :name "write_repo_summary"
-   :description "Create or update the current Git repository's single canonical org-roam summary note. Use only for /summarize. The tool controls the filename, exact repository title, Org ID, Git metadata, and full/scoped subtree upserts. Pass an Org fragment, not a complete document. Do not include the managed heading itself: full-mode headings must start at **, and scoped-mode headings must start at ***."
-   :args (list '(:name "mode"
-                       :type string
-                       :enum ["full" "scoped"]
-                       :description "full for the whole repository, scoped for a requested subset")
-               '(:name "content"
-                       :type string
-                       :description "Org fragment placed below the managed summary heading")
-               '(:name "scope"
-                       :type string
-                       :description "Original user scope query; required for scoped mode"
-                       :optional t)
-               '(:name "scope_files"
-                       :type array
-                       :items (:type string)
-                       :description "Repository-relative files resolved for scoped mode"
-                       :optional t)
-               magent-tools--reason-arg)
-   :function #'magent-tools--write-repo-summary
-   :async t
-   :confirm t
-   :category "magent")
-  "gptel-tool struct for write_repo_summary.")
-
 (defvar magent-tools--edit-file-tool
   (gptel-make-tool
    :name "edit_file"
@@ -2495,8 +2414,6 @@ See `magent-agent-loop-filter-display-args'.")
   `((:name "read_file" :tool ,magent-tools--read-file-tool
      :permission read)
     (:name "write_file" :tool ,magent-tools--write-file-tool
-     :permission write)
-    (:name "write_repo_summary" :tool ,magent-tools--write-repo-summary-tool
      :permission write)
     (:name "edit_file" :tool ,magent-tools--edit-file-tool
      :permission edit)

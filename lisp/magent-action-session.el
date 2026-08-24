@@ -35,18 +35,9 @@
 
 (defun magent-action-session--save (invocation)
   "Persist INVOCATION's action session without changing the active session."
-  (let ((previous-session magent--current-session)
-        (previous-scope magent-session--current-scope))
-    (unwind-protect
-        (progn
-          (setq magent--current-session
-                (magent-action-invocation-session invocation)
-                magent-session--current-scope
-                (magent-action-invocation-scope invocation))
-          (magent-session-save-for-session
-           magent--current-session magent-session--current-scope))
-      (setq magent--current-session previous-session
-            magent-session--current-scope previous-scope))))
+  (magent-session-save-for-session
+   (magent-action-invocation-session invocation)
+   (magent-action-invocation-scope invocation)))
 
 (defun magent-action-session--with-current-session (invocation function)
   "Call FUNCTION with INVOCATION's session and scope temporarily active."
@@ -62,28 +53,22 @@
       (setq magent--current-session previous-session
             magent-session--current-scope previous-scope))))
 
-(defun magent-action-session--ensure-turn (invocation input)
+(defun magent-action-session--ensure-turn (invocation thread input)
   "Ensure INVOCATION has an Action ledger turn for INPUT."
   (or (magent-action-invocation-turn-id invocation)
-      (magent-action-session--with-current-session
-       invocation
-       (lambda ()
-         (let* ((session (magent-action-invocation-session invocation))
-                (thread (magent-session-thread-ledger session))
-                (turn (magent-thread-queue-turn
-                       thread input nil
-                       (list :source 'magent-action
-                             :action
-                             (magent-action-spec-name
-                              (magent-action-invocation-spec invocation))
-                             :action-invocation-id
-                             (magent-action-invocation-id invocation)
-                             :workflow-control t))))
-           (magent-thread-start-turn thread (magent-thread-turn-id turn))
-           (setf (magent-action-invocation-turn-id invocation)
-                 (magent-thread-turn-id turn))
-           (magent-action-session--save invocation)
-           (magent-thread-turn-id turn))))))
+      (let ((turn (magent-thread-queue-turn
+                   thread input nil
+                   (list :source 'magent-action
+                         :action
+                         (magent-action-spec-name
+                          (magent-action-invocation-spec invocation))
+                         :action-invocation-id
+                         (magent-action-invocation-id invocation)
+                         :workflow-control t))))
+        (magent-thread-start-turn thread (magent-thread-turn-id turn))
+        (setf (magent-action-invocation-turn-id invocation)
+              (magent-thread-turn-id turn))
+        (magent-thread-turn-id turn))))
 
 (defun magent-action-session-start-step (invocation step)
   "Record STEP start for INVOCATION and return its item id."
@@ -94,7 +79,7 @@
             (thread (magent-session-thread-ledger session))
             (turn-id
              (magent-action-session--ensure-turn
-              invocation
+              invocation thread
               (magent-action-spec-title
                (magent-action-invocation-spec invocation))))
             (item
@@ -176,25 +161,6 @@
              (_ (magent-thread-fail-turn thread turn-id message)))
            (magent-action-session--save invocation)))))))
 
-(defun magent-action-session-record-tool
-    (invocation name args result &optional metadata)
-  "Record a tool-like step in INVOCATION's ledger."
-  (magent-action-session--with-current-session
-   invocation
-   (lambda ()
-     (let* ((session (magent-action-invocation-session invocation))
-            (thread (magent-session-thread-ledger session))
-            (turn-id (magent-action-session--ensure-turn
-                      invocation
-                      (magent-action-spec-title
-                       (magent-action-invocation-spec invocation))))
-            (call-id (magent-protocol-generate-id "action-tool")))
-       (magent-thread-record-tool-result
-        thread turn-id call-id name args result
-        (append metadata (list :source 'magent-action))
-        magent-session--current-scope)
-       (magent-action-session--save invocation)))))
-
 (defun magent-action-session-record-message
     (invocation role content &optional phase metadata)
   "Record ROLE message CONTENT in INVOCATION's ledger."
@@ -204,7 +170,7 @@
      (let* ((session (magent-action-invocation-session invocation))
             (thread (magent-session-thread-ledger session))
             (turn-id (magent-action-session--ensure-turn
-                      invocation
+                      invocation thread
                       (magent-action-spec-title
                        (magent-action-invocation-spec invocation)))))
        (magent-thread-record-message
@@ -348,7 +314,7 @@ When CANCELLABLE-ONLY is non-nil, omit invocations without owned work."
      (lambda ()
        (let* ((thread (magent-session-thread-ledger session))
               (turn-id (magent-action-session--ensure-turn
-                        invocation
+                        invocation thread
                         (magent-action-spec-title
                          (magent-action-invocation-spec invocation)))))
          (when fallback

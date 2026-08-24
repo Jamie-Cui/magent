@@ -754,21 +754,10 @@ an optional zero-argument cancellation function."
   (or (alist-get layer magent-action--layer-ranks)
       (error "Invalid Magent Action source layer: %S" layer)))
 
-(defun magent-action--canonical-scope (scope)
-  "Return canonical project origin for SCOPE, or nil for global scope."
-  (let ((origin (magent-session-scope-origin scope)))
-    (cond
-     ((or (null origin) (eq origin 'global)) nil)
-     ((stringp origin)
-      (condition-case nil
-          (file-truename (directory-file-name origin))
-        (error (directory-file-name (expand-file-name origin)))))
-     (t origin))))
-
 (defun magent-action--resolution-scope (&optional scope)
   "Return canonical Action resolution scope for optional SCOPE.
 When SCOPE is nil, use the currently active project overlay."
-  (magent-action--canonical-scope
+  (magent-session-canonical-scope
    (or scope
        (and (fboundp 'magent-runtime-active-project-scope)
             (magent-runtime-active-project-scope))
@@ -777,7 +766,7 @@ When SCOPE is nil, use the currently active project overlay."
 (defun magent-action--visible-in-scope-p (spec scope)
   "Return non-nil when Action SPEC is visible in canonical SCOPE."
   (let ((source-scope
-         (magent-action--canonical-scope
+         (magent-session-canonical-scope
           (magent-action-spec-source-scope spec))))
     (or (null source-scope)
         (equal source-scope scope))))
@@ -830,7 +819,7 @@ isolated session starts.  EXPOSURE is a non-empty list containing `slash',
          (layer (or source-layer 'package))
          (_rank (magent-action--layer-rank layer))
          (registration-scope
-          (magent-action--canonical-scope source-scope))
+          (magent-session-canonical-scope source-scope))
          (spec (magent-action-spec-create
                 :name key
                 :description description
@@ -876,7 +865,7 @@ Nil SOURCE-SCOPE acts as a wildcard.  Return the removal count."
     (error "The Magent Action core layer is reserved"))
   (let ((removal-scope
          (and source-scope
-              (magent-action--canonical-scope source-scope)))
+              (magent-session-canonical-scope source-scope)))
         (before (length magent-action--registry)))
     (setq magent-action--registry
           (cl-remove-if
@@ -1392,7 +1381,7 @@ REASON may be a string or a `magent-execution-result' for direct invocations."
            (magent-runtime-session-scope runtime-session)))
          (project-only-p (plist-get config :project-only-p))
          (project-root (and (stringp origin)
-                            (magent-action--canonical-scope origin)))
+                            (magent-session-canonical-scope origin)))
          (kind (plist-get config :kind))
          (pattern (plist-get config :pattern))
          (candidates

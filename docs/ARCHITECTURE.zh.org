@@ -74,9 +74,9 @@ view 不能互相冒充 canonical state。
 
 ** 工具、权限与审计
 
-~magent-tools.el~ 通过单一 canonical catalog 暴露 17 个 ~gptel-tool~ ：
+~magent-tools.el~ 通过单一 canonical catalog 暴露 16 个 ~gptel-tool~ ：
 
-- ~read_file~ 、 ~write_file~ 、 ~write_repo_summary~ 、 ~edit_file~
+- ~read_file~ 、 ~write_file~ 、 ~edit_file~
 - ~grep~ 、 ~glob~ 、 ~bash~
 - ~emacs_read~ 、 ~emacs_eval~ 、 ~emacs_eval_live~ 、 ~read_tool_output~
 - ~spawn_agent~ 、 ~send_agent_message~ 、 ~wait_agent~ 、 ~list_agents~ 、 ~close_agent~
@@ -173,7 +173,7 @@ lifecycle。Action 声明 slash/interactive exposure、current/isolated session 
 快照、精确 tool requirements 和 request-local agent/skill 选择，并从 Invocation
 继承 frontend request context。Content blocks 和 canonical Action metadata 由内部
 持久化。高级受信任 package 可以拥有更长的异步 Invocation，但不会接触 ACP 或 queue
-internals。内置 ~/explain~、~/fix~、~/init~、~/review~、~/summarize~ 和 ~/test~
+internals。内置 ~/explain~、~/fix~、~/init~、~/review~ 和 ~/test~
 prompt Actions 是 ~magent-action-builtins.el~ 中的数据项；系统从对应 Org prompt
 resource 统一生成 terminal Workflow。
 

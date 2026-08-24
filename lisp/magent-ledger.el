@@ -14,6 +14,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'map)
 (require 'seq)
 (require 'subr-x)
 (require 'magent-config)
@@ -1211,11 +1212,19 @@ suffix.  Successful output keeps its prefix as before."
   (set-file-modes directory #o700)
   directory)
 
+(defun magent-tool-output-spill--directory-path (scope session-id)
+  "Return the spill directory path for exact SCOPE and SESSION-ID."
+  (expand-file-name
+   (magent-tool-output-spill--safe-id session-id "session id")
+   (expand-file-name
+    (magent-tool-output-spill--scope-key scope)
+    (expand-file-name "tool-results" magent-session-directory))))
+
 (defun magent-tool-output-spill--directory (scope session-id)
-  "Return the private spill directory for exact SCOPE and SESSION-ID."
-      (let* ((root
-              (magent-tool-output-spill--ensure-private-directory
-               (expand-file-name "tool-results" magent-session-directory)))
+  "Return and create the private spill directory for SCOPE and SESSION-ID."
+  (let* ((root
+          (magent-tool-output-spill--ensure-private-directory
+           (expand-file-name "tool-results" magent-session-directory)))
          (scope-directory
           (magent-tool-output-spill--ensure-private-directory
            (expand-file-name
@@ -1295,6 +1304,81 @@ Return nil when BODY alone exceeds the configured session quota."
                  (file-in-directory-p path directory))
       (error "tool_result_not_found: %s" result-id))
     path))
+
+(defun magent-tool-output-spill-delete-session (scope session-id)
+  "Delete spilled results belonging to exact SCOPE and SESSION-ID."
+  (let ((directory
+         (magent-tool-output-spill--directory-path scope session-id)))
+    (when (file-directory-p directory)
+      (delete-directory directory t))))
+
+(defun magent-tool-output-spill--object-value (object key)
+  "Return KEY from plist or alist OBJECT."
+  (cond
+   ((magent-json--plist-p object) (plist-get object key))
+   ((listp object)
+    (or (map-elt object key)
+        (map-elt object (intern (substring (symbol-name key) 1)))
+        (map-elt object (substring (symbol-name key) 1))))))
+
+(defun magent-thread-spill-result-ids (thread)
+  "Return distinct spill result ids referenced by THREAD."
+  (let (ids)
+    (dolist (item (and thread (magent-thread-all-items thread)))
+      (when-let* ((spill
+                   (magent-tool-output-spill--object-value
+                    (magent-thread-item-metadata item) :spill))
+                  (result-id
+                   (magent-tool-output-spill--object-value
+                    spill :result-id)))
+        (magent-tool-output-spill--safe-id result-id "result id")
+        (cl-pushnew result-id ids :test #'equal)))
+    (nreverse ids)))
+
+(defun magent-tool-output-spill-fork-session
+    (scope source-session-id target-session-id result-ids)
+  "Copy RESULT-IDS in SCOPE from SOURCE-SESSION-ID to TARGET-SESSION-ID.
+Missing source spills are already unavailable to the source session and are
+therefore logged and skipped.  Any other copy failure removes the exact target
+spill directory before propagating the error."
+  (unless (equal source-session-id target-session-id)
+    (let ((source-directory
+           (magent-tool-output-spill--directory-path scope source-session-id))
+          (target-directory nil)
+          completed)
+      (unwind-protect
+          (progn
+            (when (file-directory-p source-directory)
+              (magent-tool-output-spill--cleanup-directory source-directory))
+            (dolist (result-id result-ids)
+              (let* ((safe-result
+                      (magent-tool-output-spill--safe-id
+                       result-id "result id"))
+                     (source
+                      (expand-file-name
+                       (concat safe-result ".txt") source-directory)))
+                (if (and (file-regular-p source)
+                         (file-in-directory-p source source-directory))
+                    (let* ((directory
+                            (or target-directory
+                                (setq target-directory
+                                      (magent-tool-output-spill--directory
+                                       scope target-session-id))))
+                           (target
+                            (expand-file-name
+                             (concat safe-result ".txt") directory)))
+                      (copy-file source target t t nil t)
+                      (set-file-modes target #o600))
+                  (magent-log
+                   "WARN fork skipped unavailable tool result %s from session %s"
+                   safe-result source-session-id))))
+            (when target-directory
+              (magent-tool-output-spill--cleanup-directory target-directory))
+            (setq completed t)
+            target-directory)
+        (unless completed
+          (magent-tool-output-spill-delete-session
+           scope target-session-id))))))
 
 (defvar magent-tool-output-spill--startup-cleaned nil
   "Non-nil after stale spill directories were swept in this Emacs.")
@@ -1392,18 +1476,6 @@ truncating it.  RESULT itself is not changed."
        :error (and failed-p visible)
        :exit-code (magent-tool-result-exit-code result)
        :metadata metadata))))
-
-(defun magent-thread-bound-tool-result-for-model (result thread &optional scope)
-  "Mutate RESULT to its model-visible projection for THREAD and SCOPE."
-  (let ((projected
-         (magent-thread-project-tool-result-for-model result thread scope)))
-    (setf (magent-tool-result-output result)
-          (magent-tool-result-output projected)
-          (magent-tool-result-error result)
-          (magent-tool-result-error projected)
-          (magent-tool-result-metadata result)
-          (magent-tool-result-metadata projected))
-    result))
 
 (defun magent-thread-record-message
     (thread turn-id role content &optional phase metadata)

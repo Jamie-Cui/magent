@@ -249,7 +249,7 @@ resource patterns match the canonical project-relative form of FILE."
                   (file-name-absolute-p relative))
         relative))))
 
-(defun magent-permission--glob-to-regexp (pattern)
+(defun magent-permission-glob-to-regexp (pattern)
   "Return an anchored, path-aware regexp for glob PATTERN.
 
 A single `*' matches only within one path component.  A `**' matches across
@@ -298,7 +298,7 @@ depth."
          (normalized-file (subst-char-in-string ?\\ ?/ file))
          (relative (magent-permission--project-relative-path
                     normalized-file project-root))
-         (regexp (magent-permission--glob-to-regexp normalized-pattern))
+         (regexp (magent-permission-glob-to-regexp normalized-pattern))
          (path-pattern-p (string-match-p "/" normalized-pattern)))
     (if path-pattern-p
         (or (string-match-p regexp normalized-file)
