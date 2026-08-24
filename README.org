@@ -90,11 +90,15 @@ Add the project to your Emacs load path:
 ** Installing from Git with ~use-package~
 
 When your ~use-package~ supports the ~:vc~ keyword, it can install and load
-Magent directly from Git:
+Magent directly from Git.  Magent stores its Emacs Lisp sources under
+~lisp/~, so keep the explicit ~:lisp-dir~ entry in the VC package
+specification:
 
 #+begin_src elisp
 (use-package magent
-  :vc (:url "https://github.com/Jamie-Cui/magent" :rev "master")
+  :vc (:url "https://github.com/Jamie-Cui/magent"
+       :rev "master"
+       :lisp-dir "lisp")
   :ensure t
   :after (agent-shell gptel)
   :demand t

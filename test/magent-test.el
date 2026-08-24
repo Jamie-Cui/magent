@@ -240,6 +240,26 @@
                (length (delete-dups (copy-sequence manifest)))))
     (should (equal sorted-manifest (sort actual #'string<)))))
 
+(ert-deftest magent-test-readme-vc-recipe-selects-lisp-directory ()
+  "Test the documented package-vc recipe loads Magent from lisp/."
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "README.org" magent-test--root-directory))
+    (goto-char (point-min))
+    (should
+     (re-search-forward
+      "^\\*\\* Installing from Git with ~use-package~$" nil t))
+    (should (re-search-forward "^#\\+begin_src elisp$" nil t))
+    (let ((recipe-start (point)))
+      (should (re-search-forward "^#\\+end_src$" nil t))
+      (let ((recipe (buffer-substring-no-properties
+                     recipe-start (match-beginning 0))))
+        (should (string-match-p "(use-package magent" recipe))
+        (should (string-match-p ":vc" recipe))
+        (should
+         (string-match-p
+          ":lisp-dir[[:blank:]]+\\\"lisp\\\"" recipe))))))
+
 (ert-deftest magent-test-production-elisp-has-commentary-sections ()
   "Test every production Elisp module has a Commentary section."
   (dolist (relative-file
