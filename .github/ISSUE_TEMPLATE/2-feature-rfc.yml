@@ -1,0 +1,99 @@
+name: Feature request or RFC
+description: Propose a user-facing feature or architectural change
+title: "[Proposal] "
+labels: ["enhancement"]
+
+body:
+  - type: checkboxes
+    id: existing-proposal
+    attributes:
+      label: Existing proposals
+      options:
+        - label: I searched the existing issues for this proposal.
+          required: true
+
+  - type: dropdown
+    id: proposal-type
+    attributes:
+      label: Proposal type
+      options:
+        - Feature request
+        - Architecture RFC
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: Describe the user need or current limitation before describing an implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the externally observable result.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Optional API, interaction, workflow, or data-model proposal.
+
+  - type: textarea
+    id: non-goals
+    attributes:
+      label: Non-goals
+      description: What should explicitly remain outside this proposal?
+
+  - type: dropdown
+    id: architecture
+    attributes:
+      label: Architectural impact
+      description: Select every area that may be affected.
+      multiple: true
+      options:
+        - No known architectural impact
+        - gptel provider transport
+        - ACP or agent-shell frontend
+        - Runtime or agent loop
+        - Actions
+        - Tools, permissions, or approvals
+        - Child-agent lifecycle
+        - Session schema, ledger, or persistence
+        - Skills or capabilities
+        - Packaging or runtime data
+    validations:
+      required: true
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and migration
+      description: |
+        Could this affect existing configuration, saved sessions, agent or
+        skill files, public commands, or provider behavior?
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include existing workflows or smaller solutions that were considered.
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: Testing and documentation
+      description: Describe expected ERT, live-smoke, migration, and documentation work.
