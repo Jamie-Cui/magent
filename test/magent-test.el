@@ -249,6 +249,25 @@
        (expand-file-name relative-file magent-test--root-directory))
       (should (re-search-forward "^;;; Commentary:$" nil t)))))
 
+(ert-deftest magent-test-action-builtin-module-names-are-canonical ()
+  "Doctor and Memory use their Action builtin module names exclusively."
+  (dolist (entry '((magent-action-builtin-doctor
+                    . "lisp/magent-action-builtin-doctor.el")
+                   (magent-action-builtin-memory
+                    . "lisp/magent-action-builtin-memory.el")))
+    (should (featurep (car entry)))
+    (should (file-exists-p
+             (expand-file-name (cdr entry) magent-test--root-directory))))
+  (dolist (feature '(magent-doctor magent-memory))
+    (should-not (featurep feature)))
+  (dolist (file '("lisp/magent-doctor.el" "lisp/magent-memory.el"))
+    (should-not
+     (file-exists-p (expand-file-name file magent-test--root-directory))))
+  (should (fboundp 'magent-action-builtin-doctor-register))
+  (should (fboundp 'magent-action-builtin-memory-register))
+  (should-not (fboundp 'magent-doctor-register-action))
+  (should-not (fboundp 'magent-memory-register-actions)))
+
 (ert-deftest magent-test-production-elisp-declarations-are-valid ()
   "Test declarations in every production Elisp module resolve."
   (require 'check-declare)
@@ -261,7 +280,7 @@
 (ert-deftest magent-test-generated-external-accessors-use-ext-declarations ()
   "Test generated external accessors use explicit ext declarations."
   (let ((doctor-file
-         (expand-file-name "lisp/magent-doctor.el"
+         (expand-file-name "lisp/magent-action-builtin-doctor.el"
                            magent-test--root-directory)))
     (with-temp-buffer
       (insert-file-contents doctor-file)
@@ -331,7 +350,7 @@
     (should (version<= "0.66.1" (cadr (assq 'agent-shell requirements))))))
 
 (defconst magent-test--builtin-slash-command-names
-  '("explain" "fix" "init" "review" "summarize" "test")
+  '("explain" "fix" "init" "review" "test")
   "Bundled Elisp-native prompt commands.")
 
 (defconst magent-test--builtin-control-command-names
@@ -347,10 +366,10 @@
   (let ((names (append magent-test--builtin-control-command-names
                        magent-test--builtin-maintenance-command-names
                        magent-test--builtin-slash-command-names)))
-    (should (= (length names) 13))
-    (dolist (entry '(("README.org" . "thirteen bundled")
-                     ("docs/COMMANDS.org" . "thirteen slash commands")
-                     ("docs/COMMANDS.zh.org" . "13 个 slash commands")))
+    (should (= (length names) 12))
+    (dolist (entry '(("README.org" . "twelve bundled")
+                     ("docs/COMMANDS.org" . "twelve slash commands")
+                     ("docs/COMMANDS.zh.org" . "12 个 slash commands")))
       (with-temp-buffer
         (insert-file-contents
          (expand-file-name (car entry) magent-test--root-directory))
@@ -440,6 +459,17 @@
                     magent-session-refresh-projections
                     magent-session-to-gptel-prompt-list
                     magent-tool-result-migrate-legacy
+                    magent-memory-scan-plan-approval-input
+                    magent-runtime-queue-kick
+                    magent-thread-bound-tool-result-for-model
+                    magent-action-session-record-tool
+                    magent-skills--classify-source
+                    magent-acp--runtime-session-for-scope
+                    magent-action--canonical-scope
+                    magent-skills--canonical-scope
+                    magent-tools--glob-to-regexp
+                    magent-permission--glob-to-regexp
+                    magent-session--validate-json-state
                     magent-runtime-queue--set-submission-starter
                     magent-runtime-queue--bootstrap-preserved-backends))
     (should-not (fboundp symbol))))
@@ -2169,7 +2199,7 @@
 
 (ert-deftest magent-test-memory-scan-plan-skips-sensitive-and-org-notes ()
   "Test memory scan plans avoid secrets, custom-file contents, and Org notes."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let* ((root (file-name-as-directory
                 (make-temp-file "magent-memory-root" t)))
          (init-file (expand-file-name "init.el" root))
@@ -2210,7 +2240,7 @@
 
 (ert-deftest magent-test-memory-refresh-preserves-user-notes ()
   "Test memory refresh rewrites managed content and preserves User Notes."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let* ((root (file-name-as-directory
                 (make-temp-file "magent-memory-root" t)))
          (memory-dir (file-name-as-directory
@@ -2251,7 +2281,7 @@
 
 (ert-deftest magent-test-memory-profile-and-snapshots-use-private-modes ()
   "Memory persistence enforces 0700 directories and 0600 files."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let* ((memory-dir (file-name-as-directory
                       (make-temp-file "magent-memory-private-" t)))
          (magent-memory-directory memory-dir)
@@ -2320,7 +2350,7 @@
 
 (ert-deftest magent-test-memory-clear-deactivates-and-preserves-user-notes ()
   "Test memory clear writes inactive metadata and keeps local user notes."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let* ((root (file-name-as-directory
                 (make-temp-file "magent-memory-root" t)))
          (memory-dir (file-name-as-directory
@@ -2365,7 +2395,7 @@
 
 (ert-deftest magent-test-memory-outbound-injection-redacts-user-secret ()
   "Test prompt-time memory injection never emits a user-note secret."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let* ((memory-dir (file-name-as-directory
                       (make-temp-file "magent-memory-store" t)))
          (magent-memory-directory memory-dir)
@@ -2465,6 +2495,50 @@
           (should approved))
       (delete-directory magent-session-directory t))))
 
+(ert-deftest magent-test-action-session-save-is-explicit-and-step-saves-once ()
+  "Action persistence avoids ambient rebinding and duplicate first-step saves."
+  (require 'magent-action-session)
+  (let* ((ambient (magent-session-create :id "ambient"))
+         (session (magent-session-create :id "action-session"))
+         (scope (magent-session-action-scope
+                 "action-session" "test-action" 'global))
+         (spec (magent-action-spec-create
+                :name "test-action"
+                :title "Test action"
+                :session-policy 'isolated
+                :workflow #'magent-test--empty-action-workflow))
+         (invocation (magent-action-invocation-create
+                      :id "test-invocation"
+                      :spec spec
+                      :session session
+                      :scope scope))
+         (step (magent-action-step-create
+                :type 'callback :name "First step"))
+         (magent--current-session ambient)
+         (magent-session--current-scope 'global)
+         saves)
+    (cl-letf (((symbol-function 'magent-session-save-for-session)
+               (lambda (saved-session saved-scope)
+                 (push (list saved-session saved-scope
+                             magent--current-session
+                             magent-session--current-scope)
+                       saves))))
+      (magent-action-session--save invocation)
+      (should (= (length saves) 1))
+      (pcase-let ((`(,saved-session ,saved-scope
+                                  ,current-session ,current-scope)
+                   (car saves)))
+        (should (eq saved-session session))
+        (should (equal saved-scope scope))
+        (should (eq current-session ambient))
+        (should (eq current-scope 'global)))
+      (setq saves nil)
+      (should (stringp
+               (magent-action-session-start-step invocation step)))
+      (should (= (length saves) 1))
+      (should (eq magent--current-session ambient))
+      (should (eq magent-session--current-scope 'global)))))
+
 (ert-deftest magent-test-isolated-action-completion-preserves-current-session ()
   "Late isolated completion never restores stale ambient session state."
   (require 'magent-action-session)
@@ -2561,7 +2635,7 @@
 
 (ert-deftest magent-test-doctor-action-sends-one-tool-free-direct-request ()
   "Doctor emits its diagnosis without entering the runtime queue."
-  (require 'magent-doctor)
+  (require 'magent-action-builtin-doctor)
   (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
          (magent-action-session-directory nil)
          (magent-action--registry nil)
@@ -2587,7 +2661,7 @@
            "safe" :collector (lambda (_invocation _state) '((ok . t)))
            :required t)
           (let ((magent-action--allow-core-registration t))
-            (magent-doctor-register-action))
+            (magent-action-builtin-doctor-register))
           (cl-letf (((symbol-function 'magent-runtime-submit)
                      (lambda (&rest _)
                        (error "Doctor must not enter the runtime queue")))
@@ -2620,7 +2694,7 @@
 
 (ert-deftest magent-test-doctor-action-unsafe-probe-fails-before-sampling ()
   "Doctor rejects unsafe probe values before provider sampling."
-  (require 'magent-doctor)
+  (require 'magent-action-builtin-doctor)
   (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
          (magent-action-session-directory nil)
          (magent-action--registry nil)
@@ -2636,7 +2710,7 @@
            "unsafe" :collector (lambda (_invocation _state) (current-buffer))
            :required t)
           (let ((magent-action--allow-core-registration t))
-            (magent-doctor-register-action))
+            (magent-action-builtin-doctor-register))
           (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
                      #'ignore)
                     ((symbol-function 'magent-runtime-context-scope)
@@ -2656,7 +2730,7 @@
 
 (ert-deftest magent-test-doctor-action-active-request-is-cancellable ()
   "Cancelling by parent session aborts Doctor's direct request handle."
-  (require 'magent-doctor)
+  (require 'magent-action-builtin-doctor)
   (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
          (magent-action-session-directory nil)
          (magent-action--registry nil)
@@ -2679,7 +2753,7 @@
            "safe" :collector (lambda (_invocation _state) '((ok . t)))
            :required t)
           (let ((magent-action--allow-core-registration t))
-            (magent-doctor-register-action))
+            (magent-action-builtin-doctor-register))
           (cl-letf (((symbol-function 'magent-llm-gptel-sample)
                      (lambda (_request) request-buffer))
                     ((symbol-function 'gptel-abort)
@@ -2700,7 +2774,7 @@
 
 (ert-deftest magent-test-memory-system-message-selects-relevant-sections ()
   "Test prompt-time memory injection selects bounded relevant sections."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let* ((memory-dir (file-name-as-directory
                       (make-temp-file "magent-memory-store" t)))
          (magent-memory-directory memory-dir)
@@ -3691,6 +3765,53 @@
         (should (eq (magent-action-spec-source-layer command) 'builtin))
         (should (functionp (magent-action-spec-workflow command)))
         (should-not (magent-skills-get name))))))
+
+(ert-deftest magent-test-action-enabled-builtins-default-to-doctor-and-memory ()
+  "Doctor and Memory Actions remain available by default."
+  (should (equal (default-value 'magent-action-enabled-builtins)
+                 '(doctor memory))))
+
+(ert-deftest magent-test-action-builtins-respect-enabled-groups ()
+  "Optional built-in groups control only Doctor and Memory registrations."
+  (require 'magent-action-builtins)
+  (let ((magent-action--registry nil))
+    (magent-action-builtins-register nil)
+    (should-not (magent-action-get "doctor" 'global))
+    (dolist (name '("memory-init" "memory-refresh" "memory-clear"))
+      (should-not (magent-action-get name 'global)))
+    (dolist (name (append magent-test--builtin-control-command-names
+                          magent-test--builtin-slash-command-names))
+      (should (magent-action-get name 'global)))
+    (magent-action-builtins-register '(doctor))
+    (should (magent-action-get "doctor" 'global))
+    (should-not (magent-action-get "memory-init" 'global))
+    (magent-action-builtins-register '(memory))
+    (should-not (magent-action-get "doctor" 'global))
+    (dolist (name '("memory-init" "memory-refresh" "memory-clear"))
+      (should (magent-action-get name 'global)))))
+
+(ert-deftest magent-test-action-enabled-builtins-refreshes-live-registry ()
+  "Custom changes refresh Action discovery after runtime initialization."
+  (require 'magent-action-builtins)
+  (let ((original (default-value 'magent-action-enabled-builtins)))
+    (unwind-protect
+        (let ((magent--initialized t)
+              (magent-action--registry nil)
+              (magent-action-registry-changed-hook nil)
+              (changes 0))
+          (add-hook 'magent-action-registry-changed-hook
+                    (lambda () (cl-incf changes)))
+          (magent-action-builtins-register '(doctor memory))
+          (setq changes 0)
+          (customize-set-variable 'magent-action-enabled-builtins '(doctor))
+          (should (= changes 1))
+          (should (magent-action-get "doctor" 'global))
+          (should-not (magent-action-get "memory-init" 'global))
+          (customize-set-variable 'magent-action-enabled-builtins '(memory))
+          (should (= changes 2))
+          (should-not (magent-action-get "doctor" 'global))
+          (should (magent-action-get "memory-init" 'global)))
+      (set-default 'magent-action-enabled-builtins original))))
 
 (ert-deftest magent-test-action-skills-lists-scope-without-provider ()
   "The core /skills workflow lists descriptors without submitting a turn."
@@ -5214,30 +5335,6 @@
             (should (string-match-p "Do the thing" (magent-skill-prompt skill)))))
       (delete-directory tmpdir t))))
 
-(ert-deftest magent-test-bundled-summarize-command-keeps-constraints ()
-  "Test /summarize is global-capable and keeps Step-local tools."
-  (require 'magent-action)
-  (let ((magent-action--registry nil))
-    (magent-test--register-builtin-commands-only)
-    (let ((command (magent-action-get "summarize")))
-      (should command)
-      (should (eq (magent-action-spec-session-policy command) 'current))
-      (let* ((invocation
-              (magent-action-invocation-create
-               :id "summarize" :spec command :argument ""))
-             (iterator
-              (funcall (magent-action-spec-workflow command) invocation))
-             (step (iter-next iterator)))
-        (unwind-protect
-            (progn
-              (should (eq (magent-action-step-type step) 'answer))
-              (should
-               (equal
-                (magent-action--step-option step :tools)
-                '(read_file grep glob bash write_repo_summary
-                            read_tool_output))))
-          (iter-close iterator))))))
-
 (ert-deftest magent-test-skills-load-all-includes-emacs-runtime-inspection ()
   "Test builtin skill loading includes the Emacs runtime inspection workflow."
   (require 'magent-skills)
@@ -5746,7 +5843,6 @@
   (should (eq (magent-tools-permission-key "emacs_read") 'read))
   (should (eq (magent-tools-permission-key "read_tool_output") 'read))
   (should (eq (magent-tools-permission-key "write_file") 'write))
-  (should (eq (magent-tools-permission-key "write_repo_summary") 'write))
   (should (eq (magent-tools-permission-key "edit_file") 'edit))
   (should (eq (magent-tools-permission-key "grep") 'grep))
   (should (eq (magent-tools-permission-key "glob") 'glob))
@@ -5761,207 +5857,6 @@
   (should (eq (magent-tools-permission-key "close_agent") 'agent))
   (should (eq (magent-tools-permission-key "web_search") 'web_search))
   (should (null (magent-tools-permission-key "nonexistent"))))
-
-(ert-deftest magent-test-repo-summary-writes-and-updates-one-org-note ()
-  "Test full and scoped summaries coexist in one canonical Org note."
-  (require 'magent-repo-summary)
-  (require 'org-element)
-  (let* ((repository (magent-test--make-git-repository
-                      "magent-summary-repository-"))
-         (roam-directory (make-temp-file "magent-summary-roam-" t))
-         (magent-org-roam-directory roam-directory)
-         first-path first-id)
-    (cl-letf (((symbol-function
-                'magent-repo-summary--org-roam-capture-available-p)
-               #'ignore))
-      (unwind-protect
-          (progn
-            (setq first-path
-                  (plist-get
-                   (magent-repo-summary-write
-                    repository "full"
-                    "The repository exists to exercise summary writing.\n\n** Architecture\nA small test fixture.")
-                   :path))
-            (should
-             (string-match-p
-              "\\`[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}t[0-9]\\{4\\}\\.org\\'"
-              (file-name-nondirectory first-path)))
-            (should (= (length (directory-files roam-directory nil
-                                                "\\.org\\'"))
-                       1))
-            (with-temp-buffer
-              (insert-file-contents first-path)
-              (should (re-search-forward
-                       (concat "^#\\+title: "
-                               (regexp-quote
-                                (file-name-nondirectory repository))
-                               "$")
-                       nil t))
-              (goto-char (point-min))
-              (should (re-search-forward "^:REPO_PATH: " nil t))
-              (should (re-search-forward
-                       "^:LAST_ANALYZED_COMMIT: [0-9a-f]+$" nil t))
-              (goto-char (point-min))
-              (org-mode)
-              (goto-char (point-min))
-              (should (looking-at ":PROPERTIES:\n"))
-              (setq first-id (org-id-get))
-              (should (stringp first-id))
-              (should (org-element-parse-buffer)))
-
-            (magent-repo-summary-write
-             repository "scoped" "Only the parser is summarized."
-             "src/parser :internal:" "src/parser.el, test/parser-test.el")
-            (magent-repo-summary-write
-             repository "scoped" "The parser summary was updated."
-             "src/parser :internal:" "src/parser.el, test/parser-test.el")
-            (magent-repo-summary-write
-             repository "full" "The full repository summary was updated.")
-
-            (should (= (length (directory-files roam-directory nil
-                                                "\\.org\\'"))
-                       1))
-            (with-temp-buffer
-              (insert-file-contents first-path)
-              (org-mode)
-              (goto-char (point-min))
-              (should (equal (org-id-get) first-id))
-              (should (= (how-many "^:ID:" (point-min) (point-max)) 1))
-              (should (re-search-forward "^\\* Repository Summary$" nil t))
-              (should (re-search-forward
-                       "The full repository summary was updated" nil t))
-              (should (re-search-forward "^\\* Scoped Summaries$" nil t))
-              (should (= (how-many "^:SUMMARY_SCOPE_ID:"
-                                   (point-min) (point-max))
-                         1))
-              (should (re-search-forward
-                       "The parser summary was updated" nil t))
-              (should-not
-               (re-search-forward "Only the parser is summarized" nil t))))
-        (delete-directory repository t)
-        (delete-directory roam-directory t)))))
-
-(ert-deftest magent-test-repo-summary-note-path-follows-org-roam-timestamps ()
-  "Test new paths follow Org-roam timestamps and existing notes use metadata."
-  (require 'magent-repo-summary)
-  (let* ((roam-directory (make-temp-file "magent-summary-path-roam-" t))
-         (root "/tmp/example-repository")
-         (time (encode-time 0 48 23 4 6 2026))
-         (occupied (expand-file-name "2026-06-04t2348.org" roam-directory))
-         (existing (expand-file-name "existing-summary.org" roam-directory)))
-    (unwind-protect
-        (cl-letf (((symbol-function 'current-time) (lambda () time)))
-          (should
-           (equal (magent-repo-summary--note-path
-                   roam-directory root)
-                  occupied))
-          (with-temp-file occupied
-            (insert ":PROPERTIES:\n:ID: unrelated\n:END:\n"))
-          (should
-           (equal (magent-repo-summary--note-path
-                   roam-directory root)
-                  (expand-file-name "2026-06-04t2349.org" roam-directory)))
-          (with-temp-file existing
-            (insert (format
-                     ":PROPERTIES:\n:ID: existing\n:REPO_PATH: %s\n:END:\n"
-                     root)))
-          (should
-           (equal (magent-repo-summary--note-path
-                   roam-directory root)
-                  existing)))
-      (delete-directory roam-directory t))))
-
-(ert-deftest magent-test-repo-summary-creates-new-note-through-org-roam ()
-  "Test new summaries use noninteractive Org-roam capture when available."
-  (require 'magent-repo-summary)
-  (let* ((repository (magent-test--make-git-repository
-                      "magent-summary-roam-capture-repository-"))
-         (roam-directory (make-temp-file "magent-summary-roam-capture-" t))
-         (magent-org-roam-directory roam-directory)
-         (org-roam-directory "/wrong-org-roam-directory/")
-         captured-arguments indexed-directory indexed-path)
-    (unwind-protect
-        (cl-letf (((symbol-function
-                    'magent-repo-summary--org-roam-capture-available-p)
-                   (lambda () t))
-                  ((symbol-function 'org-roam-node-create)
-                   (lambda (&rest properties) properties))
-                  ((symbol-function 'org-roam-capture-)
-                   (lambda (&rest arguments)
-                     (setq captured-arguments arguments)
-                     (let* ((node (plist-get arguments :node))
-                            (template
-                             (car (plist-get arguments :templates)))
-                            (target (plist-get (nthcdr 4 template) :target))
-                            (path (cadr target)))
-                       (with-temp-file path
-                         (insert ":PROPERTIES:\n:ID: "
-                                 (plist-get node :id)
-                                 "\n:END:\n#+title: "
-                                 (plist-get node :title)
-                                 "\n")))))
-                  ((symbol-function 'org-roam-db-update-file)
-                   (lambda (path)
-                     (setq indexed-directory
-                           (symbol-value 'org-roam-directory)
-                           indexed-path path))))
-          (let* ((result
-                  (magent-repo-summary-write
-                   repository "full" "Captured repository summary."))
-                 (path (plist-get result :path))
-                 (template
-                  (car (plist-get captured-arguments :templates))))
-            (should captured-arguments)
-            (should (equal (cadr (plist-get (nthcdr 4 template) :target))
-                           path))
-            (should (plist-get (nthcdr 4 template) :immediate-finish))
-            (should (plist-get (nthcdr 4 template) :kill-buffer))
-            (should (equal indexed-directory
-                           (file-truename roam-directory)))
-            (should (equal indexed-path path))
-            (with-temp-buffer
-              (insert-file-contents path)
-              (org-mode)
-              (goto-char (point-min))
-              (should (equal
-                       (org-id-get)
-                       (plist-get (plist-get captured-arguments :node) :id))))))
-      (delete-directory repository t)
-      (delete-directory roam-directory t))))
-
-(ert-deftest magent-test-repo-summary-rejects-invalid-destinations ()
-  "Test repository summaries require a Git project and org-roam directory."
-  (require 'magent-repo-summary)
-  (let ((repository (magent-test--make-git-repository
-                     "magent-summary-repository-"))
-        (plain-directory (make-temp-file "magent-summary-plain-" t)))
-    (unwind-protect
-        (progn
-          (let ((magent-org-roam-directory nil)
-                (org-roam-directory nil))
-            (should-error
-             (magent-repo-summary-write repository "full" "Summary")))
-          (let ((magent-org-roam-directory plain-directory)
-                (new-id-calls 0))
-            (cl-letf (((symbol-function 'magent-repo-summary--new-id)
-                       (lambda (_path)
-                         (cl-incf new-id-calls)
-                         "unexpected-id")))
-              (should-error
-               (magent-repo-summary-write 'global "full" "Summary"))
-              (should-error
-               (magent-repo-summary-write plain-directory "full" "Summary"))
-              (should-error
-               (magent-repo-summary-write
-                repository "scoped" "Summary" "parser" '("../outside.el")))
-              (should-error
-               (magent-repo-summary-write repository "invalid" "Summary"))
-              (should-error
-               (magent-repo-summary-write repository "full" "")))
-            (should (zerop new-id-calls))
-            (should-not (directory-files plain-directory nil "\\.org\\'"))))
-      (delete-directory repository t)
-      (delete-directory plain-directory t))))
 
 (ert-deftest magent-test-tool-result-rejects-unstructured-strings ()
   "Test runtime consumers reject unstructured tool results."
@@ -6631,7 +6526,7 @@
 (ert-deftest magent-test-tools-all-registered ()
   "Test that all core tools are registered."
   (require 'magent-tools)
-  (should (= (length magent-tools-catalog) 17))
+  (should (= (length magent-tools-catalog) 16))
   (should-not (magent-tools-catalog-entry "read_buffer"))
   (should (magent-tools-catalog-entry "emacs_read"))
   (should (magent-tools-catalog-entry "emacs_eval_live"))
@@ -6645,18 +6540,6 @@
     (should (string-match-p "titles and URLs only" description))
     (should (string-match-p "does not fetch result pages" description))
     (should (string-match-p "do not claim to have read page content"
-                            description))))
-
-(ert-deftest magent-test-tools-write-repo-summary-description-defines-headings ()
-  "Test write_repo_summary explains its managed heading boundaries."
-  (require 'magent-tools)
-  (let ((description
-         (gptel-tool-description magent-tools--write-repo-summary-tool)))
-    (should (string-match-p "Do not include the managed heading itself"
-                            description))
-    (should (string-match-p "full-mode headings must start at \\*\\*"
-                            description))
-    (should (string-match-p "scoped-mode headings must start at \\*\\*\\*"
                             description))))
 
 (ert-deftest magent-test-tools-filtering ()
@@ -7999,10 +7882,10 @@
 ;; ──────────────────────────────────────────────────────────────────────
 
 (ert-deftest magent-test-audit-record-appends-jsonl ()
-  "Test audit records append into one daily JSONL file."
+  "Test a file audit destination receives appended JSONL records."
   (require 'magent-audit)
-  (let* ((magent-enable-audit-log t)
-         (magent-audit-directory (make-temp-file "magent-audit-" t))
+  (let* ((directory (make-temp-file "magent-audit-" t))
+         (magent-audit (expand-file-name "audit.jsonl" directory))
          (magent-session--scoped-sessions (make-hash-table :test #'equal))
          (magent-session--current-scope 'global)
          (magent--current-session (magent-session-create)))
@@ -8015,29 +7898,90 @@
                                :decision 'deny
                                :decision-source 'file-rule-deny)
           (magent-audit--flush-pending)
-          (should (= (length (directory-files magent-audit-directory nil "\\.jsonl$")) 1))
-          (should (= (length (magent-test--read-audit-records magent-audit-directory)) 2)))
-      (delete-directory magent-audit-directory t))))
+          (should (file-exists-p magent-audit))
+          (should (= (length (magent-test--read-audit-records directory)) 2)))
+      (delete-directory directory t))))
 
-(ert-deftest magent-test-audit-record-disabled-skips-write ()
-  "Test disabled audit logging does not create any files."
+(ert-deftest magent-test-audit-relative-file-is-user-emacs-relative ()
+  "Test a relative audit file is stable across buffer default directories."
   (require 'magent-audit)
-  (let ((magent-enable-audit-log nil)
-        (magent-audit-directory (make-temp-file "magent-audit-" t)))
+  (let* ((directory (make-temp-file "magent-audit-relative-" t))
+         (user-emacs-directory (file-name-as-directory directory))
+         (magent-audit "logs/audit.jsonl")
+         (expected (expand-file-name magent-audit user-emacs-directory))
+         (magent-audit-buffer-name "*magent-test-file-audit*")
+         (magent-audit--pending-writes nil)
+         (magent-audit--flush-timer nil))
     (unwind-protect
         (progn
+          (when-let* ((buffer (get-buffer magent-audit-buffer-name)))
+            (kill-buffer buffer))
+          (let ((default-directory temporary-file-directory))
+            (magent-audit-record 'permission-decision
+                                 :decision 'allow
+                                 :decision-source 'bypass))
+          (magent-audit--flush-pending)
+          (should (file-exists-p expected))
+          (should-not (get-buffer magent-audit-buffer-name)))
+      (magent-audit--flush-pending)
+      (when-let* ((buffer (get-buffer magent-audit-buffer-name)))
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
+(ert-deftest magent-test-audit-record-disabled-skips-write ()
+  "Test nil audit recording creates neither a buffer nor a file."
+  (require 'magent-audit)
+  (let ((magent-audit nil)
+        (magent-audit-buffer-name "*magent-test-disabled-audit*")
+        (directory (make-temp-file "magent-audit-" t)))
+    (unwind-protect
+        (progn
+          (when-let* ((buffer (get-buffer magent-audit-buffer-name)))
+            (kill-buffer buffer))
           (magent-audit-record 'permission-decision
                                :decision 'allow
                                :decision-source 'bypass)
           (magent-audit--flush-pending)
-          (should-not (directory-files magent-audit-directory nil "\\.jsonl$")))
-      (delete-directory magent-audit-directory t))))
+          (should-not (get-buffer magent-audit-buffer-name))
+          (should-not (directory-files directory nil "\\.jsonl$")))
+      (when-let* ((buffer (get-buffer magent-audit-buffer-name)))
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
+(ert-deftest magent-test-audit-defaults-to-live-buffer-only ()
+  "Test the default destination records only in the live audit buffer."
+  (require 'magent-audit)
+  (let* ((magent-audit (default-value 'magent-audit))
+         (magent-audit-buffer-name "*magent-test-buffer-audit*")
+         (directory (make-temp-file "magent-audit-buffer-only-" t))
+         (user-emacs-directory (file-name-as-directory directory))
+         (magent-audit--pending-writes nil)
+         buffer)
+    (unwind-protect
+        (progn
+          (should (eq magent-audit 'buffer))
+          (when-let* ((existing (get-buffer magent-audit-buffer-name)))
+            (kill-buffer existing))
+          (magent-audit-record 'permission-decision
+                               :decision 'allow
+                               :decision-source 'bypass)
+          (setq buffer (get-buffer magent-audit-buffer-name))
+          (should (buffer-live-p buffer))
+          (should-not magent-audit--pending-writes)
+          (should-not (directory-files directory nil "\\.jsonl$"))
+          (with-current-buffer buffer
+            (should (= (length magent-audit--live-records) 1))
+            (should (= (length magent-audit--visible-records) 1))
+            (should (string-match-p "permission-decision" (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
 
 (ert-deftest magent-test-audit-tool-events-redact-write-payloads ()
-  "Test persisted tool audit records redact general and summary bodies."
+  "Test persisted tool audit records redact write and edit bodies."
   (require 'magent-audit)
-  (let* ((magent-enable-audit-log t)
-         (magent-audit-directory (make-temp-file "magent-audit-" t))
+  (let* ((directory (make-temp-file "magent-audit-" t))
+         (magent-audit (expand-file-name "audit.jsonl" directory))
          (magent-session--scoped-sessions (make-hash-table :test #'equal))
          (magent-session--current-scope 'global)
          (session (magent-session-create :id "audit-payload-session"))
@@ -8056,14 +8000,6 @@
           (magent-lifecycle-events-emit 'tool-call-start
 					:context context
 					:audit-context audit-context
-					:call-id "call-summary"
-					:tool-name "write_repo_summary"
-					:summary "full"
-					:args '(:mode "full"
-						      :content "private repository details"))
-          (magent-lifecycle-events-emit 'tool-call-start
-					:context context
-					:audit-context audit-context
 					:call-id "call-write"
 					:tool-name "write_file"
 					:summary "notes.txt"
@@ -8079,7 +8015,7 @@
 						      :new_text "new secret value"))
           (magent-audit--flush-pending)
           (let* ((records
-                  (magent-test--read-audit-records magent-audit-directory))
+                  (magent-test--read-audit-records directory))
                  (find-tool
                   (lambda (name)
                     (cl-find-if
@@ -8087,23 +8023,14 @@
                        (equal (cdr (assq 'tool_name record)) name))
                      records)))
                  (write-record (funcall find-tool "write_file"))
-                 (summary-record
-                  (funcall find-tool "write_repo_summary"))
                  (edit-record (funcall find-tool "edit_file"))
                  (write-preview (cdr (assq 'args_preview write-record)))
-                 (summary-preview
-                  (cdr (assq 'args_preview summary-record)))
                  (edit-preview (cdr (assq 'args_preview edit-record))))
             (should (equal (cdr (assq 'tool_name write-record)) "write_file"))
             (should (equal (cdr (assq 'path write-preview)) "notes.txt"))
             (should (= (cdr (assq 'content_length write-preview))
                        (length "super secret body")))
             (should-not (assq 'content write-preview))
-            (should (equal (cdr (assq 'tool_name summary-record))
-                           "write_repo_summary"))
-            (should (= (cdr (assq 'content_length summary-preview))
-                       (length "private repository details")))
-            (should-not (assq 'content summary-preview))
             (should (equal (cdr (assq 'tool_name edit-record)) "edit_file"))
             (should (equal (cdr (assq 'path edit-preview)) "notes.txt"))
             (should (= (cdr (assq 'old_text_length edit-preview))
@@ -8113,13 +8040,13 @@
             (should-not (assq 'old_text edit-preview))
             (should-not (assq 'new_text edit-preview))))
       (magent-audit-disable)
-      (delete-directory magent-audit-directory t))))
+      (delete-directory directory t))))
 
 (ert-deftest magent-test-audit-approval-hooks-persist-request-and-resolution ()
   "Test approval lifecycle events are persisted with decision metadata."
   (require 'magent-audit)
-  (let* ((magent-enable-audit-log t)
-         (magent-audit-directory (make-temp-file "magent-audit-" t))
+  (let* ((directory (make-temp-file "magent-audit-" t))
+         (magent-audit (expand-file-name "audit.jsonl" directory))
          (magent-session--scoped-sessions (make-hash-table :test #'equal))
          (magent-session--current-scope 'global)
          (session (magent-session-create :id "approval-session"))
@@ -8149,7 +8076,7 @@
            #'ignore)
           (magent-approval-resolve-request "req-1" 'allow-session)
           (magent-audit--flush-pending)
-          (let ((records (magent-test--read-audit-records magent-audit-directory)))
+          (let ((records (magent-test--read-audit-records directory)))
             (should (= (length records) 2))
             (should (equal (mapcar (lambda (record) (cdr (assq 'event record))) records)
                            '("approval-requested" "approval-resolved")))
@@ -8160,7 +8087,7 @@
                            "user-allow-session"))
             (should (equal (cdr (assq 'decision (cadr records))) "allow"))))
       (magent-audit-disable)
-      (delete-directory magent-audit-directory t))))
+      (delete-directory directory t))))
 
 (ert-deftest magent-test-audit-args-normalize-captured-project-and-home-paths ()
   "Audit argument previews never expose captured project or home prefixes."
@@ -8236,8 +8163,7 @@
            :event-context event-context))
          (audit-context
           (magent-request-context-audit-snapshot request-context))
-         (magent-enable-audit-log t)
-         (magent-audit-directory directory)
+         (magent-audit (expand-file-name "audit.jsonl" directory))
          (magent-audit--enabled nil)
          (magent-audit--pending-writes nil)
          (magent-audit--flush-timer nil)
@@ -8522,8 +8448,8 @@
 (ert-deftest magent-test-audit-malformed-context-still-persists-missing-attribution ()
   "Malformed attribution is dropped without dropping its audit event."
   (require 'magent-audit)
-  (let* ((magent-enable-audit-log t)
-         (magent-audit-directory (make-temp-file "magent-audit-malformed-" t))
+  (let* ((directory (make-temp-file "magent-audit-malformed-" t))
+         (magent-audit (expand-file-name "audit.jsonl" directory))
          (magent-audit--pending-writes nil)
          (magent-audit--flush-timer nil)
          (secret "malformed-context-secret-8821")
@@ -8541,7 +8467,7 @@
            :result secret)
           (magent-audit--flush-pending)
           (let* ((records
-                  (magent-test--read-audit-records magent-audit-directory))
+                  (magent-test--read-audit-records directory))
                  (record (car records))
                  (encoded (json-encode record)))
             (should (= (length records) 1))
@@ -8550,7 +8476,7 @@
             (should-not (cdr (assq 'scope record)))
             (should-not (string-match-p (regexp-quote secret) encoded))))
       (magent-audit--flush-pending)
-      (delete-directory magent-audit-directory t))))
+      (delete-directory directory t))))
 
 (ert-deftest magent-test-audit-subagent-snapshot-survives-ambient-switch ()
   "Subagent start and stop retain one scalar request attribution snapshot."
@@ -8570,8 +8496,7 @@
            :event-context parent-context))
          (audit-context
           (magent-request-context-audit-snapshot request-context))
-         (magent-enable-audit-log t)
-         (magent-audit-directory directory)
+         (magent-audit (expand-file-name "audit.jsonl" directory))
          (magent-audit--enabled nil)
          (magent-audit--pending-writes nil)
          (magent-audit--flush-timer nil)
@@ -8778,8 +8703,8 @@
   (require 'magent-audit)
   (require 'magent-agent-loop)
   (require 'magent-permission)
-  (let* ((magent-enable-audit-log t)
-         (magent-audit-directory (make-temp-file "magent-audit-" t))
+  (let* ((directory (make-temp-file "magent-audit-" t))
+         (magent-audit (expand-file-name "audit.jsonl" directory))
          (magent-session--scoped-sessions (make-hash-table :test #'equal))
          (magent-session--current-scope 'global)
          (magent--current-session (magent-session-create))
@@ -8810,7 +8735,7 @@
                                                (setq result value)))))
           (should (equal result "ran echo hi"))
           (magent-audit--flush-pending)
-          (let* ((records (magent-test--read-audit-records magent-audit-directory))
+          (let* ((records (magent-test--read-audit-records directory))
                  (record (car records)))
             (should (= (length records) 1))
             (should (equal (cdr (assq 'event record)) "permission-decision"))
@@ -8819,14 +8744,14 @@
             (should (equal (cdr (assq 'decision_source record))
                            "session-override-allow"))))
       (magent-audit-disable)
-      (delete-directory magent-audit-directory t))))
+      (delete-directory directory t))))
 
 (ert-deftest magent-test-audit-permission-file-rule-deny-is-persisted ()
   "Test file-rule deny permission decisions are persisted."
   (require 'magent-audit)
   (require 'magent-agent-loop)
-  (let* ((magent-enable-audit-log t)
-         (magent-audit-directory (make-temp-file "magent-audit-" t))
+  (let* ((directory (make-temp-file "magent-audit-" t))
+         (magent-audit (expand-file-name "audit.jsonl" directory))
          (magent-session--scoped-sessions (make-hash-table :test #'equal))
          (magent-session--current-scope 'global)
          (magent--current-session (magent-session-create))
@@ -8853,7 +8778,7 @@
                                             (setq result value)))))
           (should (string-match-p "access denied" result))
           (magent-audit--flush-pending)
-          (let* ((records (magent-test--read-audit-records magent-audit-directory))
+          (let* ((records (magent-test--read-audit-records directory))
                  (record (car records))
                  (args-preview (cdr (assq 'args_preview record))))
             (should (= (length records) 1))
@@ -8864,17 +8789,16 @@
               (should-not (string-match-p
                            (regexp-quote (expand-file-name "~")) path)))))
       (magent-audit-disable)
-      (delete-directory magent-audit-directory t))))
+      (delete-directory directory t))))
 
 (ert-deftest magent-test-audit-write-failure-does-not-signal ()
   "Test audit persistence failures never interrupt Magent execution."
   (require 'magent-audit)
-  (let ((magent-enable-audit-log t)
-        (magent-audit-directory (make-temp-file "magent-audit-" t)))
+  (let* ((directory (make-temp-file "magent-audit-" t))
+         (magent-audit (expand-file-name "audit.jsonl" directory)))
     (unwind-protect
-        (cl-letf (((symbol-function 'append-to-file)
-                   (lambda (&rest _args)
-                     (error "disk full"))))
+        (cl-letf (((symbol-function 'magent-audit--append-batch)
+                   (lambda (&rest _args) (error "disk full"))))
           (should-not
            (condition-case nil
                (progn
@@ -8884,13 +8808,13 @@
                  (magent-audit--flush-pending)
                  nil)
              (error t))))
-      (delete-directory magent-audit-directory t))))
+      (delete-directory directory t))))
 
 (ert-deftest magent-test-audit-record-queues-write-until-flush ()
   "Test audit writes stay queued until the deferred flush runs."
   (require 'magent-audit)
-  (let* ((magent-enable-audit-log t)
-         (magent-audit-directory (make-temp-file "magent-audit-" t))
+  (let* ((directory (make-temp-file "magent-audit-" t))
+         (magent-audit (expand-file-name "audit.jsonl" directory))
          (magent-audit-flush-delay 60)
          (magent-session--scoped-sessions (make-hash-table :test #'equal))
          (magent-session--current-scope 'global)
@@ -8901,17 +8825,18 @@
                                :decision 'allow
                                :decision-source 'bypass)
           (should magent-audit--pending-writes)
-          (should-not (directory-files magent-audit-directory nil "\\.jsonl$"))
+          (should-not (file-exists-p magent-audit))
           (magent-audit--flush-pending)
           (should-not magent-audit--pending-writes)
-          (should (= (length (magent-test--read-audit-records magent-audit-directory)) 1)))
+          (should (= (length (magent-test--read-audit-records directory)) 1)))
       (magent-audit--flush-pending)
-      (delete-directory magent-audit-directory t))))
+      (delete-directory directory t))))
 
 (ert-deftest magent-test-audit-browser-respects-default-time-window ()
   "Test the audit browser only shows records inside the default day window."
   (require 'magent-audit)
-  (let* ((magent-audit-directory (make-temp-file "magent-audit-ui-" t))
+  (let* ((directory (make-temp-file "magent-audit-ui-" t))
+         (magent-audit (expand-file-name "audit-test.jsonl" directory))
          (magent-audit-default-days 1)
          (magent-audit-max-records 50)
          (recent-time (format-time-string "%Y-%m-%dT%H:%M:%S%z" (current-time)))
@@ -8922,7 +8847,7 @@
     (unwind-protect
         (progn
           (magent-test--write-audit-record-file
-           magent-audit-directory
+           directory
            "audit-test.jsonl"
            `(((timestamp . ,recent-time)
               (event . "permission-decision")
@@ -8943,12 +8868,13 @@
             (should-not (string-match-p "stale audit record" (buffer-string)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
-      (delete-directory magent-audit-directory t))))
+      (delete-directory directory t))))
 
 (ert-deftest magent-test-audit-browser-filters-and-expands-details ()
   "Test audit browser filters records and expands inline details."
   (require 'magent-audit)
-  (let* ((magent-audit-directory (make-temp-file "magent-audit-ui-" t))
+  (let* ((directory (make-temp-file "magent-audit-ui-" t))
+         (magent-audit (expand-file-name "audit-test.jsonl" directory))
          (magent-audit-default-days 7)
          (magent-audit-max-records 50)
          (timestamp (format-time-string "%Y-%m-%dT%H:%M:%S%z" (current-time)))
@@ -8956,7 +8882,7 @@
     (unwind-protect
         (progn
           (magent-test--write-audit-record-file
-           magent-audit-directory
+           directory
            "audit-test.jsonl"
            `(((timestamp . ,timestamp)
               (event . "permission-decision")
@@ -8986,20 +8912,21 @@
             (should (string-match-p "\\(path \\. \".env\"\\)" (buffer-string)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
-      (delete-directory magent-audit-directory t))))
+      (delete-directory directory t))))
 
 (ert-deftest magent-test-audit-browser-skips-malformed-jsonl ()
   "Test malformed audit lines are ignored without breaking the browser."
   (require 'magent-audit)
-  (let* ((magent-audit-directory (make-temp-file "magent-audit-ui-" t))
+  (let* ((directory (make-temp-file "magent-audit-ui-" t))
+         (magent-audit (expand-file-name "audit-test.jsonl" directory))
          (magent-audit-default-days 7)
          (magent-audit-max-records 50)
          (timestamp (format-time-string "%Y-%m-%dT%H:%M:%S%z" (current-time)))
-         (file (expand-file-name "audit-test.jsonl" magent-audit-directory))
+         (file magent-audit)
          buffer)
     (unwind-protect
         (progn
-          (make-directory magent-audit-directory t)
+          (make-directory directory t)
           (with-temp-file file
             (insert "{not-json}\n")
             (insert
@@ -9018,7 +8945,7 @@
                                     (buffer-string)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
-      (delete-directory magent-audit-directory t))))
+      (delete-directory directory t))))
 
 (ert-deftest magent-test-session-scope-from-directory-falls-back-to-global ()
   "Test session scope is global when no project root is detected."
@@ -12212,7 +12139,7 @@
                    (lambda (&rest _)
                      '(read_file write_file edit_file grep glob bash
                        emacs_read emacs_eval emacs_eval_live
-                       read_tool_output write_repo_summary))))
+                       read_tool_output))))
           (magent-acp--handle-request
            client
            `((:method . "session/prompt")
@@ -14759,6 +14686,27 @@
                          "gpt-4o-mini")))))
     (delete-directory magent-session-directory t)))
 
+(ert-deftest magent-test-session-read-file-decodes-snapshot-once ()
+  "A full session load reuses the validated decoded snapshot."
+  (let* ((directory (make-temp-file "magent-session-decode-" t))
+         (file (expand-file-name "single-decode.json" directory))
+         (original-decoder
+          (symbol-function 'magent-thread-snapshot-from-alist))
+         (decode-count 0))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert
+             (json-encode
+              (magent-test--current-session-json-data "single-decode"))))
+          (cl-letf (((symbol-function 'magent-thread-snapshot-from-alist)
+                     (lambda (snapshot)
+                       (cl-incf decode-count)
+                       (funcall original-decoder snapshot))))
+            (should (magent-session-read-file file)))
+          (should (= decode-count 1)))
+      (delete-directory directory t))))
+
 (ert-deftest magent-test-session-explicit-save-does-not-use-ambient-state ()
   "Explicit and deferred saves retain the captured session/scope pair."
   (let* ((target (magent-session-create :id "target"))
@@ -14927,7 +14875,7 @@
 
 (ert-deftest magent-test-memory-async-commit-preserves-latest-user-notes ()
   "Memory completion re-reads notes edited while the provider is sampling."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let* ((directory (make-temp-file "magent-memory-stale-" t))
          (magent-memory-directory directory)
          (magent-memory-open-after-write nil)
@@ -14959,7 +14907,7 @@
 
 (ert-deftest magent-test-memory-deleted-source-marks-profile-stale ()
   "A source recorded by memory generation is stale when later deleted."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let* ((directory (make-temp-file "magent-memory-source-missing-" t))
          (magent-memory-directory directory)
          (missing (expand-file-name "deleted.el" directory)))
@@ -14985,7 +14933,7 @@
 
 (ert-deftest magent-test-memory-new-generation-cancels-stale-request ()
   "A newer memory operation aborts and terminalizes the older generation."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let ((magent-memory-use-llm t)
         (magent-memory--operation-generation 0)
         (magent-memory--active-operation nil)
@@ -15018,7 +14966,7 @@
 
 (ert-deftest magent-test-memory-supersession-callback-cannot-clobber-newest-operation ()
   "A cancelled operation callback may reenter without leaking the middle run."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let ((magent-memory--operation-generation 0)
         (magent-memory--active-operation nil)
         newest
@@ -15056,7 +15004,7 @@
 
 (ert-deftest magent-test-doctor-zero-timeout-disables-local-deadline ()
   "A zero probe timeout runs without installing a local timeout."
-  (require 'magent-doctor)
+  (require 'magent-action-builtin-doctor)
   (let* ((called nil)
          (probe (magent-doctor-probe-create
                  :id "zero"
@@ -15072,14 +15020,14 @@
 
 (ert-deftest magent-test-doctor-project-probe-does-not-freeze-process-timeout ()
   "The project probe leaves subprocess timeout policy to its collector."
-  (require 'magent-doctor)
+  (require 'magent-action-builtin-doctor)
   (let ((probe (gethash "project" magent-doctor--registry)))
     (should probe)
     (should (= (magent-doctor-probe-timeout probe) 0))))
 
 (ert-deftest magent-test-memory-stale-clear-confirmation-cannot-write ()
   "A delayed clear approval cannot write after a newer operation supersedes it."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let ((magent-memory--operation-generation 0)
         (magent-memory--active-operation nil)
         old-continue new-continue (writes 0))
@@ -15435,13 +15383,12 @@
   "Audit persistence omits arbitrary free text and enforces private modes."
   (require 'magent-audit)
   (let* ((directory (make-temp-file "magent-audit-private-" t))
-         (magent-enable-audit-log t)
-         (magent-audit-directory directory)
+         (magent-audit (expand-file-name "audit.jsonl" directory))
          (magent-audit--pending-writes nil)
          (magent-audit--flush-timer nil)
          (magent-session--current-scope 'global)
          (magent--current-session (magent-session-create))
-         (file (magent-audit--daily-file-path))
+         (file (magent-audit--file-path))
          (secret "alice:hunter2")
          (result-secret "#<closure ((password . winter-is-coming))>"))
     (unwind-protect
@@ -16438,6 +16385,265 @@
           (should (equal (nreverse calls) '(nil force))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest magent-test-session-fork-deep-copies-ledger-and-resets-owned-state ()
+  "Forked sessions share history but no mutable conversation state."
+  (let* ((agent (magent-agent-info-create :name "build" :mode 'primary))
+         (source
+          (magent-session-create
+           :id "source-session"
+           :max-history 17
+           :agent agent
+           :approval-overrides '((bash . allow))
+           :agent-jobs '(source-job)
+           :metadata '((title . "Source title"))))
+         (_ (magent-test--record-session-entry source 'user "hello"))
+         (_ (magent-test--record-session-entry source 'assistant "world"))
+         (source-thread (magent-session-thread source))
+         (source-turn (car (magent-thread-turns source-thread)))
+         (source-item (car (magent-thread-turn-items source-turn)))
+         (source-transcript (magent-test--session-transcript source))
+         (fork (magent-session-fork source 'global))
+         (fork-thread (magent-session-thread fork))
+         (fork-turn (car (magent-thread-turns fork-thread)))
+         (fork-item (car (magent-thread-turn-items fork-turn))))
+    (should-not (equal (magent-session-id fork) (magent-session-id source)))
+    (should (equal (magent-session-metadata-value fork 'parent-session-id)
+                   "source-session"))
+    (should (equal (magent-session-metadata-value fork 'title)
+                   "Source title"))
+    (should (numberp (magent-session-metadata-value fork 'forked-at)))
+    (should (= (magent-session-max-history fork) 17))
+    (should (eq (magent-session-agent fork) agent))
+    (should-not (magent-session-approval-overrides fork))
+    (should-not (magent-session-agent-jobs fork))
+    (should (equal (magent-test--session-transcript fork) source-transcript))
+    (should-not (eq fork-thread source-thread))
+    (should-not (eq fork-turn source-turn))
+    (should-not (eq fork-item source-item))
+    (should-not (eq (magent-thread-item-content fork-item)
+                    (magent-thread-item-content source-item)))
+    (should (equal (magent-thread-id fork-thread) (magent-session-id fork)))
+    (should (equal (magent-thread-session-id fork-thread)
+                   (magent-session-id fork)))
+    (should (equal (magent-thread-turn-thread-id fork-turn)
+                   (magent-session-id fork)))
+    (should (eq (magent-thread-status fork-thread) 'idle))
+    (should-not (magent-thread-journal fork-thread))
+    (should (= (magent-thread-last-event-seq fork-thread) 0))
+    (magent-test--record-session-entry fork 'user "fork only")
+    (magent-test--record-session-entry fork 'assistant "diverged")
+    (should (equal (magent-test--session-transcript source)
+                   source-transcript))
+    (should (= (length (magent-thread-turns fork-thread)) 2))
+    (should (= (length (magent-thread-turns source-thread)) 1))))
+
+(ert-deftest magent-test-session-fork-rejects-non-terminal-ledger ()
+  "A fork cannot capture a queued or otherwise non-terminal turn."
+  (let* ((source (magent-session-create :id "busy-source"))
+         (thread (magent-session-thread-ledger source)))
+    (magent-thread-queue-turn thread "queued")
+    (should-error (magent-session-fork source 'global) :type 'user-error)
+    (should (= (length (magent-thread-turns thread)) 1))))
+
+(ert-deftest magent-test-runtime-session-fork-copies-config-spills-and-persists ()
+  "Runtime fork preserves stable options and session-private tool results."
+  (require 'magent-runtime-api)
+  (let* ((magent-session-directory (make-temp-file "magent-fork-" t))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil)
+         (magent-runtime-api--sessions (make-hash-table :test #'equal))
+         (magent-runtime-api--clearing-sessions
+          (make-hash-table :test #'eq :weakness 'key))
+         (magent-runtime-queue--active nil)
+         (magent-runtime-queue--pending nil)
+         (magent-runtime-queue--arbiter-active nil)
+         (magent-runtime-queue--arbiter-pending nil)
+         (magent-tool-result-model-max-length 30)
+         (magent-tool-result-model-preview-length 20)
+         (payload (make-string 200 ?f))
+         (agent (magent-agent-info-create :name "build" :mode 'primary))
+         (source
+          (magent-session-create :id "fork-source" :agent agent
+                                 :approval-overrides '((bash . allow))
+                                 :agent-jobs '(source-job)))
+         (source-runtime
+          (magent-runtime-session-create
+           :id "fork-source" :scope 'global :magent-session source
+           :effort 'xhigh :pending-skills '(one-shot)
+           :metadata '(:capabilities-enabled nil))))
+    (unwind-protect
+        (progn
+          (magent-test--record-session-entry source 'user "large tool")
+          (magent-test--record-tool-entry
+           source "fork-spill" "bash" '(:command "large")
+           (magent-test-tool-result payload))
+          (magent-test--record-session-entry source 'assistant "done")
+          (magent-session-install 'global source)
+          (puthash (list 'global "fork-source") source-runtime
+                   magent-runtime-api--sessions)
+          (let* ((source-result-id
+                  (car (magent-thread-spill-result-ids
+                        (magent-session-thread source))))
+                 (fork-runtime
+                  (magent-runtime-session-fork source-runtime))
+                 (fork (magent-runtime-session-magent-session fork-runtime))
+                 (fork-id (magent-runtime-session-id fork-runtime))
+                 (fork-file
+                  (expand-file-name
+                   (concat fork-id ".json")
+                   (magent-session--scope-storage-directory 'global))))
+            (should (eq (magent-session-get-if-present 'global) source))
+            (should (eq (magent-runtime-session-effort fork-runtime) 'xhigh))
+            (should-not
+             (magent-runtime-session-capabilities-enabled-p fork-runtime))
+            (should-not (magent-runtime-session-pending-skills fork-runtime))
+            (should (eq (magent-session-agent fork) agent))
+            (should-not (magent-session-approval-overrides fork))
+            (should-not (magent-session-agent-jobs fork))
+            (should (file-regular-p fork-file))
+            (let ((loaded
+                   (plist-get (magent-session-read-file fork-file) :session)))
+              (should (equal
+                       (magent-session-metadata-value
+                        loaded 'parent-session-id)
+                       "fork-source"))
+              (should
+               (equal (magent-test--session-transcript loaded)
+                      (magent-test--session-transcript source))))
+            (should
+             (equal
+              (with-temp-buffer
+                (insert-file-contents
+                 (magent-tool-output-spill-file
+                  'global fork-id source-result-id))
+                (buffer-string))
+              payload))
+            (should
+             (equal (magent-test--session-transcript fork)
+                    (magent-test--session-transcript source)))
+            (should (eq (magent-runtime-session-from-id fork-id 'global)
+                        fork-runtime))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-runtime-session-fork-rejects-queue-owner-before-clone ()
+  "Runtime fork checks the exact queue owner before creating a session."
+  (require 'magent-runtime-api)
+  (let* ((source (magent-session-create :id "queue-source"))
+         (runtime
+          (magent-runtime-session-create
+           :id "queue-source" :scope 'global :magent-session source))
+         cloned)
+    (cl-letf (((symbol-function 'magent-runtime-queue-session-busy-p)
+               (lambda (candidate) (eq candidate source)))
+              ((symbol-function 'magent-session-fork)
+               (lambda (&rest _args) (setq cloned t))))
+      (should-error (magent-runtime-session-fork runtime) :type 'user-error))
+    (should-not cloned)))
+
+(ert-deftest magent-test-runtime-session-fork-rolls-back-new-artifacts ()
+  "A failed durable save removes only the new fork artifacts."
+  (require 'magent-runtime-api)
+  (let* ((source (magent-session-create :id "rollback-source"))
+         (fork (magent-session-create :id "rollback-fork"))
+         (runtime
+          (magent-runtime-session-create
+           :id "rollback-source" :scope 'global :magent-session source))
+         cleared spill-deleted)
+    (cl-letf (((symbol-function 'magent-runtime-queue-session-busy-p)
+               (lambda (_session) nil))
+              ((symbol-function 'magent-session-fork)
+               (lambda (_source _scope) fork))
+              ((symbol-function 'magent-thread-spill-result-ids)
+               (lambda (_thread) '("result-one")))
+              ((symbol-function 'magent-tool-output-spill-fork-session)
+               (lambda (&rest _args) t))
+              ((symbol-function 'magent-session-save-for-session)
+               (lambda (&rest _args) (error "disk full")))
+              ((symbol-function 'magent-session-clear)
+               (lambda (session scope)
+                 (setq cleared (list session scope))))
+              ((symbol-function 'magent-tool-output-spill-delete-session)
+               (lambda (scope id)
+                 (setq spill-deleted (list scope id)))))
+      (should-error (magent-runtime-session-fork runtime)))
+    (should (equal cleared (list fork 'global)))
+    (should (equal spill-deleted '(global "rollback-fork")))))
+
+(ert-deftest magent-test-acp-session-fork-negotiates-and-binds-new-session ()
+  "ACP advertises fork only with a working exact-scope request path."
+  (require 'magent-acp)
+  (let* ((magent-acp--client-session-scopes
+          (make-hash-table :test #'eq :weakness 'key))
+         (magent-runtime-api--sessions (make-hash-table :test #'equal))
+         (source-session (magent-session-create :id "acp-source"))
+         (source
+          (magent-runtime-session-create
+           :id "acp-source" :scope "/project" :magent-session source-session))
+         (fork-session (magent-session-create :id "acp-fork"))
+         (fork
+          (magent-runtime-session-create
+           :id "acp-fork" :scope "/project" :magent-session fork-session))
+         (client '((:notification-handlers . nil)
+                   (:request-handlers . nil)))
+         response failure captured)
+    (puthash (list "/project" "acp-source") source
+             magent-runtime-api--sessions)
+    (let* ((capabilities
+            (map-elt (magent-acp--initialize-response)
+                     'sessionCapabilities))
+           (fork-capability (assq 'fork capabilities)))
+      (should fork-capability)
+      (should-not (cdr fork-capability)))
+    (cl-letf (((symbol-function 'magent-session-scope-from-directory)
+               (lambda (cwd)
+                 (if (equal cwd "/project") "/project" "/other")))
+              ((symbol-function 'magent-runtime-session-fork)
+               (lambda (runtime-session)
+                 (setq captured runtime-session)
+                 fork))
+              ((symbol-function 'magent-acp--available-commands)
+               (lambda (&optional _runtime-session) []))
+              ((symbol-function 'magent-runtime-session-title)
+               (lambda (_runtime-session) nil))
+              ((symbol-function 'magent-agent-registry-primary-agents)
+               (lambda () nil)))
+      (magent-acp--handle-request
+       client
+       '((:method . "session/fork")
+         (:params . ((sessionId . "acp-source") (cwd . "/project"))))
+       (lambda (value) (setq response value))
+       (lambda (err) (setq failure err))))
+    (should-not failure)
+    (should (eq captured source))
+    (should (equal (map-elt response 'sessionId) "acp-fork"))
+    (should (equal (magent-acp--client-session-scope client "acp-fork")
+                   "/project"))))
+
+(ert-deftest magent-test-acp-session-fork-rejects-cross-scope-source ()
+  "ACP fork cannot resolve a source session from another cwd scope."
+  (require 'magent-acp)
+  (let* ((magent-runtime-api--sessions (make-hash-table :test #'equal))
+         (source
+          (magent-runtime-session-create
+           :id "scope-source" :scope "/source"
+           :magent-session (magent-session-create :id "scope-source")))
+         failure forked)
+    (puthash (list "/source" "scope-source") source
+             magent-runtime-api--sessions)
+    (cl-letf (((symbol-function 'magent-session-scope-from-directory)
+               (lambda (_cwd) "/other"))
+              ((symbol-function 'magent-runtime-session-fork)
+               (lambda (_runtime-session) (setq forked t))))
+      (magent-acp--handle-request
+       nil
+       '((:method . "session/fork")
+         (:params . ((sessionId . "scope-source") (cwd . "/other"))))
+       #'ignore
+       (lambda (err) (setq failure err))))
+    (should failure)
+    (should-not forked)))
 
 (ert-deftest magent-test-runtime-struct-layouts-match-current-contract ()
   "Runtime structs expose the current request and submission contract."

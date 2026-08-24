@@ -191,10 +191,9 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-agent-shell-session-strategy~          | ~prompt~                              | Prompt to start new or load a saved session; also supports ~new~ and ~latest~                     |
 | ~magent-skill-directories~                     | ~user-emacs-directory/magent/skills/~ | Ordered user skill roots; later entries override earlier entries                               |
 | ~magent-load-custom-agents~                    | ~t~                                   | Load custom agents from ~.magent/agent/*.md~                                                     |
-| ~magent-enable-audit-log~                      | ~t~                                   | Persist compact audit logs for permission and sensitive actions                                |
+| ~magent-audit~                                 | ~buffer~                              | Audit destination: live buffer, nil to disable, or a JSONL file path                            |
 | ~magent-agent-directory~                       | ~".magent/agent"~                   | Relative path to custom agent dir                                                              |
 | ~magent-session-directory~                     | =~/.emacs.d/magent/sessions/=         | Base directory for global sessions and per-project session subdirectories                      |
-| ~magent-audit-directory~                       | ~nil~                                 | Override directory for audit JSONL files; defaults to ~magent-session-directory/audit/~          |
 | ~magent-grep-program~                          | ~"rg"~                              | Path to ripgrep binary                                                                         |
 | ~magent-grep-max-matches~                      | ~100~                                 | Max matches from grep searches                                                                 |
 | ~magent-glob-max-results~                      | ~500~                                 | Maximum paths returned by one glob                                                             |
@@ -211,7 +210,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-enable-capabilities~                   | ~t~                                   | Enable contextual capability resolution by default                                             |
 | ~magent-project-instruction-file-names~        | ~("AGENTS.md")~                       | Scoped project instruction filenames discovered from root toward request resources             |
 | ~magent-project-instructions-max-bytes~        | ~65536~                               | Aggregate per-request byte limit for project instructions; nil disables discovery              |
-| ~magent-audit-preview-length~                  | ~120~                                 | Max width for persisted normalized audit path markers                                          |
+| ~magent-audit-preview-length~                  | ~120~                                 | Max width for normalized audit path markers                                                    |
 | ~magent-include-reasoning~                     | ~t~                                   | Display (~t~), hide but retain (~ignore~), or discard (~nil~) reasoning; never final-answer fallback |
 
 ** Prompt Files
@@ -265,7 +264,7 @@ workflow associates sessions with the current project:
 - In a recognized project, prompts, agent selection, clear, and resume operate on that project's current session.
 - Saved project sessions live under ~magent-session-directory/projects/<sha1(project-root)>/~.
 - Outside any project, Magent falls back to the global session behavior and saves directly under ~magent-session-directory~.
-- Compact audit logs for permission decisions and sensitive tools are written as daily JSONL files under ~magent-session-directory/audit/~ unless ~magent-audit-directory~ is set.
+- Permission decisions and sensitive tools are audited only in the live ~*magent-audit*~ buffer by default. Set ~magent-audit~ to nil to disable recording or to a file path to append JSONL records.
 
 ** Slash Commands And Skills
 
@@ -277,13 +276,25 @@ and are consumed by the next prompt.
 
 Elisp-native slash commands are registered through the public
 ~magent-action-register~ API and can be selected with
-~M-x magent-agent-shell-run-command~. Agent-shell advertises thirteen bundled
-commands: ~/explain~, ~/fix~, ~/init~, ~/review~, ~/summarize~, ~/test~,
+~M-x magent-agent-shell-run-command~. By default, agent-shell advertises twelve bundled
+commands: ~/explain~, ~/fix~, ~/init~, ~/review~, ~/test~,
 ~/compact~, ~/authority~, ~/skills~, ~/doctor~, ~/memory-init~,
-~/memory-refresh~, and ~/memory-clear~. The six prompt commands own package
-Org resources and do not activate same-name skills. ~/summarize~ writes one
-canonical Org note
-for the current Git project and accepts an optional path or semantic scope.
+~/memory-refresh~, and ~/memory-clear~. The five prompt commands own package
+Org resources and do not activate same-name skills.
+
+Doctor and Memory are optional built-in Action groups. Customize
+~magent-action-enabled-builtins~, or use ~setopt~, to change them at runtime:
+
+#+begin_src elisp
+;; Keep Doctor, but remove the three memory-management Actions.
+(setopt magent-action-enabled-builtins '(doctor))
+#+end_src
+
+The Action registry and active agent-shell command menus update immediately;
+an already running Action is allowed to finish. The ~memory~ entry controls
+~/memory-init~, ~/memory-refresh~, and ~/memory-clear~ together. It does not
+disable profile-memory injection, which is controlled separately by
+~magent-memory-enable-auto-injection~.
 
 Every instruction skill in the exact session scope is advertised as ~/$name~.
 ~/skills~ lists those descriptors locally. Submit ~/$name~ to select a skill
@@ -425,7 +436,6 @@ The AI agent has access to these tools (can be customized per agent):
 |--------------------+-------------+---------------------------------------------------------|
 | ~read_file~          | no          | Read explicit disk/live-buffer source and return revision |
 | ~write_file~         | yes         | Revision-checked atomic write; rejects dirty buffers     |
-| ~write_repo_summary~ | yes         | Update the canonical single-file Org repository summary |
 | ~edit_file~          | yes         | Revision-checked exact replacement; rejects conflicts    |
 | ~grep~               | no          | Regex search via ripgrep with per-file revisions         |
 | ~glob~               | no          | Bounded, event-loop-sliced glob traversal               |

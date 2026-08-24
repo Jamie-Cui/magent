@@ -8,7 +8,6 @@ actions/explain.org
 actions/fix.org
 actions/init.org
 actions/review.org
-actions/summarize.org
 actions/test.org
 internal/active-skills.org
 internal/additional-instruction.org

@@ -171,7 +171,7 @@
      magent-bypass-permission t
      magent-enable-capabilities t
      magent-session-directory (expand-file-name "sessions/" logs)
-     magent-audit-directory (expand-file-name "audit/" logs)
+     magent-audit (expand-file-name "audit.jsonl" logs)
      magent-request-timeout 300
      magent-bash-timeout 300
      magent-max-sampling-requests 0)

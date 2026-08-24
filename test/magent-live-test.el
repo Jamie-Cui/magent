@@ -469,8 +469,7 @@
   (setq magent-log-buffer-name "*magent-live-test-log*"
         magent-audit-buffer-name "*magent-live-test-audit*"
         magent-session-directory (make-temp-file "magent-live-sessions-" t)
-        magent-audit-directory (make-temp-file "magent-live-audit-" t)
-        magent-enable-audit-log nil
+        magent-audit nil
         magent-enable-capabilities nil
         magent-bypass-permission nil
         magent--current-session nil
@@ -659,8 +658,7 @@ return that path."
   `(let* ((magent-log-buffer-name "*magent-live-test-log*")
           (magent-audit-buffer-name "*magent-live-test-audit*")
           (magent-session-directory (make-temp-file "magent-live-sessions-" t))
-          (magent-audit-directory (make-temp-file "magent-live-audit-" t))
-          (magent-enable-audit-log nil)
+          (magent-audit nil)
           (magent-enable-capabilities nil)
           (magent-bypass-permission nil)
           (magent--current-session nil)
@@ -689,9 +687,7 @@ return that path."
          (ignore-errors (magent-runtime-cancel runtime-session)))
        (magent-live-test--kill-magent-test-buffers)
        (when (file-directory-p magent-session-directory)
-         (delete-directory magent-session-directory t))
-       (when (file-directory-p magent-audit-directory)
-         (delete-directory magent-audit-directory t)))))
+         (delete-directory magent-session-directory t)))))
 
 (ert-deftest magent-live-test-loop-runs-emacs-eval-and-continues ()
   "Run a live Magent turn through loop tool execution and continuation."
@@ -839,6 +835,124 @@ return that path."
             (should (equal
                      (magent-execution-result-content-string (cadr completion))
                      "done"))))))))
+
+(ert-deftest magent-live-test-agent-shell-fork-clones-runtime-history ()
+  "Fork a real agent-shell session through Magent's in-process ACP client."
+  :tags '(:magent-live-smoke)
+  (require 'magent)
+  (require 'agent-shell)
+  (magent-live-test--with-isolated-runtime
+    (let* ((agent-shell-prefer-viewport-interaction nil)
+           (agent-shell-show-welcome-message nil)
+           (magent-agent-shell-session-strategy 'new)
+           (agent-shell-session-strategy 'new)
+           (default-directory magent-live-test--root-directory)
+           (config (magent-agent-shell-make-config))
+           source-buffer
+           fork-buffer)
+      (unwind-protect
+          (progn
+            (setq source-buffer
+                  (agent-shell--start
+                   :config config
+                   :no-focus t
+                   :new-session t
+                   :session-strategy 'new))
+            (magent-live-test--wait-until
+             (lambda ()
+               (and (buffer-live-p source-buffer)
+                    (with-current-buffer source-buffer
+                      (and (magent-agent-shell--bootstrap-complete-p)
+                           (not (map-elt agent-shell--state
+                                         :active-requests))
+                           (map-elt agent-shell--state
+                                    :supports-session-fork)
+                           (map-nested-elt agent-shell--state
+                                           '(:session :id))))))
+             10
+             "Magent source agent-shell did not finish initialization")
+            (let* ((source-runtime
+                    (magent-agent-shell--runtime-session source-buffer))
+                   (source-session
+                    (magent-runtime-session-magent-session source-runtime))
+                   (source-thread
+                    (magent-session-thread-ledger source-session))
+                   (turn (magent-thread-create-turn
+                          source-thread "fork source prompt")))
+              (magent-thread-record-user-message-if-needed
+               source-thread (magent-thread-turn-id turn)
+               "fork source prompt")
+              (magent-thread-record-message
+               source-thread (magent-thread-turn-id turn)
+               'assistant "fork source response")
+              (magent-thread-complete-turn
+               source-thread (magent-thread-turn-id turn))
+              (let ((source-id
+                     (magent-runtime-session-id source-runtime)))
+                (with-current-buffer source-buffer
+                  (cl-letf (((symbol-function 'agent-shell--display-buffer)
+                             (lambda (buffer &rest _)
+                               (setq fork-buffer buffer)
+                               buffer)))
+                    (agent-shell-fork)))
+                (magent-live-test--wait-until
+                 (lambda ()
+                   (and (buffer-live-p fork-buffer)
+                        (with-current-buffer fork-buffer
+                          (let ((fork-id
+                                 (map-nested-elt
+                                  agent-shell--state '(:session :id))))
+                            (and (magent-agent-shell--bootstrap-complete-p)
+                                 (not (map-elt agent-shell--state
+                                               :active-requests))
+                                 fork-id
+                                 (not (equal fork-id source-id)))))))
+                 10
+                 "Magent forked agent-shell did not finish initialization")
+                (let* ((fork-runtime
+                        (magent-agent-shell--runtime-session fork-buffer))
+                       (fork-session
+                        (magent-runtime-session-magent-session fork-runtime))
+                       (source-transcript
+                        (magent-session-context-view source-session 'transcript))
+                       (fork-transcript
+                        (magent-session-context-view fork-session 'transcript)))
+                  (should (buffer-live-p source-buffer))
+                  (should fork-runtime)
+                  (should (equal source-transcript fork-transcript))
+                  (should (equal
+                           (magent-session-metadata-value
+                            fork-session 'parent-session-id)
+                           source-id))
+                  (let* ((fork-thread
+                          (magent-session-thread-ledger fork-session))
+                         (fork-turn
+                          (magent-thread-create-turn
+                           fork-thread "fork-only prompt")))
+                    (magent-thread-record-user-message-if-needed
+                     fork-thread (magent-thread-turn-id fork-turn)
+                     "fork-only prompt")
+                    (magent-thread-record-message
+                     fork-thread (magent-thread-turn-id fork-turn)
+                     'assistant "fork-only response")
+                    (magent-thread-complete-turn
+                     fork-thread (magent-thread-turn-id fork-turn)))
+                  (should (equal
+                           (magent-session-context-view
+                            source-session 'transcript)
+                           source-transcript))
+                  (should-not (equal
+                               (magent-session-context-view
+                                fork-session 'transcript)
+                               source-transcript))))))
+        (dolist (buffer (list fork-buffer source-buffer))
+          (when (buffer-live-p buffer)
+            (with-current-buffer buffer
+              (setq-local shell-maker-prompt-before-killing-buffer nil)
+              (when-let* ((process (get-buffer-process buffer)))
+                (set-process-query-on-exit-flag process nil))
+              (let ((kill-buffer-query-functions nil))
+                (kill-buffer buffer)))))))))
 
 (ert-deftest magent-live-test-real-simple-prompt ()
   "Send a real non-tool request through the configured gptel provider."

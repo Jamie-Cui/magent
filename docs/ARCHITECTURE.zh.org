@@ -74,9 +74,9 @@ view 不能互相冒充 canonical state。
 
 ** 工具、权限与审计
 
-~magent-tools.el~ 通过单一 canonical catalog 暴露 17 个 ~gptel-tool~ ：
+~magent-tools.el~ 通过单一 canonical catalog 暴露 16 个 ~gptel-tool~ ：
 
-- ~read_file~ 、 ~write_file~ 、 ~write_repo_summary~ 、 ~edit_file~
+- ~read_file~ 、 ~write_file~ 、 ~edit_file~
 - ~grep~ 、 ~glob~ 、 ~bash~
 - ~emacs_read~ 、 ~emacs_eval~ 、 ~emacs_eval_live~ 、 ~read_tool_output~
 - ~spawn_agent~ 、 ~send_agent_message~ 、 ~wait_agent~ 、 ~list_agents~ 、 ~close_agent~
@@ -173,7 +173,7 @@ lifecycle。Action 声明 slash/interactive exposure、current/isolated session 
 快照、精确 tool requirements 和 request-local agent/skill 选择，并从 Invocation
 继承 frontend request context。Content blocks 和 canonical Action metadata 由内部
 持久化。高级受信任 package 可以拥有更长的异步 Invocation，但不会接触 ACP 或 queue
-internals。内置 ~/explain~、~/fix~、~/init~、~/review~、~/summarize~ 和 ~/test~
+internals。内置 ~/explain~、~/fix~、~/init~、~/review~ 和 ~/test~
 prompt Actions 是 ~magent-action-builtins.el~ 中的数据项；系统从对应 Org prompt
 resource 统一生成 terminal Workflow。
 
@@ -193,11 +193,13 @@ skills 展示为两个独立入口。
 ~magent-action-session.el~ 为 ~:session-policy 'isolated~ 的 Action 提供持久化、
 ledger 记录和取消；~magent-action-session-view.el~ 单独负责交互式列表与查看。
 两者都不拥有第二套 registry 或 context 类型。~/doctor~ 和 ~/memory-*~ 同时提供
-~magent-action-run-*~ wrapper，两种入口执行相同 Invocation lifecycle；新 session
+~magent-action-run-*~ wrapper，两种入口执行相同 Invocation lifecycle。它们作为两组
+由 ~magent-action-enabled-builtins~ 控制注册；Custom 变更会原子刷新 registry 和
+frontend discovery。新 session
 写入 ~magent-session-directory/actions~。旧 ~commands/~ 格式既不迁移、也不读取，
 文件原样留在磁盘上。
 
-~magent-action-run-doctor~ 是安全敏感的 direct-pipeline 场景。 ~magent-doctor.el~
+~magent-action-run-doctor~ 是安全敏感的 direct-pipeline 场景。 ~magent-action-builtin-doctor.el~
 中的受信任只读 probes 采集有界 JSON-safe 数据；数据在持久化或发送一次
 无工具 provider request 前，会经过 ~magent-redaction.el~ 的路径规范化和
 脱敏。Doctor 不进入通用 agent loop，也不会暴露 ~emacs_eval~ 、shell 或

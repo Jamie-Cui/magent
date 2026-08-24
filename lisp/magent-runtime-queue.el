@@ -344,10 +344,6 @@ runtime session wrapper."
         (magent-runtime-submission-detail submission)
         (error-message-string err)))
 
-(defun magent-runtime-queue-kick ()
-  "Reconcile and resume the backend-neutral global FIFO."
-  (magent-runtime-queue--arbiter-reconcile))
-
 (defun magent-runtime-queue-submit (submission starter)
   "Submit SUBMISSION, using STARTER when it becomes active.
 Return SUBMISSION's id."

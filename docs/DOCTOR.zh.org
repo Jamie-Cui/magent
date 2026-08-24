@@ -54,6 +54,8 @@ Probes 默认串行运行。普通 probe error 或 timeout 会安全记录并继
 使用 ~magent-doctor-register-probe~ 注册受信任 probe：
 
 #+begin_src emacs-lisp
+(require 'magent-action-builtin-doctor)
+
 (magent-doctor-register-probe
  "my-runtime-check"
  :description "Read-only status for my package"

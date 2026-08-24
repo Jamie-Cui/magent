@@ -23,7 +23,7 @@
 (require 'magent-log)
 (require 'magent-runtime)
 
-(declare-function magent-session-scope-origin "magent-session")
+(declare-function magent-session-canonical-scope "magent-session")
 
 ;;; Built-in skill metadata
 
@@ -193,20 +193,9 @@ their overlays are inactive so live frontend sessions remain scope-correct.")
         (push entry effective)))
     (nreverse effective)))
 
-(defun magent-skills--canonical-scope (scope)
-  "Return canonical project origin for SCOPE, or nil for global scope."
-  (let ((origin (magent-session-scope-origin scope)))
-    (cond
-     ((or (null origin) (eq origin 'global)) nil)
-     ((stringp origin)
-      (condition-case nil
-          (file-truename (directory-file-name origin))
-        (error (directory-file-name (expand-file-name origin)))))
-     (t origin))))
-
 (defun magent-skills--resolution-scope (&optional scope)
   "Return canonical catalog scope for optional SCOPE."
-  (magent-skills--canonical-scope
+  (magent-session-canonical-scope
    (or scope
        (magent-runtime-active-project-scope)
        'global)))
@@ -214,7 +203,7 @@ their overlays are inactive so live frontend sessions remain scope-correct.")
 (defun magent-skills--visible-in-scope-p (skill scope)
   "Return non-nil when SKILL is visible in canonical SCOPE."
   (let ((source-scope
-         (magent-skills--canonical-scope
+         (magent-session-canonical-scope
           (magent-skill-source-scope skill))))
     (or (null source-scope)
         (equal source-scope scope))))
@@ -247,7 +236,7 @@ their overlays are inactive so live frontend sessions remain scope-correct.")
                   (lambda (skill)
                     (equal
                      scope
-                     (magent-skills--canonical-scope
+                     (magent-session-canonical-scope
                       (magent-skill-source-scope skill))))
                   skills))
                 (project-names
@@ -294,7 +283,7 @@ When SCOPE is nil, use the currently active project overlay.  Results are
 sorted by skill name and do not expose prompt bodies or executable handlers."
   (let* ((key (magent-skills--resolution-scope scope))
          (active-key
-          (magent-skills--canonical-scope
+          (magent-session-canonical-scope
            (or (magent-runtime-active-project-scope) 'global)))
          (skills
           (if (equal key active-key)
@@ -509,10 +498,6 @@ directory if it exists."
    :project-relative-dir ".magent/skills"
    :default-layer 'external))
 
-(defun magent-skills--classify-source (filepath)
-  "Return a plist describing the source classification for FILEPATH."
-  (magent-skills-classify-source filepath))
-
 (defun magent-skills--list-files (&optional directories)
   "List all SKILL.md files in DIRECTORIES or `magent-skill-directories'."
   (let ((ordered-directories
@@ -551,7 +536,7 @@ Returns the skill if successful, nil otherwise."
       (let* ((definition (magent-file-loader-read-definition filepath))
              (frontmatter (plist-get definition :frontmatter))
              (body (plist-get definition :body))
-             (source (magent-skills--classify-source filepath)))
+             (source (magent-skills-classify-source filepath)))
         (when frontmatter
           (magent-skills--validate-frontmatter frontmatter)
           (let* ((name (or (plist-get frontmatter :name)

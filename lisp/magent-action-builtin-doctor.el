@@ -1,4 +1,4 @@
-;;; magent-doctor.el --- Safe probe-based Magent diagnostics  -*- lexical-binding: t; -*-
+;;; magent-action-builtin-doctor.el --- Built-in Magent Doctor Action  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -6,9 +6,10 @@
 
 ;;; Commentary:
 
-;; Magent doctor collects bounded diagnostics through trusted, read-only probe
-;; functions and sends one sanitized, tool-free request to the current provider.
-;; Custom probes are trusted Emacs Lisp; this module does not sandbox them.
+;; Implementation backing the built-in Doctor Action.  It collects bounded
+;; diagnostics through trusted, read-only probe functions and sends one
+;; sanitized, tool-free request to the current provider.  Custom probes are
+;; trusted Emacs Lisp; this module does not sandbox them.
 
 ;;; Code:
 
@@ -209,8 +210,10 @@ values.  Custom probes execute as trusted Emacs Lisp and are not sandboxed."
                  (lambda (feature)
                    (when-let* ((source (magent-doctor--feature-source feature)))
                      (cons feature source)))
-                 '(magent magent-action magent-action-session magent-memory
-                   magent-doctor magent-agent-loop magent-acp)))))))
+                 '(magent magent-action magent-action-session
+                   magent-action-builtin-memory
+                   magent-action-builtin-doctor
+                   magent-agent-loop magent-acp)))))))
 
 (defun magent-doctor--buffer-collector (context _state)
   "Collect content-free facts about CONTEXT's origin buffer."
@@ -924,7 +927,7 @@ With prefix argument SELECT-PROBES, review probe selection in the minibuffer."
 
 (magent-doctor--register-builtins)
 
-(defun magent-doctor-register-action ()
+(defun magent-action-builtin-doctor-register ()
   "Register the core Doctor Action."
   (magent-action-register
    "doctor"
@@ -935,5 +938,5 @@ With prefix argument SELECT-PROBES, review probe selection in the minibuffer."
    :workflow #'magent-doctor--workflow
    :source-layer 'core))
 
-(provide 'magent-doctor)
-;;; magent-doctor.el ends here
+(provide 'magent-action-builtin-doctor)
+;;; magent-action-builtin-doctor.el ends here

@@ -1,4 +1,4 @@
-;;; magent-audit.el --- Persistent audit logging for Magent  -*- lexical-binding: t; -*-
+;;; magent-audit.el --- Audit recording for Magent  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -9,9 +9,10 @@
 
 ;;; Commentary:
 
-;; Compact JSONL audit logging for permission decisions and sensitive
-;; agent actions.  This is intentionally separate from *magent-log* so
-;; audit data survives Emacs restarts and remains machine-readable.
+;; Compact audit recording for permission decisions and sensitive agent
+;; actions.  Records may stay only in a live browser buffer or be appended as
+;; JSONL to a configured file.  This is intentionally separate from
+;; *magent-log*.
 
 ;;; Code:
 
@@ -27,10 +28,10 @@
 (require 'magent-session)
 
 (defconst magent-audit--sensitive-tools
-  '("bash" "emacs_eval" "write_file" "write_repo_summary" "edit_file"
+  '("bash" "emacs_eval" "write_file" "edit_file"
     "spawn_agent"
     "send_agent_message" "wait_agent" "list_agents" "close_agent")
-  "Tool names that are always persisted to the audit log.")
+  "Tool names that are always included in audit recording.")
 
 (defvar magent-audit--enabled nil
   "Non-nil when Magent audit hooks are installed.")
@@ -50,6 +51,9 @@ Each entry is a cons cell of the form (FILE . JSONL-LINE).")
 
 (defvar-local magent-audit--all-records nil
   "All audit records loaded into the current audit buffer.")
+
+(defvar-local magent-audit--live-records nil
+  "Audit records retained only in the current live audit buffer.")
 
 (defvar-local magent-audit--visible-records nil
   "Audit records currently rendered in the buffer.")
@@ -88,7 +92,7 @@ Each entry is a cons cell of the form (FILE . JSONL-LINE).")
   (setq-local header-line-format '(:eval (magent-audit--header-line))))
 
 (defun magent-audit-enable ()
-  "Enable persistent audit logging hooks."
+  "Enable audit recording hooks."
   ;; Registration is idempotent.  Reassert it even when the enabled flag is
   ;; already set so live reloads and dynamically rebound hook lists
   ;; cannot leave auditing nominally enabled but disconnected.
@@ -99,7 +103,7 @@ Each entry is a cons cell of the form (FILE . JSONL-LINE).")
   magent-audit--enabled)
 
 (defun magent-audit-disable ()
-  "Disable persistent audit logging hooks."
+  "Disable audit recording hooks."
   (when magent-audit--enabled
     (magent-lifecycle-events-remove-sink #'magent-audit--event-sink)
     (remove-hook 'magent-approval-state-change-functions
@@ -109,21 +113,25 @@ Each entry is a cons cell of the form (FILE . JSONL-LINE).")
   magent-audit--enabled)
 
 (defun magent-audit-record (event &rest props)
-  "Persist an audit EVENT with PROPS as one JSONL record."
-  (when magent-enable-audit-log
+  "Record audit EVENT with PROPS in the configured destination."
+  (when magent-audit
     (condition-case err
         (let ((record (magent-audit--build-record event props)))
           (when record
-            (magent-audit--enqueue-record
-             (magent-audit--daily-file-path)
-             (concat (json-encode record) "\n"))))
+            (pcase magent-audit
+              ('buffer
+               (magent-audit--record-live-buffer record))
+              ((pred stringp)
+               (magent-audit--enqueue-record
+                (magent-audit--file-path)
+                (concat (json-encode record) "\n"))))))
       (error
-       (magent-log "WARN audit write failed: %s"
+       (magent-log "WARN audit record failed: %s"
                    (error-message-string err))))))
 
 (defun magent-audit-record-permission-decision (tool-name perm-key decision source
                                                          &rest props)
-  "Persist a structured permission decision for TOOL-NAME.
+  "Record a structured permission decision for TOOL-NAME.
 PERM-KEY is the tool permission symbol.  DECISION is the final
 decision symbol and SOURCE identifies how that decision was made.
 PROPS accepts the same plist keys as `magent-audit-record'."
@@ -135,17 +143,19 @@ PROPS accepts the same plist keys as `magent-audit-record'."
          :decision-source source
          props))
 
-(defun magent-audit--directory ()
-  "Return the directory used for persisted audit logs."
-  (expand-file-name
-   (or magent-audit-directory
-       (expand-file-name "audit" magent-session-directory))))
+(defun magent-audit--file-path ()
+  "Return the configured audit JSONL file path.
+Signal an error unless `magent-audit' names a file."
+  (unless (stringp magent-audit)
+    (error "Magent audit destination is not a file: %S" magent-audit))
+  (expand-file-name magent-audit user-emacs-directory))
 
-(defun magent-audit--daily-file-path ()
-  "Return today's audit log file path."
-  (expand-file-name
-   (format "audit-%s.jsonl" (format-time-string "%Y%m%d"))
-   (magent-audit--directory)))
+(defun magent-audit--record-live-buffer (record)
+  "Retain RECORD in the live audit buffer and redraw it."
+  (with-current-buffer (magent-audit-get-buffer)
+    (let ((preserve-entry-id (magent-audit--entry-id-at-point)))
+      (push record magent-audit--live-records)
+      (magent-audit--refresh-current-buffer preserve-entry-id))))
 
 (defun magent-audit--enqueue-record (file line)
   "Queue audit LINE for FILE and schedule an idle flush."
@@ -239,21 +249,27 @@ refresh.  The first two arguments follow `revert-buffer'."
     (with-current-buffer buffer
       (setq preserve-entry-id (or preserve-entry-id
                                   (magent-audit--entry-id-at-point)))
-      (pcase-let* ((`(,records . ,errors) (magent-audit--load-records))
-                   (filtered (magent-audit--apply-filters records magent-audit--filters))
-                   (limit (and (integerp magent-audit-max-records)
-                               (> magent-audit-max-records 0)
-                               magent-audit-max-records))
-                   (visible (if (and limit (> (length filtered) limit))
-                                (cl-subseq filtered 0 limit)
-                              filtered)))
-        (setq magent-audit--all-records records
-              magent-audit--visible-records visible
-              magent-audit--load-errors errors
-              magent-audit--truncated-count (max 0 (- (length filtered)
-                                                      (length visible))))
-        (magent-audit--render preserve-entry-id)))
+      (magent-audit--refresh-current-buffer preserve-entry-id))
     buffer))
+
+(defun magent-audit--refresh-current-buffer (&optional preserve-entry-id)
+  "Reload and redraw the current audit buffer.
+PRESERVE-ENTRY-ID is the record id to keep point on after refresh."
+  (pcase-let* ((`(,records . ,errors) (magent-audit--load-records))
+               (filtered (magent-audit--apply-filters
+                          records magent-audit--filters))
+               (limit (and (integerp magent-audit-max-records)
+                           (> magent-audit-max-records 0)
+                           magent-audit-max-records))
+               (visible (if (and limit (> (length filtered) limit))
+                            (cl-subseq filtered 0 limit)
+                          filtered)))
+    (setq magent-audit--all-records records
+          magent-audit--visible-records visible
+          magent-audit--load-errors errors
+          magent-audit--truncated-count (max 0 (- (length filtered)
+                                                  (length visible))))
+    (magent-audit--render preserve-entry-id)))
 
 (defun magent-audit-clear-filters ()
   "Clear all active audit browser filters."
@@ -453,16 +469,6 @@ PROJECT-ROOT is the captured request root used to normalize path prefixes."
         (cons 'path (magent-audit--path-preview
                      (plist-get args :path) project-root))
         (cons 'content_length (magent-audit--string-length (plist-get args :content)))))
-      ("write_repo_summary"
-       (magent-audit--compact-alist
-        (cons 'mode (magent-audit--safe-identifier (plist-get args :mode)))
-        (cons 'scope_length
-              (magent-audit--string-length (plist-get args :scope)))
-        (cons 'scope_file_count
-              (and (proper-list-p (plist-get args :scope_files))
-                   (length (plist-get args :scope_files))))
-        (cons 'content_length
-              (magent-audit--string-length (plist-get args :content)))))
       ("edit_file"
        (magent-audit--compact-alist
         (cons 'path (magent-audit--path-preview
@@ -654,27 +660,30 @@ False and malformed values are omitted by `magent-audit--compact-alist'."
 
 (defun magent-audit--load-records ()
   "Return `(RECORDS . LOAD-ERRORS)' for the current audit window."
-  (let ((files (magent-audit--list-files))
-        (cutoff (magent-audit--cutoff-time))
+  (let ((cutoff (magent-audit--cutoff-time))
         records
         (load-errors 0))
-    (dolist (file files)
-      (pcase-let ((`(,file-records . ,file-errors)
-                   (magent-audit--read-file file)))
-        (setq load-errors (+ load-errors file-errors))
-        (dolist (record file-records)
-          (when (magent-audit--record-in-window-p record cutoff)
-            (push record records)))))
-    (setq records (sort records #'magent-audit--record-newer-p))
-    (cons records load-errors)))
+    (pcase magent-audit
+      ('buffer
+       (setq records (copy-sequence magent-audit--live-records)))
+      ((pred stringp)
+       (dolist (file (magent-audit--list-files))
+         (pcase-let ((`(,file-records . ,file-errors)
+                      (magent-audit--read-file file)))
+           (setq load-errors (+ load-errors file-errors)
+                 records (nconc file-records records))))))
+    (setq records
+          (cl-remove-if-not
+           (lambda (record)
+             (magent-audit--record-in-window-p record cutoff))
+           records))
+    (cons (sort records #'magent-audit--record-newer-p) load-errors)))
 
 (defun magent-audit--list-files ()
   "Return available audit JSONL files."
-  (let ((directory (magent-audit--directory)))
-    (if (file-directory-p directory)
-        (sort (directory-files directory t "\\.jsonl\\'")
-              #'string>)
-      nil)))
+  (when (stringp magent-audit)
+    (let ((file (magent-audit--file-path)))
+      (and (file-regular-p file) (list file)))))
 
 (defun magent-audit--cutoff-time ()
   "Return the oldest time included by default, or nil for all data."
@@ -792,6 +801,8 @@ When PRESERVE-ENTRY-ID is non-nil, restore point to that entry."
         (buffer (current-buffer)))
     (erase-buffer)
     (cond
+     ((null magent-audit)
+      (insert "Audit recording is disabled.\n"))
      ((null magent-audit--all-records)
       (insert "No audit records found.\n"))
      ((null magent-audit--visible-records)

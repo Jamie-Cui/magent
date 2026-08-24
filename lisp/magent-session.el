@@ -136,6 +136,17 @@ When VALUE is nil, remove KEY.  Return SESSION metadata."
   "Return the public project/global origin represented by SCOPE."
   (magent-session--scope-origin scope))
 
+(defun magent-session-canonical-scope (scope)
+  "Return canonical project origin for SCOPE, or nil for global scope."
+  (let ((origin (magent-session-scope-origin scope)))
+    (cond
+     ((or (null origin) (eq origin 'global)) nil)
+     ((stringp origin)
+      (condition-case nil
+          (file-truename (directory-file-name origin))
+        (error (directory-file-name (expand-file-name origin)))))
+     (t origin))))
+
 (defun magent-session--origin-scope-for-session (session scope)
   "Return ordinary project/global origin for SESSION saved under SCOPE."
   (or (magent-session-metadata-value session 'origin-scope)
@@ -233,6 +244,98 @@ When VALUE is nil, remove KEY.  Return SESSION metadata."
 (defun magent-session-thread-ledger (session)
   "Return SESSION's canonical thread ledger."
   (magent-session--ensure-thread session))
+
+(defun magent-session--forkable-p (session)
+  "Return non-nil when SESSION has a stable ledger snapshot to fork."
+  (let ((thread (magent-session-thread session)))
+    (or (null thread)
+        (and (not (eq (magent-thread-status thread) 'active))
+             (cl-every #'magent-thread-terminal-turn-p
+                       (magent-thread-turns thread))
+             (cl-every #'magent-thread-terminal-item-p
+                       (magent-thread-all-items thread))))))
+
+(defun magent-session--deep-copy-data (value)
+  "Return a recursive copy of JSON-like VALUE, including strings."
+  (cond
+   ((stringp value) (copy-sequence value))
+   ((vectorp value)
+    (vconcat (mapcar #'magent-session--deep-copy-data
+                     (append value nil))))
+   ((hash-table-p value)
+    (let ((copy (make-hash-table :test (hash-table-test value))))
+      (maphash
+       (lambda (key item)
+         (puthash (magent-session--deep-copy-data key)
+                  (magent-session--deep-copy-data item)
+                  copy))
+       value)
+      copy))
+   ((consp value)
+    (cons (magent-session--deep-copy-data (car value))
+          (magent-session--deep-copy-data (cdr value))))
+   (t value)))
+
+(defun magent-session--fork-thread
+    (source-thread source-session-id session-id scope session-metadata)
+  "Deep-copy SOURCE-THREAD for SESSION-ID in SCOPE.
+SOURCE-SESSION-ID records the branch parent.  SESSION-METADATA is embedded in
+the new thread metadata.  Historical turn, item, and call ids remain stable,
+while the mutable thread identity and journal start a new branch."
+  (let* ((now (float-time))
+         (thread
+          (if source-thread
+              (magent-thread-snapshot-from-alist
+               (magent-session--deep-copy-data
+                (magent-thread-snapshot-to-alist source-thread)))
+            (magent-thread-create
+             :id session-id :session-id session-id :scope scope))))
+    (setf (magent-thread-id thread) session-id
+          (magent-thread-session-id thread) session-id
+          (magent-thread-scope thread) scope
+          (magent-thread-status thread) 'idle
+          (magent-thread-created-at thread) now
+          (magent-thread-updated-at thread) now
+          (magent-thread-metadata thread)
+          (list :source 'magent
+                :forked-from-session-id source-session-id
+                :session-metadata session-metadata)
+          (magent-thread-journal thread) nil
+          (magent-thread-snapshot-created-at thread) now
+          (magent-thread-last-event-seq thread) 0)
+    (dolist (turn (magent-thread-turns thread))
+      (setf (magent-thread-turn-thread-id turn) session-id))
+    thread))
+
+(defun magent-session-fork (source scope)
+  "Return an independent fork of SOURCE in exact SCOPE.
+The fork retains conversation history, the selected agent, and the history
+limit.  Session-scoped approvals, child jobs, and unrelated metadata are not
+inherited.  SOURCE is never modified."
+  (unless (magent-session-p source)
+    (error "Expected a Magent session, got: %S" source))
+  (unless scope
+    (error "An explicit session scope is required"))
+  (unless (magent-session--forkable-p source)
+    (user-error "Magent: cannot fork a session with non-terminal work"))
+  (let* ((source-id
+          (or (magent-session-id source)
+              (error "Magent: cannot fork a session without an id")))
+         (source-title (magent-session-metadata-value source 'title))
+         (fork (magent-session-create
+                :max-history (magent-session-max-history source)
+                :agent (magent-session-agent source)))
+         (fork-id (magent-session-get-id fork))
+         (metadata
+          (append
+           `((parent-session-id . ,source-id)
+             (forked-at . ,(float-time)))
+           (and source-title `((title . ,source-title))))))
+    (setf (magent-session-metadata fork) metadata
+          (magent-session-thread fork)
+          (magent-session--fork-thread
+           (magent-session-thread source) source-id fork-id scope metadata))
+    fork))
 
 ;;; Session management
 
@@ -347,14 +450,20 @@ This is either the symbol `global' or a normalized project root path.")
                             decision))))
     (cons (intern tool) (intern decision))))
 
-(defun magent-session--validate-json-state (data)
-  "Validate all nested current-format persistence objects in DATA."
-  (magent-thread-snapshot-from-alist (cdr (assq 'snapshot data)))
-  (mapc #'magent-thread-event-from-alist (cdr (assq 'journal data)))
-  (mapc #'magent-agent-job-from-alist (cdr (assq 'agent-jobs data)))
-  (mapc #'magent-session--approval-override-from-alist
-        (cdr (assq 'approval-overrides data)))
-  data)
+(defun magent-session--decode-json-state (data)
+  "Validate and decode nested current-format persistence objects in DATA."
+  (let ((snapshot (cdr (assq 'snapshot data))))
+    (unless snapshot
+      (signal 'magent-session-schema-error
+              (list "Session is missing its ledger snapshot")))
+    (list :snapshot (magent-thread-snapshot-from-alist snapshot)
+          :events (mapcar #'magent-thread-event-from-alist
+                          (cdr (assq 'journal data)))
+          :agent-jobs (mapcar #'magent-agent-job-from-alist
+                              (cdr (assq 'agent-jobs data)))
+          :approval-overrides
+          (mapcar #'magent-session--approval-override-from-alist
+                  (cdr (assq 'approval-overrides data))))))
 
 (defun magent-session--persisted-journal (thread)
   "Return the bounded journal tail persisted for THREAD."
@@ -575,70 +684,76 @@ selected agent, and history limit so runtime UI handles remain valid."
       (magent-session--sort-files-by-time
        (directory-files-recursively directory "\\.json$")))))
 
+(defun magent-session--read-validated-data (filepath)
+  "Read and validate current session data from FILEPATH."
+  (with-temp-buffer
+    (insert-file-contents filepath)
+    (let* ((data (json-parse-buffer
+                  :object-type 'alist
+                  :array-type 'list
+                  :null-object nil
+                  :false-object :json-false))
+           (_fields (magent-session--validate-json-fields data))
+           (_schema-version
+            (magent-session--validate-schema-version
+             (cdr (assq 'schema-version data))))
+           (state (magent-session--decode-json-state data))
+           (file-id (magent-session--file-id filepath))
+           (raw-id (cdr (assq 'id data)))
+           (_required-id
+            (unless raw-id
+              (signal 'magent-session-schema-error
+                      (list "Session is missing its id"))))
+           (id (magent-session-validate-id raw-id))
+           (_matching-id
+            (unless (equal id file-id)
+              (signal
+               'magent-session-schema-error
+               (list (format "Session id %S does not match filename %S"
+                             id file-id)))))
+           (scope-name (cdr (assq 'scope data)))
+           (project-root (cdr (assq 'project-root data)))
+           (scope
+            (pcase scope-name
+              ("project"
+               (or (and (stringp project-root)
+                        (magent-session--normalize-project-root project-root))
+                   (signal 'magent-session-schema-error
+                           (list "Project session is missing project-root"))))
+              ("global" 'global)
+              (_
+               (signal 'magent-session-schema-error
+                       (list (format "Invalid session scope: %S"
+                                     scope-name)))))))
+      (list :data data :id id :scope scope :state state))))
+
 (defun magent-session--read-file-metadata (filepath)
   "Read lightweight metadata from session FILEPATH."
   (condition-case nil
-      (with-temp-buffer
-        (insert-file-contents filepath)
-        (let* ((data (json-parse-buffer
-                      :object-type 'alist
-                      :array-type 'list
-                      :null-object nil
-                      :false-object :json-false))
-               (_fields (magent-session--validate-json-fields data))
-               (_schema-version
-                (magent-session--validate-schema-version
-                 (cdr (assq 'schema-version data))))
-               (_state (magent-session--validate-json-state data))
-               (file-id (magent-session--file-id filepath))
-               (raw-id (cdr (assq 'id data)))
-               (_required-id
-                (unless raw-id
-                  (signal 'magent-session-schema-error
-                          (list "Session is missing its id"))))
-               (id (magent-session-validate-id raw-id))
-               (_matching-id
-                (when (and raw-id (not (equal id file-id)))
-                  (signal
-                   'magent-session-schema-error
-                   (list (format
-                          "Session id %S does not match filename %S"
-                          id file-id)))))
-               (kind (cdr (assq 'kind data)))
-               (action (cdr (assq 'action data)))
-               (status (cdr (assq 'status data)))
-               (title (cdr (assq 'title data)))
-               (parent-session-id (cdr (assq 'parent-session-id data)))
-               (metadata (cdr (assq 'metadata data)))
-               (scope-name (cdr (assq 'scope data)))
-               (project-root (cdr (assq 'project-root data)))
-               (_snapshot
-                (unless (assq 'snapshot data)
-                  (signal 'magent-session-schema-error
-                          (list "Session is missing its ledger snapshot"))))
-               (_scope
-                (unless (member scope-name '("global" "project"))
-                  (signal 'magent-session-schema-error
-                          (list (format "Invalid session scope: %S" scope-name)))))
-               (_project-root
-                (when (and (equal scope-name "project")
-                           (not (stringp project-root)))
-                  (signal 'magent-session-schema-error
-                          (list "Project session is missing project-root"))))
-               (summary-title (or (magent-session--clean-summary-title title)
-                                  (magent-session--clean-summary-title
-                                   (cdr (assq 'summary-title data))))))
-          (list :valid t
-                :id id
-                :scope (if (equal scope-name "project") 'project 'global)
-                :project-root (magent-session--normalize-project-root project-root)
-                :summary-title summary-title
-                :kind kind
-                :action action
-                :status status
-                :title title
-                :parent-session-id parent-session-id
-                :metadata metadata)))
+      (let* ((validated (magent-session--read-validated-data filepath))
+             (data (plist-get validated :data))
+             (id (plist-get validated :id))
+             (scope (plist-get validated :scope))
+             (kind (cdr (assq 'kind data)))
+             (action (cdr (assq 'action data)))
+             (status (cdr (assq 'status data)))
+             (title (cdr (assq 'title data)))
+             (parent-session-id (cdr (assq 'parent-session-id data)))
+             (metadata (cdr (assq 'metadata data)))
+             (summary-title (or (magent-session--clean-summary-title title)
+                                (magent-session--clean-summary-title
+                                 (cdr (assq 'summary-title data))))))
+        (list :valid t
+              :id id
+              :scope (if (eq scope 'global) 'global 'project)
+              :project-root (and (stringp scope) scope)
+              :summary-title summary-title
+              :kind kind
+              :action action
+              :status status
+              :title title
+              :parent-session-id parent-session-id
+              :metadata metadata))
     (error
      (list :valid nil
            :id nil
@@ -858,82 +973,42 @@ is consulted when the timer fires."
   "Read session data from FILEPATH without changing active session state.
 Return a plist with keys `:scope', `:session', and `:id', or nil on error."
   (condition-case err
-      (with-temp-buffer
-        (insert-file-contents filepath)
-        (let* ((json-object-type 'alist)
-               (json-array-type 'list)
-               (data (json-read))
-               (_fields (magent-session--validate-json-fields data))
-               (_schema-version
-                (magent-session--validate-schema-version
-                 (cdr (assq 'schema-version data))))
-               (_state (magent-session--validate-json-state data))
-               (file-id (magent-session--file-id filepath))
-               (raw-id (cdr (assq 'id data)))
-               (_required-id
-                (unless raw-id
-                  (signal 'magent-session-schema-error
-                          (list "Session is missing its id"))))
-               (id (magent-session-validate-id raw-id))
-               (_matching-id
-                (when (and raw-id (not (equal id file-id)))
-                  (signal
-                   'magent-session-schema-error
-                   (list (format
-                          "Session id %S does not match filename %S"
-                          id file-id)))))
-               (kind (cdr (assq 'kind data)))
-               (action (cdr (assq 'action data)))
-               (status (cdr (assq 'status data)))
-               (title (cdr (assq 'title data)))
-               (parent-session-id (cdr (assq 'parent-session-id data)))
-               (metadata-raw (cdr (assq 'metadata data)))
-               (scope-name (cdr (assq 'scope data)))
-               (project-root (cdr (assq 'project-root data)))
-               (snapshot-raw (cdr (assq 'snapshot data)))
-               (journal-raw (cdr (assq 'journal data)))
-               (jobs-raw (cdr (assq 'agent-jobs data)))
-               (approval-raw (cdr (assq 'approval-overrides data)))
-               (scope (pcase scope-name
-                        ("project"
-                         (or (magent-session--normalize-project-root project-root)
-                             (signal 'magent-session-schema-error
-                                     (list "Project session is missing project-root"))))
-                        ("global" 'global)
-                        (_ (signal 'magent-session-schema-error
-                                   (list (format "Invalid session scope: %S"
-                                                 scope-name))))))
-               (_snapshot-required
-                (unless snapshot-raw
-                  (signal 'magent-session-schema-error
-                          (list "Session is missing its ledger snapshot"))))
-               (thread
-                (magent-thread-replay
-                 snapshot-raw
-                 (mapcar #'magent-thread-event-from-alist journal-raw)))
-               (agent-jobs (mapcar #'magent-agent-job-from-alist jobs-raw))
-               (approval-overrides
-                (mapcar #'magent-session--approval-override-from-alist
-                        approval-raw))
-               (metadata (append metadata-raw
-                                 (delq nil
-                                       `((kind . ,kind)
-                                         (action . ,action)
-                                         (status . ,status)
-                                         (title . ,title)
-                                         (parent-session-id
-                                          . ,parent-session-id)
-                                         (origin-scope . ,scope)))))
-               (session (magent-session-create
-                         :id id
-                         :metadata metadata
-                         :agent-jobs agent-jobs
-                         :approval-overrides approval-overrides
-                         :thread thread)))
+      (let* ((validated (magent-session--read-validated-data filepath))
+             (data (plist-get validated :data))
+             (id (plist-get validated :id))
+             (scope (plist-get validated :scope))
+             (state (plist-get validated :state))
+             (kind (cdr (assq 'kind data)))
+             (action (cdr (assq 'action data)))
+             (status (cdr (assq 'status data)))
+             (title (cdr (assq 'title data)))
+             (parent-session-id (cdr (assq 'parent-session-id data)))
+             (metadata-raw (cdr (assq 'metadata data)))
+             (thread
+              (magent-thread-replay
+               (plist-get state :snapshot)
+               (plist-get state :events)))
+             (agent-jobs (plist-get state :agent-jobs))
+             (approval-overrides (plist-get state :approval-overrides))
+             (metadata (append metadata-raw
+                               (delq nil
+                                     `((kind . ,kind)
+                                       (action . ,action)
+                                       (status . ,status)
+                                       (title . ,title)
+                                       (parent-session-id
+                                        . ,parent-session-id)
+                                       (origin-scope . ,scope)))))
+             (session (magent-session-create
+                       :id id
+                       :metadata metadata
+                       :agent-jobs agent-jobs
+                       :approval-overrides approval-overrides
+                       :thread thread)))
           (puthash session filepath magent-session--loaded-sessions)
           (list :scope scope
                 :session session
-                :id id)))
+                :id id))
     (error
      (magent-log "ERROR loading session %s: %s" filepath (error-message-string err))
      nil)))

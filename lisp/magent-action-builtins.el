@@ -9,11 +9,12 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'magent-action)
 (require 'magent-action-controls)
 (require 'magent-action-skills)
-(require 'magent-doctor)
-(require 'magent-memory)
+(require 'magent-action-builtin-doctor)
+(require 'magent-action-builtin-memory)
 (require 'magent-prompt)
 (require 'magent-agent-registry)
 (require 'magent-runtime-api)
@@ -43,12 +44,6 @@
      "Review the current changes for defects, risks, and missing tests."
      :prompt "actions/review.org"
      :tools (read_file grep bash read_tool_output))
-    (:name "summarize"
-     :title "Summarize repository"
-     :description
-     "Summarize the current Git project into one canonical Org note."
-     :prompt "actions/summarize.org"
-     :tools (read_file grep glob bash write_repo_summary read_tool_output))
     (:name "test"
      :title "Run tests"
      :description "Run and interpret the relevant project tests."
@@ -178,15 +173,20 @@
    :workflow #'magent-action-builtins--authority
    :source-layer 'core))
 
-(defun magent-action-builtins-register ()
-  "Register every bundled Magent action as one atomic refresh."
+(cl-defun magent-action-builtins-register
+    (&optional (enabled-builtins magent-action-enabled-builtins))
+  "Register bundled Magent Actions as one atomic refresh.
+ENABLED-BUILTINS controls the optional Action groups and defaults to
+`magent-action-enabled-builtins'."
   (let ((magent-action--allow-core-registration t)
         (magent-action--suppress-registry-hooks t))
     (magent-action-remove-source 'core)
     (magent-action-controls-register)
     (magent-action-builtins--register-authority)
-    (magent-doctor-register-action)
-    (magent-memory-register-actions)
+    (when (memq 'doctor enabled-builtins)
+      (magent-action-builtin-doctor-register))
+    (when (memq 'memory enabled-builtins)
+      (magent-action-builtin-memory-register))
     (magent-action-builtins--register-prompt-actions)
     (magent-action-skills-register))
   (magent-action--registry-changed))

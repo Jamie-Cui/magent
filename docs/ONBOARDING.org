@@ -45,14 +45,14 @@ Manages conversation history, scoped overlays, and runtime state.
 - ~magent-session.el~ — Conversation projections, JSON persistence, per-project sessions
 - ~magent-action-session.el~ — Isolated Action persistence, ledger, and cancellation
 - ~magent-action-session-view.el~ — Isolated Action session listing and inspection
-- ~magent-doctor.el~ — Trusted read-only probes and one sanitized tool-free analysis request
+- ~magent-action-builtin-doctor.el~ — Trusted read-only probes and one sanitized tool-free analysis request
 - ~magent-redaction.el~ — Fail-closed redaction for Magent-owned outbound diagnostics and memory
 - ~magent-agent-job.el~ — Durable child-agent job records and JSON shape
 - ~magent-action.el~ — Workflow DSL, Step runtime, layered Action registry, and Invocation lifecycle
 - ~magent-runtime.el~ — Static initialization plus project-local overlay activation for agents, skills, Actions, and capabilities
 - ~magent-runtime-api.el~ — UI/backend-facing runtime session and prompt API
 - ~magent-runtime-queue.el~ — Global single-execution runtime queue with session-scoped cancellation
-- ~magent-audit.el~ — Persistent JSONL audit logging for permissions and sensitive actions
+- ~magent-audit.el~ — Live-buffer or JSONL-file audit recording for permissions and sensitive actions
 
 *What it does:* Maintains ledger-backed conversation history scoped by project, persists to ~~/.emacs.d/magent/sessions/~ by default, stores durable child-agent jobs under ~agent-jobs~, and activates or unloads project-local overlays as scope changes. Ordinary ACP prompts and Action-owned agent work submit through ~magent-runtime-api.el~; ~magent-runtime-queue.el~ owns queued/active turn state and session-scoped cancellation. Doctor and Memory use unified Actions exposed through slash and ~M-x magent-action-run-*~, with isolated sessions under ~magent-session-directory/actions~. Doctor is a direct probe pipeline with no model tools; read [[file:DOCTOR.org][DOCTOR.org]] before changing its data boundary or extension API.
 
@@ -78,7 +78,7 @@ Multi-agent architecture with specialized agents for different tasks.
 The action layer that executes operations requested by agents.
 
 *Key Files:*
-- ~magent-tools.el~ — canonical catalog of 17 ~gptel-tool~ structs: read_file, write_file, write_repo_summary, edit_file, grep, glob, bash, emacs_read, emacs_eval, emacs_eval_live, read_tool_output, spawn_agent, send_agent_message, wait_agent, list_agents, close_agent, web_search
+- ~magent-tools.el~ — canonical catalog of 16 ~gptel-tool~ structs: read_file, write_file, edit_file, grep, glob, bash, emacs_read, emacs_eval, emacs_eval_live, read_tool_output, spawn_agent, send_agent_message, wait_agent, list_agents, close_agent, web_search
 - ~magent-skills.el~ — Skill registry, built-in skills, file loading, inspection commands
 - ~magent-skill-manager.el~ — User-level skills.sh finder, safe copy installer, and permanent deletion
 - ~magent-capability.el~ — Capability definitions, resolution, and file-backed loading
@@ -285,7 +285,7 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 ** State Management
 - *magent-session.el* — Conversation history, per-project sessions, JSON persistence
 - *magent-runtime.el* — Static initialization and project-local overlay activation
-- *magent-audit.el* — JSONL audit logs for permissions and sensitive actions
+- *magent-audit.el* — Live-buffer or JSONL-file audit records for permissions and sensitive actions
 
 ** Agent System
 - *magent-agent.el* — Core processing: builds prompts, filters tools, calls gptel
@@ -296,8 +296,7 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 - *magent-permission.el* — Tool access control with glob patterns
 
 ** Tools & Skills
-- *magent-repo-summary.el* — deterministic org-roam repository-note upserts
-- *magent-tools.el* — canonical catalog of 17 gptel-tool implementations
+- *magent-tools.el* — canonical catalog of 16 gptel-tool implementations
 - *magent-skills.el* — Skill registry, built-in skills, file loading, commands
 - *magent-capability.el* — Capability definitions, resolution, and file-backed loading
 - *magent-approval.el* — User approval prompts for sensitive operations
@@ -358,7 +357,7 @@ ACP conversion in ~magent-acp.el~, and agent-shell-specific behavior in
 *Approach carefully:* More specific patterns must come before less specific ones. Test with various glob patterns.
 
 ** 5. magent-tools.el (Medium Complexity)
-*Why it's complex:* 17 tool implementations have different side effects, process lifecycles, revision contracts, spill retention, child-agent state, and error handling. ~emacs_read~ uses the captured origin buffer; ~emacs_eval~ uses a disposable child process; ~emacs_eval_live~ deliberately crosses into the main process.
+*Why it's complex:* 16 tool implementations have different side effects, process lifecycles, revision contracts, spill retention, child-agent state, and error handling. ~emacs_read~ uses the captured origin buffer; ~emacs_eval~ uses a disposable child process; ~emacs_eval_live~ deliberately crosses into the main process.
 
 *Approach carefully:* Keep child-eval cleanup and host-owned timeout handling robust. Preserve once-only approval for both arbitrary eval tools, session isolation for spilled output, revision validation for writes, and parent/child request-context inheritance.
 

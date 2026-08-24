@@ -278,10 +278,6 @@ being normalized into structured tool calls."
               "?"))
            ((member name '("read_file" "write_file" "edit_file"))
             (or (plist-get args :path) "?"))
-           ((string= name "write_repo_summary")
-            (or (plist-get args :scope)
-                (plist-get args :mode)
-                "summary"))
            ((string= name "grep")
             (format "%s in %s"
                     (or (plist-get args :pattern) "?")

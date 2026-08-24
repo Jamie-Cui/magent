@@ -11,8 +11,20 @@ Magent 把同一个 Action registry 投影为两类用户可见的 command 入�
 - *Interactive commands* 是选择了 interactive exposure 的 Action spec 对应的
   ~M-x~ wrapper。
 
-当前内置包提供 13 个 slash commands。Doctor 和三个 Memory Action 还提供
+当前内置包默认提供 12 个 slash commands。Doctor 和三个 Memory Action 还提供
 ~M-x magent-action-run-*~ wrapper，并使用独立 durable session。
+
+Doctor 和 Memory 是两个可选的内置 Action 组。可以 Customize
+~magent-action-enabled-builtins~，也可以用 ~setopt~ 在运行时打开或关闭它们：
+
+#+begin_src elisp
+;; 保留 Doctor，关闭 memory-init、memory-refresh 和 memory-clear。
+(setopt magent-action-enabled-builtins '(doctor))
+#+end_src
+
+Action registry 和活动 ACP command menu 会立即刷新；已经开始的 Action 不会被中断，
+配置只影响后续发现和调用。~memory~ 项只控制三个 memory management Action；profile
+memory 注入仍由 ~magent-memory-enable-auto-injection~ 独立控制。
 
 * Slash Commands
 
@@ -20,7 +32,6 @@ Magent 把同一个 Action registry 投影为两类用户可见的 command 入�
 
 #+begin_example
 /review
-/summarize src/session 的持久化与 replay
 /fix 重点检查失败的 session persistence test
 /compact 保留准确的文件名和未解决的失败
 /authority
@@ -28,7 +39,7 @@ Magent 把同一个 Action registry 投影为两类用户可见的 command 入�
 /$code-review 重点检查 queue
 #+end_example
 
-Prompt command 或 ~/compact~ 后的文本会作为命令参数。六个内置 prompt command
+Prompt command 或 ~/compact~ 后的文本会作为命令参数。五个内置 prompt command
 复用当前 session 和 agent，但不会激活同名 instruction skill。未知 slash command
 不会在本地执行，而是作为普通 prompt text 提交。~/$name~ 形式专门用于显式选择
 instruction skill；skill 不存在或在当前 scope 不可用时，会在提交 provider 前失败。
@@ -39,7 +50,6 @@ instruction skill；skill 不存在或在当前 scope 不可用时，会在提�
 | ~/fix~     | 诊断并修复 bug 或 regression       | 可能修改文件并运行针对性验证 |
 | ~/init~    | 创建或刷新项目 ~AGENTS.md~          | 检查仓库后可能更新项目指令 |
 | ~/review~  | 审查当前改动中的缺陷                | 只读审查，优先报告问题和测试缺口 |
-| ~/summarize~ | 把项目总结到 org-roam            | 创建或更新一个 canonical Org note |
 | ~/test~    | 运行并解释相关测试                  | 运行聚焦测试；适当时可修复范围内失败 |
 | ~/compact~ | 总结当前对话                        | 用续接摘要替换较早的模型上下文 |
 | ~/authority~ | 查看实际工具权限 | 不请求 provider，显示暴露状态、规则/override 来源、approval policy 和 execution boundary |
@@ -105,28 +115,6 @@ bug、regression、不安全的边界情况和缺失测试，并按严重程度�
 
 #+begin_example
 /test 运行当前分支改动文件相关的聚焦测试
-#+end_example
-
-** ~/summarize~
-
-检查当前 Git 项目并写入一个 org-roam note，标题严格等于 repository name。无参数
-时总结整个 workspace，并更新 ~* Repository Summary~；后续自由文本可指定路径或
-语义范围，相应内容会在同一文件的 ~* Scoped Summaries~ 下按 scope 更新。Global
-session 会在创建 LLM turn 之前直接拒绝。
-
-目标目录优先使用 ~magent-org-roam-directory~；该选项为 nil 时使用
-~org-roam-directory~，且目录必须已经存在。文件名、Org ID、仓库路径、分析时的
-Git commit 和原子更新均由专用 writer 管理。org-roam 可用时，新 note 会通过
-非交互式 org-roam capture API 创建；规范的 file-level property drawer 总是位于
-Org keywords 之前，确保 org-roam 能识别并索引该 node。新文件名遵循默认的
-org-roam capture 约定 ~YYYY-MM-DDtHHMM.org~。后续运行通过 file-level
-~REPO_PATH~ 找回 note，因此时间戳文件名和手工改名的文件都仍只更新
-同一篇。
-
-#+begin_example
-/summarize
-/summarize 只总结 ACP session lifecycle
-/summarize lisp/magent-session.el
 #+end_example
 
 ** 其他调用方式与扩展

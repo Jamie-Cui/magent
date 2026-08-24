@@ -47,14 +47,14 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 - ~magent-session.el~ ：conversation projections、JSON persistence、per-project sessions。
 - ~magent-action-session.el~ ：isolated Action 的持久化、ledger 与取消。
 - ~magent-action-session-view.el~ ：isolated Action session 的列表与查看。
-- ~magent-doctor.el~ ：受信任只读 probes 和一次脱敏后的无工具分析请求。
+- ~magent-action-builtin-doctor.el~ ：受信任只读 probes 和一次脱敏后的无工具分析请求。
 - ~magent-redaction.el~ ：Magent-owned outbound diagnostics 与 memory 的 fail-closed 脱敏。
 - ~magent-agent-job.el~ ：durable child-agent job records 和 JSON shape。
 - ~magent-action.el~ ：Workflow DSL、Step runtime、分层 Action registry 和 Invocation lifecycle。
 - ~magent-runtime.el~ ：静态初始化，以及 agents、skills、Actions、capabilities 的 project-local overlay activation。
 - ~magent-runtime-api.el~ ：UI/backend-facing runtime session 和 prompt API。
 - ~magent-runtime-queue.el~ ：全局单执行 runtime queue 和 session-scoped cancellation。
-- ~magent-audit.el~ ：permission 和 sensitive action 的持久 JSONL audit logging。
+- ~magent-audit.el~ ：permission 和 sensitive action 的 live buffer 或 JSONL 文件 audit 记录。
 
 *职责：* 维护 project-scoped、ledger-backed conversation history，默认持久化到 ~~/.emacs.d/magent/sessions/~ ，在 ~agent-jobs~ 下保存 durable child-agent jobs，并在 scope 变化时加载或卸载 project-local overlays。普通 ACP prompt 和 Action-owned agent work 都通过 ~magent-runtime-api.el~ 提交； ~magent-runtime-queue.el~ 负责 queued/active turn state 和 session-scoped cancellation。Doctor 和 Memory 使用同时暴露为 slash 与 ~M-x magent-action-run-*~ 的统一 Action，并在 ~magent-session-directory/actions~ 下使用独立 session。Doctor 是不向模型开放工具的 direct probe pipeline；修改其数据边界或扩展 API 前先读 [[file:DOCTOR.zh.org][DOCTOR.zh.org]]。
 
@@ -82,8 +82,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 
 *关键文件：*
 
-- ~magent-repo-summary.el~ ：确定性更新单个 org-roam repository note。
-- ~magent-tools.el~ ：单一 canonical catalog 中的 17 个 ~gptel-tool~ structs，包括显式 disk/live-buffer source 的 read、revision-checked write/edit、grep/glob、bash、emacs_read、隔离与 live eval、tool-result pagination、child-agent coordination 和 web_search。
+- ~magent-tools.el~ ：单一 canonical catalog 中的 16 个 ~gptel-tool~ structs，包括显式 disk/live-buffer source 的 read、revision-checked write/edit、grep/glob、bash、emacs_read、隔离与 live eval、tool-result pagination、child-agent coordination 和 web_search。
 - ~magent-skills.el~ ：skill registry、built-in skills、file loading 和 inspection commands。
 - ~magent-skill-manager.el~ ：用户级 skills.sh finder、安全复制安装与永久删除。
 - ~magent-capability.el~ ：capability definitions、resolution 和 file-backed loading。
@@ -306,7 +305,7 @@ API。
 
 ** 5. ~magent-tools.el~
 
-*复杂原因：* 17 个 tool implementation 各自有 side effects、process lifecycle、revision contract、spill retention、child-agent runtime state 和 error handling。~emacs_read~ 使用捕获的 origin buffer，~emacs_eval~ 使用一次性 child process，~emacs_eval_live~ 刻意跨入主进程。
+*复杂原因：* 16 个 tool implementation 各自有 side effects、process lifecycle、revision contract、spill retention、child-agent runtime state 和 error handling。~emacs_read~ 使用捕获的 origin buffer，~emacs_eval~ 使用一次性 child process，~emacs_eval_live~ 刻意跨入主进程。
 
 *修改建议：* child-eval cleanup 和 host-owned timeout 必须可靠；两个任意 eval tool 的 once-only approval、spill 的 session isolation、写入的 revision validation、child-agent status persistence 和 parent/child request-context inheritance 都不能弱化。
 
