@@ -20,7 +20,7 @@
 (require 'magent-lifecycle-events)
 (require 'magent-llm)
 (require 'magent-llm-gptel)
-(require 'magent-memory)
+(require 'magent-action-builtin-memory)
 (require 'magent-project-instructions)
 (require 'magent-protocol)
 (require 'magent-runtime)

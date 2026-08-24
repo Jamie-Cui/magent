@@ -45,7 +45,7 @@ Manages conversation history, scoped overlays, and runtime state.
 - ~magent-session.el~ — Conversation projections, JSON persistence, per-project sessions
 - ~magent-action-session.el~ — Isolated Action persistence, ledger, and cancellation
 - ~magent-action-session-view.el~ — Isolated Action session listing and inspection
-- ~magent-doctor.el~ — Trusted read-only probes and one sanitized tool-free analysis request
+- ~magent-action-builtin-doctor.el~ — Trusted read-only probes and one sanitized tool-free analysis request
 - ~magent-redaction.el~ — Fail-closed redaction for Magent-owned outbound diagnostics and memory
 - ~magent-agent-job.el~ — Durable child-agent job records and JSON shape
 - ~magent-action.el~ — Workflow DSL, Step runtime, layered Action registry, and Invocation lifecycle

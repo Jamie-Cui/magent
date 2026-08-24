@@ -14,7 +14,7 @@ lisp/magent-llm.el
 lisp/magent-llm-gptel.el
 lisp/magent-session.el
 lisp/magent-action.el
-lisp/magent-memory.el
+lisp/magent-action-builtin-memory.el
 lisp/magent-agent-loop.el
 lisp/magent-approval.el
 lisp/magent-file-loader.el
@@ -28,7 +28,7 @@ lisp/magent-agent.el
 lisp/magent-runtime-api.el
 lisp/magent-action-session.el
 lisp/magent-action-session-view.el
-lisp/magent-doctor.el
+lisp/magent-action-builtin-doctor.el
 lisp/magent-action-controls.el
 lisp/magent-action-skills.el
 lisp/magent-action-builtins.el

@@ -11,9 +11,24 @@ Magent has one Action registry projected onto two user-facing command surfaces:
 - *Interactive commands* are ~M-x~ wrappers over Actions that opt into
   interactive exposure.
 
-The bundled package provides twelve slash commands. Doctor and the three
-Memory Actions also expose ~M-x magent-action-run-*~ wrappers and use isolated
-durable sessions.
+The bundled package provides twelve slash commands by default. Doctor and the
+three Memory Actions also expose ~M-x magent-action-run-*~ wrappers and use
+isolated durable sessions.
+
+Doctor and Memory are optional built-in Action groups. Customize
+~magent-action-enabled-builtins~, or change it with ~setopt~, to enable or
+disable either group at runtime:
+
+#+begin_src elisp
+;; Keep Doctor; disable memory-init, memory-refresh, and memory-clear.
+(setopt magent-action-enabled-builtins '(doctor))
+#+end_src
+
+The registry and active ACP command menus refresh immediately. A running
+Action is not interrupted; the setting applies to future discovery and
+invocation. The ~memory~ entry controls only the three memory-management
+Actions. Profile-memory injection remains independently controlled by
+~magent-memory-enable-auto-injection~.
 
 * Slash Commands
 

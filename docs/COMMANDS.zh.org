@@ -11,8 +11,20 @@ Magent 把同一个 Action registry 投影为两类用户可见的 command 入�
 - *Interactive commands* 是选择了 interactive exposure 的 Action spec 对应的
   ~M-x~ wrapper。
 
-当前内置包提供 12 个 slash commands。Doctor 和三个 Memory Action 还提供
+当前内置包默认提供 12 个 slash commands。Doctor 和三个 Memory Action 还提供
 ~M-x magent-action-run-*~ wrapper，并使用独立 durable session。
+
+Doctor 和 Memory 是两个可选的内置 Action 组。可以 Customize
+~magent-action-enabled-builtins~，也可以用 ~setopt~ 在运行时打开或关闭它们：
+
+#+begin_src elisp
+;; 保留 Doctor，关闭 memory-init、memory-refresh 和 memory-clear。
+(setopt magent-action-enabled-builtins '(doctor))
+#+end_src
+
+Action registry 和活动 ACP command menu 会立即刷新；已经开始的 Action 不会被中断，
+配置只影响后续发现和调用。~memory~ 项只控制三个 memory management Action；profile
+memory 注入仍由 ~magent-memory-enable-auto-injection~ 独立控制。
 
 * Slash Commands
 

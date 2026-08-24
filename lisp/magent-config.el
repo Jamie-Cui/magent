@@ -22,6 +22,8 @@
 (require 'magent-prompt)
 (require 'subr-x)
 
+(declare-function magent-action-builtins-register "magent-action-builtins")
+
 (defgroup magent nil
   "Magent AI coding agent for Emacs."
   :prefix "magent-"
@@ -255,6 +257,29 @@ start immediately or `latest' to load the most recent session automatically."
   (expand-file-name "magent/sessions" user-emacs-directory)
   "Directory where session files are stored."
   :type 'directory
+  :group 'magent)
+
+(defun magent-action--set-enabled-builtins (symbol value)
+  "Set SYMBOL to VALUE and refresh initialized built-in Actions."
+  (set-default symbol value)
+  (when (and (bound-and-true-p magent--initialized)
+             (fboundp 'magent-action-builtins-register))
+    (magent-action-builtins-register value)))
+
+(defcustom magent-action-enabled-builtins '(doctor memory)
+  "Optional built-in Action groups registered by Magent.
+
+The `doctor' entry controls the Doctor Action.  The `memory' entry controls
+the `memory-init', `memory-refresh', and `memory-clear' Actions as one group;
+it does not control profile-memory injection.  Other bundled prompt and
+session-control Actions are always registered.
+
+Changes made through Customize or `setopt' take effect immediately for future
+Action discovery and invocation.  An Action already in progress is allowed to
+finish."
+  :type '(set (const :tag "Doctor diagnostics" doctor)
+              (const :tag "Memory management" memory))
+  :set #'magent-action--set-enabled-builtins
   :group 'magent)
 
 (defcustom magent-action-session-directory nil

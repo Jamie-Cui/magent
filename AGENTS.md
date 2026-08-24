@@ -117,10 +117,10 @@ magent.el (package entry point and lazy runtime bootstrap)
   ├─ magent-action-builtins.el   (data-defined prompt Actions and built-in registration)
   ├─ magent-action-session.el    (isolated Action persistence, ledger, and cancellation)
   ├─ magent-action-session-view.el (isolated Action session listing and inspection)
-  ├─ magent-doctor.el            (trusted probes + one sanitized tool-free analysis)
+  ├─ magent-action-builtin-doctor.el            (trusted probes + one sanitized tool-free analysis)
   ├─ magent-llm.el               (provider-neutral request/event protocol)
   ├─ magent-llm-gptel.el         (gptel-request sampling adapter; hides gptel callback/FSM details)
-  ├─ magent-memory.el            (Emacs profile memory scan, persistence, and prompt injection)
+  ├─ magent-action-builtin-memory.el            (Emacs profile memory scan, persistence, and prompt injection)
   ├─ magent-agent-loop.el        (Magent-owned normalized event loop, tool dispatch, queueing, abort)
   ├─ magent-tool-orchestrator.el (permission, approval, audit, and tool-call orchestration)
   ├─ magent-approval.el          (user approval prompts for permission=ask)
@@ -147,7 +147,7 @@ magent.el (package entry point and lazy runtime bootstrap)
 
 3. **Actions** (`magent-action.el`, `magent-action-builtins.el`, `magent-action-session.el`, `magent-action-session-view.el`): Elisp-native Actions are registered through `magent-action-register`; slash commands and interactive commands are frontend projections. `:exposure` selects the projections, while `:session-policy` selects the current conversation or an isolated durable Action session. One deep Action module owns the generator Workflow DSL, managed Step runtime, layered registry, and Invocation lifecycle. Trusted Elisp owns control flow while managed agent, Answer, argv process, and callback Steps provide asynchronous suspension, exact-submission cancellation, and ledger activity. Elisp feature dependencies are declared with `:requires`; an agent Step's `:tools` is its exact provider allowlist, and Actions have no project-workspace requirement. Definitions resolve by `core > project > user > package > builtin`, and core names are reserved. ACP resolves slash discovery and dispatch against each runtime session's exact scope. Terminal results are claimed before cleanup, and finalization errors remain terminal failures.
 
-4. **Isolated Actions** (`magent-action-session.el`, `magent-action-session-view.el`, `magent-memory.el`, `magent-doctor.el`): `/doctor` and `/memory-*` are unified Action specs exposed through both agent-shell and `M-x magent-action-run-*`. They create isolated sessions under `magent-session-directory/actions`, preserve the current conversation, and can be inspected with `magent-action-list-sessions` or cancelled with `magent-action-cancel`. The old `commands/` format is not read or migrated. Memory Actions respect `magent-bypass-permission`. Doctor uses trusted read-only probes, Magent-owned redaction, and one tool-free direct request outside the runtime queue. Custom probes are trusted Elisp, not sandboxed code. See `docs/DOCTOR.org`.
+4. **Isolated Actions** (`magent-action-session.el`, `magent-action-session-view.el`, `magent-action-builtin-memory.el`, `magent-action-builtin-doctor.el`): `/doctor` and `/memory-*` are unified Action specs exposed through both agent-shell and `M-x magent-action-run-*`. `magent-action-enabled-builtins` controls their registration as `doctor` and `memory` groups and refreshes frontend discovery after Custom changes. They create isolated sessions under `magent-session-directory/actions`, preserve the current conversation, and can be inspected with `magent-action-list-sessions` or cancelled with `magent-action-cancel`. The old `commands/` format is not read or migrated. Memory Actions respect `magent-bypass-permission`. Doctor uses trusted read-only probes, Magent-owned redaction, and one tool-free direct request outside the runtime queue. Custom probes are trusted Elisp, not sandboxed code. See `docs/DOCTOR.org`.
 
 5. **Supported frontend boundary** (`magent-agent-shell.el`, `magent-acp.el`, `magent-runtime-api.el`): `magent-agent-shell.el` is the only supported frontend integration and uses an in-process ACP client implemented by `magent-acp.el`. ACP routes registered slash input through `magent-action.el`, submits model turns through `magent-runtime-api.el`, and converts runtime observer events to ACP `session/update` messages. ACP prompt requests remain pending until the corresponding command invocation or ordinary Magent turn completes, fails, or is cancelled.
    - `magent-runtime-queue.el` owns the global single-execution queue and session-scoped cancellation
@@ -206,7 +206,7 @@ Markdown body: system-prompt instructions. `type` must be `instruction`.
 
 UI-neutral `defcustom` variables live in `magent-config.el` under `customize-group magent`. LLM provider/model/key settings are managed entirely by gptel.
 
-Key settings: `magent-default-agent` (`"build"`), `magent-enable-tools` (list of enabled tool symbols), `magent-include-reasoning` (`t`/`ignore`/`nil`), `magent-request-timeout` (120s), `magent-bash-timeout` (300s), `magent-emacs-eval-timeout` (10s), `magent-action-process-timeout` (300s), `magent-action-step-output-max-chars` (24000), `magent-max-history` (100).
+Key settings: `magent-default-agent` (`"build"`), `magent-enable-tools` (list of enabled tool symbols), `magent-action-enabled-builtins` (`(doctor memory)`), `magent-include-reasoning` (`t`/`ignore`/`nil`), `magent-request-timeout` (120s), `magent-bash-timeout` (300s), `magent-emacs-eval-timeout` (10s), `magent-action-process-timeout` (300s), `magent-action-step-output-max-chars` (24000), `magent-max-history` (100).
 
 ### Supported Frontend Commands
 

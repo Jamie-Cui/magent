@@ -57,6 +57,8 @@ the entire run without contacting the provider.
 Register trusted probes with ~magent-doctor-register-probe~:
 
 #+begin_src emacs-lisp
+(require 'magent-action-builtin-doctor)
+
 (magent-doctor-register-probe
  "my-runtime-check"
  :description "Read-only status for my package"

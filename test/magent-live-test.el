@@ -862,7 +862,9 @@ return that path."
              (lambda ()
                (and (buffer-live-p source-buffer)
                     (with-current-buffer source-buffer
-                      (and (map-elt agent-shell--state :initialized)
+                      (and (magent-agent-shell--bootstrap-complete-p)
+                           (not (map-elt agent-shell--state
+                                         :active-requests))
                            (map-elt agent-shell--state
                                     :supports-session-fork)
                            (map-nested-elt agent-shell--state
@@ -900,7 +902,9 @@ return that path."
                           (let ((fork-id
                                  (map-nested-elt
                                   agent-shell--state '(:session :id))))
-                            (and (map-elt agent-shell--state :initialized)
+                            (and (magent-agent-shell--bootstrap-complete-p)
+                                 (not (map-elt agent-shell--state
+                                               :active-requests))
                                  fork-id
                                  (not (equal fork-id source-id)))))))
                  10

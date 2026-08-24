@@ -276,11 +276,25 @@ and are consumed by the next prompt.
 
 Elisp-native slash commands are registered through the public
 ~magent-action-register~ API and can be selected with
-~M-x magent-agent-shell-run-command~. Agent-shell advertises twelve bundled
+~M-x magent-agent-shell-run-command~. By default, agent-shell advertises twelve bundled
 commands: ~/explain~, ~/fix~, ~/init~, ~/review~, ~/test~,
 ~/compact~, ~/authority~, ~/skills~, ~/doctor~, ~/memory-init~,
 ~/memory-refresh~, and ~/memory-clear~. The five prompt commands own package
 Org resources and do not activate same-name skills.
+
+Doctor and Memory are optional built-in Action groups. Customize
+~magent-action-enabled-builtins~, or use ~setopt~, to change them at runtime:
+
+#+begin_src elisp
+;; Keep Doctor, but remove the three memory-management Actions.
+(setopt magent-action-enabled-builtins '(doctor))
+#+end_src
+
+The Action registry and active agent-shell command menus update immediately;
+an already running Action is allowed to finish. The ~memory~ entry controls
+~/memory-init~, ~/memory-refresh~, and ~/memory-clear~ together. It does not
+disable profile-memory injection, which is controlled separately by
+~magent-memory-enable-auto-injection~.
 
 Every instruction skill in the exact session scope is advertised as ~/$name~.
 ~/skills~ lists those descriptors locally. Submit ~/$name~ to select a skill

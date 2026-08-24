@@ -216,12 +216,14 @@ and cancellation for Actions using ~:session-policy 'isolated~.
 ~magent-action-session-view.el~ separately owns interactive listing and
 inspection. Neither module owns a second registry or context type. ~/doctor~
 and ~/memory-*~ also expose ~magent-action-run-*~ wrappers, and both surfaces
-execute the same Invocation lifecycle. New sessions are stored under
+execute the same Invocation lifecycle. Their registration is controlled as
+two groups by ~magent-action-enabled-builtins~; Custom changes atomically
+refresh the registry and frontend discovery. New sessions are stored under
 ~magent-session-directory/actions~. The former ~commands/~ format is neither
 migrated nor read; old files remain untouched.
 
 ~magent-action-run-doctor~ is the security-sensitive direct-pipeline case.  Trusted,
-read-only probes in ~magent-doctor.el~ collect bounded JSON-safe data, which is
+read-only probes in ~magent-action-builtin-doctor.el~ collect bounded JSON-safe data, which is
 normalized and redacted through ~magent-redaction.el~ before persistence or one
 tool-free provider request.  Doctor never enters the general agent loop and
 never exposes ~emacs_eval~, shell, or file tools.  Custom probes are trusted

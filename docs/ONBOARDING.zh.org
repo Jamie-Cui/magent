@@ -47,7 +47,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 - ~magent-session.el~ ：conversation projections、JSON persistence、per-project sessions。
 - ~magent-action-session.el~ ：isolated Action 的持久化、ledger 与取消。
 - ~magent-action-session-view.el~ ：isolated Action session 的列表与查看。
-- ~magent-doctor.el~ ：受信任只读 probes 和一次脱敏后的无工具分析请求。
+- ~magent-action-builtin-doctor.el~ ：受信任只读 probes 和一次脱敏后的无工具分析请求。
 - ~magent-redaction.el~ ：Magent-owned outbound diagnostics 与 memory 的 fail-closed 脱敏。
 - ~magent-agent-job.el~ ：durable child-agent job records 和 JSON shape。
 - ~magent-action.el~ ：Workflow DSL、Step runtime、分层 Action registry 和 Invocation lifecycle。

@@ -249,6 +249,25 @@
        (expand-file-name relative-file magent-test--root-directory))
       (should (re-search-forward "^;;; Commentary:$" nil t)))))
 
+(ert-deftest magent-test-action-builtin-module-names-are-canonical ()
+  "Doctor and Memory use their Action builtin module names exclusively."
+  (dolist (entry '((magent-action-builtin-doctor
+                    . "lisp/magent-action-builtin-doctor.el")
+                   (magent-action-builtin-memory
+                    . "lisp/magent-action-builtin-memory.el")))
+    (should (featurep (car entry)))
+    (should (file-exists-p
+             (expand-file-name (cdr entry) magent-test--root-directory))))
+  (dolist (feature '(magent-doctor magent-memory))
+    (should-not (featurep feature)))
+  (dolist (file '("lisp/magent-doctor.el" "lisp/magent-memory.el"))
+    (should-not
+     (file-exists-p (expand-file-name file magent-test--root-directory))))
+  (should (fboundp 'magent-action-builtin-doctor-register))
+  (should (fboundp 'magent-action-builtin-memory-register))
+  (should-not (fboundp 'magent-doctor-register-action))
+  (should-not (fboundp 'magent-memory-register-actions)))
+
 (ert-deftest magent-test-production-elisp-declarations-are-valid ()
   "Test declarations in every production Elisp module resolve."
   (require 'check-declare)
@@ -261,7 +280,7 @@
 (ert-deftest magent-test-generated-external-accessors-use-ext-declarations ()
   "Test generated external accessors use explicit ext declarations."
   (let ((doctor-file
-         (expand-file-name "lisp/magent-doctor.el"
+         (expand-file-name "lisp/magent-action-builtin-doctor.el"
                            magent-test--root-directory)))
     (with-temp-buffer
       (insert-file-contents doctor-file)
@@ -2180,7 +2199,7 @@
 
 (ert-deftest magent-test-memory-scan-plan-skips-sensitive-and-org-notes ()
   "Test memory scan plans avoid secrets, custom-file contents, and Org notes."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let* ((root (file-name-as-directory
                 (make-temp-file "magent-memory-root" t)))
          (init-file (expand-file-name "init.el" root))
@@ -2221,7 +2240,7 @@
 
 (ert-deftest magent-test-memory-refresh-preserves-user-notes ()
   "Test memory refresh rewrites managed content and preserves User Notes."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let* ((root (file-name-as-directory
                 (make-temp-file "magent-memory-root" t)))
          (memory-dir (file-name-as-directory
@@ -2262,7 +2281,7 @@
 
 (ert-deftest magent-test-memory-profile-and-snapshots-use-private-modes ()
   "Memory persistence enforces 0700 directories and 0600 files."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let* ((memory-dir (file-name-as-directory
                       (make-temp-file "magent-memory-private-" t)))
          (magent-memory-directory memory-dir)
@@ -2331,7 +2350,7 @@
 
 (ert-deftest magent-test-memory-clear-deactivates-and-preserves-user-notes ()
   "Test memory clear writes inactive metadata and keeps local user notes."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let* ((root (file-name-as-directory
                 (make-temp-file "magent-memory-root" t)))
          (memory-dir (file-name-as-directory
@@ -2376,7 +2395,7 @@
 
 (ert-deftest magent-test-memory-outbound-injection-redacts-user-secret ()
   "Test prompt-time memory injection never emits a user-note secret."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let* ((memory-dir (file-name-as-directory
                       (make-temp-file "magent-memory-store" t)))
          (magent-memory-directory memory-dir)
@@ -2616,7 +2635,7 @@
 
 (ert-deftest magent-test-doctor-action-sends-one-tool-free-direct-request ()
   "Doctor emits its diagnosis without entering the runtime queue."
-  (require 'magent-doctor)
+  (require 'magent-action-builtin-doctor)
   (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
          (magent-action-session-directory nil)
          (magent-action--registry nil)
@@ -2642,7 +2661,7 @@
            "safe" :collector (lambda (_invocation _state) '((ok . t)))
            :required t)
           (let ((magent-action--allow-core-registration t))
-            (magent-doctor-register-action))
+            (magent-action-builtin-doctor-register))
           (cl-letf (((symbol-function 'magent-runtime-submit)
                      (lambda (&rest _)
                        (error "Doctor must not enter the runtime queue")))
@@ -2675,7 +2694,7 @@
 
 (ert-deftest magent-test-doctor-action-unsafe-probe-fails-before-sampling ()
   "Doctor rejects unsafe probe values before provider sampling."
-  (require 'magent-doctor)
+  (require 'magent-action-builtin-doctor)
   (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
          (magent-action-session-directory nil)
          (magent-action--registry nil)
@@ -2691,7 +2710,7 @@
            "unsafe" :collector (lambda (_invocation _state) (current-buffer))
            :required t)
           (let ((magent-action--allow-core-registration t))
-            (magent-doctor-register-action))
+            (magent-action-builtin-doctor-register))
           (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
                      #'ignore)
                     ((symbol-function 'magent-runtime-context-scope)
@@ -2711,7 +2730,7 @@
 
 (ert-deftest magent-test-doctor-action-active-request-is-cancellable ()
   "Cancelling by parent session aborts Doctor's direct request handle."
-  (require 'magent-doctor)
+  (require 'magent-action-builtin-doctor)
   (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
          (magent-action-session-directory nil)
          (magent-action--registry nil)
@@ -2734,7 +2753,7 @@
            "safe" :collector (lambda (_invocation _state) '((ok . t)))
            :required t)
           (let ((magent-action--allow-core-registration t))
-            (magent-doctor-register-action))
+            (magent-action-builtin-doctor-register))
           (cl-letf (((symbol-function 'magent-llm-gptel-sample)
                      (lambda (_request) request-buffer))
                     ((symbol-function 'gptel-abort)
@@ -2755,7 +2774,7 @@
 
 (ert-deftest magent-test-memory-system-message-selects-relevant-sections ()
   "Test prompt-time memory injection selects bounded relevant sections."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let* ((memory-dir (file-name-as-directory
                       (make-temp-file "magent-memory-store" t)))
          (magent-memory-directory memory-dir)
@@ -3746,6 +3765,53 @@
         (should (eq (magent-action-spec-source-layer command) 'builtin))
         (should (functionp (magent-action-spec-workflow command)))
         (should-not (magent-skills-get name))))))
+
+(ert-deftest magent-test-action-enabled-builtins-default-to-doctor-and-memory ()
+  "Doctor and Memory Actions remain available by default."
+  (should (equal (default-value 'magent-action-enabled-builtins)
+                 '(doctor memory))))
+
+(ert-deftest magent-test-action-builtins-respect-enabled-groups ()
+  "Optional built-in groups control only Doctor and Memory registrations."
+  (require 'magent-action-builtins)
+  (let ((magent-action--registry nil))
+    (magent-action-builtins-register nil)
+    (should-not (magent-action-get "doctor" 'global))
+    (dolist (name '("memory-init" "memory-refresh" "memory-clear"))
+      (should-not (magent-action-get name 'global)))
+    (dolist (name (append magent-test--builtin-control-command-names
+                          magent-test--builtin-slash-command-names))
+      (should (magent-action-get name 'global)))
+    (magent-action-builtins-register '(doctor))
+    (should (magent-action-get "doctor" 'global))
+    (should-not (magent-action-get "memory-init" 'global))
+    (magent-action-builtins-register '(memory))
+    (should-not (magent-action-get "doctor" 'global))
+    (dolist (name '("memory-init" "memory-refresh" "memory-clear"))
+      (should (magent-action-get name 'global)))))
+
+(ert-deftest magent-test-action-enabled-builtins-refreshes-live-registry ()
+  "Custom changes refresh Action discovery after runtime initialization."
+  (require 'magent-action-builtins)
+  (let ((original (default-value 'magent-action-enabled-builtins)))
+    (unwind-protect
+        (let ((magent--initialized t)
+              (magent-action--registry nil)
+              (magent-action-registry-changed-hook nil)
+              (changes 0))
+          (add-hook 'magent-action-registry-changed-hook
+                    (lambda () (cl-incf changes)))
+          (magent-action-builtins-register '(doctor memory))
+          (setq changes 0)
+          (customize-set-variable 'magent-action-enabled-builtins '(doctor))
+          (should (= changes 1))
+          (should (magent-action-get "doctor" 'global))
+          (should-not (magent-action-get "memory-init" 'global))
+          (customize-set-variable 'magent-action-enabled-builtins '(memory))
+          (should (= changes 2))
+          (should-not (magent-action-get "doctor" 'global))
+          (should (magent-action-get "memory-init" 'global)))
+      (set-default 'magent-action-enabled-builtins original))))
 
 (ert-deftest magent-test-action-skills-lists-scope-without-provider ()
   "The core /skills workflow lists descriptors without submitting a turn."
@@ -14809,7 +14875,7 @@
 
 (ert-deftest magent-test-memory-async-commit-preserves-latest-user-notes ()
   "Memory completion re-reads notes edited while the provider is sampling."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let* ((directory (make-temp-file "magent-memory-stale-" t))
          (magent-memory-directory directory)
          (magent-memory-open-after-write nil)
@@ -14841,7 +14907,7 @@
 
 (ert-deftest magent-test-memory-deleted-source-marks-profile-stale ()
   "A source recorded by memory generation is stale when later deleted."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let* ((directory (make-temp-file "magent-memory-source-missing-" t))
          (magent-memory-directory directory)
          (missing (expand-file-name "deleted.el" directory)))
@@ -14867,7 +14933,7 @@
 
 (ert-deftest magent-test-memory-new-generation-cancels-stale-request ()
   "A newer memory operation aborts and terminalizes the older generation."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let ((magent-memory-use-llm t)
         (magent-memory--operation-generation 0)
         (magent-memory--active-operation nil)
@@ -14900,7 +14966,7 @@
 
 (ert-deftest magent-test-memory-supersession-callback-cannot-clobber-newest-operation ()
   "A cancelled operation callback may reenter without leaking the middle run."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let ((magent-memory--operation-generation 0)
         (magent-memory--active-operation nil)
         newest
@@ -14938,7 +15004,7 @@
 
 (ert-deftest magent-test-doctor-zero-timeout-disables-local-deadline ()
   "A zero probe timeout runs without installing a local timeout."
-  (require 'magent-doctor)
+  (require 'magent-action-builtin-doctor)
   (let* ((called nil)
          (probe (magent-doctor-probe-create
                  :id "zero"
@@ -14954,14 +15020,14 @@
 
 (ert-deftest magent-test-doctor-project-probe-does-not-freeze-process-timeout ()
   "The project probe leaves subprocess timeout policy to its collector."
-  (require 'magent-doctor)
+  (require 'magent-action-builtin-doctor)
   (let ((probe (gethash "project" magent-doctor--registry)))
     (should probe)
     (should (= (magent-doctor-probe-timeout probe) 0))))
 
 (ert-deftest magent-test-memory-stale-clear-confirmation-cannot-write ()
   "A delayed clear approval cannot write after a newer operation supersedes it."
-  (require 'magent-memory)
+  (require 'magent-action-builtin-memory)
   (let ((magent-memory--operation-generation 0)
         (magent-memory--active-operation nil)
         old-continue new-continue (writes 0))

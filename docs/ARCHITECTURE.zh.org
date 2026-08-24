@@ -193,11 +193,13 @@ skills 展示为两个独立入口。
 ~magent-action-session.el~ 为 ~:session-policy 'isolated~ 的 Action 提供持久化、
 ledger 记录和取消；~magent-action-session-view.el~ 单独负责交互式列表与查看。
 两者都不拥有第二套 registry 或 context 类型。~/doctor~ 和 ~/memory-*~ 同时提供
-~magent-action-run-*~ wrapper，两种入口执行相同 Invocation lifecycle；新 session
+~magent-action-run-*~ wrapper，两种入口执行相同 Invocation lifecycle。它们作为两组
+由 ~magent-action-enabled-builtins~ 控制注册；Custom 变更会原子刷新 registry 和
+frontend discovery。新 session
 写入 ~magent-session-directory/actions~。旧 ~commands/~ 格式既不迁移、也不读取，
 文件原样留在磁盘上。
 
-~magent-action-run-doctor~ 是安全敏感的 direct-pipeline 场景。 ~magent-doctor.el~
+~magent-action-run-doctor~ 是安全敏感的 direct-pipeline 场景。 ~magent-action-builtin-doctor.el~
 中的受信任只读 probes 采集有界 JSON-safe 数据；数据在持久化或发送一次
 无工具 provider request 前，会经过 ~magent-redaction.el~ 的路径规范化和
 脱敏。Doctor 不进入通用 agent loop，也不会暴露 ~emacs_eval~ 、shell 或

@@ -1,4 +1,4 @@
-;;; magent-memory.el --- Emacs profile memory for Magent  -*- lexical-binding: t; -*-
+;;; magent-action-builtin-memory.el --- Built-in Magent memory Actions  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -6,10 +6,10 @@
 
 ;;; Commentary:
 
-;; Local, user-owned Emacs profile memory.  This module scans a bounded,
-;; confirmed set of Emacs configuration files, writes a human-editable Org
-;; profile, and exposes a small selected subset to Magent prompts when the
-;; current request is relevant.
+;; Implementation backing the built-in Memory Action group.  It scans a
+;; bounded, confirmed set of Emacs configuration files, writes a local,
+;; human-editable Org profile, and exposes a small selected subset to Magent
+;; prompts when the current request is relevant.
 
 ;;; Code:
 
@@ -1340,7 +1340,7 @@ with a plan and continuation for scan-based operations."
            "internal/memory-injection.org"
            `((memory . ,included-text))))))))
 
-(defun magent-memory-register-actions ()
+(defun magent-action-builtin-memory-register ()
   "Register the core Magent memory actions."
   (dolist (definition
            `(("memory-init"
@@ -1364,5 +1364,5 @@ with a plan and continuation for scan-based operations."
      :workflow (nth 3 definition)
      :source-layer 'core)))
 
-(provide 'magent-memory)
-;;; magent-memory.el ends here
+(provide 'magent-action-builtin-memory)
+;;; magent-action-builtin-memory.el ends here
