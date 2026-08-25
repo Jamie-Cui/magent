@@ -391,7 +391,7 @@ magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
 
 *解决：*
 
-- 使用 ~M-x magent-agent-shell-start~ 启动一个新 shell，然后选择新 session。
+- 使用 ~M-x magent-start~ 启动另一个 shell，然后选择新 session。
 - 如果仍然存在，重启 Emacs。
 
 ** 性能问题
@@ -403,7 +403,7 @@ magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
 *解决：*
 
 - 确认 agent-shell 版本满足 README 要求。
-- 在新的 ~M-x magent-agent-shell-start~ buffer 中复现，并检查 ~*Messages*~ 和
+- 在新的 ~M-x magent-start~ buffer 中复现，并检查 ~*Messages*~ 和
   ~*magent-log*~ 是否有 update/rendering error。
 
 *** 内存占用高
@@ -416,8 +416,8 @@ magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
 (setq magent-max-history 50)
 #+end_src
 
-当前 session 不再需要保留在 active buffer 时，使用
-~M-x magent-agent-shell-start~ 启动新 shell，然后选择新 conversation。
+当前 session 不再需要保留在 active buffer 时，使用 ~M-x magent-start~ 启动另一个
+shell，然后选择新 conversation。
 
 * Diagnostic Commands
 

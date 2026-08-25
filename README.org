@@ -31,13 +31,13 @@ See [[file:docs/UI_BACKENDS.org][docs/UI_BACKENDS.org]] for the supported agent-
 ~magent-action~ and skills are complementary extension points, not two ways to
 define the same thing:
 
-|                        | ~magent-action~                                                        | Skill                                                            |
-|------------------------+-----------------------------------------------------------------------+------------------------------------------------------------------|
-| Primary role           | An explicit Emacs or slash-command action                             | Reusable model instructions                                      |
-| Definition             | Trusted Elisp registered with ~magent-action-register~                 | A data-only ~SKILL.md~ file                                        |
-| Activation             | The user enters ~/name~ or runs ~M-x magent-agent-shell-run-command~      | The user enters ~/$name~, selects it, or a capability activates it |
+|                        | ~magent-action~                                                          | Skill                                                            |
+|------------------------+------------------------------------------------------------------------+------------------------------------------------------------------|
+| Primary role           | An explicit Emacs or slash-command action                              | Reusable model instructions                                      |
+| Definition             | Trusted Elisp registered with ~magent-action-register~                   | A data-only ~SKILL.md~ file                                        |
+| Activation             | The user enters ~/name~ or selects it from agent-shell                    | The user enters ~/$name~, selects it, or a capability activates it |
 | Owns                   | Arguments, requirements, session policy, Steps, and multi-step control | Model context and workflow guidance                              |
-| Project trust boundary | Action Workflows are trusted installed Elisp                          | Project skill Markdown never executes code                       |
+| Project trust boundary | Action Workflows are trusted installed Elisp                           | Project skill Markdown never executes code                       |
 
 Use ~magent-action~ when you want a stable, user-triggered entry point in
 Emacs.  Use a skill when you want reusable expertise that the agent can apply
@@ -58,7 +58,7 @@ managed agent, process, and callback Steps provide asynchronous suspension,
 cancellation, progress, and activity recording.
 
 Registered commands are advertised to agent-shell and can be invoked as slash
-input or selected with ~M-x magent-agent-shell-run-command~.  The complete
+input or selected from agent-shell's slash menu.  The complete
 ~use-package~ example below registers ~/ask-name~; see
 [[file:docs/COMMANDS.org][docs/COMMANDS.org]] for the full command API and lifecycle.
 
@@ -169,20 +169,20 @@ agent-shell configuration and in-process ACP client, so no external ACP
 command is required.  To start using Magent:
 
 1. Visit a file in the project you want Magent to work on.
-2. Run ~M-x magent-start~.  Magent opens or reuses the project-local
-   agent-shell buffer through its in-process ACP adapter.  A new buffer prompts
-   you to start a new session or load a saved session from that project.  You
-   can also run ~M-x agent-shell~ and select Magent after registering the
-   configuration as shown in the installation examples above.
+2. Run ~M-x magent-start~.  This compatibility entry starts agent-shell with
+   Magent's in-process ACP config.  By default it prompts you to start a new
+   session or load one saved for the current project.  You can also run
+   ~M-x agent-shell~ and select Magent after registering the configuration as
+   shown in the installation examples above.
 3. Type a prompt at the bottom of the agent-shell buffer and press ~RET~ to
    submit it.  Assistant responses, reasoning, tool calls, and permission
    requests are streamed into the same buffer.
 4. Enter another prompt and press ~RET~ to continue the project-scoped session.
    While a request is running, press ~C-c C-c~ to interrupt it.
 
-From a source buffer, ~M-x magent-agent-shell-prompt-region~ sends the active
-region and ~M-x magent-agent-shell-ask-at-point~ asks about the symbol at point;
-both commands submit their context through agent-shell.
+From a source buffer, use agent-shell's native ~M-x agent-shell-send-region~ or
+~M-x agent-shell-send-dwim~ commands.  In a Magent shell, use
+~M-x agent-shell-interrupt~ (normally ~C-c C-c~) to interrupt a request.
 
 TRAMP projects use the same entry point.  Visit a remote file or Dired
 directory, then run ~M-x magent-start~.  Magent keeps its control plane on the
@@ -248,16 +248,14 @@ must appear exactly once in ~prompts/manifest.txt~.
 
 ** Interactive Commands
 
-| Command                                          | Description                                                      |
-|--------------------------------------------------+------------------------------------------------------------------|
-| ~magent-start~                                     | Open or reuse the project-local Magent agent-shell buffer        |
-| ~magent-agent-shell-start~                         | Start a fresh Magent agent-shell buffer                          |
-| ~magent-agent-shell-prompt-region~                 | Send the selected region through agent-shell                     |
-| ~magent-agent-shell-ask-at-point~                  | Ask about the symbol at point through agent-shell                |
-| ~magent-agent-shell-interrupt~                     | Interrupt the active Magent agent-shell request                  |
-| ~magent-agent-shell-run-command~                   | Select and run a registered slash command                        |
-| ~magent-agent-shell-toggle-skill-for-next-request~ | Toggle a one-shot instruction skill                              |
-| ~magent-toggle-bypass-permission~                  | Toggle ordinary permission bypass; once-only eval approval remains |
+| Command                           | Description                                                         |
+|-----------------------------------+---------------------------------------------------------------------|
+| ~magent-start~                    | Start agent-shell with Magent's in-process ACP config                |
+| ~agent-shell~                     | Select a registered agent backend, including Magent                  |
+| ~agent-shell-send-region~         | Send the selected region through the active agent-shell backend      |
+| ~agent-shell-send-dwim~           | Send the context chosen by agent-shell                               |
+| ~agent-shell-interrupt~           | Interrupt the active agent-shell request                             |
+| ~magent-toggle-bypass-permission~ | Toggle ordinary permission bypass; once-only eval approval remains  |
 
 Prompt text is entered directly in the agent-shell buffer, and Magent streams
 assistant responses, tool activity, permission prompts, and session updates
@@ -291,14 +289,13 @@ workflow associates sessions with the current project:
 ** Slash Commands And Skills
 
 Instruction skills can be selected as one-shot context for the next request.
-In agent-shell, use ~M-x magent-agent-shell-toggle-skill-for-next-request~ to
-toggle a skill and ~M-x magent-agent-shell-clear-skills-for-next-request~ to
-clear selected skills.  Selected skills are scoped to the active Magent session
-and are consumed by the next prompt.
+In agent-shell, submit ~/$name~ or select the skill from the slash menu.
+Selected skills are scoped to the active Magent session and are consumed by the
+next prompt.
 
 Elisp-native slash commands are registered through the public
-~magent-action-register~ API and can be selected with
-~M-x magent-agent-shell-run-command~. By default, agent-shell advertises twelve bundled
+~magent-action-register~ API and can be selected from agent-shell's slash menu.
+By default, agent-shell advertises twelve bundled
 commands: ~/explain~, ~/fix~, ~/init~, ~/review~, ~/test~,
 ~/compact~, ~/authority~, ~/skills~, ~/doctor~, ~/memory-init~,
 ~/memory-refresh~, and ~/memory-clear~. The five prompt commands own package
@@ -320,8 +317,8 @@ disable profile-memory injection, which is controlled separately by
 
 Every instruction skill in the exact session scope is advertised as ~/$name~.
 ~/skills~ lists those descriptors locally. Submit ~/$name~ to select a skill
-for one normal turn; submit ~/name~ or use
-~M-x magent-agent-shell-run-command~ to invoke an Action. See
+for one normal turn; submit ~/name~ or select it from the slash menu to invoke
+an Action. See
 [[file:docs/COMMANDS.org][docs/COMMANDS.org]] for slash-command behavior and
 the third-party Action API. Action definitions and skill descriptors are
 resolved by canonical project scope, and agent-shell uses the exact session

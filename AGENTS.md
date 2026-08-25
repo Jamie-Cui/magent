@@ -134,14 +134,14 @@ magent.el (package entry point and lazy runtime bootstrap)
   ├─ magent-agent-file.el        (loads custom agents from .magent/agent/*.md)
   ├─ magent-permission.el        (rule-based tool access control per agent)
   ├─ magent-acp.el               (in-process ACP adapter for agent-shell)
-  ├─ magent-agent-shell.el       (agent-shell backend registration and routing)
+  ├─ magent-agent-shell.el       (agent-shell config and isolated context compatibility)
   ├─ magent-file-loader.el       (shared file-backed definition loader and frontmatter parser)
   └─ magent-skills.el            (skill registry, built-in skill definitions, file loading, and interactive commands)
 ```
 
 ### Core Flow
 
-1. **Entry point** (`magent.el`, `magent-agent-shell.el`): `magent.el` loads the package; supported interaction starts with `magent-start`, `magent-agent-shell-start`, or Magent selected from `agent-shell`. Static initialization is **lazy** — triggered on the first supported command via `magent--ensure-initialized`.
+1. **Entry point** (`magent.el`, `magent-agent-shell.el`): `magent.el` loads the package; supported interaction starts with the compatibility command `magent-start` or Magent selected from `agent-shell`. Static initialization is **lazy** — triggered on the first supported command.
 
 2. **Runtime** (`magent-runtime.el`): Owns the ordered initialization pipeline for agents, skills, slash commands, and capabilities. Static bundled definitions load once; project-local overlays under `.magent/` are activated and unloaded as session scope changes.
 
@@ -149,7 +149,7 @@ magent.el (package entry point and lazy runtime bootstrap)
 
 4. **Isolated Actions** (`magent-action-session.el`, `magent-action-session-view.el`, `magent-action-builtin-memory.el`, `magent-action-builtin-doctor.el`): `/doctor` and `/memory-*` are unified Action specs exposed through both agent-shell and `M-x magent-action-run-*`. `magent-action-enabled-builtins` controls their registration as `doctor` and `memory` groups and refreshes frontend discovery after Custom changes. They create isolated sessions under `magent-session-directory/actions`, preserve the current conversation, and can be inspected with `magent-action-list-sessions` or cancelled with `magent-action-cancel`. The old `commands/` format is not read or migrated. Memory Actions respect `magent-bypass-permission`. Doctor uses trusted read-only probes, Magent-owned redaction, and one tool-free direct request outside the runtime queue. Custom probes are trusted Elisp, not sandboxed code. See `docs/DOCTOR.org`.
 
-5. **Supported frontend boundary** (`magent-agent-shell.el`, `magent-acp.el`, `magent-runtime-api.el`): `magent-agent-shell.el` is the only supported frontend integration and uses an in-process ACP client implemented by `magent-acp.el`. ACP routes registered slash input through `magent-action.el`, submits model turns through `magent-runtime-api.el`, and converts runtime observer events to ACP `session/update` messages. ACP prompt requests remain pending until the corresponding command invocation or ordinary Magent turn completes, fails, or is cancelled.
+5. **Supported frontend boundary** (`magent-agent-shell.el`, `magent-acp.el`, `magent-runtime-api.el`): `magent-agent-shell.el` supplies the agent-shell config, the sole compatibility command `magent-start`, and one isolated private context-compatibility block; it does not own buffer selection, prompt submission, queues, skills, Actions, busy-state recovery, or interruption. The config uses an in-process ACP client implemented by `magent-acp.el`. ACP routes registered slash input through `magent-action.el`, submits model turns through `magent-runtime-api.el`, and converts runtime observer events to ACP `session/update` messages. ACP prompt requests remain pending until the corresponding command invocation or ordinary Magent turn completes, fails, or is cancelled.
    - `magent-runtime-queue.el` owns the global single-execution queue and session-scoped cancellation
    - Runtime emits Magent-native observer events; ACP conversion is isolated in `magent-acp.el`
    - ACP text/resource blocks are stored as structured turn metadata and reconstructed as user-role prompt context; local `file://` resources also provide scoped request paths
@@ -177,7 +177,7 @@ magent.el (package entry point and lazy runtime bootstrap)
 - **Action projections are registry-driven**: keep invocation and precedence in `magent-action.el`; frontends discover and dispatch command projections through that public layer rather than private command tables.
 - **Actions own both projections**: keep slash discovery, interactive wrappers, isolated sessions, and lifecycle ownership in `magent-action`; do not add `/magent-*` local command tables to `magent-acp.el`.
 - **Doctor never receives general tools**: keep `magent-action-run-doctor` on the trusted probe plus one tool-free request path. Do not expose `emacs_eval`, shell, file tools, backend objects, credentials, environment variables, or raw provider logs through Doctor probes.
-- **Frontend code stays on the supported path**: keep UI-independent behavior in `magent-runtime-api.el`, ACP conversion in `magent-acp.el`, and agent-shell behavior in `magent-agent-shell.el`.
+- **Frontend code stays on the supported path**: keep UI-independent behavior in `magent-runtime-api.el`, ACP conversion in `magent-acp.el`, and agent-shell behavior in agent-shell itself. `magent-agent-shell.el` owns only Magent's config and the explicitly grouped context compatibility advices.
 - **Core logging is UI-neutral**: `magent-log.el` dispatches formatted messages to sinks and falls back to `message` for warnings/errors when headless.
 - **Tool execution helpers live in `magent-agent-loop.el`**: serial queueing, abort cleanup, lifecycle event emission, and tool-result recording are all loop-owned; UI sinks own visible rendering. As with Codex, repeated tool use is steered by prompt/context rather than a hard `emacs_eval` call-count guard. Do not add hidden final-response recovery requests.
 - **Provider transport stays in gptel**: `magent-llm-gptel.el` may use gptel private FSM details internally for one sampling request, but the Magent loop consumes only normalized events.
@@ -212,16 +212,10 @@ Key settings: `magent-default-agent` (`"build"`), `magent-enable-tools` (list of
 
 | Command | Action |
 |---------|--------|
-| `magent-start` | Open or reuse the project-local Magent agent-shell buffer |
-| `magent-agent-shell-start` | Start a fresh Magent agent-shell buffer |
-| `magent-agent-shell-prompt-region` | Send the active region through agent-shell |
-| `magent-agent-shell-ask-at-point` | Ask about the symbol at point through agent-shell |
-| `magent-agent-shell-interrupt` | Interrupt the active request |
-| `magent-agent-shell-toggle-skill-for-next-request` | Toggle a one-shot instruction skill |
-| `magent-agent-shell-run-command` | Select and run an Elisp-native Action through its command projection |
+| `magent-start` | Start agent-shell with Magent's in-process ACP config |
 
-Use agent-shell's own bindings, session options, mode selector, and slash
-commands for interaction.
+Use agent-shell's own commands, bindings, session options, mode selector, and
+slash menu for interaction. Skills use `/$name`; Actions use `/name`.
 
 ## Conventions
 

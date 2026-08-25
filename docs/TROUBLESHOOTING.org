@@ -360,8 +360,7 @@ magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
 3. Press ~C-c C-c~ in the agent-shell buffer and confirm the interrupt
 
 *Solution:*
-- Start a new shell with ~M-x magent-agent-shell-start~, then select a new
-  session.
+- Start another shell with ~M-x magent-start~, then select a new session.
 - Restart Emacs if issue persists
 
 ** Performance Issues
@@ -371,7 +370,7 @@ magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
 
 *Solution:*
 - Confirm that the installed agent-shell version satisfies README requirements.
-- Reproduce in a fresh ~M-x magent-agent-shell-start~ buffer and inspect
+- Reproduce in a fresh ~M-x magent-start~ buffer and inspect
   ~*Messages*~ and ~*magent-log*~ for update or rendering errors.
 
 *** High memory usage
@@ -384,7 +383,7 @@ magent-session-directory  ; Default: ~/.emacs.d/magent/sessions/
 
 #+end_src
 
-Start a new shell with ~M-x magent-agent-shell-start~ and select a new session
+Start another shell with ~M-x magent-start~ and select a new session
 when the current session no longer needs to be retained in the active buffer.
 
 * Diagnostic Commands
