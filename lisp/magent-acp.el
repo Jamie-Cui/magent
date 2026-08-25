@@ -22,14 +22,13 @@
 (require 'magent-agent-registry)
 (require 'magent-config)
 (require 'magent-json)
+(require 'magent-llm-gptel)
 (require 'magent-protocol)
 (require 'magent-runtime-api)
 (require 'magent-session)
 (require 'magent-ledger)
 (require 'magent-action)
 (require 'magent-skills)
-
-(defvar gptel-model)
 
 (defconst magent-acp-protocol-version 1
   "ACP protocol version supported by Magent.")
@@ -96,14 +95,82 @@ all protocol traffic.  Keep that implementation detail off the TRAMP host."
                         (mapcar #'magent-acp--mode-entry
                                 (magent-agent-registry-primary-agents))))))
 
-(defun magent-acp--models ()
-  "Return ACP models object for current gptel model."
-  (let ((model-id (format "%s" (or (and (boundp 'gptel-model) gptel-model)
-                                   "gptel"))))
-    `((currentModelId . ,model-id)
-      (availableModels . [((modelId . ,model-id)
-                           (name . ,model-id)
-                           (description . "Current gptel model"))]))))
+(defun magent-acp--model-descriptor-entry (descriptor)
+  "Return an ACP legacy model entry for DESCRIPTOR."
+  `((modelId . ,(magent-model-descriptor-id descriptor))
+    (name . ,(magent-model-descriptor-name descriptor))
+    (description . ,(magent-model-descriptor-description descriptor))))
+
+(defun magent-acp--effective-model-route (&optional runtime-session)
+  "Return the current effective route for RUNTIME-SESSION or gptel defaults."
+  (if runtime-session
+      (magent-runtime-session-effective-model-route runtime-session)
+    (magent-llm-gptel-validate-route
+     (magent-llm-gptel-default-route))))
+
+(defun magent-acp--effective-model-descriptor (&optional runtime-session)
+  "Return the catalog descriptor effective for RUNTIME-SESSION."
+  (when (and (magent-llm-gptel-model-catalog)
+             (if runtime-session
+                 (magent-runtime-session-model-routing-configured-p
+                  runtime-session)
+               (or (default-value 'gptel-backend)
+                   (default-value 'gptel-model))))
+    (let* ((route (magent-acp--effective-model-route runtime-session))
+           (descriptor (magent-llm-gptel-descriptor-for-route route)))
+      (unless descriptor
+        (error "Magent route %s:%s is absent from the gptel model registry"
+               (gptel-backend-name (magent-model-route-backend route))
+               (magent-model-route-model route)))
+      descriptor)))
+
+(defun magent-acp--models (&optional runtime-session)
+  "Return ACP models for all gptel providers and RUNTIME-SESSION."
+  (let ((current (magent-acp--effective-model-descriptor runtime-session)))
+    `((currentModelId . ,(if current
+                             (magent-model-descriptor-id current)
+                           "unconfigured"))
+      (availableModels
+       . ,(vconcat
+           (mapcar #'magent-acp--model-descriptor-entry
+                   (magent-llm-gptel-model-catalog)))))))
+
+(defun magent-acp--model-option-entry (descriptor)
+  "Return an ACP config option value for model DESCRIPTOR."
+  `((value . ,(magent-model-descriptor-id descriptor))
+    (name . ,(magent-model-descriptor-name descriptor))
+    (description . ,(magent-model-descriptor-description descriptor))))
+
+(defun magent-acp--model-config-option (runtime-session)
+  "Return the ACP model config option for RUNTIME-SESSION."
+  (let* ((effective (magent-acp--effective-model-descriptor runtime-session))
+         (explicit
+          (magent-runtime-session-model-route-option runtime-session))
+         (current-value
+          (if explicit
+              (let ((descriptor
+                     (magent-llm-gptel-descriptor-for-route explicit)))
+                (unless descriptor
+                  (error "Explicit Magent model route is absent from gptel"))
+                (magent-model-descriptor-id descriptor))
+            magent-llm-gptel-auto-model-id)))
+    `((id . "model")
+      (name . "Model")
+      (description . "Provider and model for future Magent turns in this session.")
+      (category . "model")
+      (type . "select")
+      (currentValue . ,current-value)
+      (options
+       . ,(vconcat
+           (cons
+            `((value . ,magent-llm-gptel-auto-model-id)
+              (name . ,(format "Auto → %s"
+                               (if effective
+                                   (magent-model-descriptor-name effective)
+                                 "Unconfigured")))
+              (description . "Use the selected agent model, then gptel defaults."))
+            (mapcar #'magent-acp--model-option-entry
+                    (magent-llm-gptel-model-catalog))))))))
 
 (defun magent-acp--effort-option-entry (effort)
   "Return ACP config option value entry for EFFORT."
@@ -149,7 +216,8 @@ all protocol traffic.  Keep that implementation detail off the TRAMP host."
                   (description . "Auto-activate matching instruction skills."))
                  ((value . "disabled")
                   (name . "Disabled")
-                  (description . "Use only explicitly selected instruction skills."))]))))
+                  (description . "Use only explicitly selected instruction skills."))]))
+   (magent-acp--model-config-option runtime-session)))
 
 (defun magent-acp--command-entry (command)
   "Return ACP available command entry for COMMAND."
@@ -192,7 +260,7 @@ the leading slash, so agent-shell displays them as `/$NAME'."
   "Return common ACP session response for RUNTIME-SESSION."
   `((sessionId . ,(magent-runtime-session-id runtime-session))
     (modes . ,(magent-acp--modes runtime-session))
-    (models . ,(magent-acp--models))
+    (models . ,(magent-acp--models runtime-session))
     (configOptions . ,(magent-acp--config-options runtime-session))))
 
 (defun magent-acp--initialize-response ()
@@ -969,22 +1037,21 @@ does not activate overlays or install a session into the runtime registry."
     (magent-acp--session-response runtime-session)))
 
 (defun magent-acp--handle-set-model (params &optional expected-scope)
-  "Handle ACP session/set_model PARAMS.
-Magent uses gptel as the provider boundary, so the first ACP backend only
-advertises the currently configured gptel model.  Accepting that model keeps
-agent-shell's default bootstrap flow working without adding ACP-side model
-switching semantics."
+  "Handle ACP session/set_model PARAMS."
   (let* ((session-id (map-elt params 'sessionId))
          (model-id (map-elt params 'modelId))
          (runtime-session
-          (magent-acp--runtime-session-by-id session-id expected-scope))
-         (current-model-id (format "%s" (or (and (boundp 'gptel-model)
-                                                 gptel-model)
-                                            "gptel"))))
+          (magent-acp--runtime-session-by-id session-id expected-scope)))
     (unless runtime-session
       (error "Unknown session: %s" session-id))
-    (unless (equal model-id current-model-id)
-      (error "Unknown Magent model: %s" model-id))
+    (if (equal model-id magent-llm-gptel-auto-model-id)
+        (magent-runtime-session-clear-model-route runtime-session)
+      (let ((descriptor (magent-llm-gptel-model-descriptor model-id)))
+        (unless descriptor
+          (error "Unknown Magent model: %s" model-id))
+        (magent-runtime-session-set-model-route
+         runtime-session
+         (magent-llm-gptel-descriptor-route descriptor 'session))))
     (magent-acp--session-response runtime-session)))
 
 (defun magent-acp--handle-set-config-option (params &optional expected-scope)
@@ -1004,6 +1071,15 @@ switching semantics."
          (error "Invalid capabilities option: %s" value))
        (magent-runtime-session-set-capabilities-enabled
         runtime-session (equal value "enabled")))
+      ("model"
+       (if (equal value magent-llm-gptel-auto-model-id)
+           (magent-runtime-session-clear-model-route runtime-session)
+         (let ((descriptor (magent-llm-gptel-model-descriptor value)))
+           (unless descriptor
+             (error "Unknown Magent model: %s" value))
+           (magent-runtime-session-set-model-route
+            runtime-session
+            (magent-llm-gptel-descriptor-route descriptor 'session)))))
       (_
        (error "Unknown Magent config option: %s" config-id)))
     (magent-acp--session-response runtime-session)))

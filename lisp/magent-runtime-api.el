@@ -34,6 +34,7 @@
   id
   scope
   magent-session
+  model-route
   effort
   pending-skills
   metadata)
@@ -180,6 +181,8 @@ submission so the source frontend stays current."
                   (magent-runtime-api--wrap-session fork-session scope))
             (setf (magent-runtime-session-effort runtime-session)
                   (magent-runtime-session-effort source-runtime-session)
+                  (magent-runtime-session-model-route runtime-session)
+                  (magent-runtime-session-model-route source-runtime-session)
                   (magent-runtime-session-pending-skills runtime-session) nil
                   (magent-runtime-session-metadata runtime-session)
                   (list :capabilities-enabled
@@ -257,6 +260,57 @@ submission so the source frontend stays current."
          (agent (or (magent-session-agent session)
                     (magent-agent-registry-get-default))))
     (and agent (magent-agent-info-name agent))))
+
+(defun magent-runtime-session-model-route-option (runtime-session)
+  "Return RUNTIME-SESSION's explicit model route, or nil for automatic routing."
+  (unless (magent-runtime-session-p runtime-session)
+    (error "Expected a runtime session, got: %S" runtime-session))
+  (magent-runtime-session-model-route runtime-session))
+
+(defun magent-runtime-session-set-model-route (runtime-session route)
+  "Set RUNTIME-SESSION's explicit model ROUTE and return it.
+Pass nil to restore automatic routing."
+  (unless (magent-runtime-session-p runtime-session)
+    (error "Expected a runtime session, got: %S" runtime-session))
+  (magent-runtime-api--assert-session-available runtime-session)
+  (let ((stored-route
+         (when route
+           (magent-model-route-relabel
+            (magent-llm-gptel-validate-route route) 'session))))
+    (setf (magent-runtime-session-model-route runtime-session) stored-route)
+    stored-route))
+
+(defun magent-runtime-session-clear-model-route (runtime-session)
+  "Restore automatic model routing for RUNTIME-SESSION."
+  (magent-runtime-session-set-model-route runtime-session nil))
+
+(defun magent-runtime-session-effective-model-route
+    (runtime-session &optional agent-or-name phase)
+  "Resolve RUNTIME-SESSION's model route for AGENT-OR-NAME and PHASE.
+The returned route is an immutable request-ready snapshot."
+  (unless (magent-runtime-session-p runtime-session)
+    (error "Expected a runtime session, got: %S" runtime-session))
+  (let ((agent (magent-runtime-api--resolve-agent
+                runtime-session agent-or-name)))
+    (magent-agent-resolve-model-route
+     agent
+     :explicit-route (magent-runtime-session-model-route runtime-session)
+     :phase phase)))
+
+(defun magent-runtime-session-model-routing-configured-p
+    (runtime-session &optional agent-or-name)
+  "Return non-nil when RUNTIME-SESSION has enough policy to attempt routing.
+AGENT-OR-NAME selects a request-local agent without changing session state.
+This distinguishes a clean, not-yet-configured gptel installation from an
+invalid explicit route, which must still fail loudly during resolution."
+  (unless (magent-runtime-session-p runtime-session)
+    (error "Expected a runtime session, got: %S" runtime-session))
+  (let ((agent (magent-runtime-api--resolve-agent
+                runtime-session agent-or-name)))
+    (or (magent-runtime-session-model-route runtime-session)
+        (magent-agent-info-model agent)
+        (default-value 'gptel-backend)
+        (default-value 'gptel-model))))
 
 (defun magent-runtime-session-title (runtime-session)
   "Return RUNTIME-SESSION's canonical display title, or nil."
@@ -517,6 +571,7 @@ Any active or queued work for the session is cancelled first."
                  :ui-visibility 'none
                  :origin-context (magent-runtime-submission-context submission)
                  :tool-names (magent-runtime-submission-tool-names submission)
+                 :model-route (magent-runtime-submission-model-route submission)
                  :effort (magent-runtime-submission-effort submission)
                  :skill-names (magent-runtime-submission-skills submission)
                  :approval-provider
@@ -629,7 +684,10 @@ request-local Magent-native events."
          (effective-tools
           (magent-runtime-api--resolve-tools effective-agent tools))
          (effective-skills
-          (or skills (magent-runtime-session-pending-skills runtime-session))))
+          (or skills (magent-runtime-session-pending-skills runtime-session)))
+         (model-routing-configured-p
+          (magent-runtime-session-model-routing-configured-p
+           runtime-session effective-agent)))
     (magent-runtime-api--validate-skill-scope
      runtime-session effective-skills)
     (let* ((turn-id (magent-runtime-api--prepare-turn
@@ -645,6 +703,10 @@ request-local Magent-native events."
              :tool-names effective-tools
              :skills effective-skills
              :agent effective-agent
+             :model-route
+             (and model-routing-configured-p
+                  (magent-runtime-session-effective-model-route
+                   runtime-session effective-agent))
              :effort (or (magent-effort-normalize-option effort)
                          (magent-effort-normalize-option
                           (magent-runtime-session-effort runtime-session)))

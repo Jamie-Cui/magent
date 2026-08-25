@@ -164,6 +164,14 @@ Magent delegates all LLM communication to [[https://github.com/karthink/gptel][g
 
 See [[https://github.com/karthink/gptel#configuration][gptel documentation]] for full provider setup (Anthropic, OpenAI, Ollama, etc.).
 
+Every backend and model registered with gptel is available from agent-shell's
+model selector, including models from different providers.  A selection is
+local to the Magent session and does not mutate global ~gptel-backend~ or
+~gptel-model~.  ~Auto~ clears the session override and shows the model currently
+resolved from the selected agent or gptel defaults.  Changes apply only to new
+submissions; active requests, queued submissions, and provider-native tool
+continuations keep the route frozen when they were submitted.
+
 The only supported Magent frontend is agent-shell.  Magent supplies its own
 agent-shell configuration and in-process ACP client, so no external ACP
 command is required.  To start using Magent:
@@ -442,7 +450,8 @@ The YAML frontmatter supports:
 - ~hidden~: Hide from agent selection UI
 - ~temperature~: Override default temperature
 - ~effort~: Override reasoning effort: ~auto~, ~minimal~, ~low~, ~medium~, ~high~, or ~xhigh~
-- ~model~: Override default model
+- ~model~: Override the default model for this agent.  Child agents prefer this
+  explicit route over the frozen route inherited from their parent.
 - ~permissions~: Mapping of permission groups to ~allow~, ~deny~, ~ask~, or nested file-pattern rules
 
 Unknown frontmatter fields and non-canonical permission keys are rejected.

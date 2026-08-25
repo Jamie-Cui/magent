@@ -51,6 +51,17 @@ invocation 则属于 ~magent-action.el~ 。
   session 流程；无论使用 Magent 兼容入口还是从通用 agent-shell 选择器中选择 Magent，
   该设置都会生效。默认值是 ~prompt~，会列出当前 scope 中的新 session 和已保存
   session。
+- ACP 暴露一个原生 ~model~ session option，包含 gptel 已注册的所有 backend 和
+  model。显示名使用 ~provider:model~；opaque id 能区分不同 provider 下的同名
+  model。选择模型只会保存 session-local route，不会修改 gptel 的全局 backend 或
+  model 变量。~Auto~ 会清除该 route，并显示当前由 agent/default 解析出的模型。
+
+Model route 会在 runtime submission 创建时完成解析并冻结。用户可见 turn 的优先级为
+session route、agent 显式模型、gptel 默认值；child agent 则优先使用自身显式模型，
+否则继承冻结的 parent route。route object 还保留 agent profile 与 phase 字段，作为
+未来 per-agent/per-phase policy 的 API 接口；当前 runtime 并未实现 phase router。
+切换 session 模型只影响后续 submission，不影响 active work、已经 queued 的 work，
+也不影响 provider-native tool continuation。
 
 * Session 生命周期
 
@@ -60,10 +71,10 @@ Magent 实现 ACP ~session/new~、~session/list~、~session/load~、~session/res
 独立演进。
 
 Fork 按精确 scope fail closed：请求 cwd 必须解析到 source session 的 scope，source
-也不能拥有 active 或 queued work。selected agent、effort 和 automatic capability
-设置等稳定 frontend option 会被继承；session approval override、child-agent job 和
-one-shot skill 会被显式重置。历史中引用的 spilled tool output 会复制到 fork 自己的
-私有 session storage。
+也不能拥有 active 或 queued work。selected agent、model route、effort 和 automatic
+capability 设置等稳定 frontend option 会被继承；session approval override、
+child-agent job 和 one-shot skill 会被显式重置。历史中引用的 spilled tool output
+会复制到 fork 自己的私有 session storage。
 
 * 开发边界
 
@@ -93,4 +104,6 @@ registered Action command projections 与 skill descriptors 展示为两个独�
   per-request agent overrides。
 - ACP session config 暴露 ~Automatic capabilities~ ；关闭后，该 session 后续 turn 不再
   自动解析 contextual capabilities，但显式选择的 instruction skills 仍然生效。
+- Model route 当前只保存在 session 内存中；尚未实现跨 Emacs 持久化。加载已保存的
+  session 后会回到 ~Auto~。
 - 不支持在 active turn 执行期间 fork，也不支持跨 project scope fork。

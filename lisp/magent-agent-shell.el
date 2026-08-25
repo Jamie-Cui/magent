@@ -20,7 +20,6 @@
 (require 'magent-config)
 (require 'magent-runtime)
 
-(defvar gptel-model)
 (defvar agent-shell-agent-configs)
 (defvar agent-shell-session-strategy)
 
@@ -44,10 +43,6 @@
 (defun magent-agent-shell--ensure-loaded ()
   "Load `agent-shell' before using its public runtime API."
   (require 'agent-shell))
-
-(defun magent-agent-shell--model-id ()
-  "Return the current gptel model id for agent-shell display."
-  (format "%s" (or (and (boundp 'gptel-model) gptel-model) "gptel")))
 
 (defun magent-agent-shell--make-client (buffer)
   "Create Magent's in-process ACP client for BUFFER.
@@ -74,7 +69,6 @@ directory-local frontend configuration keeps precedence."
    :shell-prompt-regexp "Magent> "
    :welcome-function #'magent-agent-shell--welcome-message
    :client-maker #'magent-agent-shell--make-client
-   :default-model-id #'magent-agent-shell--model-id
    :default-session-mode-id (lambda () magent-default-agent)
    :install-instructions "Magent uses an in-process ACP client; no external command is required."))
 

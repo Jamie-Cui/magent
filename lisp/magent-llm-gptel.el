@@ -18,6 +18,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'url-util)
 (require 'gptel)
 (require 'gptel-request)
 (require 'magent-config)
@@ -38,8 +39,150 @@
 (defvar gptel-confirm-tool-calls)
 (defvar gptel-include-reasoning)
 (defvar gptel-temperature)
+(defvar gptel--known-backends)
 (defvar gptel-proxy)
 (defvar magent-include-reasoning)
+
+(defconst magent-llm-gptel-auto-model-id "auto"
+  "ACP model id that clears an explicit Magent session route.")
+
+(defun magent-llm-gptel--model-name (model)
+  "Return gptel MODEL's provider-facing name as a string."
+  (if (fboundp 'gptel--model-name)
+      (gptel--model-name model)
+    (format "%s" model)))
+
+(defun magent-llm-gptel--route-id (backend-name model)
+  "Return an opaque model id for BACKEND-NAME and MODEL."
+  (format "gptel/%s/%s"
+          (url-hexify-string (format "%s" backend-name))
+          (url-hexify-string (magent-llm-gptel--model-name model))))
+
+(defun magent-llm-gptel--model-description (backend-name model)
+  "Return a concise safe description for MODEL on BACKEND-NAME."
+  (let* ((description (get model :description))
+         (capabilities (get model :capabilities))
+         (context-window (get model :context-window))
+         (details
+          (delq nil
+                (list
+                 (and capabilities
+                      (format "capabilities: %s"
+                              (mapconcat (lambda (value) (format "%s" value))
+                                         capabilities ", ")))
+                 (and context-window
+                      (format "context: %sk" context-window))))))
+    (string-join
+     (delq nil
+           (list (and (stringp description) description)
+                 (and details (string-join details "; "))
+                 (unless (or description details)
+                   (format "gptel model from %s" backend-name))))
+     " — ")))
+
+(defun magent-llm-gptel--descriptor (backend-name backend model)
+  "Return a safe model descriptor for BACKEND-NAME, BACKEND, and MODEL."
+  (magent-model-descriptor-create
+   :id (magent-llm-gptel--route-id backend-name model)
+   :name (format "%s:%s" backend-name
+                 (magent-llm-gptel--model-name model))
+   :description (magent-llm-gptel--model-description backend-name model)
+   :backend-name (format "%s" backend-name)
+   :backend backend
+   :model model
+   :capabilities (copy-sequence (get model :capabilities))))
+
+(defun magent-llm-gptel-model-catalog ()
+  "Return descriptors for every model registered with gptel.
+gptel currently exposes backend lookup and model accessors publicly but uses
+the private `gptel--known-backends' registry for its own cross-provider model
+picker.  Keep that private dependency isolated and fail clearly if its shape
+changes."
+  (unless (boundp 'gptel--known-backends)
+    (error "Installed gptel does not expose its backend registry"))
+  (unless (and (proper-list-p gptel--known-backends)
+               (cl-every #'consp gptel--known-backends))
+    (error "Unsupported gptel backend registry shape"))
+  (let ((seen (make-hash-table :test #'equal))
+        descriptors)
+    (dolist (entry gptel--known-backends)
+      (let ((backend-name (car entry))
+            (backend (cdr entry)))
+        (when (gptel-backend-p backend)
+          (dolist (model (gptel-backend-models backend))
+            (let* ((descriptor
+                    (magent-llm-gptel--descriptor
+                     backend-name backend model))
+                   (id (magent-model-descriptor-id descriptor)))
+              (unless (gethash id seen)
+                (puthash id t seen)
+                (push descriptor descriptors)))))))
+    (nreverse descriptors)))
+
+(defun magent-llm-gptel-model-descriptor (model-id)
+  "Return the gptel model descriptor for MODEL-ID, or nil."
+  (cl-find model-id (magent-llm-gptel-model-catalog)
+           :key #'magent-model-descriptor-id :test #'equal))
+
+(defun magent-llm-gptel-descriptor-route (descriptor &optional source)
+  "Return a model route for DESCRIPTOR attributed to SOURCE."
+  (unless (magent-model-descriptor-p descriptor)
+    (error "Expected Magent model descriptor, got: %S" descriptor))
+  (magent-model-route-create
+   :backend (magent-model-descriptor-backend descriptor)
+   :model (magent-model-descriptor-model descriptor)
+   :source (or source 'session)))
+
+(defun magent-llm-gptel-descriptor-for-route (route)
+  "Return the catalog descriptor matching ROUTE, or nil."
+  (when (magent-model-route-p route)
+    (cl-find-if
+     (lambda (descriptor)
+       (and (eq (magent-model-descriptor-backend descriptor)
+                (magent-model-route-backend route))
+            (equal (magent-model-descriptor-model descriptor)
+                   (magent-model-route-model route))))
+     (magent-llm-gptel-model-catalog))))
+
+(defun magent-llm-gptel-default-route ()
+  "Return the current global gptel route."
+  (magent-model-route-create
+   :backend (default-value 'gptel-backend)
+   :model (default-value 'gptel-model)
+   :source 'gptel))
+
+(defun magent-llm-gptel-validate-route (route)
+  "Return ROUTE when its backend and model remain registered and compatible."
+  (unless (magent-model-route-p route)
+    (error "Expected Magent model route, got: %S" route))
+  (let ((backend (magent-model-route-backend route))
+        (model (magent-model-route-model route)))
+    (unless (gptel-backend-p backend)
+      (error "Magent model route has no valid gptel backend"))
+    (unless model
+      (error "Magent model route has no model"))
+    (unless (member model (gptel-backend-models backend))
+      (error "Magent model %s is unavailable on gptel backend %s"
+             model (gptel-backend-name backend)))
+    (unless (magent-llm-gptel-descriptor-for-route route)
+      (error "Magent backend/model route is no longer registered with gptel: %s:%s"
+             (gptel-backend-name backend) model)))
+  route)
+
+(defun magent-llm-gptel-route-tool-capability (route)
+  "Return `supported', `unsupported', or `unknown' for ROUTE tool use."
+  (magent-llm-gptel-validate-route route)
+  (let* ((model (magent-model-route-model route))
+         (properties (and (symbolp model) (symbol-plist model))))
+    (if (and (symbolp model)
+             (plist-member properties :capabilities))
+        (if (cl-some (lambda (capability)
+                       (member (format "%s" capability)
+                               '("tool-use" "tools" "function-calling")))
+                     (get model :capabilities))
+            'supported
+          'unsupported)
+      'unknown)))
 
 (defun magent-llm-gptel--managed-context-p (context)
   "Return non-nil when gptel CONTEXT belongs to this adapter."

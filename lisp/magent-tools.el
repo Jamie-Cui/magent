@@ -1764,10 +1764,9 @@ Return the child loop handle when startup succeeds."
            :project-root (and parent-context
                               (magent-request-context-project-root
                                parent-context))
-           :model (and parent-context
-                       (magent-request-context-model parent-context))
-           :backend (and parent-context
-                         (magent-request-context-backend parent-context))
+           :parent-model-route
+           (and parent-context
+                (magent-request-context-model-route parent-context))
            :temperature (and parent-context
                              (magent-request-context-temperature parent-context))
            :top-p (and parent-context

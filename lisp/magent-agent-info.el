@@ -15,6 +15,7 @@
 
 (require 'cl-lib)
 (require 'gptel)
+(require 'magent-llm)
 
 (cl-defstruct (magent-agent-info
                (:constructor nil)
@@ -95,6 +96,40 @@ The agent's TEMPERATURE field, if non-nil, overrides `gptel-temperature'."
          (gptel-temperature (or (magent-agent-info-temperature info)
                                 (default-value 'gptel-temperature))))
     (funcall body-thunk)))
+
+(defun magent-agent-info-model-route (info)
+  "Return INFO's explicit `magent-model-route', or nil.
+The route preserves the existing agent MODEL field contract.  A symbol or
+string selects a model on the default gptel backend, a backend object selects
+that backend with the default model, and (BACKEND . MODEL) selects both."
+  (unless (magent-agent-info-p info)
+    (error "Expected Magent agent info, got: %S" info))
+  (when-let* ((model-field (magent-agent-info-model info)))
+    (let ((backend
+           (cond
+            ((and (consp model-field)
+                  (gptel-backend-p (car model-field)))
+             (car model-field))
+            ((gptel-backend-p model-field) model-field)
+            (t (default-value 'gptel-backend))))
+          (model
+           (cond
+            ((and (consp model-field)
+                  (or (symbolp (cdr model-field))
+                      (stringp (cdr model-field))))
+             (if (symbolp (cdr model-field))
+                 (cdr model-field)
+               (intern (cdr model-field))))
+            ((or (symbolp model-field) (stringp model-field))
+             (if (symbolp model-field)
+                 model-field
+               (intern model-field)))
+            (t (default-value 'gptel-model)))))
+      (magent-model-route-create
+       :backend backend
+       :model model
+       :source 'agent
+       :profile-agent (magent-agent-info-name info)))))
 
 (defun magent-agent-info-format-for-display (info)
   "Format INFO as a string for display in listings."
