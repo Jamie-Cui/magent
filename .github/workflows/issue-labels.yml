@@ -1,0 +1,22 @@
+name: Label issues
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Apply labels from issue form fields
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const labelIssue = require('./.github/scripts/label-issue.js')
+            await labelIssue({github, context, core})

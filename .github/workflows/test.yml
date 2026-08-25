@@ -10,6 +10,13 @@ permissions:
   contents: read
 
 jobs:
+  issue-labeler:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test issue label mapping
+        run: node --test .github/scripts/label-issue.test.js
+
   ert:
     runs-on: ubuntu-latest
     strategy:
