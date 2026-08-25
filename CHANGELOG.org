@@ -34,3 +34,10 @@ intentional tagged release is planned as ~v0.2.0~.
   submission, region/symbol helpers, interruption, Action selection, and
   one-shot skill selection, together with private busy-state recovery and
   request handoff machinery.
+
+** Fixed
+
+- Preserve structured provider error responses before gptel cleanup and report
+  runtime failures through ACP errors, so agent-shell shows the actionable
+  provider message instead of a generic JSON parse error followed by an unknown
+  stop reason.

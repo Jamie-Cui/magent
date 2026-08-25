@@ -9636,6 +9636,39 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest magent-test-llm-gptel-preserves-structured-curl-provider-error ()
+  "A structured HTTP error survives gptel's generic JSON parse failure."
+  (require 'magent-llm-gptel)
+  (let ((buffer (generate-new-buffer " *magent-test-curl-error*"))
+        (info '(:uuid "response-marker"
+                :error "Malformed JSON in response.")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (insert
+             (concat
+              "HTTP/1.1 200 Connection established\r\n\r\n"
+              "HTTP/2 503\r\ncontent-type: application/json\r\n\r\n"
+              "{\"error\":{\"message\":\"The engine is currently overloaded, "
+              "please try again later\",\"type\":\"engine_overloaded_error\"}}"
+              "(response-marker . 128)")))
+          (magent-llm-gptel--capture-curl-provider-error buffer info)
+          (should
+           (equal (plist-get info :magent-provider-error)
+                  '(:message
+                    "The engine is currently overloaded, please try again later"
+                    :type "engine_overloaded_error")))
+          (should
+           (equal (magent-llm-gptel--error-message info)
+                  "The engine is currently overloaded, please try again later"))
+          (should
+           (equal (plist-get (magent-llm-gptel--metadata info) :provider-error)
+                  '(:message
+                    "The engine is currently overloaded, please try again later"
+                    :type "engine_overloaded_error"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest magent-test-llm-gptel-reasoning-only-done-completes-empty ()
   "Test reasoning-only provider responses complete without leaking reasoning."
   (require 'magent-llm-gptel)
@@ -12524,26 +12557,65 @@
     (should (equal (map-elt success 'stopReason) "end_turn"))))
 
 (ert-deftest magent-test-acp-stop-reason-preserves-failure-kind ()
-  "Test ACP stopReason does not report internal failures as refusals."
+  "Test ACP stopReason is limited to protocol-defined terminal conditions."
   (require 'magent-acp)
   (should (equal (magent-acp--stop-reason
                   'failed
                   (magent-execution-result-failed
                    "Maximum sampling requests reached"
-                   '(:status sampling-limit)))
+                   '(:reason sampling-limit)))
                  "max_turn_requests"))
   (should (equal (magent-acp--stop-reason
                   'failed
                   (magent-execution-result-failed
                    "Request timed out"
                    '(:status timeout)))
-                 "error"))
+                 nil))
   (should (equal (magent-acp--stop-reason
                   'failed
                   (magent-execution-result-failed
                    "Model refused"
                    '(:status refusal)))
                  "refusal")))
+
+(ert-deftest magent-test-acp-provider-failure-uses-json-rpc-error ()
+  "Test provider failures do not become an invalid ACP stop reason."
+  (require 'magent-acp)
+  (let (success failure raw-message)
+    (magent-acp--complete-prompt-request
+     (lambda (value) (setq success value))
+     (lambda (error raw)
+       (setq failure error
+             raw-message raw))
+     'failed
+     (magent-execution-result-failed
+      "The engine is currently overloaded, please try again later"
+      '(:status "HTTP/2 503"
+        :provider-error
+        (:message "The engine is currently overloaded, please try again later"
+         :type "engine_overloaded_error"))))
+    (should-not success)
+    (should (= (map-elt failure 'code) -32603))
+    (should
+     (equal (map-elt failure 'message)
+            "The engine is currently overloaded, please try again later"))
+    (should (equal (plist-get (map-elt failure 'data) :status)
+                   "HTTP/2 503"))
+    (should (equal (map-elt raw-message 'error) failure))))
+
+(ert-deftest magent-test-acp-turn-error-is-not-assistant-content ()
+  "Test runtime failures are reported by the pending ACP request only."
+  (require 'magent-acp)
+  (let* (notifications
+         (client `((:notification-handlers
+                    . (,(lambda (notification)
+                          (push notification notifications))))
+                   (:request-handlers . nil)))
+         (observer (magent-acp--observer client "session-1")))
+    (funcall observer
+             '(:type turn-error
+               :message "The engine is currently overloaded"))
+    (should-not notifications)))
 
 (ert-deftest magent-test-acp-session-prompt-success-runs-in-request-buffer ()
   "Test deferred ACP prompt callbacks run in the buffer supplied by acp.el."
