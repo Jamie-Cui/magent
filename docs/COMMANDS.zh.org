@@ -236,6 +236,9 @@ requirement；未知或不可用的名字会在提交前失败。
   override alist、~:timeout~、~:check~、~:result~、~:record-command~ 与
   ~:record-output~。默认结果是完整 stdout；~:result 'full~ 返回包含 stderr、
   exit status、duration 和 timeout state 的 ~magent-action-process-result~。
+  Process Step 是 local-only：捕获到或显式传入 remote directory 时，会在创建
+  process 前失败。Action 若有意在 project host 执行，应使用暴露 ~bash~ tool 的
+  agent Step。
 - ~magent-workflow-callback~ 用来适配已有的异步 Elisp API。Start function 接收
   ~DONE~，必须用 ~completed~、~failed~ 或 ~cancelled~ 调用
   ~(DONE STATUS VALUE)~ 一次，并可返回一个无参数 cancel function。

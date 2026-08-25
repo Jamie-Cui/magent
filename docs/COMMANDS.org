@@ -264,7 +264,9 @@ preflight requirement. Unknown or unavailable names fail before submission.
   ~:result~, ~:record-command~, and ~:record-output~. The default result is
   complete stdout; ~:result 'full~ returns a
   ~magent-action-process-result~ including stderr, exit status, duration, and
-  timeout state.
+  timeout state. Process Steps are local-only: a remote captured or explicit
+  directory fails before process creation. Use an agent Step with the ~bash~
+  tool when an Action intentionally needs project-host execution.
 - ~magent-workflow-callback~ adapts an existing asynchronous Elisp API. Its
   start function receives ~DONE~, calls ~(DONE STATUS VALUE)~ exactly once with
   ~completed~, ~failed~, or ~cancelled~, and may return a zero-argument

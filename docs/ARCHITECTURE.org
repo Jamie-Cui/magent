@@ -20,6 +20,31 @@ The boundary is intentionally narrow:
 
 This shape keeps replacement points visible. A provider change should stay behind ~magent-llm-gptel.el~ and gptel configuration. A frontend change should stay around ~magent-agent-shell.el~, ~magent-acp.el~, and ~magent-runtime-api.el~. An Action registration, Workflow, Step, or Invocation change should go through ~magent-action.el~, while isolated Action persistence belongs in ~magent-action-session.el~ and its interactive viewer belongs in ~magent-action-session-view.el~. A persistence or resume change should otherwise go through the ledger and session modules. A tool policy change should go through the permission and orchestrator modules.
 
+** TRAMP Locality Contract
+
+A remote project changes resource location, not Magent's control-plane host.
+The agent-shell UI, in-process ACP placeholder, gptel transport, runtime queue,
+ledger/session persistence, Action control flow, Doctor, skill installation,
+child-agent coordination, ~emacs_read~, ~emacs_eval~, ~emacs_eval_live~, and
+~web_search~ remain local.  Remote session keys are normalized without probing
+the TRAMP filesystem, and agent-shell context rendering does not perform image
+or containment queries for remote files.
+
+The canonical tool catalog declares one locality for every tool:
+
+| Locality | Tools | Contract |
+|----------+-------+----------|
+| ~local~ | ~emacs_read~, ~emacs_eval~, ~emacs_eval_live~, ~read_tool_output~, child-agent tools, ~web_search~ | Runs on the Emacs host. ~emacs_eval~ passes the TRAMP project root to the local child as data. |
+| ~tramp-file~ | ~read_file~, ~write_file~, ~edit_file~, ~glob~ | Local Elisp uses Emacs file APIs; a remote resource is accessed through TRAMP, without starting a project-host process. |
+| ~project-process~ | ~bash~, ~grep~ | The only tools allowed to start on the project host. Remote execution uses the TRAMP process handler explicitly. |
+
+Execution locality never comes from ambient ~default-directory~ alone.  A
+project-process executable is resolved on the project host and failure is
+reported there; there is no fallback to the local host or home directory.
+Trusted Action argv Steps and Doctor process probes are local-only and reject a
+remote working directory.  This is a locality and failure contract, not an OS
+sandbox.
+
 * Dependency Layers
 
 ** Emacs Runtime

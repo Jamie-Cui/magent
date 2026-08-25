@@ -112,6 +112,45 @@ whole so a subsequent line-based request always makes progress.")
              (and (stringp scope) scope)))
       (magent-project-root)))
 
+(defun magent-tools--local-process-directory ()
+  "Return the directory used to start Magent-owned local processes.
+Signal an error instead of allowing a remote temporary directory to change
+the execution host implicitly."
+  (let ((directory (file-name-as-directory
+                    (expand-file-name temporary-file-directory))))
+    (when (file-remote-p directory)
+      (error "Magent local process directory is remote: %s" directory))
+    directory))
+
+(defun magent-tools--project-executable (program directory)
+  "Resolve PROGRAM for a project process running in DIRECTORY.
+Return the host-local executable spelling consumed by `make-process', or nil.
+Remote lookup happens only for tools whose declared locality is
+`project-process'."
+  (condition-case nil
+      (when (and (stringp program) (not (string-blank-p program)))
+        (let* ((default-directory (file-name-as-directory directory))
+               (remote (file-remote-p default-directory)))
+          (if (file-name-directory program)
+              (let ((candidate (expand-file-name program default-directory)))
+                (and (not (file-directory-p candidate))
+                     (file-executable-p candidate)
+                     (if remote (file-local-name candidate) candidate)))
+            (executable-find program remote))))
+    (error nil)))
+
+(defun magent-tools--start-project-process (tool-name directory &rest arguments)
+  "Start TOOL-NAME's project-side process in DIRECTORY with ARGUMENTS.
+This is Magent's only process-launch mechanism allowed to cross a TRAMP
+boundary.  Local projects use an ordinary local process; remote projects use
+the matching file-name handler."
+  (unless (eq (magent-tools-locality tool-name) 'project-process)
+    (error "Tool %s is not authorized for project-host execution" tool-name))
+  (let* ((default-directory (file-name-as-directory directory))
+         (remote (file-remote-p default-directory)))
+    (apply #'make-process
+           (append arguments (list :file-handler (and remote t))))))
+
 (defun magent-tools--register-cancel-cleanup (cleanup)
   "Register CLEANUP for the current request when supported."
   (when (functionp magent-tools--register-cancel)
@@ -447,8 +486,16 @@ CALLBACK is called with matching lines or error message."
                       (file-name-as-directory resolved)
                     (or (file-name-directory resolved)
                         (magent-tools--request-project-root))))
-                 (target (if directory-p "." resolved))
+                 (target (if directory-p
+                             "."
+                           (if (file-remote-p resolved)
+                               (file-local-name resolved)
+                             resolved)))
                  (limit (max 1 magent-grep-max-matches))
+                 (program (or (magent-tools--project-executable
+                               magent-grep-program default-directory)
+                              (error "ripgrep executable not found on project host: %s"
+                                     magent-grep-program)))
                  (args (append
                         (list "--no-heading" "--with-filename" "--null"
                               "--line-number" "--color=never")
@@ -518,10 +565,11 @@ CALLBACK is called with matching lines or error message."
                             :output message
                             :error message)))))))))
               (setq proc
-                    (make-process
+                    (magent-tools--start-project-process
+                     "grep" default-directory
                      :name "magent-grep"
                      :buffer buf
-                     :command (cons magent-grep-program args)
+                     :command (cons program args)
                      :noquery t
                      :filter
                      (lambda (process chunk)
@@ -720,6 +768,10 @@ CALLBACK is called with success message or error."
   "(progn (require 'subr-x) (let ((debug-on-error nil) (debug-on-quit nil) (debug-on-signal nil) (print-circle t) (print-level 20) (print-length 1000))
      (condition-case err
          (let* ((input (getenv \"MAGENT_EVAL_INPUT\"))
+                (project-root (getenv \"MAGENT_EVAL_PROJECT_ROOT\"))
+                (default-directory (if (and project-root (not (string-empty-p project-root)))
+                                       (file-name-as-directory project-root)
+                                     default-directory))
                 (sexp (with-temp-buffer (insert-file-contents input) (buffer-string)))
                 (parsed (read-from-string sexp))
                 (form (car parsed)))
@@ -791,12 +843,11 @@ CALLBACK is called with success message or error."
                 (insert sexp)))
             (set-file-modes input-file #o600)
             (setq buffer (generate-new-buffer " *magent-emacs-eval*"))
-            (let ((default-directory
-                   (file-name-as-directory
-                    (or (magent-tools--request-project-root)
-                        temporary-file-directory)))
+            (let ((default-directory (magent-tools--local-process-directory))
                   (process-environment (copy-sequence process-environment)))
               (setenv "MAGENT_EVAL_INPUT" input-file)
+              (setenv "MAGENT_EVAL_PROJECT_ROOT"
+                      (magent-tools--request-project-root))
               (setq process
                     (make-process
                      :name "magent-emacs-eval"
@@ -1246,18 +1297,9 @@ EXIT-CODE is nil when no process exit status exists.  METADATA is optional."
      :output bounded-message
      :metadata metadata)))
 
-(defun magent-tools--bash-executable ()
-  "Return the configured Bash executable, or nil when unavailable."
-  (condition-case nil
-      (when (and (stringp magent-bash-program)
-                 (not (string-blank-p magent-bash-program)))
-        (if (file-name-directory magent-bash-program)
-            (let ((program (expand-file-name magent-bash-program)))
-              (and (not (file-directory-p program))
-                   (file-executable-p program)
-                   program))
-          (executable-find magent-bash-program)))
-    (error nil)))
+(defun magent-tools--bash-executable (directory)
+  "Return the configured Bash executable on DIRECTORY's project host."
+  (magent-tools--project-executable magent-bash-program directory))
 
 (defun magent-tools--bash (callback command)
   "Execute COMMAND asynchronously with Bash pipefail semantics.
@@ -1274,7 +1316,8 @@ result containing combined stdout and stderr plus the process exit status."
              (magent-tools--bash-failure
               "Error: magent-bash-timeout must be a positive number.")))
    (t
-    (let ((bash-program (magent-tools--bash-executable)))
+    (let* ((directory (magent-tools--request-project-root))
+           (bash-program (magent-tools--bash-executable directory)))
       (if (not bash-program)
           (funcall callback
                    (magent-tools--bash-failure
@@ -1296,8 +1339,7 @@ result containing combined stdout and stderr plus the process exit status."
                   (when (buffer-live-p buf)
                     (kill-buffer buf))))
           (condition-case err
-              (let ((timeout magent-bash-timeout)
-                    (default-directory (magent-tools--request-project-root)))
+              (let ((timeout magent-bash-timeout))
                 (setq buf (generate-new-buffer " *magent-bash*"))
                 (magent-tools--register-cancel-cleanup cleanup)
                 (setq timer
@@ -1334,7 +1376,8 @@ result containing combined stdout and stderr plus the process exit status."
                                 process-environment))
                   (setenv "BASH_ENV" nil)
                   (setq proc
-                        (make-process
+                        (magent-tools--start-project-process
+                         "bash" directory
                          :name "magent-bash"
                          :buffer buf
                          :command (list bash-program "-o" "pipefail"
@@ -2412,34 +2455,37 @@ See `magent-agent-loop-filter-display-args'.")
 
 (defconst magent-tools-catalog
   `((:name "read_file" :tool ,magent-tools--read-file-tool
-     :permission read)
+     :permission read :locality tramp-file)
     (:name "write_file" :tool ,magent-tools--write-file-tool
-     :permission write)
+     :permission write :locality tramp-file)
     (:name "edit_file" :tool ,magent-tools--edit-file-tool
-     :permission edit)
-    (:name "grep" :tool ,magent-tools--grep-tool :permission grep)
-    (:name "glob" :tool ,magent-tools--glob-tool :permission glob)
-    (:name "bash" :tool ,magent-tools--bash-tool :permission bash)
+     :permission edit :locality tramp-file)
+    (:name "grep" :tool ,magent-tools--grep-tool :permission grep
+     :locality project-process)
+    (:name "glob" :tool ,magent-tools--glob-tool :permission glob
+     :locality tramp-file)
+    (:name "bash" :tool ,magent-tools--bash-tool :permission bash
+     :locality project-process)
     (:name "emacs_eval" :tool ,magent-tools--emacs-eval-tool
-     :permission emacs_eval :approval once-only)
+     :permission emacs_eval :approval once-only :locality local)
     (:name "emacs_read" :tool ,magent-tools--emacs-read-tool
-     :permission read)
+     :permission read :locality local)
     (:name "read_tool_output" :tool ,magent-tools--read-tool-output-tool
-     :permission read)
+     :permission read :locality local)
     (:name "emacs_eval_live" :tool ,magent-tools--emacs-eval-live-tool
-     :permission emacs_eval_live :approval once-only)
+     :permission emacs_eval_live :approval once-only :locality local)
     (:name "spawn_agent" :tool ,magent-tools--spawn-agent-tool
-     :permission agent)
+     :permission agent :locality local)
     (:name "send_agent_message" :tool ,magent-tools--send-agent-message-tool
-     :permission agent)
+     :permission agent :locality local)
     (:name "wait_agent" :tool ,magent-tools--wait-agent-tool
-     :permission agent)
+     :permission agent :locality local)
     (:name "list_agents" :tool ,magent-tools--list-agents-tool
-     :permission agent)
+     :permission agent :locality local)
     (:name "close_agent" :tool ,magent-tools--close-agent-tool
-     :permission agent)
+     :permission agent :locality local)
     (:name "web_search" :tool ,magent-tools--web-search-tool
-     :permission web_search))
+     :permission web_search :locality local))
   "Canonical data catalog for Magent tools.")
 
 (defun magent-tools-catalog-entry (tool-name)
@@ -2458,6 +2504,13 @@ See `magent-agent-loop-filter-display-args'.")
 (defun magent-tools-approval-policy (tool-name)
   "Return the approval policy for TOOL-NAME, or nil."
   (plist-get (magent-tools-catalog-entry tool-name) :approval))
+
+(defun magent-tools-locality (tool-name)
+  "Return TOOL-NAME's execution locality, or nil if unknown.
+`local' operations stay on the Emacs host, `tramp-file' operations use local
+Emacs file APIs and may access project resources through TRAMP, and
+`project-process' operations may start a process on the project host."
+  (plist-get (magent-tools-catalog-entry tool-name) :locality))
 
 (defun magent-tools-get-gptel-tools-for-permission
     (permission &optional tool-names)

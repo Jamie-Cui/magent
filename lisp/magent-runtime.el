@@ -156,7 +156,7 @@ objects, and other live runtime state so lifecycle sinks and completed
                (canonical-root
                 (and project-root
                      (condition-case nil
-                         (file-truename (expand-file-name project-root))
+                         (magent-session-canonical-scope project-root)
                        (error (expand-file-name project-root)))))
                (agent (and valid-session
                            (magent-session-agent valid-session)))

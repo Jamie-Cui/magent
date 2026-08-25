@@ -317,8 +317,12 @@ Bundled and project-local skills are intentionally excluded."
 
 (defun magent-skill-manager--call-git (&rest arguments)
   "Run git with argv-based ARGUMENTS and return trimmed output."
-  (let ((process-environment (cons "GIT_TERMINAL_PROMPT=0"
+  (let ((default-directory (file-name-as-directory
+                            (expand-file-name temporary-file-directory)))
+        (process-environment (cons "GIT_TERMINAL_PROMPT=0"
                                    process-environment)))
+    (when (file-remote-p default-directory)
+      (error "Magent skill installation requires a local temporary directory"))
     (with-temp-buffer
       (let ((status (apply #'process-file "git" nil t nil
                            "-c" "credential.helper=" arguments)))

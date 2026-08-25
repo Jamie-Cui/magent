@@ -267,7 +267,8 @@ make EMACSCLIENT="emacsclient -s magent-live-test" test-live-smoke
 
 *解决：*
 
-- bash：确认已安装 Bash，且 ~magent-bash-program~ 能解析到它。命令不启用
+- bash：确认已安装 Bash，且 ~magent-bash-program~ 能在 project host 上解析。
+  TRAMP project 不会回退到本地执行。命令不启用
   errexit，但启用 pipefail；需要 fail-fast 串联时使用 ~&&~ 或显式
   ~set -e~ 。 ~rg ... | head~ 一类限流 pipeline 可能因 SIGPIPE 失败，
   应优先使用工具原生 limit 参数。
@@ -276,7 +277,26 @@ make EMACSCLIENT="emacsclient -s magent-live-test" test-live-smoke
   ~emacs -Q --batch~，看不到 live buffer 或用户已加载的 package。
 - ~emacs_eval_live~：timeout 只属于 best effort；阻塞的 C primitive 或进程级
   failure 仍可能卡死、崩溃 live Emacs。
-- grep：确认 ripgrep 已安装： ~which rg~ 。
+- grep：确认 project host 上已安装 ripgrep： ~which rg~ 。
+
+*** TRAMP project 启动或 tool call 卡住
+
+*问题：* 从 remote file/Dired buffer 启动 Magent，或调用 project tool 时阻塞
+Emacs。
+
+*诊断：*
+
+1. 先确认同一目录可用普通 TRAMP file operation 访问。
+2. 检查 ~*magent-log*~ 与 ~*Messages*~ 中的精确 operation。
+3. 确认只有 ~bash~ 或 ~grep~ 本应启动 project-host process。
+
+*解决：*
+
+- ACP placeholder、Action、Doctor 与 ~emacs_eval~ 必须保持本地；这些路径出现
+  remote process 属于 bug。
+- 在 remote project host 上为对应 ~project-process~ tool 安装 ~bash~ 和 ~rg~。
+- Remote file tool 仍使用同步 Emacs/TRAMP file API；损坏的 SSH transport 因此
+  仍可能阻塞一次显式 file operation。修复或中止 TRAMP connection 后再重试。
 
 *** 模型返回的 Elisp 卡死或崩溃 Emacs
 
