@@ -15,7 +15,7 @@
 
 (require 'cl-lib)
 (require 'gptel)
-(require 'magent-llm)
+(require 'magent-sampling)
 
 (cl-defstruct (magent-agent-info
                (:constructor nil)

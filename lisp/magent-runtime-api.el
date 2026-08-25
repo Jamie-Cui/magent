@@ -276,7 +276,7 @@ Pass nil to restore automatic routing."
   (let ((stored-route
          (when route
            (magent-model-route-relabel
-            (magent-llm-gptel-validate-route route) 'session))))
+            (magent-sampling-gptel-validate-route route) 'session))))
     (setf (magent-runtime-session-model-route runtime-session) stored-route)
     stored-route))
 

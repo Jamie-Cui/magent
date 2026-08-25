@@ -60,7 +60,7 @@ timeout so host policy remains authoritative. When ~wait_agent~ omits its
 timeout, it uses a positive ~magent-request-timeout~ or a finite 300-second
 fallback. Timing out one wait does not cancel or close the child job.
 
-The provider boundary remains ~gptel-request~ through ~magent-llm-gptel.el~. Magent owns orchestration, tool dispatch, persistence, abort behavior, and child-job coordination.
+The provider boundary remains ~gptel-request~ through ~magent-sampling-gptel.el~. Magent owns orchestration, tool dispatch, persistence, abort behavior, and child-job coordination.
 
 * Inheritance
 

@@ -21,8 +21,8 @@
 (require 'gptel-request)
 (require 'magent-config)
 (require 'magent-action)
-(require 'magent-llm)
-(require 'magent-llm-gptel)
+(require 'magent-sampling)
+(require 'magent-sampling-gptel)
 (require 'magent-prompt)
 (require 'magent-redaction)
 
@@ -865,7 +865,7 @@ the user-owned heading.  ACTIVE defaults to t."
 (cl-defun magent-memory--summarize-with-llm (plan bundle callback)
   "Summarize BUNDLE for PLAN, then call CALLBACK with text or nil."
   (let* ((request
-          (magent-llm-request-create
+          (magent-sampling-request-create
            :prompt (magent-memory--summarizer-user-prompt plan bundle)
            :system (magent-memory--summarizer-system-prompt)
            :stream nil
@@ -879,23 +879,23 @@ the user-owned heading.  ACTIVE defaults to t."
                            :magent-memory t)
            :callback
            (lambda (event)
-             (pcase (magent-llm-event-type event)
+             (pcase (magent-sampling-event-type event)
                ('completed
                 (funcall
                  callback
                  (condition-case nil
                      (magent-memory--sanitize-outbound
-                      (or (magent-llm-event-text event) ""))
+                      (or (magent-sampling-event-text event) ""))
                    (magent-redaction-unsafe-value nil))))
                ('error
                 (magent-log
                  "WARN magent memory summarization failed: %s"
                  (condition-case nil
                      (magent-redaction-string
-                      (format "%s" (magent-llm-event-message event)) t)
+                      (format "%s" (magent-sampling-event-message event)) t)
                    (magent-redaction-unsafe-value "redacted error")))
                 (funcall callback nil)))))))
-    (magent-llm-gptel-sample request)))
+    (magent-sampling-gptel-sample request)))
 
 (defun magent-memory--complete-command (status message on-complete)
   "Record memory Action STATUS and MESSAGE, then call ON-COMPLETE."

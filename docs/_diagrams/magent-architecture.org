@@ -80,7 +80,7 @@ participant "magent-runtime-api.el" as Runtime
 participant "magent-runtime-queue.el" as Queue
 participant "magent-ledger.el" as Ledger
 participant "magent-agent.el" as Agent
-participant "magent-llm-gptel.el" as Adapter
+participant "magent-sampling-gptel.el" as Adapter
 participant "gptel-request" as Gptel
 participant "magent-agent-loop.el" as Loop
 participant "magent-tool-orchestrator.el" as Orchestrator

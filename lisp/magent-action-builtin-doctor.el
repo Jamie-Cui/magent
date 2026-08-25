@@ -21,8 +21,8 @@
 (require 'magent-action-session)
 (require 'magent-config)
 (require 'magent-json)
-(require 'magent-llm)
-(require 'magent-llm-gptel)
+(require 'magent-sampling)
+(require 'magent-sampling-gptel)
 (require 'magent-prompt)
 (require 'magent-redaction)
 (require 'magent-session)
@@ -759,11 +759,11 @@ output data."
         (debug-on-signal nil))
     (unless (or (magent-doctor-state-cancelled-p state)
                 (not (eq (magent-action-invocation-status context) 'active)))
-      (pcase (magent-llm-event-type event)
+      (pcase (magent-sampling-event-type event)
       ('completed
        (magent-doctor--cancel-request-timer state)
        (setf (magent-doctor-state-request-handle state) nil)
-       (let ((text (or (magent-llm-event-text event) "")))
+       (let ((text (or (magent-sampling-event-text event) "")))
          (if (string-empty-p (string-trim text))
              (magent-doctor--done
               state 'failed "Doctor analysis returned an empty response")
@@ -784,7 +784,7 @@ output data."
             (format "Doctor analysis failed: %s"
                     (magent-doctor--safe-error
                      (list 'error
-                           (format "%s" (magent-llm-event-message event)))
+                           (format "%s" (magent-sampling-event-message event)))
                      state)))
          (magent-doctor-security-error
           (magent-doctor--done
@@ -798,7 +798,7 @@ output data."
                          "\n\n"
                          (magent-json-encode bundle)))
          (request
-          (magent-llm-request-create
+          (magent-sampling-request-create
            :prompt prompt
            :system (magent-prompt-read "internal/doctor-system.org")
            :tools nil
@@ -815,7 +815,7 @@ output data."
            (lambda (event)
              (magent-doctor--request-callback context state event)))))
     (magent-action-progress context "Analyzing sanitized diagnostics...")
-    (let ((handle (magent-llm-gptel-sample request)))
+    (let ((handle (magent-sampling-gptel-sample request)))
       (if (or (magent-doctor-state-cancelled-p state)
               (not (eq (magent-action-invocation-status context) 'active)))
           (when (and (bufferp handle) (buffer-live-p handle))

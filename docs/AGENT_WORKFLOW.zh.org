@@ -140,7 +140,7 @@ frontend；共享 runtime 行为保持 frontend-neutral。
 Magent 刻意保留以下差异：
 
 - UI 是 Emacs-native；受支持的交互是 agent-shell + in-process ACP。
-- Provider streaming 经 ~magent-llm-gptel.el~ 规范化，但 transport 仍是 gptel。
+- Provider streaming 经 ~magent-sampling-gptel.el~ 规范化，但 transport 仍是 gptel。
 - Codex core 有 app-server mailbox、steering queue 和更丰富的 intra-turn input 语义；Magent 把 request serialization 放在 runtime queue，用 Codex-style tool continuation 处理工具结果：工具执行记录 model-visible output，然后 turn layer 继续 sampling，直到模型返回 assistant completion。Magent 仍不实现 Codex 的 app-server mailbox、steering queue、stop hooks 或 mid-turn auto-compaction。
 - Magent 用自己的 session JSON ~snapshot + journal~ ，不直接使用 Codex rollout files。
 - Tool call 和 output 在 Magent 中是一个 source-of-truth item 的状态更新。

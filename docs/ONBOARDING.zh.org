@@ -99,10 +99,10 @@ trusted Action 或 canonical catalog 中的一等 tool；capability resolver 根
 *关键文件：*
 
 - ~magent-agent-loop.el~ ：Magent-owned loop、tool dispatch、serial queueing、abort helpers、continuation outcomes。
-- ~magent-llm.el~ ：provider-neutral request/event protocol。
-- ~magent-llm-gptel.el~ ：薄的 ~gptel-request~ sampling adapter。
+- ~magent-sampling.el~ ：provider-neutral request/event protocol。
+- ~magent-sampling-gptel.el~ ：薄的 ~gptel-request~ sampling adapter。
 
-*职责：* ~magent-agent-loop.el~ 消费 normalized LLM events，记录 assistant/tool state，经过 ~magent-tool-orchestrator~ 分发工具，并在 model-visible tool output 记录完成后返回 continuation outcome。 ~magent-agent-run-turn~ 负责 provider-native tool continuation，显式完成空响应，并在可选 sampling limit 处直接失败。Reasoning 与 assistant text 分开保存。 ~magent-llm-gptel.el~ 仍然调用 ~gptel-request~ ；Magent 不重写 provider transport。
+*职责：* ~magent-agent-loop.el~ 消费 normalized LLM events，记录 assistant/tool state，经过 ~magent-tool-orchestrator~ 分发工具，并在 model-visible tool output 记录完成后返回 continuation outcome。 ~magent-agent-run-turn~ 负责 provider-native tool continuation，显式完成空响应，并在可选 sampling limit 处直接失败。Reasoning 与 assistant text 分开保存。 ~magent-sampling-gptel.el~ 仍然调用 ~gptel-request~ ；Magent 不重写 provider transport。
 
 ** 第 6 层：受支持的 Frontend
 
@@ -240,7 +240,7 @@ API。
    scope-aware ~/$skill~ descriptor。
 3. ~magent-runtime-api.el~ / ~magent-runtime-queue.el~ / ~magent-ledger.el~ ：记录、排队并启动普通或 Action-owned turn。
 4. ~magent-agent.el~ ：构造 prompt，选择 agent、skills、capabilities 和 tools。
-5. ~magent-llm-gptel.el~ / ~magent-agent-loop.el~ ：通过 gptel sampling，并负责 normalized continuation outcomes。
+5. ~magent-sampling-gptel.el~ / ~magent-agent-loop.el~ ：通过 gptel sampling，并负责 normalized continuation outcomes。
 6. ~magent-tool-orchestrator.el~ / ~magent-tools.el~ ：解析权限并执行 tool implementations。
 
 ** Step 4：权限
@@ -283,7 +283,7 @@ API。
 
 *修改建议：* 任何 loop state、tool callback ordering 或 abort handling 的改动都可能导致 turn hang 或 session history 损坏。先加 ERT，再在 Emacs 可用时用 tool-use prompts 做 live 验证。
 
-** 2. ~magent-llm-gptel.el~
+** 2. ~magent-sampling-gptel.el~
 
 *复杂原因：* 它是唯一允许触碰 gptel callback/FSM 细节的位置。
 

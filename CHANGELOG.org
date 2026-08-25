@@ -28,6 +28,9 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Changed
 
+- Tool-call headings now emphasize factual operations instead of repeating
+  model-authored reason summaries, while approval and audit records retain the
+  richer summary.
 - Narrowed ~magent-agent-shell.el~ to Magent's ACP config, the single
   ~magent-start~ compatibility entry, and an isolated temporary context
   compatibility block. Interactive buffers, prompts, queues, slash menus,

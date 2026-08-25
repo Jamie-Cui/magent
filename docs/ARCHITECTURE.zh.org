@@ -18,7 +18,7 @@ Magent 是一个 Emacs-native 的 AI coding agent。它的核心设计判断是�
 #+caption: Magent architecture boundary
 [[file:assets/img/diagrams/architecture-boundary.svg]]
 
-这个结构让替换点保持可见。换 provider 应该局限在 ~magent-llm-gptel.el~ 和 gptel 配置里；换 frontend 应该局限在 ~magent-agent-shell.el~、~magent-acp.el~ 和 ~magent-runtime-api.el~ 附近；Action registration、Workflow、Step 或 Invocation 的修改应该通过 ~magent-action.el~，isolated Action persistence 属于 ~magent-action-session.el~，交互 viewer 属于 ~magent-action-session-view.el~；其余持久化和恢复修改应该通过 ledger/session 模块；工具策略应该通过 permission 和 orchestrator 模块。
+这个结构让替换点保持可见。换 provider 应该局限在 ~magent-sampling-gptel.el~ 和 gptel 配置里；换 frontend 应该局限在 ~magent-agent-shell.el~、~magent-acp.el~ 和 ~magent-runtime-api.el~ 附近；Action registration、Workflow、Step 或 Invocation 的修改应该通过 ~magent-action.el~，isolated Action persistence 属于 ~magent-action-session.el~，交互 viewer 属于 ~magent-action-session-view.el~；其余持久化和恢复修改应该通过 ledger/session 模块；工具策略应该通过 permission 和 orchestrator 模块。
 
 ** TRAMP locality 契约
 
@@ -56,7 +56,7 @@ Emacs 不只是宿主进程。Magent 依赖活的编辑器状态：buffer、majo
 
 ** Provider Plumbing
 
-~magent-llm.el~ 定义 provider-neutral request/event。 ~magent-llm-gptel.el~ 负责一次 sampling request：调用 ~gptel-request~ ，再把 gptel callback 转成 Magent normalized events。这个 adapter 可以隐藏 gptel callback/FSM 细节，但主 loop 只消费 normalized events。Reasoning event 与 assistant text 分开保存；reasoning-only completion 可以产生空 assistant content，不会把 chain text 泄漏成最终回答。
+~magent-sampling.el~ 定义 provider-neutral request/event。 ~magent-sampling-gptel.el~ 负责一次 sampling request：调用 ~gptel-request~ ，再把 gptel callback 转成 Magent normalized events。这个 adapter 可以隐藏 gptel callback/FSM 细节，但主 loop 只消费 normalized events。Reasoning event 与 assistant text 分开保存；reasoning-only completion 可以产生空 assistant content，不会把 chain text 泄漏成最终回答。
 
 每次 provider continuation 都会开始一个新的 sample 边界。公开的 terminal result
 只包含最后一个 sample 的 assistant text，ledger 则保留完整 turn transcript 和 tool
@@ -164,7 +164,7 @@ session 私有、带 TTL/quota 的 spill，只能凭 opaque id 通过 ~read_tool
 4. ~magent-runtime-api.el~ 先解析 request-local agent 和精确 tool set，再记录 queued turn 和 completed user item。
 5. ~magent-runtime-queue.el~ 在全局执行槽空闲时启动 turn。
 6. ~magent-agent.el~ 选择 session agent、active skills、capability instructions 和允许的工具。
-7. ~magent-llm-gptel.el~ 调用 ~gptel-request~ 发起一次 sampling。
+7. ~magent-sampling-gptel.el~ 调用 ~gptel-request~ 发起一次 sampling。
 8. ~magent-agent-loop.el~ 接收 normalized text、reasoning、tool-call 和 completion events。
 9. tool call 累积到 ~tool-call-batch-end~ 后，通过 orchestrator 串行执行。
 10. tool result 更新同一个 tool item，而不是创建一条独立的持久记录。
@@ -267,7 +267,7 @@ Magent 更接近 “gptel + stateful agent runtime”，不是 gptel 的替代�
 
 实际开发时应保留这些边界：
 
-- Provider 工作留在 gptel 和 ~magent-llm-gptel.el~ 。
+- Provider 工作留在 gptel 和 ~magent-sampling-gptel.el~ 。
 - 受支持的 frontend 工作放进 ~magent-agent-shell.el~ ，不要放进不受支持的 UI 文件。
 - durable workflow state 留在 ledger。
 - child-agent 行为保持和 ~docs/AGENT_JOBS.org~ 一致。

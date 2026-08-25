@@ -18,7 +18,7 @@ The boundary is intentionally narrow:
 #+caption: Magent architecture boundary
 [[file:assets/img/diagrams/architecture-boundary.svg]]
 
-This shape keeps replacement points visible. A provider change should stay behind ~magent-llm-gptel.el~ and gptel configuration. A frontend change should stay around ~magent-agent-shell.el~, ~magent-acp.el~, and ~magent-runtime-api.el~. An Action registration, Workflow, Step, or Invocation change should go through ~magent-action.el~, while isolated Action persistence belongs in ~magent-action-session.el~ and its interactive viewer belongs in ~magent-action-session-view.el~. A persistence or resume change should otherwise go through the ledger and session modules. A tool policy change should go through the permission and orchestrator modules.
+This shape keeps replacement points visible. A provider change should stay behind ~magent-sampling-gptel.el~ and gptel configuration. A frontend change should stay around ~magent-agent-shell.el~, ~magent-acp.el~, and ~magent-runtime-api.el~. An Action registration, Workflow, Step, or Invocation change should go through ~magent-action.el~, while isolated Action persistence belongs in ~magent-action-session.el~ and its interactive viewer belongs in ~magent-action-session-view.el~. A persistence or resume change should otherwise go through the ledger and session modules. A tool policy change should go through the permission and orchestrator modules.
 
 ** TRAMP Locality Contract
 
@@ -58,7 +58,7 @@ Emacs is not just a host process. Magent depends on live editor state through bu
 
 ** Provider Plumbing
 
-~magent-llm.el~ defines provider-neutral request and event shapes. ~magent-llm-gptel.el~ performs one sampling request by calling ~gptel-request~ and translating gptel callbacks into normalized Magent events. Magent may hide gptel callback/FSM details inside this adapter, but the rest of the loop consumes only normalized events. Reasoning events are kept separate from assistant text; reasoning-only completions are allowed to complete with empty assistant content instead of leaking chain text into the answer.
+~magent-sampling.el~ defines provider-neutral request and event shapes. ~magent-sampling-gptel.el~ performs one sampling request by calling ~gptel-request~ and translating gptel callbacks into normalized Magent events. Magent may hide gptel callback/FSM details inside this adapter, but the rest of the loop consumes only normalized events. Reasoning events are kept separate from assistant text; reasoning-only completions are allowed to complete with empty assistant content instead of leaking chain text into the answer.
 
 Each provider continuation starts a new sample boundary. The public terminal
 result contains only the final sample's assistant text, while the ledger keeps
@@ -180,7 +180,7 @@ This catalog intentionally has no compatibility aliases:
 4. ~magent-runtime-api.el~ resolves the request-local agent and exact tool set, then records a queued turn and a completed user item.
 5. ~magent-runtime-queue.el~ starts the turn when the global execution slot is free.
 6. ~magent-agent.el~ chooses the session agent, active skills, capability instructions, and allowed tools.
-7. ~magent-llm-gptel.el~ calls ~gptel-request~ for one sampling request.
+7. ~magent-sampling-gptel.el~ calls ~gptel-request~ for one sampling request.
 8. ~magent-agent-loop.el~ receives normalized text, reasoning, tool-call, and completion events.
 9. Tool calls are accumulated until ~tool-call-batch-end~, then dispatched serially through the orchestrator.
 10. Tool results update the same ledger item that started with the tool call.
@@ -302,7 +302,7 @@ Magent is closest to gptel plus a stateful agent runtime, not a replacement for 
 
 The practical consequence is that new work should preserve these boundaries:
 
-- Keep provider work in gptel and ~magent-llm-gptel.el~.
+- Keep provider work in gptel and ~magent-sampling-gptel.el~.
 - Keep frontend work in ~magent-agent-shell.el~, ACP conversion in
   ~magent-acp.el~, and shared runtime behavior in ~magent-runtime-api.el~.
 - Keep durable workflow state in the ledger.
