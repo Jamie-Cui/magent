@@ -165,13 +165,11 @@ Skills are instruction-only Markdown injected into the system prompt.
 Companion Elisp is not loaded.
 
 Instruction skills can be selected as one-shot context for the next request.
-The agent-shell frontend exposes
-~magent-agent-shell-toggle-skill-for-next-request~. ACP also advertises every
-visible instruction skill as ~/$name~; this explicitly selects the skill for
-an ordinary turn. Skills never enter the Action registry. Elisp-native Actions
-are registered separately through
-~magent-action-register~ and can be selected with
-~magent-agent-shell-run-command~. ~/skills~ lists the same descriptors without
+ACP advertises every visible instruction skill as ~/$name~ in agent-shell;
+submitting or selecting it explicitly applies the skill to one ordinary turn.
+Skills never enter the Action registry. Elisp-native Actions are registered
+separately through ~magent-action-register~ and are selected as ~/name~ from
+agent-shell's slash menu. ~/skills~ lists the same descriptors without
 a provider request. The bundled ~/init~ command initializes or refreshes the
 project root ~AGENTS.md~ and accepts optional extra text.
 
@@ -483,7 +481,7 @@ Skill instructions for the agent.
 - *Child-agent architecture:* ~docs/AGENT_JOBS.org~
 - *Interactive help:* ~M-x magent-action-run-doctor~ for self-diagnostics
 - *Frontend:* ~M-x magent-start~
-- *Skills:* ~M-x magent-agent-shell-toggle-skill-for-next-request~
+- *Skills:* select ~/$name~ from agent-shell's slash menu
 - *Logs:* open ~*magent-log*~ with ~C-x b~
 - *Agent selection:* ~M-x agent-shell-set-session-mode~ from the agent-shell buffer
 

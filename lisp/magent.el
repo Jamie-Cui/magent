@@ -57,10 +57,11 @@
 ;;   M-x customize-group RET magent RET
 ;;
 ;; Usage:
-;;   M-x magent-start                    - Open or reuse the project session
-;;   M-x magent-agent-shell-start        - Start a new Magent shell
-;;   M-x magent-agent-shell-prompt-region - Send the selected region
-;;   M-x magent-agent-shell-ask-at-point - Ask about the symbol at point
+;;   M-x magent-start                    - Start the Magent frontend
+;;   M-x agent-shell                     - Select a registered agent backend
+;;
+;; Once inside Magent, use agent-shell's native commands and slash menu for
+;; prompt submission, region/context transfer, Actions, skills, and interrupts.
 ;;
 ;; Setup:
 ;; 1. Configure gptel with your provider and API key:

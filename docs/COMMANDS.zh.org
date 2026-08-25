@@ -119,8 +119,8 @@ bug、regression、不安全的边界情况和缺失测试，并按严重程度�
 
 ** 其他调用方式与扩展
 
-~M-x magent-agent-shell-run-command~ 可以选择并运行任意已注册 slash command。
-内置单 turn prompt Action 是 ~magent-action-builtins.el~ 中的数据项；第三方包使用
+agent-shell 会展示已注册 slash command，并运行选中的 ~/name~ 输入。内置单 turn
+prompt Action 是 ~magent-action-builtins.el~ 中的数据项；第三方包使用
 相同的公开 Action API：
 
 #+begin_src emacs-lisp
@@ -342,5 +342,5 @@ Action-session viewer 优先显示最终结果，并默认折叠详细 activity�
   时，使用 slash command。
 - 当 Magent 维护、profile-memory 管理或脱敏诊断需要独立 durable session 时，
   按当前 UI 选择 slash 或 M-x 入口。
-- 对于不属于预定义工作流的自由请求，使用 ~magent-start~ 、
-  ~magent-agent-shell-prompt-region~ 和 ~magent-agent-shell-ask-at-point~ 。
+- 对于不属于预定义工作流的自由请求，先使用 ~magent-start~ 进入 Magent，再使用
+  agent-shell 自带的 prompt 与 context command。

@@ -502,7 +502,17 @@
                     magent-permission--glob-to-regexp
                     magent-session--validate-json-state
                     magent-runtime-queue--set-submission-starter
-                    magent-runtime-queue--bootstrap-preserved-backends))
+                    magent-runtime-queue--bootstrap-preserved-backends
+                    magent-agent-shell-start
+                    magent-agent-shell-send-prompt
+                    magent-agent-shell-toggle-skill-for-next-request
+                    magent-agent-shell-clear-skills-for-next-request
+                    magent-agent-shell-run-command
+                    magent-agent-shell-run-init-command
+                    magent-agent-shell-prompt-region
+                    magent-agent-shell-ask-at-point
+                    magent-agent-shell-interrupt
+                    magent-agent-shell-processing-p))
     (should-not (fboundp symbol))))
 
 (ert-deftest magent-test-aa-interactive-command-names-are-canonical ()
@@ -13028,11 +13038,8 @@
       (unwind-protect
           (progn
             (setq shell-buffer
-                  (agent-shell--start
-                   :config (magent-agent-shell-make-config)
-                   :no-focus t
-                   :new-session t
-                   :session-strategy agent-shell-session-strategy))
+                  (agent-shell-start
+                   :config (magent-agent-shell-make-config)))
             (should
              (eq (buffer-local-value 'agent-shell-session-strategy
                                      shell-buffer)
@@ -13040,37 +13047,46 @@
         (when (buffer-live-p shell-buffer)
           (kill-buffer shell-buffer))))))
 
-(ert-deftest magent-test-agent-shell-start-uses-magent-session-strategy ()
-  "Test Magent agent-shell entry points do not inherit global prompt strategy."
-  (require 'magent-agent-shell)
-  (let ((magent-agent-shell-session-strategy 'new)
-        captured)
-    (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
-               #'ignore)
-              ((symbol-function 'agent-shell-start)
-               (lambda (&rest _args)
-                 (setq captured agent-shell-session-strategy)
-                 'shell-buffer)))
-      (should (eq (magent-agent-shell-start) 'shell-buffer))
-      (should (eq captured 'new)))))
-
 (ert-deftest magent-test-start-is-canonical-agent-shell-entry-point ()
   "Test `magent-start' opens Magent through the supported frontend."
   (require 'magent-agent-shell)
-  (let (captured-config)
+  (let ((magent-agent-shell-session-strategy 'new)
+        captured-config captured-strategy)
     (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
                #'ignore)
-              ((symbol-function 'magent-agent-shell-ensure-config)
-               (lambda () 'magent))
-              ((symbol-function 'magent-agent-shell--buffer)
-               (lambda (&optional _no-create) nil))
-              ((symbol-function 'agent-shell--dwim)
+              ((symbol-function 'agent-shell-start)
                (lambda (&rest args)
                  (setq captured-config (plist-get args :config))
+                 (setq captured-strategy agent-shell-session-strategy)
                  'shell-buffer)))
       (should (commandp 'magent-start))
       (should (eq (magent-start) 'shell-buffer))
-      (should (eq (map-elt captured-config :identifier) 'magent)))))
+      (should (eq (map-elt captured-config :identifier) 'magent))
+      (should (eq captured-strategy 'new)))))
+
+(ert-deftest magent-test-agent-shell-adapter-has-a-narrow-private-boundary ()
+  "Test production coupling is limited to context compatibility advices."
+  (require 'magent-agent-shell)
+  (let ((source (expand-file-name "lisp/magent-agent-shell.el"
+                                  magent-test--root-directory)))
+    (with-temp-buffer
+      (insert-file-contents source)
+      (dolist (private-state '("agent-shell--state"
+                               "agent-shell--send-command"
+                               "agent-shell--display-buffer"
+                               "agent-shell--dwim"
+                               "shell-maker--"))
+        (goto-char (point-min))
+        (should-not (search-forward private-state nil t)))))
+  (should
+   (equal
+    magent-agent-shell--context-compatibility-advices
+    '((agent-shell--context . magent-agent-shell--context)
+      (agent-shell--get-region-context .
+                                       magent-agent-shell--get-region-context)
+      (agent-shell--get-files-context . magent-agent-shell--get-files-context)
+      (agent-shell--get-current-line-context .
+                                             magent-agent-shell--get-current-line-context)))))
 
 (ert-deftest magent-test-agent-shell-suppresses-blank-line-context ()
   "Test blank current-line context does not produce inverted line ranges."
@@ -13188,165 +13204,32 @@
     (unwind-protect
         (progn
           (with-current-buffer magent-shell
-            (setq major-mode 'agent-shell-mode)
-            (setq-local agent-shell--state
-                        '((:agent-config . ((:identifier . magent))))))
+            (setq major-mode 'agent-shell-mode))
           (with-current-buffer other-shell
-            (setq major-mode 'agent-shell-mode)
-            (setq-local agent-shell--state
-                        '((:agent-config . ((:identifier . other))))))
+            (setq major-mode 'agent-shell-mode))
           (with-temp-buffer
             (setq buffer-file-name
                   "/ssh:test.invalid:/srv/project/example.el")
-            (dolist (case `((,magent-shell . nil)
-                            (,other-shell . ,remote-cwd)))
-              (let (captured-cwd)
-                (magent-agent-shell--context
-                 (lambda (&rest _args)
-                   (magent-agent-shell--get-region-context
-                    (lambda (&rest region-args)
-                      (setq captured-cwd
-                            (plist-get region-args :agent-cwd)))
-                    :agent-cwd remote-cwd))
-                 :shell-buffer (car case))
-                (should (equal captured-cwd (cdr case)))))))
+            (cl-letf (((symbol-function 'agent-shell-get-config)
+                       (lambda (buffer)
+                         `((:identifier
+                            . ,(if (eq buffer magent-shell)
+                                   'magent
+                                 'other))))))
+              (dolist (case `((,magent-shell . nil)
+                              (,other-shell . ,remote-cwd)))
+                (let (captured-cwd)
+                  (magent-agent-shell--context
+                   (lambda (&rest _args)
+                     (magent-agent-shell--get-region-context
+                      (lambda (&rest region-args)
+                        (setq captured-cwd
+                              (plist-get region-args :agent-cwd)))
+                      :agent-cwd remote-cwd))
+                   :shell-buffer (car case))
+                  (should (equal captured-cwd (cdr case))))))))
       (kill-buffer magent-shell)
       (kill-buffer other-shell))))
-
-(ert-deftest magent-test-agent-shell-send-prompt-queues-skills ()
-  "Test agent-shell prompt submission records request-local skills."
-  (require 'magent-agent-shell)
-  (let ((buffer (generate-new-buffer "*magent-skill-queue*"))
-        queued)
-    (unwind-protect
-        (progn
-          (with-current-buffer buffer
-            (setq major-mode 'agent-shell-mode)
-            (setq-local shell-maker--busy t)
-            (setq-local agent-shell--state
-                        '((:agent-config . ((:identifier . magent))))))
-          (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
-                     #'ignore)
-                    ((symbol-function 'magent-agent-shell-ensure-config)
-                     (lambda () 'magent))
-                    ((symbol-function 'magent-agent-shell--buffer)
-                     (lambda (&optional _no-create) buffer))
-                    ((symbol-function 'magent-agent-shell--recover-stale-busy)
-                     #'ignore)
-                    ((symbol-function 'shell-maker-busy)
-                     (lambda () t))
-                    ((symbol-function 'agent-shell-prompt-queue)
-                     (lambda (prompt)
-                       (setq queued prompt))))
-            (magent-agent-shell-send-prompt
-             "hello" :skills '("init") :no-focus t))
-          (should (equal queued "hello"))
-          (with-current-buffer buffer
-            (should (equal magent-agent-shell--prompt-skill-queue
-                           '((:prompt "hello" :skills ("init")))))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest magent-test-agent-shell-prepares-prompt-skills-for-runtime ()
-  "Test queued prompt skills are applied to the runtime session."
-  (require 'magent-agent-shell)
-  (let* ((buffer (generate-new-buffer "*magent-skill-runtime*"))
-         (runtime-session (magent-runtime-session-create
-                           :id "session-1" :scope 'global))
-         (client (magent-test--acp-client-for-runtime runtime-session)))
-    (unwind-protect
-        (progn
-          (with-current-buffer buffer
-            (setq major-mode 'agent-shell-mode)
-            (setq-local agent-shell--state
-                        `((:agent-config . ((:identifier . magent)))
-                          (:client . ,client)
-                          (:session . ((:id . "session-1")))))
-            (setq-local magent-agent-shell--prompt-skill-queue
-                        '((:prompt "hello" :skills ("init")))))
-          (cl-letf (((symbol-function 'magent-runtime-session-from-id)
-                     (lambda (session-id _scope)
-                       (and (equal session-id "session-1")
-                            runtime-session))))
-            (magent-agent-shell--prepare-command-skills "hello" buffer))
-          (should (equal (magent-runtime-session-pending-skills
-                          runtime-session)
-                         '("init")))
-          (with-current-buffer buffer
-            (should-not magent-agent-shell--prompt-skill-queue)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest magent-test-agent-shell-keeps-prompt-skills-without-runtime ()
-  "Test queued prompt skills are not consumed before runtime session exists."
-  (require 'magent-agent-shell)
-  (let ((buffer (generate-new-buffer "*magent-skill-no-runtime*")))
-    (unwind-protect
-        (progn
-          (with-current-buffer buffer
-            (setq major-mode 'agent-shell-mode)
-            (setq-local agent-shell--state
-                        '((:agent-config . ((:identifier . magent)))))
-            (setq-local magent-agent-shell--prompt-skill-queue
-                        '((:prompt "hello" :skills ("init")))))
-          (magent-agent-shell--prepare-command-skills "hello" buffer)
-          (with-current-buffer buffer
-            (should (equal magent-agent-shell--prompt-skill-queue
-                           '((:prompt "hello" :skills ("init")))))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest magent-test-agent-shell-run-command-submits-slash-input ()
-  "Test interactive command selection submits the literal slash request."
-  (require 'magent-agent-shell)
-  (let ((magent-action--registry nil)
-        sent)
-    (magent-action-register "demo" :session-policy 'current :workflow #'magent-test--empty-action-workflow)
-    (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-              ((symbol-function 'magent-agent-shell--prepare-skill-context)
-               #'ignore)
-              ((symbol-function 'magent-agent-shell--buffer)
-               (lambda (&optional _no-create) 'shell-buffer))
-              ((symbol-function 'magent-agent-shell--runtime-session)
-               (lambda (&optional _buffer) nil))
-              ((symbol-function 'magent-agent-shell-send-prompt)
-               (lambda (prompt &rest _args) (setq sent prompt))))
-      (magent-agent-shell-run-command "demo" "focus on tests"))
-    (should (equal sent "/demo focus on tests"))))
-
-(ert-deftest magent-test-agent-shell-run-command-lists-session-scope ()
-  "Test interactive command selection uses the shell session's scope."
-  (require 'magent-agent-shell)
-  (let ((magent-action--registry nil)
-        (magent-action--sequence 0)
-        (runtime-session
-         (magent-runtime-session-create
-          :id "session-a" :scope "/tmp/project-a"))
-        offered sent)
-    (magent-action-register
-     "project-a-command" :session-policy 'current :workflow #'magent-test--empty-action-workflow
-     :source-layer 'project :source-scope "/tmp/project-a")
-    (magent-action-register
-     "project-b-command" :session-policy 'current :workflow #'magent-test--empty-action-workflow
-     :source-layer 'project :source-scope "/tmp/project-b")
-    (cl-letf (((symbol-function 'magent--ensure-initialized) #'ignore)
-              ((symbol-function 'magent-runtime-ensure-initialized) #'ignore)
-              ((symbol-function 'magent-agent-shell--prepare-skill-context)
-               #'ignore)
-              ((symbol-function 'magent-agent-shell--buffer)
-               (lambda (&optional _no-create) 'shell-buffer))
-              ((symbol-function 'magent-agent-shell--runtime-session)
-               (lambda (&optional _buffer) runtime-session))
-              ((symbol-function 'completing-read)
-               (lambda (_prompt collection &rest _args)
-                 (setq offered collection)
-                 "project-a-command"))
-              ((symbol-function 'read-string) (lambda (&rest _) ""))
-              ((symbol-function 'magent-agent-shell-send-prompt)
-               (lambda (prompt &rest _args) (setq sent prompt))))
-      (magent-agent-shell-run-command))
-    (should (equal offered '("project-a-command")))
-    (should (equal sent "/project-a-command"))))
 
 (ert-deftest magent-test-runtime-cancel-is-session-scoped ()
   "Test runtime cancellation removes only the requested session's work."
@@ -13915,225 +13798,6 @@
                      :project-root "/project-a"
                      :title "Scoped chat"
                      :updated-at 0.0)))))))
-
-(ert-deftest magent-test-agent-shell-buffer-selects-only-magent-shells ()
-  "Test Magent backend ignores non-Magent agent-shell buffers."
-  (require 'magent-agent-shell)
-  (let ((foreign (generate-new-buffer "*foreign-agent-shell*"))
-        (magent-buffer (generate-new-buffer "*magent-agent-shell*")))
-    (unwind-protect
-        (progn
-          (with-current-buffer foreign
-            (setq major-mode 'agent-shell-mode)
-            (setq-local default-directory "/tmp/")
-            (setq-local agent-shell--state
-                        '((:agent-config . ((:identifier . codex))))))
-          (with-current-buffer magent-buffer
-            (setq major-mode 'agent-shell-mode)
-            (setq-local default-directory
-                        (file-name-as-directory default-directory))
-            (setq-local agent-shell--state
-                        '((:agent-config . ((:identifier . magent))))))
-          (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
-                     #'ignore)
-                    ((symbol-function 'magent-agent-shell-ensure-config)
-                     (lambda () 'config))
-                    ((symbol-function 'agent-shell-cwd)
-                     (lambda () default-directory))
-                    ((symbol-function 'agent-shell-start)
-                     (lambda (&rest _args)
-                       (error "should not create a shell"))))
-            (should (eq (magent-agent-shell--buffer t)
-                        magent-buffer))))
-      (when (buffer-live-p foreign)
-        (kill-buffer foreign))
-      (when (buffer-live-p magent-buffer)
-        (kill-buffer magent-buffer)))))
-
-(ert-deftest magent-test-agent-shell-submit-trims-trailing-input-whitespace ()
-  "Test Magent shell submit removes trailing blank input lines."
-  (require 'magent-agent-shell)
-  (let ((buffer (generate-new-buffer "*magent-trim-input*")))
-    (unwind-protect
-        (with-current-buffer buffer
-          (setq major-mode 'agent-shell-mode)
-          (setq-local agent-shell--state
-                      '((:agent-config . ((:identifier . magent)))))
-          (insert "Magent> hi\n\nthere\n\n")
-          (setq-local comint-last-prompt
-                      (cons (copy-marker (point-min))
-                            (copy-marker (+ (point-min) (length "Magent> ")))))
-          (magent-agent-shell--trim-trailing-input-whitespace)
-          (should (equal (buffer-string)
-                         "Magent> hi\n\nthere")))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest magent-test-agent-shell-processing-p-is-side-effect-free ()
-  "Test processing checks do not initialize runtime or inspect projects."
-  (require 'magent-agent-shell)
-  (let ((initialized nil)
-        (configured nil)
-        (project-looked-up nil)
-        (runtime-checked nil))
-    (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
-               (lambda ()
-                 (setq initialized t)
-                 (error "processing-p should not initialize runtime")))
-              ((symbol-function 'magent-agent-shell-ensure-config)
-               (lambda ()
-                 (setq configured t)
-                 (error "processing-p should not ensure config")))
-              ((symbol-function 'agent-shell-cwd)
-               (lambda ()
-                 (setq project-looked-up t)
-                 (error "processing-p should not inspect project")))
-              ((symbol-function 'magent-runtime-processing-p)
-               (lambda ()
-                 (setq runtime-checked t)
-                 nil)))
-      (should-not (magent-agent-shell-processing-p))
-      (should-not initialized)
-      (should-not configured)
-      (should-not project-looked-up)
-      (should-not runtime-checked))))
-
-(ert-deftest magent-test-agent-shell-send-recovers-stale-busy ()
-  "Test prompt dispatch clears agent-shell busy state when no work is live."
-  (require 'magent-agent-shell)
-  (let ((buffer (generate-new-buffer "*magent-stale-busy*"))
-        inserted queued)
-    (unwind-protect
-        (progn
-          (with-current-buffer buffer
-            (setq major-mode 'agent-shell-mode)
-            (setq-local shell-maker--busy t)
-            (setq-local shell-maker--request-process nil)
-            (setq-local agent-shell--state
-                        `((:agent-config
-                           . ((:identifier . magent)
-                              (:default-model-id . ,(lambda () "model"))
-                              (:default-session-mode-id . ,(lambda () "build"))))
-                          (:initialized . t)
-                          (:set-model . t)
-                          (:set-session-mode . t)
-                          (:session . ((:id . "session-1")))
-                          (:active-requests . nil)
-                          (:pending-restore . nil)
-                          (:pending-prompts . nil))))
-          (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
-                     #'ignore)
-                    ((symbol-function 'magent-agent-shell-ensure-config)
-                     (lambda () 'magent))
-                    ((symbol-function 'magent-agent-shell--buffer)
-                     (lambda (&optional _no-create) buffer))
-                    ((symbol-function 'shell-maker-busy)
-                     (lambda () shell-maker--busy))
-                    ((symbol-function 'agent-shell-insert)
-                     (lambda (&rest args)
-                       (setq inserted args)))
-                    ((symbol-function 'agent-shell-prompt-queue)
-                     (lambda (prompt)
-                       (setq queued prompt))))
-            (magent-agent-shell-send-prompt "hello" :no-focus t))
-          (with-current-buffer buffer
-            (should-not shell-maker--busy))
-          (should-not queued)
-          (should (equal (plist-get inserted :text) "hello"))
-          (should (plist-get inserted :submit))
-          (should (plist-get inserted :no-focus))
-          (should (eq (plist-get inserted :shell-buffer) buffer)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest magent-test-agent-shell-stale-recovery-resumes-prompt-queue ()
-  "Test stale recovery resumes pending prompts through the public queue API."
-  (require 'magent-agent-shell)
-  (with-temp-buffer
-    (setq-local shell-maker--busy t)
-    (setq-local agent-shell--state '((:pending-prompts . ("queued"))))
-    (let (resumed)
-      (cl-letf (((symbol-function 'magent-agent-shell--stale-busy-p)
-                 (lambda () t))
-                ((symbol-function 'agent-shell-prompt-queue-resume)
-                 (lambda ()
-                   (setq resumed t))))
-        (should (magent-agent-shell--recover-stale-busy t)))
-      (should-not shell-maker--busy)
-      (should resumed))))
-
-(ert-deftest magent-test-agent-shell-send-queues-real-busy ()
-  "Test prompt dispatch keeps using agent-shell queue for live work."
-  (require 'magent-agent-shell)
-  (let ((buffer (generate-new-buffer "*magent-real-busy*"))
-        inserted queued)
-    (unwind-protect
-        (progn
-          (with-current-buffer buffer
-            (setq major-mode 'agent-shell-mode)
-            (setq-local shell-maker--busy t)
-            (setq-local shell-maker--request-process nil)
-            (setq-local agent-shell--state
-                        `((:agent-config
-                           . ((:identifier . magent)
-                              (:default-model-id . ,(lambda () "model"))
-                              (:default-session-mode-id . ,(lambda () "build"))))
-                          (:initialized . t)
-                          (:set-model . t)
-                          (:set-session-mode . t)
-                          (:session . ((:id . "session-1")))
-                          (:active-requests . (((:method . "session/prompt"))))
-                          (:pending-restore . nil)
-                          (:pending-prompts . nil))))
-          (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
-                     #'ignore)
-                    ((symbol-function 'magent-agent-shell-ensure-config)
-                     (lambda () 'magent))
-                    ((symbol-function 'magent-agent-shell--buffer)
-                     (lambda (&optional _no-create) buffer))
-                    ((symbol-function 'shell-maker-busy)
-                     (lambda () shell-maker--busy))
-                    ((symbol-function 'agent-shell-insert)
-                     (lambda (&rest args)
-                       (setq inserted args)))
-                    ((symbol-function 'agent-shell-prompt-queue)
-                     (lambda (prompt)
-                       (setq queued prompt))))
-            (magent-agent-shell-send-prompt "hello" :no-focus t))
-          (with-current-buffer buffer
-            (should shell-maker--busy))
-          (should-not inserted)
-          (should (equal queued "hello")))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest magent-test-agent-shell-processing-p-ignores-stale-busy ()
-  "Test stale shell-maker busy state is not reported as Magent processing."
-  (require 'magent-agent-shell)
-  (let ((buffer (generate-new-buffer "*magent-stale-processing*")))
-    (unwind-protect
-        (progn
-          (with-current-buffer buffer
-            (setq major-mode 'agent-shell-mode)
-            (setq-local default-directory
-                        (file-name-as-directory default-directory))
-            (setq-local shell-maker--busy t)
-            (setq-local shell-maker--request-process nil)
-            (setq-local agent-shell--state
-                        `((:agent-config
-                           . ((:identifier . magent)
-                              (:default-model-id . ,(lambda () "model"))
-                              (:default-session-mode-id . ,(lambda () "build"))))
-                          (:initialized . t)
-                          (:set-model . t)
-                          (:set-session-mode . t)
-                          (:session . ((:id . "session-1")))
-                          (:active-requests . nil)
-                          (:pending-restore . nil)
-                          (:pending-prompts . nil))))
-          (should-not (magent-agent-shell-processing-p)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 
 (ert-deftest magent-test-list-agents-loads-project-scope-before-first-prompt ()
   "Test listing agents loads project-local agents without a prior prompt."
@@ -16412,30 +16076,6 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest magent-test-agent-shell-runtime-session-rejects-unbound-buffer ()
-  "Agent-shell does not infer session scope from a buffer directory."
-  (require 'magent-agent-shell)
-  (let ((buffer (generate-new-buffer "*magent-agent-shell-scope-test*")))
-    (unwind-protect
-        (progn
-          (with-current-buffer buffer
-            (setq major-mode 'agent-shell-mode)
-            (setq-local agent-shell--state
-                        '((:agent-config . ((:identifier . magent)))
-                          (:session . ((:id . "same"))))))
-          (cl-letf (((symbol-function 'magent-session-scope-from-directory)
-                     (lambda (&rest _)
-                       (error "unexpected cwd-derived scope")))
-                    ((symbol-function 'magent-runtime-session-from-id)
-                     (lambda (&rest _)
-                       (error "unexpected unbound runtime lookup")))
-                    ((symbol-function 'magent-acp--runtime-session-by-id)
-                     (lambda (&rest _args)
-                       (error "unexpected unbound ACP lookup"))))
-            (should-not (magent-agent-shell--runtime-session buffer))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
 (ert-deftest magent-test-acp-client-session-binding-survives-buffer-cwd-change ()
   "ACP prompt and cancel keep the scope captured at session bootstrap."
   (require 'magent-acp)
@@ -16520,34 +16160,6 @@
        (lambda (err) (setq failure err))))
     (should failure)
     (should-not prepared)))
-
-(ert-deftest magent-test-agent-shell-runtime-session-prefers-client-binding ()
-  "Agent-shell lookup does not drift when its buffer directory changes."
-  (require 'magent-agent-shell)
-  (let* ((magent-acp--client-session-scopes
-          (make-hash-table :test #'eq :weakness 'key))
-         (magent-runtime-api--sessions (make-hash-table :test #'equal))
-         (buffer (generate-new-buffer "*magent-agent-shell-fixed-scope*"))
-         (client `((:context-buffer . ,buffer)))
-         (runtime
-          (magent-runtime-session-create
-           :id "fixed" :scope "/explicit"
-           :magent-session (magent-session-create :id "fixed"))))
-    (unwind-protect
-        (progn
-          (puthash (list "/explicit" "fixed") runtime
-                   magent-runtime-api--sessions)
-          (magent-acp--bind-client-session client runtime)
-          (with-current-buffer buffer
-            (setq major-mode 'agent-shell-mode)
-            (setq-local default-directory "/changed/")
-            (setq-local agent-shell--state
-                        `((:agent-config . ((:identifier . magent)))
-                          (:client . ,client)
-                          (:session . ((:id . "fixed"))))))
-          (should (eq (magent-agent-shell--runtime-session buffer) runtime)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 
 (ert-deftest magent-test-runtime-register-refuses-same-scope-lease-replacement ()
   "A same-scope session cannot replace the exact session owning the lease."
@@ -16767,22 +16379,6 @@
                    logs))
           (should-not (magent-session-list-files)))
       (delete-directory directory t))))
-
-(ert-deftest magent-test-agent-shell-interrupt-honors-force-argument ()
-  "Magent forwards nil and non-nil FORCE without forcing confirmation off."
-  (require 'magent-agent-shell)
-  (let ((buffer (generate-new-buffer "*magent-agent-shell-interrupt*"))
-        calls)
-    (unwind-protect
-        (cl-letf (((symbol-function 'magent-agent-shell--buffer)
-                   (lambda (&optional _no-create) buffer))
-                  ((symbol-function 'agent-shell-interrupt)
-                   (lambda (force) (push force calls))))
-          (magent-agent-shell-interrupt nil)
-          (magent-agent-shell-interrupt 'force)
-          (should (equal (nreverse calls) '(nil force))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 
 (ert-deftest magent-test-session-fork-deep-copies-ledger-and-resets-owned-state ()
   "Forked sessions share history but no mutable conversation state."

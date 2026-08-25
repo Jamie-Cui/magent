@@ -4,8 +4,8 @@
 #+options: toc:nil num:nil
 
 Magent 只支持一个会话式前端： ~agent-shell~ 。它通过进程内 ACP adapter 连接
-Magent runtime。会话式文档和示例必须使用 ~magent-agent-shell.el~ 导出的命令，
-或者直接使用 agent-shell。显式 registered command 也可以通过 ~magent-action~
+Magent runtime。会话式文档和示例必须直接使用 agent-shell，或者使用 Magent 唯一的
+兼容命令 ~magent-start~。显式 registered command 也可以通过 ~magent-action~
 暴露受信任的 ~M-x~ wrapper；这些 wrapper 不构成另一套会话 frontend。
 
 * 公共接口
@@ -17,7 +17,8 @@ invocation 则属于 ~magent-action.el~ 。
 
 * 受支持的模块
 
-- ~magent-agent-shell.el~ 注册 Magent agent-shell 配置，并提供受支持的交互入口。
+- ~magent-agent-shell.el~ 提供 Magent agent-shell 配置、兼容入口 ~magent-start~，以及
+  隔离的 context compatibility block；交互 buffer 和 prompt 行为仍由 agent-shell 负责。
 - ~magent-acp.el~ 实现进程内 ACP request、notification、response、permission 和
   ~session/update~ adapter。
 - ~magent-action.el~ 负责 registered slash/interactive command discovery 和
@@ -28,7 +29,7 @@ invocation 则属于 ~magent-action.el~ 。
 
 * 受支持的流程
 
-1. 使用 ~M-x magent-start~ 启动或复用 Magent；也可以先调用
+1. 使用 ~M-x magent-start~ 启动 Magent；也可以先调用
    ~magent-agent-shell-ensure-config~ 注册配置，再从 ~M-x agent-shell~ 中选择 Magent。
 2. agent-shell 调用 ~magent-acp.el~ 中的进程内 ACP client。
 3. ACP 分别规范化 text 和 resource blocks。本地 ~file://~ resource 会提供 scoped
@@ -47,7 +48,7 @@ invocation 则属于 ~magent-action.el~ 。
 * 配置
 
 - ~magent-agent-shell-session-strategy~ 用于选择受支持前端的 new、latest 或 prompt
-  session 流程；无论使用 Magent 入口命令还是从通用 agent-shell 选择器中选择 Magent，
+  session 流程；无论使用 Magent 兼容入口还是从通用 agent-shell 选择器中选择 Magent，
   该设置都会生效。默认值是 ~prompt~，会列出当前 scope 中的新 session 和已保存
   session。
 
@@ -66,9 +67,10 @@ one-shot skill 会被显式重置。历史中引用的 spilled tool output 会�
 
 * 开发边界
 
-Frontend-neutral 行为放在 ~magent-runtime-api.el~ ，ACP conversion 放在
-~magent-acp.el~ ，受支持的 frontend 行为放在 ~magent-agent-shell.el~ 。不要在 core
-runtime 内引入第二套交互 frontend。
+Frontend-neutral 行为放在 ~magent-runtime-api.el~，ACP conversion 放在
+~magent-acp.el~，交互 frontend 行为留在 agent-shell。~magent-agent-shell.el~ 只保留
+Magent config 与显式分组的 context compatibility advice。不要在 core runtime 内
+引入第二套交互 frontend。
 
 Skill discovery 同样保持 frontend-neutral。
 ~magent-skills-list-descriptors~ 和 ~magent-skills-resolve-descriptor~ 会针对精确
@@ -81,6 +83,8 @@ registered Action command projections 与 skill descriptors 展示为两个独�
 * 当前限制
 
 - 受支持的 frontend 硬依赖 ~agent-shell~ 和 ~acp~ 。
+- Magent 目前仍需为通用 agent-shell picker 显式注册 config，并临时 advice 四个私有
+  context function，以处理 remote-safe 与空行 context。
 - runtime execution 使用全局单执行队列。
 - cancellation 是 session-scoped：取消一个 ACP session 会取消该 session 的 active
   和 queued submissions，但不会移除其他 session 的 queued work。
