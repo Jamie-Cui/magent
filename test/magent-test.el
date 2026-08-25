@@ -2870,7 +2870,7 @@
   (require 'magent-agent)
   (let* ((backend (gptel-make-openai
                     "tools" :key "key"
-                    :models '((tool-model :capabilities (tool-use)))))
+                    :models '((tool-model :capabilities (tool)))))
          (gptel-backend backend)
          (gptel-model 'tool-model)
          (agent (magent-agent-info-create
@@ -12114,10 +12114,14 @@
          (backend
           (gptel-make-openai
            "Capabilities" :key "key"
-           :models '((magent-tool-model :capabilities (tool-use json))
+           :models '((magent-tool-use-model :capabilities (tool-use json))
+                     (magent-tool-model :capabilities (tool reasoning))
                      (magent-no-tool-model :capabilities (json))
                      magent-unknown-tool-model)))
-         (supported
+         (tool-use-supported
+          (magent-model-route-create
+           :backend backend :model 'magent-tool-use-model))
+         (tool-supported
           (magent-model-route-create
            :backend backend :model 'magent-tool-model))
          (unsupported
@@ -12126,14 +12130,16 @@
          (unknown
           (magent-model-route-create
            :backend backend :model 'magent-unknown-tool-model)))
-    (should (eq (magent-llm-gptel-route-tool-capability supported)
+    (should (eq (magent-llm-gptel-route-tool-capability tool-use-supported)
+                'supported))
+    (should (eq (magent-llm-gptel-route-tool-capability tool-supported)
                 'supported))
     (should (eq (magent-llm-gptel-route-tool-capability unsupported)
                 'unsupported))
     (should (eq (magent-llm-gptel-route-tool-capability unknown)
                 'unknown))
     (setq gptel--known-backends nil)
-    (should-error (magent-llm-gptel-validate-route supported)
+    (should-error (magent-llm-gptel-validate-route tool-use-supported)
                   :type 'error)))
 
 (ert-deftest magent-test-acp-session-response-advertises-effort-config ()

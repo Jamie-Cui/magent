@@ -178,7 +178,8 @@ changes."
              (plist-member properties :capabilities))
         (if (cl-some (lambda (capability)
                        (member (format "%s" capability)
-                               '("tool-use" "tools" "function-calling")))
+                               '("tool-use" "tool" "tools"
+                                 "function-calling")))
                      (get model :capabilities))
             'supported
           'unsupported)
