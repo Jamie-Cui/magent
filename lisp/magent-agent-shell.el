@@ -348,6 +348,33 @@ context must not perform remote file I/O."
   (advice-add 'agent-shell--get-region-context :around
               #'magent-agent-shell--get-region-context))
 
+(defun magent-agent-shell--get-files-context (orig &rest args)
+  "Build Magent file context through ORIG without remote file probes.
+For remote files, retain full TRAMP names and omit image detection and project
+containment checks.  Context rendering must not contact the project host."
+  (let* ((files (plist-get args :files))
+         (agent-cwd (plist-get args :agent-cwd))
+         (expanded
+          (mapcar (lambda (file)
+                    (if agent-cwd (expand-file-name file agent-cwd) file))
+                  files)))
+    (if (and files
+             magent-agent-shell--context-request-p
+             (or (and (stringp agent-cwd) (file-remote-p agent-cwd))
+                 (seq-some (lambda (file)
+                             (and (stringp file) (file-remote-p file)))
+                           expanded)))
+        (mapconcat (lambda (file)
+                     (propertize (concat "@" file) 'pointer 'hand))
+                   expanded
+                   "\n\n")
+      (apply orig args))))
+
+(unless (advice-member-p #'magent-agent-shell--get-files-context
+                         'agent-shell--get-files-context)
+  (advice-add 'agent-shell--get-files-context :around
+              #'magent-agent-shell--get-files-context))
+
 (defun magent-agent-shell--get-current-line-context (orig &rest args)
   "Suppress empty current-line context before delegating to ORIG.
 

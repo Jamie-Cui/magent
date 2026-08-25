@@ -323,10 +323,12 @@ extensions."
   :type 'integer
   :group 'magent)
 
-(defcustom magent-grep-program (or (executable-find "rg") "rg")
-  "Path to the grep program.
-Magent uses ripgrep (rg) for fast, recursive code search.
-If rg is not found, grep tool calls will fail with an informative error."
+(defcustom magent-grep-program "rg"
+  "Preferred ripgrep executable used by the grep tool on the project host.
+The name is resolved independently on local and TRAMP project hosts.  An
+explicit path therefore names a path on whichever host owns the project.
+If it cannot be resolved there, Magent falls back to `git grep --no-index'
+on the same host.  It never falls back to a process on another host."
   :type 'string
   :group 'magent)
 

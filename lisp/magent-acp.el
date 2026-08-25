@@ -34,6 +34,28 @@
 (defconst magent-acp-protocol-version 1
   "ACP protocol version supported by Magent.")
 
+(defconst magent-acp--local-control-plane-key :magent-local-control-plane
+  "Private ACP client key marking Magent's in-process local transport.")
+
+(defun magent-acp--start-client-locally (orig &rest args)
+  "Run ORIG with ARGS locally for Magent's in-process ACP client.
+`acp.el' starts a placeholder process even when custom in-process senders own
+all protocol traffic.  Keep that implementation detail off the TRAMP host."
+  (let ((client (plist-get args :client)))
+    (if (and client
+             (map-elt client magent-acp--local-control-plane-key))
+        (let ((default-directory
+               (file-name-as-directory
+                (expand-file-name temporary-file-directory))))
+          (when (file-remote-p default-directory)
+            (error "Magent ACP requires a local temporary directory"))
+          (apply orig args))
+      (apply orig args))))
+
+(unless (advice-member-p #'magent-acp--start-client-locally
+                         'acp--start-client)
+  (advice-add 'acp--start-client :around #'magent-acp--start-client-locally))
+
 (defun magent-acp--content-block (text)
   "Return ACP text content block for TEXT."
   `((type . "text")
@@ -772,8 +794,8 @@ Each handler runs inside the CLIENT's context buffer (via
   (cond
    ((and (eq left 'global) (eq right 'global)) t)
    ((and (stringp left) (stringp right))
-    (equal (file-truename (directory-file-name left))
-           (file-truename (directory-file-name right))))
+    (equal (magent-session-canonical-scope left)
+           (magent-session-canonical-scope right)))
    (t nil)))
 
 (defun magent-acp--scope-for-cwd (cwd)
@@ -1192,12 +1214,15 @@ active message running forever)."
   "Return an in-process ACP client for Magent.
 CONTEXT-BUFFER is passed to `acp-make-client'."
   (magent-acp--ensure-command-refresh-hook)
-  (acp-make-client
-   :context-buffer context-buffer
-   :command "cat"
-   :request-sender #'magent-acp--request-sender
-   :notification-sender #'magent-acp--notification-sender
-   :response-sender #'magent-acp--response-sender))
+  (let ((client
+         (acp-make-client
+          :context-buffer context-buffer
+          :command "cat"
+          :request-sender #'magent-acp--request-sender
+          :notification-sender #'magent-acp--notification-sender
+          :response-sender #'magent-acp--response-sender)))
+    (push (cons magent-acp--local-control-plane-key t) client)
+    client))
 
 (provide 'magent-acp)
 ;;; magent-acp.el ends here

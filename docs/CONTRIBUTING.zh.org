@@ -25,7 +25,7 @@ shell isolation parity 不在范围内。
 - acp 0.13.1+
 - agent-shell 0.66.1+
 - package-lint（仅开发时需要）
-- ripgrep，用于 ~grep~ tool
+- ripgrep 或 Git，用于 ~grep~ tool 测试；优先使用 ripgrep
 
 ** 构建
 

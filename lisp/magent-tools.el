@@ -112,6 +112,45 @@ whole so a subsequent line-based request always makes progress.")
              (and (stringp scope) scope)))
       (magent-project-root)))
 
+(defun magent-tools--local-process-directory ()
+  "Return the directory used to start Magent-owned local processes.
+Signal an error instead of allowing a remote temporary directory to change
+the execution host implicitly."
+  (let ((directory (file-name-as-directory
+                    (expand-file-name temporary-file-directory))))
+    (when (file-remote-p directory)
+      (error "Magent local process directory is remote: %s" directory))
+    directory))
+
+(defun magent-tools--project-executable (program directory)
+  "Resolve PROGRAM for a project process running in DIRECTORY.
+Return the host-local executable spelling consumed by `make-process', or nil.
+Remote lookup happens only for tools whose declared locality is
+`project-process'."
+  (condition-case nil
+      (when (and (stringp program) (not (string-blank-p program)))
+        (let* ((default-directory (file-name-as-directory directory))
+               (remote (file-remote-p default-directory)))
+          (if (file-name-directory program)
+              (let ((candidate (expand-file-name program default-directory)))
+                (and (not (file-directory-p candidate))
+                     (file-executable-p candidate)
+                     (if remote (file-local-name candidate) candidate)))
+            (executable-find program remote))))
+    (error nil)))
+
+(defun magent-tools--start-project-process (tool-name directory &rest arguments)
+  "Start TOOL-NAME's project-side process in DIRECTORY with ARGUMENTS.
+This is Magent's only process-launch mechanism allowed to cross a TRAMP
+boundary.  Local projects use an ordinary local process; remote projects use
+the matching file-name handler."
+  (unless (eq (magent-tools-locality tool-name) 'project-process)
+    (error "Tool %s is not authorized for project-host execution" tool-name))
+  (let* ((default-directory (file-name-as-directory directory))
+         (remote (file-remote-p default-directory)))
+    (apply #'make-process
+           (append arguments (list :file-handler (and remote t))))))
+
 (defun magent-tools--register-cancel-cleanup (cleanup)
   "Register CLEANUP for the current request when supported."
   (when (functionp magent-tools--register-cancel)
@@ -383,8 +422,8 @@ CALLBACK is called with success message or error."
      (magent-tools--fail
       callback (format "Error writing file: %s" (error-message-string err))))))
 
-(defun magent-tools--grep-records (output)
-  "Parse NUL-delimited ripgrep OUTPUT into (PATH TAIL) records."
+(defun magent-tools--grep-nul-tail-records (output)
+  "Parse OUTPUT records shaped as PATH NUL LINE:TEXT newline."
   (let ((position 0)
         (output-length (length output))
         records)
@@ -396,28 +435,100 @@ CALLBACK is called with success message or error."
                               output-length))
                  (path (substring output position nul))
                  (tail (substring output (1+ nul) newline)))
-            (when (string-match-p "\\`[0-9]+:" tail)
-              (push (list path tail) records))
+            (when (string-match "\\`\\([0-9]+\\):\\(.*\\)\\'" tail)
+              (push (list path (match-string 1 tail) (match-string 2 tail))
+                    records))
             (setq position (min output-length (1+ newline)))))))
     (nreverse records)))
 
-(defun magent-tools--grep-display-output (output)
-  "Render NUL-delimited ripgrep OUTPUT in conventional path:line form."
-  (if-let* ((records (magent-tools--grep-records output)))
+(defun magent-tools--git-grep-records (output)
+  "Parse git grep OUTPUT records shaped as PATH NUL LINE NUL TEXT newline."
+  (let ((position 0)
+        (output-length (length output))
+        records)
+    (while (< position output-length)
+      (let ((path-end (string-match "\0" output position)))
+        (if (null path-end)
+            (setq position output-length)
+          (let ((line-end (string-match "\0" output (1+ path-end))))
+            (if (null line-end)
+                (setq position output-length)
+              (let* ((newline (or (string-match "\n" output (1+ line-end))
+                                  output-length))
+                     (path (substring output position path-end))
+                     (line (substring output (1+ path-end) line-end))
+                     (text (substring output (1+ line-end) newline)))
+                (when (string-match-p "\\`[0-9]+\\'" line)
+                  (push (list path line text) records))
+                (setq position (min output-length (1+ newline)))))))))
+    (nreverse records)))
+
+(defun magent-tools--grep-records (output &optional backend)
+  "Parse backend-specific OUTPUT into (PATH LINE TEXT) records.
+BACKEND defaults to `ripgrep'."
+  (if (eq backend 'git-grep)
+      (magent-tools--git-grep-records output)
+    (magent-tools--grep-nul-tail-records output)))
+
+(defun magent-tools--grep-display-output (output &optional backend)
+  "Render backend-specific OUTPUT in conventional path:line:text form."
+  (if-let* ((records (magent-tools--grep-records output backend)))
       (mapconcat (lambda (record)
-                   (format "%s:%s" (car record) (cadr record)))
+                   (format "%s:%s:%s"
+                           (nth 0 record) (nth 1 record) (nth 2 record)))
                  records "\n")
     output))
 
-(defun magent-tools--grep-revisions (output directory)
-  "Return file revision alist parsed from ripgrep OUTPUT in DIRECTORY."
-  (let ((paths (mapcar #'car (magent-tools--grep-records output)))
+(defun magent-tools--grep-revisions (output directory &optional backend)
+  "Return file revisions parsed from backend-specific OUTPUT in DIRECTORY."
+  (let ((paths (mapcar #'car (magent-tools--grep-records output backend)))
         revisions)
     (dolist (path (delete-dups paths))
       (let ((absolute (expand-file-name path directory)))
         (when (file-regular-p absolute)
           (push (cons path (magent-tools--file-revision absolute)) revisions))))
     (sort revisions (lambda (left right) (string< (car left) (car right))))))
+
+(defun magent-tools--grep-backend (directory)
+  "Return the first available search backend on DIRECTORY's project host.
+The fixed preference order is ripgrep, then git grep."
+  (or (when-let* ((program (magent-tools--project-executable
+                            magent-grep-program directory)))
+        (list :name 'ripgrep :program program))
+      (when-let* ((program (magent-tools--project-executable "git" directory)))
+        (list :name 'git-grep :program program))
+      (error (concat "no supported search executable found on project host; "
+                     "tried %s and git")
+             magent-grep-program)))
+
+(defun magent-tools--grep-command (backend pattern target case-sensitive)
+  "Return BACKEND command for PATTERN and TARGET.
+CASE-SENSITIVE controls case folding."
+  (let ((program (plist-get backend :program)))
+    (pcase (plist-get backend :name)
+      ('ripgrep
+       (cons program
+             (append
+              (list "--no-heading" "--with-filename" "--null"
+                    "--line-number" "--color=never")
+              (unless case-sensitive (list "--ignore-case"))
+              (list "--" pattern target))))
+      ('git-grep
+       (cons program
+             (append
+              (list "--no-pager" "grep" "--no-index" "--exclude-standard"
+                    "-I" "-n" "-z" "--no-color" "--extended-regexp")
+              (unless case-sensitive (list "--ignore-case"))
+              (list "-e" pattern "--" target))))
+      (_ (error "Unknown grep backend: %S" (plist-get backend :name))))))
+
+(defun magent-tools--grep-result-metadata
+    (backend revisions &optional truncated limit)
+  "Return result metadata for BACKEND and REVISIONS.
+TRUNCATED and LIMIT describe host-enforced result bounding."
+  (append
+   (list :backend (symbol-name backend) :revisions revisions)
+   (when truncated (list :truncated t :limit limit))))
 
 (defun magent-tools--format-grep-output (matches revisions)
   "Return MATCHES with a deterministic REVISIONS header."
@@ -430,7 +541,8 @@ CALLBACK is called with success message or error."
             matches)))
 
 (defun magent-tools--grep (callback pattern path &optional case-sensitive)
-  "Search for PATTERN in files under PATH using ripgrep asynchronously.
+  "Search asynchronously for PATTERN in files under PATH.
+Prefer ripgrep, then fall back to git grep on the project host.
 If CASE-SENSITIVE is nil, performs case-insensitive search.
 CALLBACK is called with matching lines or error message."
   (let (buf proc)
@@ -442,18 +554,18 @@ CALLBACK is called with matching lines or error message."
             (error "Missing required argument 'path' (got %S)" path))
           (let* ((resolved (magent-tools--resolve-path path))
                  (directory-p (file-directory-p resolved))
-                 (default-directory
+                 (search-directory
                   (if directory-p
                       (file-name-as-directory resolved)
                     (or (file-name-directory resolved)
                         (magent-tools--request-project-root))))
-                 (target (if directory-p "." resolved))
+                 (default-directory search-directory)
+                 (target (if directory-p "." (file-name-nondirectory resolved)))
                  (limit (max 1 magent-grep-max-matches))
-                 (args (append
-                        (list "--no-heading" "--with-filename" "--null"
-                              "--line-number" "--color=never")
-                        (unless case-sensitive (list "--ignore-case"))
-                        (list "--" pattern target)))
+                 (backend (magent-tools--grep-backend search-directory))
+                 (backend-name (plist-get backend :name))
+                 (command (magent-tools--grep-command
+                           backend pattern target case-sensitive))
                  (finished nil)
                  (truncated nil))
             (setq buf (generate-new-buffer " *magent-grep*"))
@@ -469,8 +581,9 @@ CALLBACK is called with matching lines or error message."
                            (trimmed (string-trim-right output))
                            (revisions
                             (magent-tools--grep-revisions
-                             trimmed default-directory))
-                           (matches (magent-tools--grep-display-output trimmed))
+                             trimmed search-directory backend-name))
+                           (matches (magent-tools--grep-display-output
+                                     trimmed backend-name))
                            (rendered
                             (magent-tools--format-grep-output
                              matches revisions)))
@@ -484,8 +597,8 @@ CALLBACK is called with matching lines or error message."
                           :status 'completed
                           :success t
                           :exit-code 0
-                          :metadata (list :truncated t :limit limit
-                                          :revisions revisions)
+                          :metadata (magent-tools--grep-result-metadata
+                                     backend-name revisions t limit)
                           :output (format "%s%s[results truncated after %d matches]"
                                           rendered
                                           (if (string-empty-p rendered) "" "\n")
@@ -495,7 +608,8 @@ CALLBACK is called with matching lines or error message."
                           :status 'completed
                           :success t
                           :exit-code exit-code
-                          :metadata (list :revisions revisions)
+                          :metadata (magent-tools--grep-result-metadata
+                                     backend-name revisions)
                           :output (if (string-blank-p output)
                                       "No matches found"
                                     rendered)))
@@ -504,6 +618,8 @@ CALLBACK is called with matching lines or error message."
                           :status 'completed
                           :success t
                           :exit-code exit-code
+                          :metadata (magent-tools--grep-result-metadata
+                                     backend-name nil)
                           :output "No matches found"))
                         (t
                          (let ((message
@@ -515,13 +631,16 @@ CALLBACK is called with matching lines or error message."
                             :status 'failed
                             :success nil
                             :exit-code exit-code
+                            :metadata (magent-tools--grep-result-metadata
+                                       backend-name nil)
                             :output message
                             :error message)))))))))
               (setq proc
-                    (make-process
+                    (magent-tools--start-project-process
+                     "grep" search-directory
                      :name "magent-grep"
                      :buffer buf
-                     :command (cons magent-grep-program args)
+                     :command command
                      :noquery t
                      :filter
                      (lambda (process chunk)
@@ -720,6 +839,10 @@ CALLBACK is called with success message or error."
   "(progn (require 'subr-x) (let ((debug-on-error nil) (debug-on-quit nil) (debug-on-signal nil) (print-circle t) (print-level 20) (print-length 1000))
      (condition-case err
          (let* ((input (getenv \"MAGENT_EVAL_INPUT\"))
+                (project-root (getenv \"MAGENT_EVAL_PROJECT_ROOT\"))
+                (default-directory (if (and project-root (not (string-empty-p project-root)))
+                                       (file-name-as-directory project-root)
+                                     default-directory))
                 (sexp (with-temp-buffer (insert-file-contents input) (buffer-string)))
                 (parsed (read-from-string sexp))
                 (form (car parsed)))
@@ -791,12 +914,11 @@ CALLBACK is called with success message or error."
                 (insert sexp)))
             (set-file-modes input-file #o600)
             (setq buffer (generate-new-buffer " *magent-emacs-eval*"))
-            (let ((default-directory
-                   (file-name-as-directory
-                    (or (magent-tools--request-project-root)
-                        temporary-file-directory)))
+            (let ((default-directory (magent-tools--local-process-directory))
                   (process-environment (copy-sequence process-environment)))
               (setenv "MAGENT_EVAL_INPUT" input-file)
+              (setenv "MAGENT_EVAL_PROJECT_ROOT"
+                      (magent-tools--request-project-root))
               (setq process
                     (make-process
                      :name "magent-emacs-eval"
@@ -1246,18 +1368,9 @@ EXIT-CODE is nil when no process exit status exists.  METADATA is optional."
      :output bounded-message
      :metadata metadata)))
 
-(defun magent-tools--bash-executable ()
-  "Return the configured Bash executable, or nil when unavailable."
-  (condition-case nil
-      (when (and (stringp magent-bash-program)
-                 (not (string-blank-p magent-bash-program)))
-        (if (file-name-directory magent-bash-program)
-            (let ((program (expand-file-name magent-bash-program)))
-              (and (not (file-directory-p program))
-                   (file-executable-p program)
-                   program))
-          (executable-find magent-bash-program)))
-    (error nil)))
+(defun magent-tools--bash-executable (directory)
+  "Return the configured Bash executable on DIRECTORY's project host."
+  (magent-tools--project-executable magent-bash-program directory))
 
 (defun magent-tools--bash (callback command)
   "Execute COMMAND asynchronously with Bash pipefail semantics.
@@ -1274,7 +1387,8 @@ result containing combined stdout and stderr plus the process exit status."
              (magent-tools--bash-failure
               "Error: magent-bash-timeout must be a positive number.")))
    (t
-    (let ((bash-program (magent-tools--bash-executable)))
+    (let* ((directory (magent-tools--request-project-root))
+           (bash-program (magent-tools--bash-executable directory)))
       (if (not bash-program)
           (funcall callback
                    (magent-tools--bash-failure
@@ -1296,8 +1410,7 @@ result containing combined stdout and stderr plus the process exit status."
                   (when (buffer-live-p buf)
                     (kill-buffer buf))))
           (condition-case err
-              (let ((timeout magent-bash-timeout)
-                    (default-directory (magent-tools--request-project-root)))
+              (let ((timeout magent-bash-timeout))
                 (setq buf (generate-new-buffer " *magent-bash*"))
                 (magent-tools--register-cancel-cleanup cleanup)
                 (setq timer
@@ -1334,7 +1447,8 @@ result containing combined stdout and stderr plus the process exit status."
                                 process-environment))
                   (setenv "BASH_ENV" nil)
                   (setq proc
-                        (make-process
+                        (magent-tools--start-project-process
+                         "bash" directory
                          :name "magent-bash"
                          :buffer buf
                          :command (list bash-program "-o" "pipefail"
@@ -2178,7 +2292,7 @@ See `magent-agent-loop-filter-display-args'.")
 (defvar magent-tools--grep-tool
   (gptel-make-tool
    :name "grep"
-   :description "Search for a regex pattern in files under a directory using ripgrep (rg). Respects .gitignore. Returns matching lines with file paths and line numbers."
+   :description "Search for a regex pattern in files under a directory. Prefers ripgrep (rg) and falls back to git grep with POSIX extended regex on the same project host. Respects Git ignore rules and returns matching lines with file paths and line numbers."
    :args (list '(:name "pattern"
                        :type string
                        :description "Regex pattern to search for")
@@ -2412,34 +2526,37 @@ See `magent-agent-loop-filter-display-args'.")
 
 (defconst magent-tools-catalog
   `((:name "read_file" :tool ,magent-tools--read-file-tool
-     :permission read)
+     :permission read :locality tramp-file)
     (:name "write_file" :tool ,magent-tools--write-file-tool
-     :permission write)
+     :permission write :locality tramp-file)
     (:name "edit_file" :tool ,magent-tools--edit-file-tool
-     :permission edit)
-    (:name "grep" :tool ,magent-tools--grep-tool :permission grep)
-    (:name "glob" :tool ,magent-tools--glob-tool :permission glob)
-    (:name "bash" :tool ,magent-tools--bash-tool :permission bash)
+     :permission edit :locality tramp-file)
+    (:name "grep" :tool ,magent-tools--grep-tool :permission grep
+     :locality project-process)
+    (:name "glob" :tool ,magent-tools--glob-tool :permission glob
+     :locality tramp-file)
+    (:name "bash" :tool ,magent-tools--bash-tool :permission bash
+     :locality project-process)
     (:name "emacs_eval" :tool ,magent-tools--emacs-eval-tool
-     :permission emacs_eval :approval once-only)
+     :permission emacs_eval :approval once-only :locality local)
     (:name "emacs_read" :tool ,magent-tools--emacs-read-tool
-     :permission read)
+     :permission read :locality local)
     (:name "read_tool_output" :tool ,magent-tools--read-tool-output-tool
-     :permission read)
+     :permission read :locality local)
     (:name "emacs_eval_live" :tool ,magent-tools--emacs-eval-live-tool
-     :permission emacs_eval_live :approval once-only)
+     :permission emacs_eval_live :approval once-only :locality local)
     (:name "spawn_agent" :tool ,magent-tools--spawn-agent-tool
-     :permission agent)
+     :permission agent :locality local)
     (:name "send_agent_message" :tool ,magent-tools--send-agent-message-tool
-     :permission agent)
+     :permission agent :locality local)
     (:name "wait_agent" :tool ,magent-tools--wait-agent-tool
-     :permission agent)
+     :permission agent :locality local)
     (:name "list_agents" :tool ,magent-tools--list-agents-tool
-     :permission agent)
+     :permission agent :locality local)
     (:name "close_agent" :tool ,magent-tools--close-agent-tool
-     :permission agent)
+     :permission agent :locality local)
     (:name "web_search" :tool ,magent-tools--web-search-tool
-     :permission web_search))
+     :permission web_search :locality local))
   "Canonical data catalog for Magent tools.")
 
 (defun magent-tools-catalog-entry (tool-name)
@@ -2458,6 +2575,13 @@ See `magent-agent-loop-filter-display-args'.")
 (defun magent-tools-approval-policy (tool-name)
   "Return the approval policy for TOOL-NAME, or nil."
   (plist-get (magent-tools-catalog-entry tool-name) :approval))
+
+(defun magent-tools-locality (tool-name)
+  "Return TOOL-NAME's execution locality, or nil if unknown.
+`local' operations stay on the Emacs host, `tramp-file' operations use local
+Emacs file APIs and may access project resources through TRAMP, and
+`project-process' operations may start a process on the project host."
+  (plist-get (magent-tools-catalog-entry tool-name) :locality))
 
 (defun magent-tools-get-gptel-tools-for-permission
     (permission &optional tool-names)

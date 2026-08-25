@@ -20,6 +20,34 @@ Magent 是一个 Emacs-native 的 AI coding agent。它的核心设计判断是�
 
 这个结构让替换点保持可见。换 provider 应该局限在 ~magent-llm-gptel.el~ 和 gptel 配置里；换 frontend 应该局限在 ~magent-agent-shell.el~、~magent-acp.el~ 和 ~magent-runtime-api.el~ 附近；Action registration、Workflow、Step 或 Invocation 的修改应该通过 ~magent-action.el~，isolated Action persistence 属于 ~magent-action-session.el~，交互 viewer 属于 ~magent-action-session-view.el~；其余持久化和恢复修改应该通过 ledger/session 模块；工具策略应该通过 permission 和 orchestrator 模块。
 
+** TRAMP locality 契约
+
+Remote project 只改变 resource 所在位置，不改变 Magent control plane
+所在主机。agent-shell UI、进程内 ACP placeholder、gptel transport、runtime
+queue、ledger/session persistence、Action control flow、Doctor、skill 安装、
+child-agent coordination、~emacs_read~、~emacs_eval~、~emacs_eval_live~ 与
+~web_search~ 都留在本机。Remote session key 的规范化不会探测 TRAMP
+filesystem；agent-shell 渲染 remote file context 时也不会进行 image 或
+containment 查询。
+
+Canonical tool catalog 为每个工具声明唯一 locality：
+
+| Locality | Tools | 契约 |
+|----------+-------+------|
+| ~local~ | ~emacs_read~、~emacs_eval~、~emacs_eval_live~、~read_tool_output~、child-agent tools、~web_search~ | 在 Emacs host 执行；~emacs_eval~ 只把 TRAMP project root 当作数据传给本地 child。 |
+| ~tramp-file~ | ~read_file~、~write_file~、~edit_file~、~glob~ | 本地 Elisp 调用 Emacs file API；remote resource 通过 TRAMP 访问，不启动 project-host process。 |
+| ~project-process~ | ~bash~、~grep~ | 唯一允许在 project host 启动的工具；remote execution 显式使用 TRAMP process handler；search 选择 ~rg~ 或同主机的 ~git grep~。 |
+
+Execution locality 绝不只由 ambient ~default-directory~ 决定。
+project-process executable 必须在 project host 上解析；失败就在该边界明确返回，
+不会回退到本地主机或本地 home。
+~grep~ tool 只会在同一 project host 缺少 ~rg~ 时选择
+~git grep --no-index --exclude-standard~，不会静默替换为 recursive/ignore
+语义不够 portable 的普通 ~grep~。Git backend 使用 POSIX extended regex，并在
+tool-result metadata 中记录 backend identity。受信任的 Action argv Step 与 Doctor process
+probe 均为 local-only，并拒绝 remote working directory。这是 locality/failure
+契约，不是 OS sandbox。
+
 * 依赖层次
 
 ** Emacs Runtime

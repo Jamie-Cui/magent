@@ -136,6 +136,16 @@ When VALUE is nil, remove KEY.  Return SESSION metadata."
   "Return the public project/global origin represented by SCOPE."
   (magent-session--scope-origin scope))
 
+(defun magent-session--normalize-project-root (root)
+  "Normalize project ROOT for use as a stable scope key.
+Remote roots are normalized textually so session routing does not contact the
+TRAMP host.  Local roots retain symlink-aware canonicalization."
+  (when root
+    (let ((expanded (directory-file-name (expand-file-name root))))
+      (if (file-remote-p expanded)
+          expanded
+        (file-truename expanded)))))
+
 (defun magent-session-canonical-scope (scope)
   "Return canonical project origin for SCOPE, or nil for global scope."
   (let ((origin (magent-session-scope-origin scope)))
@@ -143,7 +153,7 @@ When VALUE is nil, remove KEY.  Return SESSION metadata."
      ((or (null origin) (eq origin 'global)) nil)
      ((stringp origin)
       (condition-case nil
-          (file-truename (directory-file-name origin))
+          (magent-session--normalize-project-root origin)
         (error (directory-file-name (expand-file-name origin)))))
      (t origin))))
 
@@ -492,11 +502,6 @@ This is either the symbol `global' or a normalized project root path.")
           (setq tempfile nil))
       (when (and tempfile (file-exists-p tempfile))
         (delete-file tempfile)))))
-
-(defun magent-session--normalize-project-root (root)
-  "Normalize project ROOT for use as a stable scope key."
-  (when root
-    (file-truename (directory-file-name root))))
 
 (defun magent-session-scope-from-directory (&optional directory)
   "Return the session scope derived from DIRECTORY.

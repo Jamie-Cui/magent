@@ -3618,6 +3618,18 @@
     (should (equal (magent-skill-candidate-source (car results))
                    "two/repo"))))
 
+(ert-deftest magent-test-skill-manager-git-is-local-under-remote-cwd ()
+  "Skill installation never sends its temporary checkout command to TRAMP."
+  (require 'magent-skill-manager)
+  (let ((default-directory "/ssh:test.invalid:/srv/project/")
+        process-directory)
+    (cl-letf (((symbol-function 'process-file)
+               (lambda (&rest _args)
+                 (setq process-directory default-directory)
+                 0)))
+      (should (equal (magent-skill-manager--call-git "--version") "")))
+    (should-not (file-remote-p process-directory))))
+
 (ert-deftest magent-test-skill-manager-preflight-rejects-tool-skills ()
   "External tool skills are rejected before installation writes anything."
   (require 'magent-skill-manager)
@@ -4135,6 +4147,18 @@
       (should (string-empty-p
                (magent-action-process-result-stderr captured)))
       (should-not (magent-action-process-result-timed-out-p captured)))))
+
+(ert-deftest magent-test-action-process-step-rejects-remote-directory ()
+  "Action argv Steps cannot become implicit remote process launchers."
+  (require 'magent-action)
+  (let ((default-directory "/ssh:test.invalid:/srv/project/"))
+    (should-error
+     (magent-action--make-process-step "Remote" '("true"))
+     :type 'error)
+    (should-error
+     (magent-action--make-process-step
+      "Remote" '("true") :directory default-directory)
+     :type 'error)))
 
 (ert-deftest magent-test-action-process-step-failure-is-recoverable ()
   "Test a failed process Step signals its typed condition in the Workflow."
@@ -5878,6 +5902,56 @@
   (should (eq (magent-tools-permission-key "web_search") 'web_search))
   (should (null (magent-tools-permission-key "nonexistent"))))
 
+(ert-deftest magent-test-tools-locality-is-explicit-and-complete ()
+  "Every canonical tool declares whether it may cross a TRAMP boundary."
+  (require 'magent-tools)
+  (let ((expected
+         '(("read_file" . tramp-file)
+           ("write_file" . tramp-file)
+           ("edit_file" . tramp-file)
+           ("grep" . project-process)
+           ("glob" . tramp-file)
+           ("bash" . project-process)
+           ("emacs_eval" . local)
+           ("emacs_read" . local)
+           ("read_tool_output" . local)
+           ("emacs_eval_live" . local)
+           ("spawn_agent" . local)
+           ("send_agent_message" . local)
+           ("wait_agent" . local)
+           ("list_agents" . local)
+           ("close_agent" . local)
+           ("web_search" . local))))
+    (should (= (length expected) (length magent-tools-catalog)))
+    (dolist (entry expected)
+      (should (eq (magent-tools-locality (car entry)) (cdr entry))))
+    (should-not (magent-tools-locality "unknown"))))
+
+(ert-deftest magent-test-project-process-launcher-is-explicitly-tramp-aware ()
+  "Only the project-process launcher opts into remote process handling."
+  (require 'magent-tools)
+  (let (calls)
+    (cl-letf (((symbol-function 'make-process)
+               (lambda (&rest args)
+                 (push (list default-directory args) calls)
+                 'process)))
+      (magent-tools--start-project-process
+       "bash" "/tmp/project/" :name "local" :command '("true"))
+      (magent-tools--start-project-process
+       "grep" "/ssh:test.invalid:/srv/project/"
+       :name "remote" :command '("true")))
+    (setq calls (nreverse calls))
+    (should (equal (caar calls) "/tmp/project/"))
+    (should-not (plist-get (cadar calls) :file-handler))
+    (should (equal (car (cadr calls))
+                   "/ssh:test.invalid:/srv/project/"))
+    (should (eq (plist-get (cadr (cadr calls)) :file-handler) t))
+    (should-error
+     (magent-tools--start-project-process
+      "emacs_eval" "/ssh:test.invalid:/srv/project/"
+      :name "forbidden" :command '("true"))
+     :type 'error)))
+
 (ert-deftest magent-test-tool-result-rejects-unstructured-strings ()
   "Test runtime consumers reject unstructured tool results."
   (should-error
@@ -7342,7 +7416,7 @@
                                :url "https://example.com/1"))))))
 
 (ert-deftest magent-test-tools-catalog-is-canonical-and-unique ()
-  "Test every catalog entry owns one name, tool, and permission."
+  "Test every catalog entry owns name, tool, permission, and locality."
   (require 'magent-tools)
   (let ((names (mapcar (lambda (entry) (plist-get entry :name))
                        magent-tools-catalog)))
@@ -7351,7 +7425,9 @@
       (should (equal (gptel-tool-name (plist-get entry :tool))
                      (plist-get entry :name)))
       (should (memq (plist-get entry :permission)
-                    magent-permission-keys)))))
+                    magent-permission-keys))
+      (should (memq (plist-get entry :locality)
+                    '(local tramp-file project-process))))))
 
 (ert-deftest magent-test-agent-loop-tools-for-provider-json-sanitizes-schema ()
   "Test gptel tool schemas are safe for strict JSON serialization."
@@ -7813,6 +7889,28 @@
              callback "(boundp 'magent-child-probe)")))))
     (should (equal (magent-test-tool-output first) "42"))
     (should (equal (magent-test-tool-output second) "nil"))))
+
+(ert-deftest magent-test-emacs-eval-launches-locally-with-remote-project-data ()
+  "A remote project root reaches child Emacs as data, not process locality."
+  (require 'magent-tools)
+  (let* ((remote-root "/ssh:test.invalid:/srv/project/")
+         (magent-tools--request-context
+          (magent-request-context-create
+           :scope remote-root :project-root remote-root))
+         (original-make-process (symbol-function 'make-process))
+         launch-directory
+         result)
+    (cl-letf (((symbol-function 'make-process)
+               (lambda (&rest args)
+                 (setq launch-directory default-directory)
+                 (apply original-make-process args))))
+      (setq result
+            (magent-test--await-tool-callback
+             (lambda (callback)
+               (magent-tools--emacs-eval callback "default-directory")))))
+    (should-not (file-remote-p launch-directory))
+    (should (equal (magent-test-tool-output result)
+                   (prin1-to-string remote-root)))))
 
 (ert-deftest magent-test-emacs-eval-child-crash-is-a-tool-failure ()
   "Killing the disposable child does not terminate the test Emacs."
@@ -8972,6 +9070,19 @@
   (cl-letf (((symbol-function 'magent-project-root)
              (lambda (&optional _directory _no-fallback) nil)))
     (should (eq (magent-session-scope-from-directory "/tmp/") 'global))))
+
+(ert-deftest magent-test-session-remote-scope-normalization-performs-no-file-io ()
+  "Remote session routing normalizes TRAMP names without contacting the host."
+  (let ((remote-root "/ssh:test.invalid:/srv/project/"))
+    (cl-letf (((symbol-function 'magent-project-root)
+               (lambda (&optional _directory _no-fallback) remote-root))
+              ((symbol-function 'file-truename)
+               (lambda (&rest _args)
+                 (ert-fail "Remote scope normalization performed file I/O"))))
+      (should (equal (magent-session-scope-from-directory remote-root)
+                     (directory-file-name remote-root)))
+      (should (equal (magent-session-canonical-scope remote-root)
+                     (directory-file-name remote-root))))))
 
 (ert-deftest magent-test-session-save-uses-project-storage-directory ()
   "Test project-scoped sessions save under a hashed project directory."
@@ -11392,6 +11503,23 @@
     (should (equal (map-nested-elt response '(modes currentModeId))
                    magent-default-agent))))
 
+(ert-deftest magent-test-acp-in-process-client-starts-on-local-host ()
+  "Magent's ACP placeholder process cannot inherit a remote shell cwd."
+  (require 'magent-acp)
+  (let ((client (magent-acp-make-client))
+        launch-directory)
+    (should (advice-member-p #'magent-acp--start-client-locally
+                             'acp--start-client))
+    (should
+     (eq
+      (magent-acp--start-client-locally
+       (lambda (&rest _args)
+         (setq launch-directory default-directory)
+         'started)
+       :client client)
+      'started))
+    (should-not (file-remote-p launch-directory))))
+
 (ert-deftest magent-test-acp-available-commands-list-command-skills ()
   "ACP exposes every instruction skill as an explicit skill command."
   (require 'magent-acp)
@@ -12893,6 +13021,7 @@
 (ert-deftest magent-test-agent-shell-remote-line-context-avoids-file-io ()
   "Test remote current-line context does not query the TRAMP filesystem."
   (require 'magent-agent-shell)
+  (magent-agent-shell--ensure-loaded)
   (with-temp-buffer
     (insert "remote line\n")
     (goto-char (point-min))
@@ -12915,8 +13044,10 @@
 (ert-deftest magent-test-agent-shell-remote-region-context-avoids-file-io ()
   "Test explicit remote region context does not query the TRAMP filesystem."
   (require 'magent-agent-shell)
+  (magent-agent-shell--ensure-loaded)
   (with-temp-buffer
     (insert "first remote line\nsecond remote line\n")
+    (setq-local transient-mark-mode t)
     (goto-char (point-min))
     (push-mark (line-end-position) t t)
     (setq buffer-file-name "/ssh:test.invalid:/srv/project/example.el"
@@ -12935,6 +13066,35 @@
                (regexp-quote buffer-file-name)
                context))
       (should (string-match-p "first remote line" context)))))
+
+(ert-deftest magent-test-agent-shell-remote-files-context-avoids-file-io ()
+  "Test Dired-style remote file context does not probe the TRAMP host."
+  (require 'magent-agent-shell)
+  (magent-agent-shell--ensure-loaded)
+  (let* ((remote-root "/ssh:test.invalid:/srv/project/")
+         (remote-file (concat remote-root "README.org"))
+         (magent-agent-shell--context-request-p t)
+         context)
+    (cl-letf (((symbol-function 'agent-shell--load-image)
+               (lambda (&rest _args)
+                 (ert-fail "Remote file context attempted image I/O")))
+              ((symbol-function 'file-in-directory-p)
+               (lambda (&rest _args)
+                 (ert-fail "Remote file context attempted containment I/O"))))
+      (setq context
+            (agent-shell--get-files-context
+             :files (list remote-file) :agent-cwd remote-root)))
+    (should (equal (substring-no-properties context)
+                   (concat "@" remote-file)))))
+
+(ert-deftest magent-test-agent-shell-empty-remote-files-context-stays-nil ()
+  "An empty files source must not mask later region or line context."
+  (require 'magent-agent-shell)
+  (magent-agent-shell--ensure-loaded)
+  (let ((magent-agent-shell--context-request-p t))
+    (should-not
+     (agent-shell--get-files-context
+      :files nil :agent-cwd "/ssh:test.invalid:/srv/project/"))))
 
 (ert-deftest magent-test-agent-shell-context-workaround-is-magent-scoped ()
   "Remote path handling leaves non-Magent agent-shell backends unchanged."
@@ -15045,6 +15205,18 @@
     (should probe)
     (should (= (magent-doctor-probe-timeout probe) 0))))
 
+(ert-deftest magent-test-doctor-process-rejects-remote-directory ()
+  "Doctor process probes fail closed instead of running through TRAMP."
+  (require 'magent-action-builtin-doctor)
+  (let ((state (magent-doctor-state-create
+                :project-root "/ssh:test.invalid:/srv/project/")))
+    (cl-letf (((symbol-function 'make-process)
+               (lambda (&rest _args)
+                 (ert-fail "Doctor started a remote process"))))
+      (should-error
+       (magent-doctor-run-process state "true" nil)
+       :type 'error))))
+
 (ert-deftest magent-test-memory-stale-clear-confirmation-cannot-write ()
   "A delayed clear approval cannot write after a newer operation supersedes it."
   (require 'magent-action-builtin-memory)
@@ -15293,6 +15465,10 @@
             (while (and (null single-result) (< (float-time) deadline))
               (accept-process-output nil 0.05)))
           (should (magent-tool-result-success-p single-result))
+          (should (equal (plist-get
+                          (magent-tool-result-metadata single-result)
+                          :backend)
+                         "ripgrep"))
           (let* ((output (magent-tool-result-output-string single-result))
                  (revisions (plist-get
                              (magent-tool-result-metadata single-result)
@@ -15320,6 +15496,105 @@
             (should (= count 2))))
       (delete-directory root t))))
 
+(ert-deftest magent-test-tools-grep-backend-selection-is-ordered ()
+  "Search backend selection prefers ripgrep and falls back only to git."
+  (require 'magent-tools)
+  (let (available calls)
+    (cl-letf (((symbol-function 'magent-tools--project-executable)
+               (lambda (program _directory)
+                 (push program calls)
+                 (and (member program available) (concat "/bin/" program)))))
+      (setq available (list magent-grep-program "git")
+            calls nil)
+      (should (equal (magent-tools--grep-backend "/tmp/")
+                     `(:name ripgrep :program ,(concat "/bin/"
+                                                       magent-grep-program))))
+      (should (equal (nreverse calls) (list magent-grep-program)))
+      (setq available '("git")
+            calls nil)
+      (should (equal (magent-tools--grep-backend "/tmp/")
+                     '(:name git-grep :program "/bin/git")))
+      (should (equal (nreverse calls) (list magent-grep-program "git")))
+      (setq available nil
+            calls nil)
+      (should-error (magent-tools--grep-backend "/tmp/") :type 'error)
+      (should (equal (nreverse calls) (list magent-grep-program "git"))))))
+
+(ert-deftest magent-test-tools-grep-does-not-fall-back-to-basic-grep ()
+  "Missing ripgrep and Git fail before any project process starts."
+  (require 'magent-tools)
+  (let ((root (make-temp-file "magent-no-grep-backend-" t))
+        started
+        result)
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-tools--project-executable)
+                   (lambda (&rest _args) nil))
+                  ((symbol-function 'magent-tools--start-project-process)
+                   (lambda (&rest _args) (setq started t))))
+          (let ((magent-tools--request-context
+                 (magent-request-context-create
+                  :scope root :project-root root)))
+            (magent-tools--grep (lambda (value) (setq result value))
+                                "needle" "." t))
+          (should-not started)
+          (should-not (magent-tool-result-success-p result))
+          (should (string-match-p
+                   "tried .* and git"
+                   (magent-tool-result-output-string result))))
+      (delete-directory root t))))
+
+(ert-deftest magent-test-tools-git-grep-command-is-self-contained ()
+  "The git fallback works inside or outside a Git worktree."
+  (require 'magent-tools)
+  (let ((command
+         (magent-tools--grep-command
+          '(:name git-grep :program "/usr/bin/git")
+          "pattern" "." nil)))
+    (should (equal (car command) "/usr/bin/git"))
+    (dolist (argument '("--no-pager" "grep" "--no-index"
+                        "--exclude-standard" "-I" "-n" "-z"
+                        "--no-color" "--extended-regexp" "--ignore-case"
+                        "-e" "pattern" "--" "."))
+      (should (member argument command)))))
+
+(ert-deftest magent-test-tools-git-grep-fallback-honors-ignore-files ()
+  "git fallback searches untracked files and honors ignores outside a repo."
+  (require 'magent-tools)
+  (let ((git-program (executable-find "git")))
+    (skip-unless git-program)
+    (let* ((root (make-temp-file "magent-git-grep-root-" t))
+           (file (expand-file-name "untracked.txt" root))
+           (ignored (expand-file-name "ignored.txt" root))
+           (original-resolver
+            (symbol-function 'magent-tools--project-executable))
+           result)
+      (unwind-protect
+          (progn
+            (with-temp-file file (insert "fallback needle\n"))
+            (with-temp-file ignored (insert "ignored needle\n"))
+            (with-temp-file (expand-file-name ".gitignore" root)
+              (insert "ignored.txt\n"))
+            (cl-letf (((symbol-function 'magent-tools--project-executable)
+                       (lambda (program directory)
+                         (if (equal program magent-grep-program)
+                             nil
+                           (funcall original-resolver program directory)))))
+              (magent-tools--grep
+               (lambda (value) (setq result value)) "needle" root t)
+              (let ((deadline (+ (float-time) 5)))
+                (while (and (null result) (< (float-time) deadline))
+                  (accept-process-output nil 0.05))))
+            (should (magent-tool-result-success-p result))
+            (should (equal (plist-get (magent-tool-result-metadata result)
+                                      :backend)
+                           "git-grep"))
+            (should (string-match-p "untracked.txt:1:fallback needle"
+                                    (magent-tool-result-output-string result)))
+            (should-not (string-match-p
+                         "ignored needle"
+                         (magent-tool-result-output-string result))))
+        (delete-directory root t)))))
+
 (ert-deftest magent-test-tools-grep-revision-parser-stops-before-match-text ()
   "NUL-delimited grep parsing ignores colon-number-colon in matched text."
   (require 'magent-tools)
@@ -15336,6 +15611,26 @@
                          (magent-tools--file-revision file)))
           (should (equal (magent-tools--grep-display-output raw)
                          "sample.txt:1:value:12:tail")))
+      (delete-directory root t))))
+
+(ert-deftest magent-test-tools-git-grep-parser-preserves-colons ()
+  "git grep parsing keeps colons in both filenames and matching text."
+  (require 'magent-tools)
+  (let* ((root (make-temp-file "magent-git-grep-revision-" t))
+         (file (expand-file-name "sample:12.txt" root))
+         (raw (concat "sample:12.txt" (string 0) "1" (string 0)
+                      "value:34:tail"))
+         revisions)
+    (unwind-protect
+        (progn
+          (with-temp-file file (insert "value:34:tail\n"))
+          (setq revisions
+                (magent-tools--grep-revisions raw root 'git-grep))
+          (should (equal (mapcar #'car revisions) '("sample:12.txt")))
+          (should (equal (cdar revisions)
+                         (magent-tools--file-revision file)))
+          (should (equal (magent-tools--grep-display-output raw 'git-grep)
+                         "sample:12.txt:1:value:34:tail")))
       (delete-directory root t))))
 
 (ert-deftest magent-test-tools-glob-double-star-keeps-prefix ()

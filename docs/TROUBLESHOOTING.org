@@ -248,6 +248,8 @@ Expected final status files include ~:status passed~, ~:repo-source~ paths under
 
 *Solution:*
 - For bash: Verify Bash is installed and ~magent-bash-program~ resolves to it.
+  In a TRAMP project it must resolve on the remote project host; Magent does
+  not fall back to local execution.
   Commands run without errexit and with pipefail.  Use ~&&~ or explicit ~set -e~
   when fail-fast sequencing is required.  Output-limiting pipelines such as
   ~rg ... | head~ can fail on SIGPIPE; prefer native limit options.
@@ -258,7 +260,27 @@ Expected final status files include ~:status passed~, ~:repo-source~ paths under
   user's loaded packages.
 - For ~emacs_eval_live~: treat the timeout as best effort only. A blocking C
   primitive or process-wide failure may still hang or crash the live Emacs.
-- For grep: Verify ripgrep is installed: ~which rg~
+- For grep: Search prefers ripgrep (~which rg~) and falls back to
+  ~git grep --no-index --exclude-standard~ (~which git~) on the project host.
+  If neither executable exists there, the tool fails explicitly.
+
+*** TRAMP project startup or a tool call hangs
+*Problem:* Starting Magent from a remote file/Dired buffer or using a project
+tool blocks Emacs.
+
+*Diagnosis:*
+1. Verify the same directory works with ordinary TRAMP file operations.
+2. Check ~*magent-log*~ and ~*Messages*~ for the exact operation.
+3. Confirm only ~bash~ or ~grep~ is expected to start a project-host process.
+
+*Solution:*
+- Keep the ACP placeholder, Actions, Doctor, and ~emacs_eval~ local; a remote
+  process in those paths is a bug.
+- Install ~bash~ plus either ~rg~ or Git on the remote project host for their
+  respective ~project-process~ tools.
+- Remote file tools still use synchronous Emacs/TRAMP file APIs. A broken SSH
+  transport can therefore block an explicit file operation; repair or abort
+  the TRAMP connection before retrying.
 
 *** Elisp returned by the model hangs or crashes Emacs
 *Problem:* An arbitrary form does not terminate, signals a fatal error, or

@@ -250,13 +250,20 @@ values.  Custom probes execute as trusted Emacs Lisp and are not sandboxed."
 No shell is used.  TIMEOUT defaults to `magent-doctor-process-timeout'.
 Zero disables the process-specific timeout; the total collection deadline,
 when enabled, still applies.
-DIRECTORY defaults to STATE's project root.  Return exit and output data."
-  (let* ((executable (or (and (file-name-absolute-p program) program)
+DIRECTORY defaults to STATE's project root.  Doctor probes are local-only;
+remote project probes must use Emacs file APIs instead.  Return exit and
+output data."
+  (let* ((default-directory (file-name-as-directory
+                             (expand-file-name
+                              (or directory
+                                  (magent-doctor-state-project-root state)
+                                  default-directory))))
+         (_ (when (file-remote-p default-directory)
+              (error "Doctor process probes are local-only: %s"
+                     default-directory)))
+         (executable (or (and (file-name-absolute-p program) program)
                          (executable-find program)
                          (error "Doctor executable not found: %s" program)))
-         (default-directory (or directory
-                                (magent-doctor-state-project-root state)
-                                default-directory))
          (buffer (generate-new-buffer " *magent-doctor-process*"))
          (configured (if (null timeout)
                          magent-doctor-process-timeout

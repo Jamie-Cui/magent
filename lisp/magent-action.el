@@ -162,20 +162,26 @@
                     environment)))
     (error "Expected environment alist, got: %S" environment))
   (magent-action--validate-result-mode result)
-  (magent-action-step-create
-   :type 'process
-   :name name
-   :options
-   (list :argv (copy-sequence argv)
-         :directory (file-name-as-directory
-                     (expand-file-name (or directory default-directory)))
-         :process-environment (copy-sequence process-environment)
-         :environment (copy-tree environment)
-         :timeout timeout
-         :check (and check t)
-         :result result
-         :record-command (and record-command t)
-         :record-output (and record-output t))))
+  (let ((process-directory
+         (file-name-as-directory
+          (expand-file-name (or directory default-directory)))))
+    (when (file-remote-p process-directory)
+      (error (concat "Magent Action process Steps are local-only; "
+                     "pass an explicit local :directory (got %s)")
+             process-directory))
+    (magent-action-step-create
+     :type 'process
+     :name name
+     :options
+     (list :argv (copy-sequence argv)
+           :directory process-directory
+           :process-environment (copy-sequence process-environment)
+           :environment (copy-tree environment)
+           :timeout timeout
+           :check (and check t)
+           :result result
+           :record-command (and record-command t)
+           :record-output (and record-output t)))))
 
 (defmacro magent-workflow-process (name argv &rest options)
   "Run ARGV as process Step NAME and return its selected result."
