@@ -193,7 +193,7 @@
 (defun magent-live-test--repo-source-summary ()
   "Return the loaded source files for core Magent features."
   (list :magent (magent-live-test--feature-source 'magent)
-        :llm-gptel (magent-live-test--feature-source 'magent-llm-gptel)
+        :llm-gptel (magent-live-test--feature-source 'magent-sampling-gptel)
         :agent-loop (magent-live-test--feature-source 'magent-agent-loop)
         :agent (magent-live-test--feature-source 'magent-agent)
         :runtime-api (magent-live-test--feature-source 'magent-runtime-api)

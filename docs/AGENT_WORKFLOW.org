@@ -208,7 +208,7 @@ areas:
 
 - UI is Emacs-native: supported interaction is agent-shell through an
   in-process ACP client.
-- Provider streaming is normalized behind ~magent-llm-gptel.el~, but
+- Provider streaming is normalized behind ~magent-sampling-gptel.el~, but
   transport remains gptel.
 - Codex core runs a turn as a multi-sampling loop where pending user
   input, mailbox items, auto-compaction, and tool follow-up can all

@@ -18,8 +18,8 @@
 (require 'gptel)
 (require 'magent-agent-loop)
 (require 'magent-lifecycle-events)
-(require 'magent-llm)
-(require 'magent-llm-gptel)
+(require 'magent-sampling)
+(require 'magent-sampling-gptel)
 (require 'magent-action-builtin-memory)
 (require 'magent-project-instructions)
 (require 'magent-protocol)
@@ -58,7 +58,7 @@ When streaming has not started, the current sample result should be rendered.
 When streaming has started, render only the completed event's text that
 was not already emitted as text deltas."
   (let ((result (magent-agent-loop-result loop))
-        (event-text (magent-llm-event-text event))
+        (event-text (magent-sampling-event-text event))
         (streamed (magent-agent-loop-sample-text loop)))
     (cond
      ((not streaming-started)
@@ -118,7 +118,7 @@ builders without adding a phase router today."
          (selected (or explicit-route
                        agent-route
                        parent-route
-                       (magent-llm-gptel-default-route)))
+                       (magent-sampling-gptel-default-route)))
          (source (cond
                   (explicit-route
                    (or (magent-model-route-source explicit-route) 'request))
@@ -128,7 +128,7 @@ builders without adding a phase router today."
          (route
           (magent-model-route-relabel
            selected source (magent-agent-info-name agent) phase)))
-    (magent-llm-gptel-validate-route route)))
+    (magent-sampling-gptel-validate-route route)))
 
 (defun magent-agent--fail-request-turn
     (session turn-id request-scope detail)
@@ -415,7 +415,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                    (magent-agent-loop-tools-for-provider tools))
                   (_tool-capability-preflight
                    (when (and request-tools
-                              (eq (magent-llm-gptel-route-tool-capability route)
+                              (eq (magent-sampling-gptel-route-tool-capability route)
                                   'unsupported))
                      (error
                       "Magent model %s on backend %s does not support tools"
@@ -553,11 +553,11 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                     :model (format "%s" model)
                     :prompt-count
                     (length
-                     (magent-llm-request-prompt
+                     (magent-sampling-request-prompt
                       (magent-agent-loop-request loop)))
                     :tool-count
                     (length
-                     (magent-llm-request-tools
+                     (magent-sampling-request-tools
                       (magent-agent-loop-request loop)))
                     :system-prompt-length (length (or system-msg ""))))
                   (close-reasoning
@@ -583,15 +583,15 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                    (let ((request
                           (magent-agent-loop-request-for-current-session
                            loop)))
-                     (magent-llm-request-create
-                      :prompt (magent-llm-request-prompt request)
-                      :system (magent-llm-request-system request)
+                     (magent-sampling-request-create
+                      :prompt (magent-sampling-request-prompt request)
+                      :system (magent-sampling-request-system request)
                       :tools request-tools
-                      :model (magent-llm-request-model request)
-                      :backend (magent-llm-request-backend request)
+                      :model (magent-sampling-request-model request)
+                      :backend (magent-sampling-request-backend request)
                       :stream t
-                      :callback (magent-llm-request-callback request)
-                      :metadata (magent-llm-request-metadata request))))
+                      :callback (magent-sampling-request-callback request)
+                      :metadata (magent-sampling-request-metadata request))))
                   (rollback-current-sample-text
                    ()
                    (magent-agent-loop-discard-sample-text loop)
@@ -698,31 +698,31 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                   (handle-event
                    (event)
                    (when (magent-agent--request-live-p live-p)
-                     (let ((event-type (magent-llm-event-type event)))
+                     (let ((event-type (magent-sampling-event-type event)))
                        (pcase event-type
                        ('text-delta
                         (start-streaming)
                         (magent-lifecycle-events-emit
                          'text-delta
                          :context context
-                         :text (magent-llm-event-text event))
+                         :text (magent-sampling-event-text event))
                         (unless (string-empty-p
-                                 (or (magent-llm-event-text event) ""))
+                                 (or (magent-sampling-event-text event) ""))
                           (setq text-delta-seen t))
                         (magent-request-context-notify
                          request-state 'assistant-delta
-                         :text (magent-llm-event-text event))
-                        (record-text-delta (magent-llm-event-text event))
+                         :text (magent-sampling-event-text event))
+                        (record-text-delta (magent-sampling-event-text event))
                         (when (and text-callback
                                    (magent-agent--ui-visible-p request-state))
                           (funcall text-callback
-                                   (magent-llm-event-text event))))
+                                   (magent-sampling-event-text event))))
                        ('reasoning-delta
                         (magent-request-context-notify
                          request-state 'reasoning-delta
-                         :text (magent-llm-event-text event))
+                         :text (magent-sampling-event-text event))
                         (record-reasoning-delta
-                         (magent-llm-event-text event)))
+                         (magent-sampling-event-text event)))
                        ('reasoning-end
                         (magent-request-context-notify
                          request-state 'reasoning-complete)
@@ -731,12 +731,12 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                         (close-reasoning)
                         (magent-request-context-notify
                          request-state 'tool-call-detected
-                         :tool-id (magent-llm-event-id event)
-                         :name (magent-llm-event-name event)
-                         :arguments (magent-llm-event-arguments event)))
+                         :tool-id (magent-sampling-event-id event)
+                         :name (magent-sampling-event-name event)
+                         :arguments (magent-sampling-event-arguments event)))
                        ('tool-call-batch-end
                         (close-reasoning)
-                        (when (eq (plist-get (magent-llm-event-metadata event)
+                        (when (eq (plist-get (magent-sampling-event-metadata event)
                                              :source)
                                   'textual-dsml)
                           (rollback-current-sample-text))
@@ -764,16 +764,16 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                       ('error
                        (magent-request-context-notify
                         request-state 'turn-error
-                        :message (magent-llm-event-message event)
-                        :metadata (magent-llm-event-metadata event))
+                        :message (magent-sampling-event-message event)
+                        :metadata (magent-sampling-event-metadata event))
                        (finish-turn 'failed
-                                    (magent-llm-event-message event)
-                                    (magent-llm-event-metadata event))))))))
+                                    (magent-sampling-event-message event)
+                                    (magent-sampling-event-metadata event))))))))
                (setq loop
                      (magent-agent-loop-create
                       :session session
                       :request
-                     (magent-llm-request-create
+                     (magent-sampling-request-create
                       :prompt prompt-list
                       :system system-msg
                       :tools request-tools
@@ -792,7 +792,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                       :turn-id (and request-state
                                     (magent-request-context-turn-id
                                      request-state))
-                      :sampler #'magent-llm-gptel-sample))
+                      :sampler #'magent-sampling-gptel-sample))
                (sample)
                loop)))))))
       (error

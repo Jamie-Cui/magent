@@ -58,7 +58,7 @@ Parent ~magent-session~ 会在 ~agent-jobs~ slot 中持久化 child jobs。activ
 省略 timeout 时使用正数 ~magent-request-timeout~；该设置被禁用时使用有限的 300 秒
 fallback。单次 wait 超时不会取消或关闭 child job。
 
-Provider 边界仍然是 ~magent-llm-gptel.el~ 里的 ~gptel-request~ 。Magent 自己负责 orchestration、tool dispatch、persistence、abort 和 child-job coordination。
+Provider 边界仍然是 ~magent-sampling-gptel.el~ 里的 ~gptel-request~ 。Magent 自己负责 orchestration、tool dispatch、persistence、abort 和 child-job coordination。
 
 * 继承
 

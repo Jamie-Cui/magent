@@ -1,4 +1,4 @@
-;;; magent-llm-gptel.el --- gptel-request adapter for Magent LLM events  -*- lexical-binding: t; -*-
+;;; magent-sampling-gptel.el --- gptel-request adapter for Magent sampling events  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -10,7 +10,7 @@
 ;;; Commentary:
 
 ;; Thin adapter from `gptel-request' callbacks to Magent's normalized
-;; `magent-llm-event' protocol.  This module is the only intended place
+;; `magent-sampling-event' protocol.  This module is the only intended place
 ;; for gptel FSM/callback details; the Magent-owned agent loop consumes
 ;; normalized events instead of gptel internals.
 
@@ -23,7 +23,7 @@
 (require 'gptel-request)
 (require 'magent-config)
 (require 'magent-json)
-(require 'magent-llm)
+(require 'magent-sampling)
 (require 'magent-protocol)
 
 (declare-function gptel-openai-p "gptel-openai" t t)
@@ -43,22 +43,22 @@
 (defvar gptel-proxy)
 (defvar magent-include-reasoning)
 
-(defconst magent-llm-gptel-auto-model-id "auto"
+(defconst magent-sampling-gptel-auto-model-id "auto"
   "ACP model id that clears an explicit Magent session route.")
 
-(defun magent-llm-gptel--model-name (model)
+(defun magent-sampling-gptel--model-name (model)
   "Return gptel MODEL's provider-facing name as a string."
   (if (fboundp 'gptel--model-name)
       (gptel--model-name model)
     (format "%s" model)))
 
-(defun magent-llm-gptel--route-id (backend-name model)
+(defun magent-sampling-gptel--route-id (backend-name model)
   "Return an opaque model id for BACKEND-NAME and MODEL."
   (format "gptel/%s/%s"
           (url-hexify-string (format "%s" backend-name))
-          (url-hexify-string (magent-llm-gptel--model-name model))))
+          (url-hexify-string (magent-sampling-gptel--model-name model))))
 
-(defun magent-llm-gptel--model-description (backend-name model)
+(defun magent-sampling-gptel--model-description (backend-name model)
   "Return a concise safe description for MODEL on BACKEND-NAME."
   (let* ((description (get model :description))
          (capabilities (get model :capabilities))
@@ -80,19 +80,19 @@
                    (format "gptel model from %s" backend-name))))
      " — ")))
 
-(defun magent-llm-gptel--descriptor (backend-name backend model)
+(defun magent-sampling-gptel--descriptor (backend-name backend model)
   "Return a safe model descriptor for BACKEND-NAME, BACKEND, and MODEL."
   (magent-model-descriptor-create
-   :id (magent-llm-gptel--route-id backend-name model)
+   :id (magent-sampling-gptel--route-id backend-name model)
    :name (format "%s:%s" backend-name
-                 (magent-llm-gptel--model-name model))
-   :description (magent-llm-gptel--model-description backend-name model)
+                 (magent-sampling-gptel--model-name model))
+   :description (magent-sampling-gptel--model-description backend-name model)
    :backend-name (format "%s" backend-name)
    :backend backend
    :model model
    :capabilities (copy-sequence (get model :capabilities))))
 
-(defun magent-llm-gptel-model-catalog ()
+(defun magent-sampling-gptel-model-catalog ()
   "Return descriptors for every model registered with gptel.
 gptel currently exposes backend lookup and model accessors publicly but uses
 the private `gptel--known-backends' registry for its own cross-provider model
@@ -111,7 +111,7 @@ changes."
         (when (gptel-backend-p backend)
           (dolist (model (gptel-backend-models backend))
             (let* ((descriptor
-                    (magent-llm-gptel--descriptor
+                    (magent-sampling-gptel--descriptor
                      backend-name backend model))
                    (id (magent-model-descriptor-id descriptor)))
               (unless (gethash id seen)
@@ -119,12 +119,12 @@ changes."
                 (push descriptor descriptors)))))))
     (nreverse descriptors)))
 
-(defun magent-llm-gptel-model-descriptor (model-id)
+(defun magent-sampling-gptel-model-descriptor (model-id)
   "Return the gptel model descriptor for MODEL-ID, or nil."
-  (cl-find model-id (magent-llm-gptel-model-catalog)
+  (cl-find model-id (magent-sampling-gptel-model-catalog)
            :key #'magent-model-descriptor-id :test #'equal))
 
-(defun magent-llm-gptel-descriptor-route (descriptor &optional source)
+(defun magent-sampling-gptel-descriptor-route (descriptor &optional source)
   "Return a model route for DESCRIPTOR attributed to SOURCE."
   (unless (magent-model-descriptor-p descriptor)
     (error "Expected Magent model descriptor, got: %S" descriptor))
@@ -133,7 +133,7 @@ changes."
    :model (magent-model-descriptor-model descriptor)
    :source (or source 'session)))
 
-(defun magent-llm-gptel-descriptor-for-route (route)
+(defun magent-sampling-gptel-descriptor-for-route (route)
   "Return the catalog descriptor matching ROUTE, or nil."
   (when (magent-model-route-p route)
     (cl-find-if
@@ -142,16 +142,16 @@ changes."
                 (magent-model-route-backend route))
             (equal (magent-model-descriptor-model descriptor)
                    (magent-model-route-model route))))
-     (magent-llm-gptel-model-catalog))))
+     (magent-sampling-gptel-model-catalog))))
 
-(defun magent-llm-gptel-default-route ()
+(defun magent-sampling-gptel-default-route ()
   "Return the current global gptel route."
   (magent-model-route-create
    :backend (default-value 'gptel-backend)
    :model (default-value 'gptel-model)
    :source 'gptel))
 
-(defun magent-llm-gptel-validate-route (route)
+(defun magent-sampling-gptel-validate-route (route)
   "Return ROUTE when its backend and model remain registered and compatible."
   (unless (magent-model-route-p route)
     (error "Expected Magent model route, got: %S" route))
@@ -164,41 +164,42 @@ changes."
     (unless (member model (gptel-backend-models backend))
       (error "Magent model %s is unavailable on gptel backend %s"
              model (gptel-backend-name backend)))
-    (unless (magent-llm-gptel-descriptor-for-route route)
+    (unless (magent-sampling-gptel-descriptor-for-route route)
       (error "Magent backend/model route is no longer registered with gptel: %s:%s"
              (gptel-backend-name backend) model)))
   route)
 
-(defun magent-llm-gptel-route-tool-capability (route)
+(defun magent-sampling-gptel-route-tool-capability (route)
   "Return `supported', `unsupported', or `unknown' for ROUTE tool use."
-  (magent-llm-gptel-validate-route route)
+  (magent-sampling-gptel-validate-route route)
   (let* ((model (magent-model-route-model route))
          (properties (and (symbolp model) (symbol-plist model))))
     (if (and (symbolp model)
              (plist-member properties :capabilities))
         (if (cl-some (lambda (capability)
                        (member (format "%s" capability)
-                               '("tool-use" "tools" "function-calling")))
+                               '("tool-use" "tool" "tools"
+                                 "function-calling")))
                      (get model :capabilities))
             'supported
           'unsupported)
       'unknown)))
 
-(defun magent-llm-gptel--managed-context-p (context)
+(defun magent-sampling-gptel--managed-context-p (context)
   "Return non-nil when gptel CONTEXT belongs to this adapter."
   (and (listp context)
-       (or (plist-get context :magent-llm-gptel)
+       (or (plist-get context :magent-sampling-gptel)
            (plist-get context :magent-managed))))
 
-(defun magent-llm-gptel--managed-info-p (info)
+(defun magent-sampling-gptel--managed-info-p (info)
   "Return non-nil when gptel INFO belongs to this adapter."
   (and (listp info)
-       (or (plist-get info :magent-llm-gptel)
+       (or (plist-get info :magent-sampling-gptel)
            (plist-get info :magent-managed)
-           (magent-llm-gptel--managed-context-p
+           (magent-sampling-gptel--managed-context-p
             (plist-get info :context)))))
 
-(defun magent-llm-gptel--sanitize-provider-tool-args (args)
+(defun magent-sampling-gptel--sanitize-provider-tool-args (args)
   "Return JSON-safe provider tool ARGS with null-like plist values omitted.
 This boundary receives provider/gptel tool metadata where nil means missing or
 JSON null, unlike Magent's internal tool args where Lisp nil can be meaningful."
@@ -217,7 +218,7 @@ JSON null, unlike Magent's internal tool args where Lisp nil can be meaningful."
    (t
     (magent-json-safe-value args))))
 
-(defun magent-llm-gptel--sanitize-tool-call (tool-call)
+(defun magent-sampling-gptel--sanitize-tool-call (tool-call)
   "Sanitize one gptel TOOL-CALL plist in place and return it."
   (when (listp tool-call)
     (when (plist-member tool-call :name)
@@ -227,17 +228,17 @@ JSON null, unlike Magent's internal tool args where Lisp nil can be meaningful."
     (when (plist-member tool-call :args)
       (plist-put tool-call
                  :args
-                 (magent-llm-gptel--sanitize-provider-tool-args
+                 (magent-sampling-gptel--sanitize-provider-tool-args
                   (plist-get tool-call :args)))))
   tool-call)
 
-(defun magent-llm-gptel--sanitize-tool-use (info)
+(defun magent-sampling-gptel--sanitize-tool-use (info)
   "Sanitize gptel INFO's `:tool-use' values in place."
   (when-let* ((tool-use (and (listp info) (plist-get info :tool-use))))
     (dolist (tool-call tool-use)
-      (magent-llm-gptel--sanitize-tool-call tool-call))))
+      (magent-sampling-gptel--sanitize-tool-call tool-call))))
 
-(defun magent-llm-gptel--sanitize-assistant-tool-calls (info)
+(defun magent-sampling-gptel--sanitize-assistant-tool-calls (info)
   "Sanitize assistant tool call history in gptel INFO's request data.
 Some gptel parsing paths preserve Lisp symbols in tool-call names after
 reading Magent's structured tool result blocks.  Emacs' native JSON
@@ -269,22 +270,22 @@ requests, so Magent normalizes this boundary before curl serializes it."
                                        func
                                        :arguments
                                        (magent-json-encode
-                                        (magent-llm-gptel--sanitize-provider-tool-args
+                                        (magent-sampling-gptel--sanitize-provider-tool-args
                                          arguments))))))))))))
 
-(defun magent-llm-gptel--sanitize-info (info)
+(defun magent-sampling-gptel--sanitize-info (info)
   "Sanitize gptel INFO structures that may be serialized as JSON."
-  (magent-llm-gptel--sanitize-tool-use info)
-  (magent-llm-gptel--sanitize-assistant-tool-calls info)
+  (magent-sampling-gptel--sanitize-tool-use info)
+  (magent-sampling-gptel--sanitize-assistant-tool-calls info)
   info)
 
-(defun magent-llm-gptel--put-nested-param
+(defun magent-sampling-gptel--put-nested-param
     (data section key value)
   "Set SECTION's KEY to VALUE in provider request DATA."
   (let ((params (copy-sequence (plist-get data section))))
     (plist-put data section (plist-put params key value))))
 
-(defun magent-llm-gptel--apply-top-p-to-info (info)
+(defun magent-sampling-gptel--apply-top-p-to-info (info)
   "Apply Magent top-p context to gptel request INFO in wire format."
   (let* ((context (plist-get info :context))
          (top-p (and (listp context)
@@ -294,69 +295,69 @@ requests, so Magent normalizes this boundary before curl serializes it."
          (data (plist-get info :data)))
     (when (and top-p (listp data))
       (cond
-       ((or (magent-llm-gptel--backend-openai-responses-p backend)
-            (magent-llm-gptel--backend-openai-chat-p backend)
+       ((or (magent-sampling-gptel--backend-openai-responses-p backend)
+            (magent-sampling-gptel--backend-openai-chat-p backend)
             (and (fboundp 'gptel-anthropic-p)
                  (gptel-anthropic-p backend)))
         (plist-put info :data (plist-put data :top_p top-p)))
        ((and (fboundp 'gptel-ollama-p)
              (gptel-ollama-p backend))
         (plist-put info :data
-                   (magent-llm-gptel--put-nested-param
+                   (magent-sampling-gptel--put-nested-param
                     data :options :top_p top-p)))
        ((and (fboundp 'gptel-gemini-p)
              (gptel-gemini-p backend))
         (plist-put info :data
-                   (magent-llm-gptel--put-nested-param
+                   (magent-sampling-gptel--put-nested-param
                     data :generationConfig :topP top-p)))
        ((and (fboundp 'gptel-bedrock-p)
              (gptel-bedrock-p backend))
         (plist-put info :data
-                   (magent-llm-gptel--put-nested-param
+                   (magent-sampling-gptel--put-nested-param
                     data :inferenceConfig :topP top-p))))))
   info)
 
-(defun magent-llm-gptel--reset-reasoning-block-a (fsm)
+(defun magent-sampling-gptel--reset-reasoning-block-a (fsm)
   "Reset managed gptel FSM reasoning state before a request starts."
   (when-let* ((info (and (fboundp 'gptel-fsm-info)
                         (gptel-fsm-info fsm))))
-    (when (and (magent-llm-gptel--managed-info-p info)
+    (when (and (magent-sampling-gptel--managed-info-p info)
                (plist-get info :reasoning-block))
       (plist-put info :reasoning-block nil))))
 
-(defun magent-llm-gptel--sanitize-before-curl-a (orig-fn info &rest args)
+(defun magent-sampling-gptel--sanitize-before-curl-a (orig-fn info &rest args)
   "Sanitize Magent-managed INFO before gptel serializes request data."
-  (when (magent-llm-gptel--managed-info-p info)
-    (magent-llm-gptel--apply-top-p-to-info info)
-    (magent-llm-gptel--sanitize-info info))
+  (when (magent-sampling-gptel--managed-info-p info)
+    (magent-sampling-gptel--apply-top-p-to-info info)
+    (magent-sampling-gptel--sanitize-info info))
   (apply orig-fn info args))
 
-(defun magent-llm-gptel--suppress-connect-headers-a
+(defun magent-sampling-gptel--suppress-connect-headers-a
     (orig-fn info &rest args)
   "Suppress proxy CONNECT headers for Magent-managed curl requests."
   (let ((curl-args (apply orig-fn info args)))
-    (if (and (magent-llm-gptel--managed-info-p info)
+    (if (and (magent-sampling-gptel--managed-info-p info)
              (stringp gptel-proxy)
              (not (string-empty-p gptel-proxy))
              (not (member "--suppress-connect-headers" curl-args)))
         (append curl-args '("--suppress-connect-headers"))
       curl-args)))
 
-(defun magent-llm-gptel--sanitize-after-parse-response-a
+(defun magent-sampling-gptel--sanitize-after-parse-response-a
     (orig-fn backend response info)
   "Sanitize Magent-managed INFO after gptel parses a response."
   (prog1 (funcall orig-fn backend response info)
-    (when (magent-llm-gptel--managed-info-p info)
-      (magent-llm-gptel--sanitize-info info))))
+    (when (magent-sampling-gptel--managed-info-p info)
+      (magent-sampling-gptel--sanitize-info info))))
 
-(defun magent-llm-gptel--sanitize-after-parse-stream-a
+(defun magent-sampling-gptel--sanitize-after-parse-stream-a
     (orig-fn backend info)
   "Sanitize Magent-managed INFO after gptel parses a stream chunk."
   (prog1 (funcall orig-fn backend info)
-    (when (magent-llm-gptel--managed-info-p info)
-      (magent-llm-gptel--sanitize-info info))))
+    (when (magent-sampling-gptel--managed-info-p info)
+      (magent-sampling-gptel--sanitize-info info))))
 
-(defun magent-llm-gptel--curl-provider-error (buffer info)
+(defun magent-sampling-gptel--curl-provider-error (buffer info)
   "Return a structured provider error from curl response BUFFER.
 INFO is gptel request metadata containing the curl write-out UUID.  Try each
 HTTP header boundary before the write-out marker so proxy and redirect header
@@ -384,16 +385,16 @@ blocks do not hide an otherwise valid JSON error response."
                   (when provider-error
                     (throw 'provider-error provider-error)))))))))))
 
-(defun magent-llm-gptel--capture-curl-provider-error (buffer info)
+(defun magent-sampling-gptel--capture-curl-provider-error (buffer info)
   "Capture a structured provider error from curl BUFFER into gptel INFO."
   (when-let* ((provider-error
-               (magent-llm-gptel--curl-provider-error buffer info)))
+               (magent-sampling-gptel--curl-provider-error buffer info)))
     (if (plist-member info :magent-provider-error)
         (plist-put info :magent-provider-error provider-error)
       (nconc info (list :magent-provider-error provider-error))))
   info)
 
-(defun magent-llm-gptel--capture-curl-error-before-cleanup-a
+(defun magent-sampling-gptel--capture-curl-error-before-cleanup-a
     (process _status)
   "Capture a Magent provider error before gptel destroys PROCESS state."
   (when-let* ((requests
@@ -402,48 +403,48 @@ blocks do not hide an otherwise valid JSON error response."
               (entry (alist-get process requests))
               (fsm (car entry))
               (info (gptel-fsm-info fsm))
-              ((magent-llm-gptel--managed-info-p info))
+              ((magent-sampling-gptel--managed-info-p info))
               (http-status (plist-get info :http-status))
               ((not (member http-status '("100" "200")))))
-    (magent-llm-gptel--capture-curl-provider-error
+    (magent-sampling-gptel--capture-curl-provider-error
      (process-buffer process) info)))
 
-(defun magent-llm-gptel--install-boundary-advice ()
+(defun magent-sampling-gptel--install-boundary-advice ()
   "Install adapter-local gptel boundary sanitization advice."
-  (unless (advice-member-p #'magent-llm-gptel--reset-reasoning-block-a
+  (unless (advice-member-p #'magent-sampling-gptel--reset-reasoning-block-a
                            'gptel--handle-wait)
     (advice-add 'gptel--handle-wait
-                :before #'magent-llm-gptel--reset-reasoning-block-a))
-  (unless (advice-member-p #'magent-llm-gptel--sanitize-before-curl-a
+                :before #'magent-sampling-gptel--reset-reasoning-block-a))
+  (unless (advice-member-p #'magent-sampling-gptel--sanitize-before-curl-a
                            'gptel-curl--get-args)
     (advice-add 'gptel-curl--get-args
-                :around #'magent-llm-gptel--sanitize-before-curl-a))
-  (unless (advice-member-p #'magent-llm-gptel--suppress-connect-headers-a
+                :around #'magent-sampling-gptel--sanitize-before-curl-a))
+  (unless (advice-member-p #'magent-sampling-gptel--suppress-connect-headers-a
                            'gptel-curl--get-config-args)
     (advice-add 'gptel-curl--get-config-args
                 :around
-                #'magent-llm-gptel--suppress-connect-headers-a))
-  (unless (advice-member-p #'magent-llm-gptel--sanitize-after-parse-response-a
+                #'magent-sampling-gptel--suppress-connect-headers-a))
+  (unless (advice-member-p #'magent-sampling-gptel--sanitize-after-parse-response-a
                            'gptel--parse-response)
     (advice-add 'gptel--parse-response
                 :around
-                #'magent-llm-gptel--sanitize-after-parse-response-a))
+                #'magent-sampling-gptel--sanitize-after-parse-response-a))
   (when (fboundp 'gptel-curl--parse-stream)
-    (unless (advice-member-p #'magent-llm-gptel--sanitize-after-parse-stream-a
+    (unless (advice-member-p #'magent-sampling-gptel--sanitize-after-parse-stream-a
                              'gptel-curl--parse-stream)
       (advice-add 'gptel-curl--parse-stream
                   :around
-                  #'magent-llm-gptel--sanitize-after-parse-stream-a)))
+                  #'magent-sampling-gptel--sanitize-after-parse-stream-a)))
   (when (fboundp 'gptel-curl--stream-cleanup)
     (unless
         (advice-member-p
-         #'magent-llm-gptel--capture-curl-error-before-cleanup-a
+         #'magent-sampling-gptel--capture-curl-error-before-cleanup-a
          'gptel-curl--stream-cleanup)
       (advice-add
        'gptel-curl--stream-cleanup
-       :before #'magent-llm-gptel--capture-curl-error-before-cleanup-a))))
+       :before #'magent-sampling-gptel--capture-curl-error-before-cleanup-a))))
 
-(defun magent-llm-gptel--make-state ()
+(defun magent-sampling-gptel--make-state ()
   "Create adapter-local streaming state."
   (let ((state (make-hash-table :test #'eq)))
     (puthash :text-chunks nil state)
@@ -453,41 +454,41 @@ blocks do not hide an otherwise valid JSON error response."
     (puthash :terminal-emitted nil state)
     state))
 
-(defun magent-llm-gptel--emit (request event)
+(defun magent-sampling-gptel--emit (request event)
   "Emit EVENT through REQUEST's callback."
-  (when-let* ((callback (magent-llm-request-callback request)))
+  (when-let* ((callback (magent-sampling-request-callback request)))
     (funcall callback event)))
 
-(defun magent-llm-gptel--emit-terminal (request state event)
+(defun magent-sampling-gptel--emit-terminal (request state event)
   "Emit terminal EVENT for REQUEST once, tracking it in STATE."
   (unless (gethash :terminal-emitted state)
     (puthash :terminal-emitted t state)
-    (magent-llm-gptel--emit request event)))
+    (magent-sampling-gptel--emit request event)))
 
-(defun magent-llm-gptel--streamed-text (state)
+(defun magent-sampling-gptel--streamed-text (state)
   "Return accumulated streamed text from STATE."
   (apply #'concat (nreverse (copy-sequence
                              (gethash :text-chunks state)))))
 
-(defun magent-llm-gptel--flush-reasoning (request state info)
+(defun magent-sampling-gptel--flush-reasoning (request state info)
   "Emit cached non-streaming reasoning chunks for REQUEST.
 Streaming reasoning is emitted as it arrives.  Non-streaming reasoning is
 held until the adapter can distinguish actual reasoning from providers
 that put the final answer only in a reasoning field."
   (unless (gethash :reasoning-emitted state)
-    (let ((metadata (magent-llm-gptel--metadata info)))
+    (let ((metadata (magent-sampling-gptel--metadata info)))
       (dolist (text (nreverse (copy-sequence
                                (gethash :reasoning-chunks state))))
-        (magent-llm-gptel--emit
+        (magent-sampling-gptel--emit
          request
-         (magent-llm-reasoning-delta-event text metadata)))
+         (magent-sampling-reasoning-delta-event text metadata)))
       (puthash :reasoning-emitted t state)
       (when (gethash :reasoning-ended state)
-        (magent-llm-gptel--emit
+        (magent-sampling-gptel--emit
          request
-         (magent-llm-reasoning-end-event metadata))))))
+         (magent-sampling-reasoning-end-event metadata))))))
 
-(defun magent-llm-gptel--pending-tool-use-p (info)
+(defun magent-sampling-gptel--pending-tool-use-p (info)
   "Return non-nil when INFO contains unfinished gptel tool calls."
   (let ((tool-use (and (listp info) (plist-get info :tool-use))))
     (cond
@@ -498,27 +499,27 @@ that put the final answer only in a reasoning field."
                tool-use))
      (t t))))
 
-(defun magent-llm-gptel--final-text (state info)
+(defun magent-sampling-gptel--final-text (state info)
   "Return final response text from STATE and gptel INFO."
   (let ((content (and (listp info) (plist-get info :content)))
-        (streamed (magent-llm-gptel--streamed-text state)))
+        (streamed (magent-sampling-gptel--streamed-text state)))
     (cond
      ((and (stringp content) (not (string-empty-p content))) content)
      ((not (string-empty-p streamed)) streamed)
      (t ""))))
 
-(defconst magent-llm-gptel--dsml-tool-calls-open
+(defconst magent-sampling-gptel--dsml-tool-calls-open
   "<｜｜DSML｜｜tool_calls>"
   "Opening marker for textual DSML tool-call envelopes.")
 
-(defconst magent-llm-gptel--dsml-tool-calls-close
+(defconst magent-sampling-gptel--dsml-tool-calls-close
   "</｜｜DSML｜｜tool_calls>"
   "Closing marker for textual DSML tool-call envelopes.")
 
-(defconst magent-llm-gptel--textual-tool-call-max-length 200000
+(defconst magent-sampling-gptel--textual-tool-call-max-length 200000
   "Maximum text length considered for textual DSML tool-call parsing.")
 
-(defun magent-llm-gptel--parse-dsml-tag-attr
+(defun magent-sampling-gptel--parse-dsml-tag-attr
     (text pos tag attr)
   "Return (VALUE . BODY-START) for TAG ATTR in TEXT at POS, or nil."
   (let* ((prefix (format "<｜｜DSML｜｜%s " tag))
@@ -537,7 +538,7 @@ that put the final answer only in a reasoning field."
           (cons (substring text value-start value-end)
                 (1+ tag-end)))))))
 
-(defun magent-llm-gptel--parse-dsml-tool-call-params (body)
+(defun magent-sampling-gptel--parse-dsml-tool-call-params (body)
   "Return a plist of textual DSML parameter values from BODY."
   (let ((pos 0)
         (close "</｜｜DSML｜｜parameter>")
@@ -546,7 +547,7 @@ that put the final answer only in a reasoning field."
       (let ((start (string-search "<｜｜DSML｜｜parameter " body pos)))
         (if (null start)
             (setq pos (length body))
-          (let* ((parsed (magent-llm-gptel--parse-dsml-tag-attr
+          (let* ((parsed (magent-sampling-gptel--parse-dsml-tag-attr
                           body start "parameter" "name"))
                  (name (car-safe parsed))
                  (content-start (cdr-safe parsed))
@@ -563,13 +564,13 @@ that put the final answer only in a reasoning field."
                     pos (+ content-end (length close))))))))
     args))
 
-(defun magent-llm-gptel--parse-dsml-tool-calls (text &optional metadata)
+(defun magent-sampling-gptel--parse-dsml-tool-calls (text &optional metadata)
   "Return normalized tool-call events parsed from textual DSML TEXT.
 Tool-call blocks may appear as a pure envelope or embedded in surrounding
 assistant prose."
   (when (and (stringp text)
              (<= (length text)
-                 magent-llm-gptel--textual-tool-call-max-length))
+                 magent-sampling-gptel--textual-tool-call-max-length))
     (let ((pos 0)
           (invoke-close "</｜｜DSML｜｜invoke>")
           events
@@ -580,15 +581,15 @@ assistant prose."
       (while (< pos (length text))
         (let ((block-start
                (string-search
-                magent-llm-gptel--dsml-tool-calls-open text pos)))
+                magent-sampling-gptel--dsml-tool-calls-open text pos)))
           (if (null block-start)
               (setq pos (length text))
             (let* ((block-body-start
                     (+ block-start
-                       (length magent-llm-gptel--dsml-tool-calls-open)))
+                       (length magent-sampling-gptel--dsml-tool-calls-open)))
                    (block-end
                     (string-search
-                     magent-llm-gptel--dsml-tool-calls-close
+                     magent-sampling-gptel--dsml-tool-calls-close
                      text
                      block-body-start)))
               (if (null block-end)
@@ -603,7 +604,7 @@ assistant prose."
                       (if (null start)
                           (setq block-pos (length block-body))
                         (let* ((parsed
-                                (magent-llm-gptel--parse-dsml-tag-attr
+                                (magent-sampling-gptel--parse-dsml-tag-attr
                                  block-body start "invoke" "name"))
                                (name (car-safe parsed))
                                (body-start (cdr-safe parsed))
@@ -626,7 +627,7 @@ assistant prose."
                                                body-start
                                                body-end))
                                    (args
-                                    (magent-llm-gptel--parse-dsml-tool-call-params
+                                    (magent-sampling-gptel--parse-dsml-tool-call-params
                                      body))
                                    (id (format
                                         "textual-dsml-%d-%s"
@@ -638,7 +639,7 @@ assistant prose."
                                                    :name name
                                                    :args args
                                                    :source 'textual-dsml)))
-                              (push (magent-llm-tool-call-event
+                              (push (magent-sampling-tool-call-event
                                      id name args raw-call metadata)
                                     events)
                               (setq block-pos
@@ -647,20 +648,20 @@ assistant prose."
                   (setq pos
                         (+ block-end
                            (length
-                            magent-llm-gptel--dsml-tool-calls-close)))))))))
+                            magent-sampling-gptel--dsml-tool-calls-close)))))))))
       (nreverse events))))
 
-(defun magent-llm-gptel--emit-tool-call-batch
+(defun magent-sampling-gptel--emit-tool-call-batch
     (request state events metadata &optional continuation)
   "Emit normalized tool-call EVENTS followed by a batch-end event."
   (puthash :terminal-emitted t state)
   (dolist (event events)
-    (magent-llm-gptel--emit request event))
-  (magent-llm-gptel--emit
+    (magent-sampling-gptel--emit request event))
+  (magent-sampling-gptel--emit
    request
-   (magent-llm-tool-call-batch-end-event metadata continuation)))
+   (magent-sampling-tool-call-batch-end-event metadata continuation)))
 
-(defun magent-llm-gptel--record-textual-tool-result (record result)
+(defun magent-sampling-gptel--record-textual-tool-result (record result)
   "Store model-visible RESULT in textual tool RECORD."
   (plist-put record :output
              (if (magent-tool-result-p result)
@@ -668,7 +669,7 @@ assistant prose."
                (gptel--to-string result)))
   (plist-put record :done t))
 
-(defun magent-llm-gptel--textual-tool-result-message (records)
+(defun magent-sampling-gptel--textual-tool-result-message (records)
   "Return an OpenAI chat user message containing textual tool RECORDS."
   (list
    :role "user"
@@ -691,7 +692,7 @@ assistant prose."
                 :output (plist-get record :output)))
         records)))))))
 
-(defun magent-llm-gptel--openai-chat-continuation-supported-p (fsm info)
+(defun magent-sampling-gptel--openai-chat-continuation-supported-p (fsm info)
   "Return non-nil when FSM and INFO support native OpenAI chat continuation."
   (let* ((backend (and (listp info) (plist-get info :backend)))
          (data (and (listp info) (plist-get info :data)))
@@ -702,7 +703,7 @@ assistant prose."
          (gptel-openai-p backend)
          (vectorp messages))))
 
-(defun magent-llm-gptel--continue-with-user-message (fsm state message)
+(defun magent-sampling-gptel--continue-with-user-message (fsm state message)
   "Append OpenAI chat MESSAGE to FSM's context and continue it."
   (let ((info (gptel-fsm-info fsm)))
     (gptel--inject-prompt
@@ -710,37 +711,37 @@ assistant prose."
      (plist-get info :data)
      message)
     (plist-put info :magent-after-tool-output t)
-    (magent-llm-gptel--reset-sample-state state info)
+    (magent-sampling-gptel--reset-sample-state state info)
     (gptel--fsm-transition fsm 'WAIT)))
 
-(defun magent-llm-gptel--continue-textual-tool-use
+(defun magent-sampling-gptel--continue-textual-tool-use
     (fsm state records)
   "Append textual tool RECORDS to FSM's native context and continue it."
   (unless (cl-every (lambda (record) (plist-get record :done)) records)
     (error "Cannot continue gptel request before all textual tools finish"))
-  (magent-llm-gptel--continue-with-user-message
-   fsm state (magent-llm-gptel--textual-tool-result-message records)))
+  (magent-sampling-gptel--continue-with-user-message
+   fsm state (magent-sampling-gptel--textual-tool-result-message records)))
 
-(defun magent-llm-gptel--prepare-textual-continuation
+(defun magent-sampling-gptel--prepare-textual-continuation
     (fsm state info events)
   "Attach result callbacks to textual EVENTS and return their continuation."
-  (when (magent-llm-gptel--openai-chat-continuation-supported-p fsm info)
+  (when (magent-sampling-gptel--openai-chat-continuation-supported-p fsm info)
     (let ((records
            (mapcar
             (lambda (event)
-              (list :id (magent-llm-event-id event)
-                    :name (magent-llm-event-name event)
-                    :arguments (magent-llm-event-arguments event)
+              (list :id (magent-sampling-event-id event)
+                    :name (magent-sampling-event-name event)
+                    :arguments (magent-sampling-event-arguments event)
                     :output nil
                     :done nil))
             events))
           resumed)
       (cl-mapc
        (lambda (event record)
-         (magent-llm-event-set-result-callback
+         (magent-sampling-event-set-result-callback
           event
           (apply-partially
-           #'magent-llm-gptel--record-textual-tool-result record)))
+           #'magent-sampling-gptel--record-textual-tool-result record)))
        events records)
       (lambda ()
         (unless resumed
@@ -749,39 +750,39 @@ assistant prose."
             (error
              "Cannot continue gptel request before all textual tools finish"))
           (setq resumed t)
-          (magent-llm-gptel--continue-textual-tool-use
+          (magent-sampling-gptel--continue-textual-tool-use
            fsm state records))))))
 
-(defun magent-llm-gptel--emit-completed-or-textual-tool-calls
+(defun magent-sampling-gptel--emit-completed-or-textual-tool-calls
     (request state info text &optional fsm)
   "Emit completion TEXT, or convert textual DSML tool calls into tool events.
 Return a symbol describing completion, including whether the native provider
 context remains paused for Magent recovery."
-  (let* ((metadata (magent-llm-gptel--metadata info))
-         (events (magent-llm-gptel--parse-dsml-tool-calls text metadata)))
+  (let* ((metadata (magent-sampling-gptel--metadata info))
+         (events (magent-sampling-gptel--parse-dsml-tool-calls text metadata)))
     (if events
         (let ((continuation
-               (magent-llm-gptel--prepare-textual-continuation
+               (magent-sampling-gptel--prepare-textual-continuation
                 fsm state info events)))
-          (magent-llm-gptel--flush-reasoning request state info)
-          (magent-llm-gptel--emit-tool-call-batch
+          (magent-sampling-gptel--flush-reasoning request state info)
+          (magent-sampling-gptel--emit-tool-call-batch
            request state events
            (append metadata '(:source textual-dsml))
            continuation)
           (if continuation 'tool-call-paused 'tool-call))
       (unless (string-empty-p (or text ""))
-        (magent-llm-gptel--flush-reasoning request state info))
-      (magent-llm-gptel--emit-terminal
+        (magent-sampling-gptel--flush-reasoning request state info))
+      (magent-sampling-gptel--emit-terminal
        request
        state
-       (magent-llm-completed-event
+       (magent-sampling-completed-event
         text
         (and (listp info) (plist-get info :tokens))
         (and (listp info) (plist-get info :stop-reason))
         metadata))
       'completed)))
 
-(defun magent-llm-gptel--metadata (info)
+(defun magent-sampling-gptel--metadata (info)
   "Return adapter metadata extracted from gptel INFO."
   (let ((metadata (list :provider 'gptel)))
     (dolist (key '(:status :http-status :error :tokens :stop-reason))
@@ -794,7 +795,7 @@ context remains paused for Magent recovery."
                           (magent-json-safe-value provider-error)))))
     metadata))
 
-(defun magent-llm-gptel--provider-error-message (provider-error)
+(defun magent-sampling-gptel--provider-error-message (provider-error)
   "Return a concise message for structured PROVIDER-ERROR."
   (cond
    ((stringp provider-error) provider-error)
@@ -806,43 +807,43 @@ context remains paused for Magent recovery."
         (format "%S" provider-error))))
    (provider-error (format "%S" provider-error))))
 
-(defun magent-llm-gptel--error-message (info)
+(defun magent-sampling-gptel--error-message (info)
   "Return the most useful provider error message from gptel INFO."
   (let ((captured-error (plist-get info :magent-provider-error))
         (provider-error (plist-get info :error))
         (status (plist-get info :status)))
     (cond
      (captured-error
-      (magent-llm-gptel--provider-error-message captured-error))
+      (magent-sampling-gptel--provider-error-message captured-error))
      (provider-error
-      (magent-llm-gptel--provider-error-message provider-error))
+      (magent-sampling-gptel--provider-error-message provider-error))
      (status (format "%s" status))
      (t "gptel request failed"))))
 
-(defun magent-llm-gptel--tool-name (tool-spec raw-call)
+(defun magent-sampling-gptel--tool-name (tool-spec raw-call)
   "Return the tool name from TOOL-SPEC or RAW-CALL."
   (or (and (fboundp 'gptel-tool-name)
            tool-spec
            (ignore-errors (gptel-tool-name tool-spec)))
       (plist-get raw-call :name)))
 
-(defun magent-llm-gptel--tool-id (raw-call)
+(defun magent-sampling-gptel--tool-id (raw-call)
   "Return a stable id from RAW-CALL, when present."
   (or (plist-get raw-call :id)
       (plist-get raw-call :call-id)
       (plist-get raw-call :tool-call-id)))
 
-(defun magent-llm-gptel--normalize-tool-call (call &optional metadata)
+(defun magent-sampling-gptel--normalize-tool-call (call &optional metadata)
   "Convert one gptel CALL into a normalized tool-call event.
 METADATA is merged into the event metadata."
   (let* ((tool-spec (nth 0 call))
          (args (nth 1 call))
          (raw-call (or (nth 3 call)
-                       (list :name (magent-llm-gptel--tool-name tool-spec nil)
+                       (list :name (magent-sampling-gptel--tool-name tool-spec nil)
                              :args args)))
-         (name (magent-llm-gptel--tool-name tool-spec raw-call)))
-    (magent-llm-tool-call-event
-     (magent-llm-gptel--tool-id raw-call)
+         (name (magent-sampling-gptel--tool-name tool-spec raw-call)))
+    (magent-sampling-tool-call-event
+     (magent-sampling-gptel--tool-id raw-call)
      name
      args
      raw-call
@@ -851,7 +852,7 @@ METADATA is merged into the event metadata."
        (append (list :provider 'gptel) metadata))
      (nth 2 call))))
 
-(defun magent-llm-gptel--record-tool-result
+(defun magent-sampling-gptel--record-tool-result
     (info tool-spec tool-call result)
   "Record RESULT for TOOL-CALL in gptel INFO without resuming the request."
   (let ((result (if (magent-tool-result-p result)
@@ -861,7 +862,7 @@ METADATA is merged into the event metadata."
           (plist-get info :tool-result))
     (plist-put tool-call :result result)))
 
-(defun magent-llm-gptel--reset-sample-state (state &optional info)
+(defun magent-sampling-gptel--reset-sample-state (state &optional info)
   "Reset adapter STATE and optional gptel INFO before continuation."
   (puthash :text-chunks nil state)
   (puthash :reasoning-chunks nil state)
@@ -872,7 +873,7 @@ METADATA is merged into the event metadata."
     (plist-put info :content nil)
     (plist-put info :stop-reason nil)))
 
-(defun magent-llm-gptel--continue-tool-use (fsm state)
+(defun magent-sampling-gptel--continue-tool-use (fsm state)
   "Inject completed tool results into FSM and continue its provider request."
   (let* ((info (gptel-fsm-info fsm))
          (tool-use (plist-get info :tool-use)))
@@ -889,17 +890,17 @@ METADATA is merged into the event metadata."
     (plist-put info :tool-pending nil)
     (plist-put info :magent-tool-continuation nil)
     (plist-put info :magent-after-tool-output t)
-    (magent-llm-gptel--reset-sample-state state info)
+    (magent-sampling-gptel--reset-sample-state state info)
     (gptel--fsm-transition fsm 'WAIT)))
 
-(defun magent-llm-gptel--handle-tool-use (state fsm)
+(defun magent-sampling-gptel--handle-tool-use (state fsm)
   "Report pending gptel tool calls and pause FSM for Magent execution."
   (when-let* ((info (gptel-fsm-info fsm))
               (callback (plist-get info :callback))
               (tools (plist-get info :tools))
               (tool-use (cl-remove-if (lambda (tc) (plist-get tc :result))
                                       (plist-get info :tool-use))))
-    (magent-llm-gptel--sanitize-info info)
+    (magent-sampling-gptel--sanitize-info info)
     (let (pending-calls
           resumed)
       (dolist (tool-call tool-use)
@@ -910,7 +911,7 @@ METADATA is merged into the event metadata."
                            tools))
                (args (plist-get tool-call :args))
                (result-callback
-                (apply-partially #'magent-llm-gptel--record-tool-result
+                (apply-partially #'magent-sampling-gptel--record-tool-result
                                  info tool-spec tool-call)))
           (push (list tool-spec args result-callback tool-call)
                 pending-calls)))
@@ -920,10 +921,10 @@ METADATA is merged into the event metadata."
        (lambda ()
          (unless resumed
            (setq resumed t)
-           (magent-llm-gptel--continue-tool-use fsm state))))
+           (magent-sampling-gptel--continue-tool-use fsm state))))
       (funcall callback (cons 'tool-call (nreverse pending-calls)) info))))
 
-(defun magent-llm-gptel--handle-done (request state buffer fsm)
+(defun magent-sampling-gptel--handle-done (request state buffer fsm)
   "Emit a completion if gptel reaches DONE without a final callback.
 Some providers can return reasoning-only non-streaming responses.  gptel
 emits the reasoning callback, then reaches DONE without invoking the
@@ -933,27 +934,27 @@ input."
   (when (and request state)
     (let ((info (gptel-fsm-info fsm)))
       (unless (or (gethash :terminal-emitted state)
-                  (magent-llm-gptel--pending-tool-use-p info)
+                  (magent-sampling-gptel--pending-tool-use-p info)
                   (and (listp info) (plist-get info :error)))
         (let ((content (and (listp info) (plist-get info :content))))
           (when (or (and (stringp content)
                          (not (string-empty-p content)))
                     (not (string-empty-p
-                          (magent-llm-gptel--streamed-text state))))
-            (magent-llm-gptel--flush-reasoning request state info)))
+                          (magent-sampling-gptel--streamed-text state))))
+            (magent-sampling-gptel--flush-reasoning request state info)))
         (unless
             (memq
-             (magent-llm-gptel--emit-completed-or-textual-tool-calls
+             (magent-sampling-gptel--emit-completed-or-textual-tool-calls
               request
               state
               info
-              (magent-llm-gptel--final-text state info)
+              (magent-sampling-gptel--final-text state info)
               fsm)
              '(tool-call-paused completed-paused))
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
 
-(defun magent-llm-gptel--make-sampling-fsm (&optional request state buffer)
+(defun magent-sampling-gptel--make-sampling-fsm (&optional request state buffer)
   "Create a gptel FSM for one model sampling request.
 gptel owns transport and its native request data.  Magent pauses the FSM at
 tool calls, executes them itself, and explicitly resumes the same context."
@@ -966,107 +967,107 @@ tool calls, executes them itself, and explicitly resumes the same context."
             (TOOL . ((t . DONE))))
    :handlers `((WAIT ,#'gptel--handle-wait)
                (TOOL ,(apply-partially
-                       #'magent-llm-gptel--handle-tool-use state))
-               (DONE ,(apply-partially #'magent-llm-gptel--handle-done
+                       #'magent-sampling-gptel--handle-tool-use state))
+               (DONE ,(apply-partially #'magent-sampling-gptel--handle-done
                                         request state buffer)
                      ,#'gptel--handle-post)
                (ERRS ,#'gptel--handle-post)
                (ABRT ,#'gptel--handle-post))))
 
-(defun magent-llm-gptel--callback
+(defun magent-sampling-gptel--callback
     (request state buffer response info &optional fsm)
   "Map gptel RESPONSE and INFO to normalized events for REQUEST."
   (cond
    ((stringp response)
     (if (and (not (plist-get info :stream))
-             (not (magent-llm-gptel--pending-tool-use-p info)))
+             (not (magent-sampling-gptel--pending-tool-use-p info)))
         (unless
             (memq
-             (magent-llm-gptel--emit-completed-or-textual-tool-calls
+             (magent-sampling-gptel--emit-completed-or-textual-tool-calls
               request state info response fsm)
              '(tool-call-paused completed-paused))
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))
       (push response (gethash :text-chunks state))
-      (magent-llm-gptel--emit
+      (magent-sampling-gptel--emit
        request
-       (magent-llm-text-delta-event
+       (magent-sampling-text-delta-event
         response
-        (magent-llm-gptel--metadata info)))))
+        (magent-sampling-gptel--metadata info)))))
    ((and (consp response) (eq (car response) 'reasoning))
     (if (eq (cdr response) t)
         (progn
           (puthash :reasoning-ended t state)
           (when (gethash :reasoning-emitted state)
-            (magent-llm-gptel--emit
+            (magent-sampling-gptel--emit
              request
-             (magent-llm-reasoning-end-event
-              (magent-llm-gptel--metadata info)))))
+             (magent-sampling-reasoning-end-event
+              (magent-sampling-gptel--metadata info)))))
       (let ((text (or (cdr response) "")))
         (push text (gethash :reasoning-chunks state))
         (when (plist-get info :stream)
           (puthash :reasoning-emitted t state)
-          (magent-llm-gptel--emit
+          (magent-sampling-gptel--emit
            request
-           (magent-llm-reasoning-delta-event
+           (magent-sampling-reasoning-delta-event
             text
-            (magent-llm-gptel--metadata info)))))))
+            (magent-sampling-gptel--metadata info)))))))
    ((and (consp response) (eq (car response) 'tool-call))
-    (magent-llm-gptel--flush-reasoning request state info)
+    (magent-sampling-gptel--flush-reasoning request state info)
     (let ((calls (cdr response))
-          (metadata (magent-llm-gptel--metadata info)))
+          (metadata (magent-sampling-gptel--metadata info)))
       (dolist (call calls)
-        (magent-llm-gptel--emit
+        (magent-sampling-gptel--emit
          request
-         (magent-llm-gptel--normalize-tool-call call metadata)))
-      (magent-llm-gptel--emit
+         (magent-sampling-gptel--normalize-tool-call call metadata)))
+      (magent-sampling-gptel--emit
        request
-       (magent-llm-tool-call-batch-end-event
+       (magent-sampling-tool-call-batch-end-event
         metadata
         (plist-get info :magent-tool-continuation)))))
    ((eq response t)
-    (if (magent-llm-gptel--pending-tool-use-p info)
+    (if (magent-sampling-gptel--pending-tool-use-p info)
         nil
       (unless
           (memq
-           (magent-llm-gptel--emit-completed-or-textual-tool-calls
-            request state info (magent-llm-gptel--final-text state info) fsm)
+           (magent-sampling-gptel--emit-completed-or-textual-tool-calls
+            request state info (magent-sampling-gptel--final-text state info) fsm)
            '(tool-call-paused completed-paused))
         (when (buffer-live-p buffer)
           (kill-buffer buffer)))))
    ((eq response 'abort)
-    (magent-llm-gptel--emit-terminal
+    (magent-sampling-gptel--emit-terminal
      request
      state
-     (magent-llm-error-event
+     (magent-sampling-error-event
       "Request aborted"
-      (append (magent-llm-gptel--metadata info) '(:status abort))))
+      (append (magent-sampling-gptel--metadata info) '(:status abort))))
     (when (buffer-live-p buffer)
       (kill-buffer buffer)))
    ((null response)
-    (magent-llm-gptel--emit-terminal
+    (magent-sampling-gptel--emit-terminal
      request
      state
-     (magent-llm-error-event
-      (magent-llm-gptel--error-message info)
-      (magent-llm-gptel--metadata info)))
+     (magent-sampling-error-event
+      (magent-sampling-gptel--error-message info)
+      (magent-sampling-gptel--metadata info)))
     (when (buffer-live-p buffer)
       (kill-buffer buffer)))))
 
-(defun magent-llm-gptel--backend-openai-responses-p (backend)
+(defun magent-sampling-gptel--backend-openai-responses-p (backend)
   "Return non-nil when BACKEND uses OpenAI Responses wire format."
   (and backend
        (fboundp 'gptel-openai-responses-p)
        (gptel-openai-responses-p backend)))
 
-(defun magent-llm-gptel--backend-openai-chat-p (backend)
+(defun magent-sampling-gptel--backend-openai-chat-p (backend)
   "Return non-nil when BACKEND uses OpenAI-compatible chat wire format."
   (and backend
-       (not (magent-llm-gptel--backend-openai-responses-p backend))
+       (not (magent-sampling-gptel--backend-openai-responses-p backend))
        (fboundp 'gptel-openai-p)
        (gptel-openai-p backend)))
 
-(defun magent-llm-gptel--unsupported-effort
+(defun magent-sampling-gptel--unsupported-effort
     (effort reason &optional fallback)
   "Handle unsupported EFFORT for REASON, optionally returning FALLBACK."
   (pcase magent-effort-unsupported-policy
@@ -1082,38 +1083,38 @@ tool calls, executes them itself, and explicitly resumes the same context."
      fallback)
     (_ nil)))
 
-(defun magent-llm-gptel--chat-effort (effort)
+(defun magent-sampling-gptel--chat-effort (effort)
   "Return OpenAI-compatible chat EFFORT, applying xhigh policy."
   (if (eq effort 'xhigh)
-      (magent-llm-gptel--unsupported-effort
+      (magent-sampling-gptel--unsupported-effort
        effort
        "OpenAI-compatible chat requests do not advertise xhigh"
        'high)
     effort))
 
-(defun magent-llm-gptel--effort-request-params (backend effort)
+(defun magent-sampling-gptel--effort-request-params (backend effort)
   "Return provider request params for BACKEND and EFFORT, or nil."
   (let ((normalized (magent-effort-effective effort)))
     (when normalized
       (cond
-       ((magent-llm-gptel--backend-openai-responses-p backend)
+       ((magent-sampling-gptel--backend-openai-responses-p backend)
         `(:reasoning (:effort ,(symbol-name normalized))))
-       ((magent-llm-gptel--backend-openai-chat-p backend)
+       ((magent-sampling-gptel--backend-openai-chat-p backend)
         (when-let* ((chat-effort
-                    (magent-llm-gptel--chat-effort normalized)))
+                    (magent-sampling-gptel--chat-effort normalized)))
           `(:reasoning_effort ,(symbol-name chat-effort))))
        (t
-        (magent-llm-gptel--unsupported-effort
+        (magent-sampling-gptel--unsupported-effort
          normalized
          "backend does not advertise a Magent effort mapping")
         nil)))))
 
-(defun magent-llm-gptel--top-p-request-params (backend top-p)
+(defun magent-sampling-gptel--top-p-request-params (backend top-p)
   "Return provider request params for BACKEND and TOP-P, or nil."
   (when top-p
     (cond
-     ((or (magent-llm-gptel--backend-openai-responses-p backend)
-          (magent-llm-gptel--backend-openai-chat-p backend)
+     ((or (magent-sampling-gptel--backend-openai-responses-p backend)
+          (magent-sampling-gptel--backend-openai-chat-p backend)
           (and (fboundp 'gptel-anthropic-p)
                (gptel-anthropic-p backend)))
       `(:top_p ,top-p))
@@ -1133,7 +1134,7 @@ tool calls, executes them itself, and explicitly resumes the same context."
        top-p)
       nil))))
 
-(defun magent-llm-gptel--merge-request-params (base extra)
+(defun magent-sampling-gptel--merge-request-params (base extra)
   "Return BASE request params with EXTRA taking precedence."
   (let ((merged (copy-sequence base)))
     (cl-loop for (key value) on extra by #'cddr
@@ -1145,45 +1146,45 @@ tool calls, executes them itself, and explicitly resumes the same context."
                                 (consp value)
                                 (magent-json--plist-p existing)
                                 (magent-json--plist-p value))
-                           (magent-llm-gptel--merge-request-params
+                           (magent-sampling-gptel--merge-request-params
                             existing value)
                          value))))
     merged))
 
-(defun magent-llm-gptel-sample (request)
+(defun magent-sampling-gptel-sample (request)
   "Start one gptel sampling request for REQUEST.
 Return the request buffer as the abort handle.  REQUEST must be a
-`magent-llm-request'."
-  (unless (magent-llm-request-p request)
-    (error "Expected magent-llm-request, got: %S" request))
-  (magent-llm-gptel--install-boundary-advice)
-  (let ((buffer (generate-new-buffer " *magent-llm-gptel-request*"))
-        (state (magent-llm-gptel--make-state))
-        (metadata (magent-llm-request-metadata request)))
+`magent-sampling-request'."
+  (unless (magent-sampling-request-p request)
+    (error "Expected magent-sampling-request, got: %S" request))
+  (magent-sampling-gptel--install-boundary-advice)
+  (let ((buffer (generate-new-buffer " *magent-sampling-gptel-request*"))
+        (state (magent-sampling-gptel--make-state))
+        (metadata (magent-sampling-request-metadata request)))
     (with-current-buffer buffer
-      (when (magent-llm-request-backend request)
-        (setq-local gptel-backend (magent-llm-request-backend request)))
-      (when (magent-llm-request-model request)
-        (setq-local gptel-model (magent-llm-request-model request)))
+      (when (magent-sampling-request-backend request)
+        (setq-local gptel-backend (magent-sampling-request-backend request)))
+      (when (magent-sampling-request-model request)
+        (setq-local gptel-model (magent-sampling-request-model request)))
       (when (and (plist-member metadata :temperature)
                  (boundp 'gptel-temperature))
         (setq-local gptel-temperature (plist-get metadata :temperature)))
       (let ((sampling-params
-             (magent-llm-gptel--top-p-request-params
+             (magent-sampling-gptel--top-p-request-params
               gptel-backend (plist-get metadata :top-p))))
         (when-let* ((effort-params
-                    (magent-llm-gptel--effort-request-params
+                    (magent-sampling-gptel--effort-request-params
                      gptel-backend
                      (plist-get metadata :effort))))
           (setq sampling-params
-                (magent-llm-gptel--merge-request-params
+                (magent-sampling-gptel--merge-request-params
                  sampling-params effort-params)))
         (when sampling-params
           (setq-local gptel--request-params
-                      (magent-llm-gptel--merge-request-params
+                      (magent-sampling-gptel--merge-request-params
                        gptel--request-params
                        sampling-params))))
-      (setq-local gptel-tools (magent-llm-request-tools request))
+      (setq-local gptel-tools (magent-sampling-request-tools request))
       (setq-local gptel-use-tools
                   (and gptel-tools
                        (not (plist-get metadata :disable-provider-tools))))
@@ -1193,22 +1194,22 @@ Return the request buffer as the abort handle.  REQUEST must be a
                     (if (plist-member metadata :include-reasoning)
                         (plist-get metadata :include-reasoning)
                       magent-include-reasoning)))
-      (let ((fsm (magent-llm-gptel--make-sampling-fsm
+      (let ((fsm (magent-sampling-gptel--make-sampling-fsm
                   request state buffer)))
         (gptel-request
-            (magent-llm-request-prompt request)
+            (magent-sampling-request-prompt request)
           :buffer buffer
           :context (append
-                    (list :magent-llm-gptel t)
+                    (list :magent-sampling-gptel t)
                     (when (plist-member metadata :top-p)
                       (list :top-p (plist-get metadata :top-p))))
-          :system (magent-llm-request-system request)
-          :stream (magent-llm-request-stream request)
+          :system (magent-sampling-request-system request)
+          :stream (magent-sampling-request-stream request)
           :fsm fsm
           :callback (lambda (response info)
-                      (magent-llm-gptel--callback
+                      (magent-sampling-gptel--callback
                        request state buffer response info fsm)))))
     buffer))
 
-(provide 'magent-llm-gptel)
-;;; magent-llm-gptel.el ends here
+(provide 'magent-sampling-gptel)
+;;; magent-sampling-gptel.el ends here

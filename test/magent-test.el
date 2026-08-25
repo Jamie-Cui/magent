@@ -314,7 +314,7 @@
 (ert-deftest magent-test-gptel-adapter-isolates-private-model-registry ()
   "Only the documented cross-provider registry exception is declared."
   (let ((adapter-file
-         (expand-file-name "lisp/magent-llm-gptel.el"
+         (expand-file-name "lisp/magent-sampling-gptel.el"
                            magent-test--root-directory))
         declarations)
     (with-temp-buffer
@@ -2016,9 +2016,9 @@
        nil
        request-state))
     (let* ((request (magent-agent-loop-request captured-loop))
-           (metadata (magent-llm-request-metadata request)))
-      (should (eq (magent-llm-request-backend request) backend))
-      (should (eq (magent-llm-request-model request) 'parent-model))
+           (metadata (magent-sampling-request-metadata request)))
+      (should (eq (magent-sampling-request-backend request) backend))
+      (should (eq (magent-sampling-request-model request) 'parent-model))
       (should (eq (magent-request-context-model request-state) 'parent-model))
       (should (eq (magent-request-context-backend request-state) backend))
       (should (= (magent-request-context-temperature request-state) 0.42))
@@ -2190,7 +2190,7 @@
        nil
        request-state))
     (let* ((request (magent-agent-loop-request captured-loop))
-           (system (magent-llm-request-system request)))
+           (system (magent-sampling-request-system request)))
       (should (string-match-p
                (regexp-quote "Current project root: /tmp/project")
                system))
@@ -2717,12 +2717,12 @@
                        (error "Doctor must not enter the runtime queue")))
                     ((symbol-function 'magent-session-save-deferred-for-session)
                      #'ignore)
-                    ((symbol-function 'magent-llm-gptel-sample)
+                    ((symbol-function 'magent-sampling-gptel-sample)
                      (lambda (value)
                        (setq request value)
                        (cl-incf sample-count)
-                       (funcall (magent-llm-request-callback value)
-                                (magent-llm-event-create
+                       (funcall (magent-sampling-request-callback value)
+                                (magent-sampling-event-create
                                  'completed :text diagnosis))
                        nil)))
             (magent-action-invoke
@@ -2732,8 +2732,8 @@
                             (setq completion (list status result)))))
           (ert-info ((format "Doctor completion: %S" completion))
             (should (= sample-count 1)))
-          (should-not (magent-llm-request-tools request))
-          (should-not (magent-llm-request-stream request))
+          (should-not (magent-sampling-request-tools request))
+          (should-not (magent-sampling-request-stream request))
           (should (eq (car completion) 'completed))
           (should (cl-find 'assistant-delta events
                            :key (lambda (event) (plist-get event :type))))
@@ -2769,7 +2769,7 @@
                      #'ignore)
                     ((symbol-function 'magent-session-save-deferred-for-session)
                      #'ignore)
-                    ((symbol-function 'magent-llm-gptel-sample)
+                    ((symbol-function 'magent-sampling-gptel-sample)
                      (lambda (_request) (setq sampled t))))
             (magent-action-run "doctor"))
           (should-not sampled)
@@ -2804,7 +2804,7 @@
            :required t)
           (let ((magent-action--allow-core-registration t))
             (magent-action-builtin-doctor-register))
-          (cl-letf (((symbol-function 'magent-llm-gptel-sample)
+          (cl-letf (((symbol-function 'magent-sampling-gptel-sample)
                      (lambda (_request) request-buffer))
                     ((symbol-function 'gptel-abort)
                      (lambda (buffer) (setq aborted buffer)))
@@ -2870,7 +2870,7 @@
   (require 'magent-agent)
   (let* ((backend (gptel-make-openai
                     "tools" :key "key"
-                    :models '((tool-model :capabilities (tool-use)))))
+                    :models '((tool-model :capabilities (tool)))))
          (gptel-backend backend)
          (gptel-model 'tool-model)
          (agent (magent-agent-info-create
@@ -2899,8 +2899,8 @@
       (magent-session-reset)
       (magent-test--run-turn "use a tool" nil agent))
     (let ((request (magent-agent-loop-request captured-loop)))
-      (should (magent-llm-request-tools request))
-      (should (magent-llm-request-stream request)))))
+      (should (magent-sampling-request-tools request))
+      (should (magent-sampling-request-stream request)))))
 
 (ert-deftest magent-test-agent-run-turn-rejects-known-tool-incapable-route ()
   "A model explicitly lacking tool support fails before provider sampling."
@@ -2946,7 +2946,7 @@
 
 (ert-deftest magent-test-llm-gptel-applies-temperature-metadata ()
   "Test the gptel adapter applies request temperature metadata."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let ((gptel-backend (gptel-make-openai "test" :key "key"))
         (gptel-model 'test-model)
         (gptel-temperature 1.0)
@@ -2957,8 +2957,8 @@
                  (funcall (plist-get kwargs :callback)
                           t
                           (list :content "ok")))))
-      (magent-llm-gptel-sample
-       (magent-llm-request-create
+      (magent-sampling-gptel-sample
+       (magent-sampling-request-create
         :prompt '("hello")
         :system "sys"
         :stream t
@@ -2968,7 +2968,7 @@
 
 (ert-deftest magent-test-llm-gptel-applies-top-p-metadata-openai ()
   "Test the gptel adapter maps top-p to OpenAI request params."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let ((backend (gptel-make-openai "test" :key "key"))
         (gptel--request-params '(:seed 7))
         captured-params)
@@ -2978,8 +2978,8 @@
                  (funcall (plist-get kwargs :callback)
                           t
                           (list :content "ok")))))
-      (magent-llm-gptel-sample
-       (magent-llm-request-create
+      (magent-sampling-gptel-sample
+       (magent-sampling-request-create
         :prompt '("hello")
         :system "sys"
         :backend backend
@@ -2992,51 +2992,51 @@
 
 (ert-deftest magent-test-llm-gptel-suppresses-connect-headers-for-managed-proxy ()
   "Managed proxied requests suppress proxy CONNECT response headers."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let ((gptel-proxy "http://127.0.0.1:10808"))
     (should
      (equal
-      (magent-llm-gptel--suppress-connect-headers-a
+      (magent-sampling-gptel--suppress-connect-headers-a
        (lambda (_info) '("--base"))
-       '(:magent-llm-gptel t))
+       '(:magent-sampling-gptel t))
       '("--base" "--suppress-connect-headers")))))
 
 (ert-deftest magent-test-llm-gptel-does-not-duplicate-connect-header-argument ()
   "Managed proxy suppression is inserted at most once."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let ((gptel-proxy "http://127.0.0.1:10808"))
     (should
      (equal
-      (magent-llm-gptel--suppress-connect-headers-a
+      (magent-sampling-gptel--suppress-connect-headers-a
        (lambda (_info) '("--base" "--suppress-connect-headers"))
-       '(:magent-llm-gptel t))
+       '(:magent-sampling-gptel t))
       '("--base" "--suppress-connect-headers")))))
 
 (ert-deftest magent-test-llm-gptel-leaves-unproxied-managed-curl-args-unchanged ()
   "Managed requests without a proxy keep gptel's curl arguments."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let ((gptel-proxy ""))
     (should
      (equal
-      (magent-llm-gptel--suppress-connect-headers-a
+      (magent-sampling-gptel--suppress-connect-headers-a
        (lambda (_info) '("--base"))
-       '(:magent-llm-gptel t))
+       '(:magent-sampling-gptel t))
       '("--base")))))
 
 (ert-deftest magent-test-llm-gptel-leaves-unmanaged-proxy-curl-args-unchanged ()
   "Unmanaged gptel requests keep their original curl arguments."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let ((gptel-proxy "http://127.0.0.1:10808"))
     (should
      (equal
-      (magent-llm-gptel--suppress-connect-headers-a
+      (magent-sampling-gptel--suppress-connect-headers-a
        (lambda (_info) '("--base"))
        '(:other-client t))
       '("--base")))))
 
 (ert-deftest magent-test-llm-gptel-installs-connect-header-advice-once ()
   "Repeated boundary initialization installs proxy advice once."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let (installed
         (add-count 0))
     (cl-letf
@@ -3044,7 +3044,7 @@
           (lambda (function symbol)
             (if (and
                  (eq function
-                     #'magent-llm-gptel--suppress-connect-headers-a)
+                     #'magent-sampling-gptel--suppress-connect-headers-a)
                  (eq symbol 'gptel-curl--get-config-args))
                 installed
               t)))
@@ -3052,24 +3052,24 @@
           (lambda (symbol _where function &optional _props)
             (when (and
                    (eq function
-                       #'magent-llm-gptel--suppress-connect-headers-a)
+                       #'magent-sampling-gptel--suppress-connect-headers-a)
                    (eq symbol 'gptel-curl--get-config-args))
               (setq installed t)
               (cl-incf add-count)))))
-      (magent-llm-gptel--install-boundary-advice)
-      (magent-llm-gptel--install-boundary-advice))
+      (magent-sampling-gptel--install-boundary-advice)
+      (magent-sampling-gptel--install-boundary-advice))
     (should (= add-count 1))))
 
 (ert-deftest magent-test-llm-gptel-merges-top-p-into-gemini-data ()
   "Test Gemini top-p preserves gptel's generated sampling config."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (require 'gptel-gemini)
   (let* ((backend (gptel-make-gemini "test" :key "key"))
          (info (list :backend backend
-                     :context '(:magent-llm-gptel t :top-p 0.37)
+                     :context '(:magent-sampling-gptel t :top-p 0.37)
                      :data '(:generationConfig
                              (:temperature 0.2 :maxOutputTokens 100)))))
-    (magent-llm-gptel--apply-top-p-to-info info)
+    (magent-sampling-gptel--apply-top-p-to-info info)
     (let ((config (plist-get (plist-get info :data) :generationConfig)))
       (should (= (plist-get config :topP) 0.37))
       (should (= (plist-get config :temperature) 0.2))
@@ -3077,7 +3077,7 @@
 
 (ert-deftest magent-test-llm-gptel-applies-effort-metadata-openai-responses ()
   "Test the gptel adapter maps effort to OpenAI Responses request params."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (require 'gptel-openai-responses)
   (let ((backend (gptel-make-openai-responses "responses" :key "key"))
         captured-params)
@@ -3087,8 +3087,8 @@
                  (funcall (plist-get kwargs :callback)
                           t
                           (list :content "ok")))))
-      (magent-llm-gptel-sample
-       (magent-llm-request-create
+      (magent-sampling-gptel-sample
+       (magent-sampling-request-create
         :prompt '("hello")
         :system "sys"
         :backend backend
@@ -3100,7 +3100,7 @@
 
 (ert-deftest magent-test-llm-gptel-downgrades-xhigh-for-openai-chat ()
   "Test OpenAI-compatible chat effort maps xhigh according to policy."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let ((backend (gptel-make-openai
                   "chat"
                   :host "openai-compatible.local"
@@ -3114,8 +3114,8 @@
                           t
                           (list :content "ok"))))
               ((symbol-function 'magent-log) #'ignore))
-      (magent-llm-gptel-sample
-       (magent-llm-request-create
+      (magent-sampling-gptel-sample
+       (magent-sampling-request-create
         :prompt '("hello")
         :system "sys"
         :backend backend
@@ -9504,46 +9504,46 @@
 
 (ert-deftest magent-test-llm-event-constructors ()
   "Test normalized LLM event constructors."
-  (require 'magent-llm)
-  (let ((text (magent-llm-text-delta-event "hello"))
-        (reasoning (magent-llm-reasoning-delta-event "thinking"))
-        (reasoning-end (magent-llm-reasoning-end-event))
-        (tool (magent-llm-tool-call-event
+  (require 'magent-sampling)
+  (let ((text (magent-sampling-text-delta-event "hello"))
+        (reasoning (magent-sampling-reasoning-delta-event "thinking"))
+        (reasoning-end (magent-sampling-reasoning-end-event))
+        (tool (magent-sampling-tool-call-event
                "call-1" "read_file" '(:path "README.org") 'raw))
         (tool-batch-end
-         (magent-llm-tool-call-batch-end-event '(:provider gptel)))
-        (completed (magent-llm-completed-event
+         (magent-sampling-tool-call-batch-end-event '(:provider gptel)))
+        (completed (magent-sampling-completed-event
                     "done" '(:input 10 :output 5) 'stop))
-        (err (magent-llm-error-event "boom" '(:status 500))))
-    (should (eq (magent-llm-event-type text) 'text-delta))
-    (should (equal (magent-llm-event-text text) "hello"))
-    (should (eq (magent-llm-event-type reasoning) 'reasoning-delta))
-    (should (equal (magent-llm-event-text reasoning) "thinking"))
-    (should (eq (magent-llm-event-type reasoning-end) 'reasoning-end))
-    (should (eq (magent-llm-event-type tool) 'tool-call))
-    (should (equal (magent-llm-event-id tool) "call-1"))
-    (should (equal (magent-llm-event-name tool) "read_file"))
-    (should (equal (magent-llm-event-arguments tool) '(:path "README.org")))
-    (should (eq (magent-llm-event-raw tool) 'raw))
-    (should (eq (magent-llm-event-type tool-batch-end)
+        (err (magent-sampling-error-event "boom" '(:status 500))))
+    (should (eq (magent-sampling-event-type text) 'text-delta))
+    (should (equal (magent-sampling-event-text text) "hello"))
+    (should (eq (magent-sampling-event-type reasoning) 'reasoning-delta))
+    (should (equal (magent-sampling-event-text reasoning) "thinking"))
+    (should (eq (magent-sampling-event-type reasoning-end) 'reasoning-end))
+    (should (eq (magent-sampling-event-type tool) 'tool-call))
+    (should (equal (magent-sampling-event-id tool) "call-1"))
+    (should (equal (magent-sampling-event-name tool) "read_file"))
+    (should (equal (magent-sampling-event-arguments tool) '(:path "README.org")))
+    (should (eq (magent-sampling-event-raw tool) 'raw))
+    (should (eq (magent-sampling-event-type tool-batch-end)
                 'tool-call-batch-end))
-    (should (equal (magent-llm-event-metadata tool-batch-end)
+    (should (equal (magent-sampling-event-metadata tool-batch-end)
                    '(:provider gptel)))
-    (should (eq (magent-llm-event-type completed) 'completed))
-    (should (equal (magent-llm-event-text completed) "done"))
-    (should (equal (magent-llm-event-usage completed) '(:input 10 :output 5)))
-    (should (eq (magent-llm-event-stop-reason completed) 'stop))
-    (should (eq (magent-llm-event-type err) 'error))
-    (should (equal (magent-llm-event-message err) "boom"))
-    (should (equal (magent-llm-event-metadata err) '(:status 500)))))
+    (should (eq (magent-sampling-event-type completed) 'completed))
+    (should (equal (magent-sampling-event-text completed) "done"))
+    (should (equal (magent-sampling-event-usage completed) '(:input 10 :output 5)))
+    (should (eq (magent-sampling-event-stop-reason completed) 'stop))
+    (should (eq (magent-sampling-event-type err) 'error))
+    (should (equal (magent-sampling-event-message err) "boom"))
+    (should (equal (magent-sampling-event-metadata err) '(:status 500)))))
 
 (ert-deftest magent-test-llm-event-plist-round-trip ()
   "Test normalized LLM events round-trip through plist shape."
-  (require 'magent-llm)
-  (let* ((event (magent-llm-tool-call-event
+  (require 'magent-sampling)
+  (let* ((event (magent-sampling-tool-call-event
                  "call-1" "bash" '(:command "pwd") 'raw '(:provider gptel)))
-         (plist (magent-llm-event-to-plist event))
-         (round-tripped (magent-llm-event-from-plist plist)))
+         (plist (magent-sampling-event-to-plist event))
+         (round-tripped (magent-sampling-event-from-plist plist)))
     (should (equal plist
                    '(:type tool-call
 			   :id "call-1"
@@ -9551,18 +9551,18 @@
 			   :arguments (:command "pwd")
 			   :raw raw
 			   :metadata (:provider gptel))))
-    (should (eq (magent-llm-event-type round-tripped) 'tool-call))
-    (should (equal (magent-llm-event-id round-tripped) "call-1"))
-    (should (equal (magent-llm-event-name round-tripped) "bash"))
-    (should (equal (magent-llm-event-arguments round-tripped)
+    (should (eq (magent-sampling-event-type round-tripped) 'tool-call))
+    (should (equal (magent-sampling-event-id round-tripped) "call-1"))
+    (should (equal (magent-sampling-event-name round-tripped) "bash"))
+    (should (equal (magent-sampling-event-arguments round-tripped)
                    '(:command "pwd")))
-    (should (equal (magent-llm-event-metadata round-tripped)
+    (should (equal (magent-sampling-event-metadata round-tripped)
                    '(:provider gptel)))))
 
 (ert-deftest magent-test-llm-request-validation ()
   "Test normalized LLM request construction and validation."
-  (require 'magent-llm)
-  (let ((request (magent-llm-request-create
+  (require 'magent-sampling)
+  (let ((request (magent-sampling-request-create
                   :prompt '((user . "hello"))
                   :system "system"
                   :tools '(read_file)
@@ -9571,21 +9571,21 @@
                   :stream t
                   :callback #'ignore
                   :metadata '(:turn-id "turn-1"))))
-    (should (magent-llm-request-p request))
-    (should (equal (magent-llm-request-prompt request)
+    (should (magent-sampling-request-p request))
+    (should (equal (magent-sampling-request-prompt request)
                    '((user . "hello"))))
-    (should (equal (magent-llm-request-system request) "system"))
-    (should (equal (magent-llm-request-tools request) '(read_file)))
-    (should (eq (magent-llm-request-model request) 'gpt-4o-mini))
-    (should (eq (magent-llm-request-backend request) 'gptel))
-    (should (eq (magent-llm-request-stream request) t))
-    (should (eq (magent-llm-request-callback request) #'ignore))
-    (should-error (magent-llm-request-create :callback "not-callable"))
-    (should-error (magent-llm-event-create 'not-an-event))))
+    (should (equal (magent-sampling-request-system request) "system"))
+    (should (equal (magent-sampling-request-tools request) '(read_file)))
+    (should (eq (magent-sampling-request-model request) 'gpt-4o-mini))
+    (should (eq (magent-sampling-request-backend request) 'gptel))
+    (should (eq (magent-sampling-request-stream request) t))
+    (should (eq (magent-sampling-request-callback request) #'ignore))
+    (should-error (magent-sampling-request-create :callback "not-callable"))
+    (should-error (magent-sampling-event-create 'not-an-event))))
 
 (ert-deftest magent-test-llm-gptel-sample-calls-gptel-request ()
   "Test gptel adapter calls `gptel-request' through the request boundary."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let ((captured-prompt nil)
         (captured-kwargs nil)
         (events nil)
@@ -9602,8 +9602,8 @@
                           '(:content "hello" :status "ok" :tokens (:total 3)))
                  'fake-fsm)))
       (setq sample-handle
-            (magent-llm-gptel-sample
-             (magent-llm-request-create
+            (magent-sampling-gptel-sample
+             (magent-sampling-request-create
               :prompt '((user . "hello"))
               :system "system"
               :tools '(fake-tool)
@@ -9621,15 +9621,15 @@
     (should (= (length events) 2))
     (let ((completed (car events))
           (delta (cadr events)))
-      (should (eq (magent-llm-event-type delta) 'text-delta))
-      (should (equal (magent-llm-event-text delta) "hello"))
-      (should (eq (magent-llm-event-type completed) 'completed))
-      (should (equal (magent-llm-event-text completed) "hello"))
-      (should (equal (magent-llm-event-usage completed) '(:total 3))))))
+      (should (eq (magent-sampling-event-type delta) 'text-delta))
+      (should (equal (magent-sampling-event-text delta) "hello"))
+      (should (eq (magent-sampling-event-type completed) 'completed))
+      (should (equal (magent-sampling-event-text completed) "hello"))
+      (should (equal (magent-sampling-event-usage completed) '(:total 3))))))
 
 (ert-deftest magent-test-llm-gptel-disable-provider-tools-keeps-tool-specs ()
   "Test metadata can hide tools from gptel while keeping request tools."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let ((captured-use-tools :unset)
         sample-handle)
     (cl-letf (((symbol-function 'gptel-request)
@@ -9639,8 +9639,8 @@
                           t '(:content "done" :status "ok"))
                  'fake-fsm)))
       (setq sample-handle
-            (magent-llm-gptel-sample
-             (magent-llm-request-create
+            (magent-sampling-gptel-sample
+             (magent-sampling-request-create
               :prompt '((user . "hello"))
               :tools '(fake-tool)
               :stream t
@@ -9652,7 +9652,7 @@
 
 (ert-deftest magent-test-llm-gptel-include-reasoning-metadata-overrides-default ()
   "Test request metadata can override `magent-include-reasoning'."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let ((magent-include-reasoning t)
         (captured-include-reasoning :unset)
         sample-handle)
@@ -9663,8 +9663,8 @@
                           t '(:content "done" :status "ok"))
                  'fake-fsm)))
       (setq sample-handle
-            (magent-llm-gptel-sample
-             (magent-llm-request-create
+            (magent-sampling-gptel-sample
+             (magent-sampling-request-create
               :prompt '((user . "hello"))
               :stream t
               :metadata '(:include-reasoning nil)
@@ -9675,37 +9675,37 @@
 
 (ert-deftest magent-test-llm-gptel-callback-maps-reasoning-and-error ()
   "Test gptel adapter maps reasoning and error callbacks."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let* ((events nil)
-         (request (magent-llm-request-create
+         (request (magent-sampling-request-create
                    :callback (lambda (event) (push event events))))
          (buffer (generate-new-buffer " *magent-test-gptel*"))
-         (state (magent-llm-gptel--make-state)))
+         (state (magent-sampling-gptel--make-state)))
     (unwind-protect
         (progn
-          (magent-llm-gptel--callback
+          (magent-sampling-gptel--callback
            request state buffer '(reasoning . "think") '(:status "ok" :stream t))
-          (magent-llm-gptel--callback
+          (magent-sampling-gptel--callback
            request state buffer '(reasoning . t) '(:status "ok" :stream t))
-          (magent-llm-gptel--callback
+          (magent-sampling-gptel--callback
            request state buffer nil '(:status "HTTP/2 400"
                                       :http-status 400
                                       :error
                                       (:message "context length exceeded"
                                        :type "invalid_request_error")))
           (should (= (length events) 3))
-          (should (eq (magent-llm-event-type (nth 2 events)) 'reasoning-delta))
-          (should (equal (magent-llm-event-text (nth 2 events)) "think"))
-          (should (eq (magent-llm-event-type (nth 1 events)) 'reasoning-end))
-          (should (eq (magent-llm-event-type (nth 0 events)) 'error))
-          (should (equal (magent-llm-event-message (nth 0 events))
+          (should (eq (magent-sampling-event-type (nth 2 events)) 'reasoning-delta))
+          (should (equal (magent-sampling-event-text (nth 2 events)) "think"))
+          (should (eq (magent-sampling-event-type (nth 1 events)) 'reasoning-end))
+          (should (eq (magent-sampling-event-type (nth 0 events)) 'error))
+          (should (equal (magent-sampling-event-message (nth 0 events))
                          "context length exceeded"))
           (should (equal (plist-get
-                          (magent-llm-event-metadata (nth 0 events))
+                          (magent-sampling-event-metadata (nth 0 events))
                           :status)
                          "HTTP/2 400"))
           (should (= (plist-get
-                      (magent-llm-event-metadata (nth 0 events))
+                      (magent-sampling-event-metadata (nth 0 events))
                       :http-status)
                      400)))
       (when (buffer-live-p buffer)
@@ -9713,7 +9713,7 @@
 
 (ert-deftest magent-test-llm-gptel-preserves-structured-curl-provider-error ()
   "A structured HTTP error survives gptel's generic JSON parse failure."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let ((buffer (generate-new-buffer " *magent-test-curl-error*"))
         (info '(:uuid "response-marker"
                 :error "Malformed JSON in response.")))
@@ -9727,17 +9727,17 @@
               "{\"error\":{\"message\":\"The engine is currently overloaded, "
               "please try again later\",\"type\":\"engine_overloaded_error\"}}"
               "(response-marker . 128)")))
-          (magent-llm-gptel--capture-curl-provider-error buffer info)
+          (magent-sampling-gptel--capture-curl-provider-error buffer info)
           (should
            (equal (plist-get info :magent-provider-error)
                   '(:message
                     "The engine is currently overloaded, please try again later"
                     :type "engine_overloaded_error")))
           (should
-           (equal (magent-llm-gptel--error-message info)
+           (equal (magent-sampling-gptel--error-message info)
                   "The engine is currently overloaded, please try again later"))
           (should
-           (equal (plist-get (magent-llm-gptel--metadata info) :provider-error)
+           (equal (plist-get (magent-sampling-gptel--metadata info) :provider-error)
                   '(:message
                     "The engine is currently overloaded, please try again later"
                     :type "engine_overloaded_error"))))
@@ -9746,76 +9746,76 @@
 
 (ert-deftest magent-test-llm-gptel-reasoning-only-done-completes-empty ()
   "Test reasoning-only provider responses complete without leaking reasoning."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let* ((events nil)
-         (request (magent-llm-request-create
+         (request (magent-sampling-request-create
                    :callback (lambda (event) (push event events))))
          (buffer (generate-new-buffer " *magent-test-gptel*"))
-         (state (magent-llm-gptel--make-state))
+         (state (magent-sampling-gptel--make-state))
          (fsm (gptel-make-fsm
                :info '(:status "ok"
 			       :tokens (:total 3)
 			       :stop-reason "stop"))))
     (unwind-protect
         (progn
-          (magent-llm-gptel--callback
+          (magent-sampling-gptel--callback
            request state buffer '(reasoning . "你好！") '(:status "ok"))
-          (magent-llm-gptel--handle-done request state buffer fsm)
-          (magent-llm-gptel--handle-done request state buffer fsm)
+          (magent-sampling-gptel--handle-done request state buffer fsm)
+          (magent-sampling-gptel--handle-done request state buffer fsm)
           (should-not (buffer-live-p buffer))
           (should (= (length events) 1))
           (let ((completed (car events)))
-            (should (eq (magent-llm-event-type completed) 'completed))
-            (should (equal (magent-llm-event-text completed) ""))
-            (should (equal (magent-llm-event-usage completed) '(:total 3)))))
+            (should (eq (magent-sampling-event-type completed) 'completed))
+            (should (equal (magent-sampling-event-text completed) ""))
+            (should (equal (magent-sampling-event-usage completed) '(:total 3)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
 (ert-deftest magent-test-llm-gptel-nonstream-reasoning-flushes-before-content ()
   "Test cached non-streaming reasoning is emitted before final content."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let* ((events nil)
-         (request (magent-llm-request-create
+         (request (magent-sampling-request-create
                    :callback (lambda (event) (push event events))))
          (buffer (generate-new-buffer " *magent-test-gptel*"))
-         (state (magent-llm-gptel--make-state)))
+         (state (magent-sampling-gptel--make-state)))
     (unwind-protect
         (progn
-          (magent-llm-gptel--callback
+          (magent-sampling-gptel--callback
            request state buffer '(reasoning . "thinking") '(:status "ok"))
-          (magent-llm-gptel--callback
+          (magent-sampling-gptel--callback
            request state buffer "answer" '(:status "ok"))
           (should (= (length events) 2))
           (let ((completed (car events))
                 (reasoning (cadr events)))
-            (should (eq (magent-llm-event-type reasoning) 'reasoning-delta))
-            (should (equal (magent-llm-event-text reasoning) "thinking"))
-            (should (eq (magent-llm-event-type completed) 'completed))
-            (should (equal (magent-llm-event-text completed) "answer"))))
+            (should (eq (magent-sampling-event-type reasoning) 'reasoning-delta))
+            (should (equal (magent-sampling-event-text reasoning) "thinking"))
+            (should (eq (magent-sampling-event-type completed) 'completed))
+            (should (equal (magent-sampling-event-text completed) "answer"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
 (ert-deftest magent-test-llm-gptel-nonstream-string-completes ()
   "Test non-streaming gptel string responses map to completion events."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let* ((events nil)
-         (request (magent-llm-request-create
+         (request (magent-sampling-request-create
                    :stream nil
                    :callback (lambda (event) (push event events))))
          (buffer (generate-new-buffer " *magent-test-gptel*"))
-         (state (magent-llm-gptel--make-state)))
-    (magent-llm-gptel--callback
+         (state (magent-sampling-gptel--make-state)))
+    (magent-sampling-gptel--callback
      request state buffer "done" '(:status "ok" :tokens (:total 3)))
     (should-not (buffer-live-p buffer))
     (should (= (length events) 1))
     (let ((event (car events)))
-      (should (eq (magent-llm-event-type event) 'completed))
-      (should (equal (magent-llm-event-text event) "done"))
-      (should (equal (magent-llm-event-usage event) '(:total 3))))))
+      (should (eq (magent-sampling-event-type event) 'completed))
+      (should (equal (magent-sampling-event-text event) "done"))
+      (should (equal (magent-sampling-event-usage event) '(:total 3))))))
 
 (ert-deftest magent-test-llm-gptel-textual-dsml-tool-call-becomes-tool-event ()
   "Test pure textual DSML tool calls are normalized before completion."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let* ((events nil)
          (text
           (concat
@@ -9829,29 +9829,29 @@
            "</｜｜DSML｜｜parameter>\n"
            "</｜｜DSML｜｜invoke>\n"
            "</｜｜DSML｜｜tool_calls>"))
-         (request (magent-llm-request-create
+         (request (magent-sampling-request-create
                    :stream nil
                    :callback (lambda (event) (push event events))))
          (buffer (generate-new-buffer " *magent-test-gptel*"))
-         (state (magent-llm-gptel--make-state)))
+         (state (magent-sampling-gptel--make-state)))
     (unwind-protect
         (progn
-          (magent-llm-gptel--callback
+          (magent-sampling-gptel--callback
            request state buffer text (list :status "ok" :content text))
           (should-not (buffer-live-p buffer))
           (let ((ordered (nreverse events)))
             (should (= (length ordered) 2))
             (let ((tool-event (car ordered))
                   (batch-event (cadr ordered)))
-              (should (eq (magent-llm-event-type tool-event) 'tool-call))
-              (should (equal (magent-llm-event-name tool-event) "bash"))
+              (should (eq (magent-sampling-event-type tool-event) 'tool-call))
+              (should (equal (magent-sampling-event-name tool-event) "bash"))
               (should (equal
-                       (magent-llm-event-arguments tool-event)
+                       (magent-sampling-event-arguments tool-event)
                        '(:command
                          "git diff test/magent-test.el | tail -n 120"
                          :reason
                          "Read remainder of test diff")))
-              (should (eq (magent-llm-event-type batch-event)
+              (should (eq (magent-sampling-event-type batch-event)
                           'tool-call-batch-end)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -9859,7 +9859,7 @@
 (ert-deftest magent-test-agent-loop-coerces-textual-dsml-integer-arguments ()
   "Test textual DSML numeric pages are restored from the tool schema."
   (require 'magent-agent-loop)
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (require 'gptel)
   (let* ((text
           (concat
@@ -9876,7 +9876,7 @@
            "</｜｜DSML｜｜parameter>\n"
            "</｜｜DSML｜｜invoke>\n"
            "</｜｜DSML｜｜tool_calls>"))
-         (event (car (magent-llm-gptel--parse-dsml-tool-calls text)))
+         (event (car (magent-sampling-gptel--parse-dsml-tool-calls text)))
          (tool (gptel-make-tool
                 :name "read_file"
                 :description "read"
@@ -9885,7 +9885,7 @@
                             '(:name "line_count" :type integer :optional t))
                 :function #'ignore))
          (loop (magent-agent-loop-create
-                :request (magent-llm-request-create :tools (list tool))))
+                :request (magent-sampling-request-create :tools (list tool))))
          (call (magent-agent-loop-tool-event-to-call loop event))
          (raw-call (nth 3 call)))
     (should (equal (cadr call)
@@ -9898,7 +9898,7 @@
 (ert-deftest magent-test-agent-loop-rejects-unknown-textual-dsml-argument ()
   "Test textual DSML arguments outside the schema become tool errors."
   (require 'magent-agent-loop)
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (require 'gptel)
   (let* ((text
           (concat
@@ -9912,7 +9912,7 @@
            "</｜｜DSML｜｜parameter>\n"
            "</｜｜DSML｜｜invoke>\n"
            "</｜｜DSML｜｜tool_calls>"))
-         (event (car (magent-llm-gptel--parse-dsml-tool-calls text)))
+         (event (car (magent-sampling-gptel--parse-dsml-tool-calls text)))
          (tool (gptel-make-tool
                 :name "read_file"
                 :description "read"
@@ -9923,7 +9923,7 @@
          (session (magent-session-create :id "session-dsml-invalid-args"))
          (loop (magent-test--loop-create-for-session
                 session "Read file"
-                :request (magent-llm-request-create :tools (list tool))))
+                :request (magent-sampling-request-create :tools (list tool))))
          outcome)
     (magent-agent-loop-apply-event loop event)
     (magent-agent-loop-dispatch-tool-calls
@@ -9962,7 +9962,7 @@
 
 (ert-deftest magent-test-llm-gptel-mixed-textual-dsml-tool-call-becomes-tool-event ()
   "Test mixed prose plus textual DSML tool calls becomes tool events."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let* ((events nil)
          (text
           (concat
@@ -9977,36 +9977,36 @@
            "</｜｜DSML｜｜parameter>\n"
            "</｜｜DSML｜｜invoke>\n"
            "</｜｜DSML｜｜tool_calls>"))
-         (request (magent-llm-request-create
+         (request (magent-sampling-request-create
                    :stream nil
                    :callback (lambda (event) (push event events))))
          (buffer (generate-new-buffer " *magent-test-gptel*"))
-         (state (magent-llm-gptel--make-state)))
+         (state (magent-sampling-gptel--make-state)))
     (unwind-protect
         (progn
-          (magent-llm-gptel--callback
+          (magent-sampling-gptel--callback
            request state buffer text (list :status "ok" :content text))
           (should-not (buffer-live-p buffer))
           (let ((ordered (nreverse events)))
             (should (= (length ordered) 2))
             (let ((tool-event (car ordered))
                   (batch-event (cadr ordered)))
-              (should (eq (magent-llm-event-type tool-event) 'tool-call))
-              (should (equal (magent-llm-event-name tool-event) "bash"))
+              (should (eq (magent-sampling-event-type tool-event) 'tool-call))
+              (should (equal (magent-sampling-event-name tool-event) "bash"))
               (should (equal
-                       (magent-llm-event-arguments tool-event)
+                       (magent-sampling-event-arguments tool-event)
                        '(:command
                          "git diff test/magent-test.el | sed -n '550,750p'"
                          :reason
                          "Continue test diff")))
-              (should (eq (magent-llm-event-type batch-event)
+              (should (eq (magent-sampling-event-type batch-event)
                           'tool-call-batch-end)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
 (ert-deftest magent-test-llm-gptel-textual-dsml-malformed-completes ()
   "Test malformed textual DSML envelopes complete as text without looping."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let* ((events nil)
          (text
           (concat
@@ -10014,20 +10014,20 @@
            "<｜｜DSML｜｜invoke name=\"bash\">\n"
            (make-string 10000 ?x)
            "\n</｜｜DSML｜｜tool_calls>"))
-         (request (magent-llm-request-create
+         (request (magent-sampling-request-create
                    :stream nil
                    :callback (lambda (event) (push event events))))
          (buffer (generate-new-buffer " *magent-test-gptel*"))
-         (state (magent-llm-gptel--make-state)))
+         (state (magent-sampling-gptel--make-state)))
     (unwind-protect
         (progn
-          (magent-llm-gptel--callback
+          (magent-sampling-gptel--callback
            request state buffer text (list :status "ok" :content text))
           (should-not (buffer-live-p buffer))
           (should (= (length events) 1))
           (let ((event (car events)))
-            (should (eq (magent-llm-event-type event) 'completed))
-            (should (equal (magent-llm-event-text event) text))))
+            (should (eq (magent-sampling-event-type event) 'completed))
+            (should (equal (magent-sampling-event-text event) text))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -10035,39 +10035,39 @@
 
 (ert-deftest magent-test-llm-gptel-stream-final-empty-content-keeps-chunks ()
   "Test streaming completion does not replace chunks with empty content."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let* ((events nil)
-         (request (magent-llm-request-create
+         (request (magent-sampling-request-create
                    :stream t
                    :callback (lambda (event) (push event events))))
          (buffer (generate-new-buffer " *magent-test-gptel*"))
-         (state (magent-llm-gptel--make-state)))
+         (state (magent-sampling-gptel--make-state)))
     (unwind-protect
         (progn
-          (magent-llm-gptel--callback
+          (magent-sampling-gptel--callback
            request state buffer "MAGENT_TOOL_OK=42" '(:stream t))
-          (magent-llm-gptel--callback
+          (magent-sampling-gptel--callback
            request state buffer t '(:content "" :tokens (:total 5)))
           (let ((event (car events)))
-            (should (eq (magent-llm-event-type event) 'completed))
-            (should (equal (magent-llm-event-text event)
+            (should (eq (magent-sampling-event-type event) 'completed))
+            (should (equal (magent-sampling-event-text event)
                            "MAGENT_TOOL_OK=42"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
 (ert-deftest magent-test-llm-gptel-normalizes-tool-call ()
   "Test gptel adapter maps tool-call callbacks to normalized events."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let* ((events nil)
          (result-callback #'ignore)
          (continuation #'ignore)
-         (request (magent-llm-request-create
+         (request (magent-sampling-request-create
                    :callback (lambda (event) (push event events))))
          (buffer (generate-new-buffer " *magent-test-gptel*"))
-         (state (magent-llm-gptel--make-state)))
+         (state (magent-sampling-gptel--make-state)))
     (unwind-protect
         (progn
-          (magent-llm-gptel--callback
+          (magent-sampling-gptel--callback
            request state buffer
            (list 'tool-call
                  (list nil '(:path "README.org") result-callback
@@ -10078,26 +10078,26 @@
           (should (= (length events) 2))
           (let ((batch-end (car events))
                 (event (cadr events)))
-            (should (eq (magent-llm-event-type batch-end)
+            (should (eq (magent-sampling-event-type batch-end)
                         'tool-call-batch-end))
-            (should (eq (magent-llm-event-type event) 'tool-call))
-            (should (equal (magent-llm-event-id event) "call-1"))
-            (should (equal (magent-llm-event-name event) "read_file"))
-            (should (equal (magent-llm-event-arguments event)
+            (should (eq (magent-sampling-event-type event) 'tool-call))
+            (should (equal (magent-sampling-event-id event) "call-1"))
+            (should (equal (magent-sampling-event-name event) "read_file"))
+            (should (equal (magent-sampling-event-arguments event)
                            '(:path "README.org")))
-            (should (eq (magent-llm-event-result-callback event)
+            (should (eq (magent-sampling-event-result-callback event)
                         result-callback))
-            (should (eq (magent-llm-event-continuation batch-end)
+            (should (eq (magent-sampling-event-continuation batch-end)
                         continuation))
             (should-not
-             (plist-member (magent-llm-event-metadata event) :last)))
+             (plist-member (magent-sampling-event-metadata event) :last)))
           (should (buffer-live-p buffer)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
 (ert-deftest magent-test-llm-gptel-continues-native-parallel-tool-context ()
   "Tool results resume gptel's original parallel assistant message unchanged."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (require 'gptel-openai)
   (let* ((backend (gptel-make-openai
                     "continuation"
@@ -10125,14 +10125,14 @@
                                :args '(:pattern "two"))))
          response
          next-state
-         (state (magent-llm-gptel--make-state))
+         (state (magent-sampling-gptel--make-state))
          (info (list :backend backend
                      :data data
                      :tools (list tool)
                      :tool-use tool-use
                      :callback (lambda (value _info) (setq response value))))
          (fsm (gptel-make-fsm :state 'TOOL :info info)))
-    (magent-llm-gptel--handle-tool-use state fsm)
+    (magent-sampling-gptel--handle-tool-use state fsm)
     (let ((calls (cdr response)))
       (should (= (length calls) 2))
       (funcall (nth 2 (nth 0 calls))
@@ -10156,7 +10156,7 @@
 
 (ert-deftest magent-test-llm-gptel-recovers-textual-tool-in-native-context ()
   "Textual tool recovery continues OpenAI chat context without forged history."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (require 'gptel-openai)
   (let* ((backend (gptel-make-openai
                     "textual-continuation"
@@ -10186,38 +10186,38 @@
            "</｜｜DSML｜｜tool_calls>"))
          events
          next-state
-         (request (magent-llm-request-create
+         (request (magent-sampling-request-create
                    :stream t
                    :callback (lambda (event) (push event events))))
          (buffer (generate-new-buffer " *magent-test-gptel*"))
-         (state (magent-llm-gptel--make-state))
+         (state (magent-sampling-gptel--make-state))
          (info (list :stream t :backend backend :data data :content text))
          (fsm (gptel-make-fsm :state 'DONE :info info)))
     (unwind-protect
         (progn
-          (magent-llm-gptel--callback
+          (magent-sampling-gptel--callback
            request state buffer text info fsm)
-          (magent-llm-gptel--callback
+          (magent-sampling-gptel--callback
            request state buffer t info fsm)
           (let* ((ordered (nreverse events))
                  (tool-event
                   (cl-find 'tool-call ordered
-                           :key #'magent-llm-event-type))
+                           :key #'magent-sampling-event-type))
                  (batch-event
                   (cl-find 'tool-call-batch-end ordered
-                           :key #'magent-llm-event-type))
+                           :key #'magent-sampling-event-type))
                  (continuation
-                  (magent-llm-event-continuation batch-event)))
+                  (magent-sampling-event-continuation batch-event)))
             (should tool-event)
             (should (functionp
-                     (magent-llm-event-result-callback tool-event)))
+                     (magent-sampling-event-result-callback tool-event)))
             (should (functionp continuation))
-            (should (eq (plist-get (magent-llm-event-metadata batch-event)
+            (should (eq (plist-get (magent-sampling-event-metadata batch-event)
                                    :source)
                         'textual-dsml))
             (should (buffer-live-p buffer))
             (funcall
-             (magent-llm-event-result-callback tool-event)
+             (magent-sampling-event-result-callback tool-event)
              (magent-tool-result-create
               :status 'completed
               :success t
@@ -10253,7 +10253,7 @@
 
 (ert-deftest magent-test-llm-gptel-closes-empty-native-tool-context ()
   "Empty post-tool replies close the FSM so policy can change on retry."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (require 'gptel-openai)
   (let* ((backend (gptel-make-openai
                     "empty-continuation"
@@ -10272,11 +10272,11 @@
           (list :role "tool" :tool_call_id "call-1" :content "match"))
          (data (list :messages (vector assistant tool-result)))
          events
-         (request (magent-llm-request-create
+         (request (magent-sampling-request-create
                    :stream t
                    :callback (lambda (event) (push event events))))
          (buffer (generate-new-buffer " *magent-test-gptel*"))
-         (state (magent-llm-gptel--make-state))
+         (state (magent-sampling-gptel--make-state))
          (info (list :stream t
                      :backend backend
                      :data data
@@ -10285,12 +10285,12 @@
          (fsm (gptel-make-fsm :state 'DONE :info info)))
     (unwind-protect
         (progn
-          (magent-llm-gptel--callback request state buffer t info fsm)
+          (magent-sampling-gptel--callback request state buffer t info fsm)
           (let* ((completed (car events))
                  (continuation
-                  (magent-llm-event-continuation completed)))
-            (should (eq (magent-llm-event-type completed) 'completed))
-            (should (equal (magent-llm-event-text completed) ""))
+                  (magent-sampling-event-continuation completed)))
+            (should (eq (magent-sampling-event-type completed) 'completed))
+            (should (equal (magent-sampling-event-text completed) ""))
             (should-not continuation)
             (should-not (buffer-live-p buffer))
             (let ((messages (plist-get data :messages)))
@@ -10304,21 +10304,21 @@
 
 (ert-deftest magent-test-llm-gptel-sanitizes-tool-use-info ()
   "Test gptel adapter normalizes tool-use data before serialization."
-  (require 'magent-llm-gptel)
-  (let* ((info (list :context '(:magent-llm-gptel t)
+  (require 'magent-sampling-gptel)
+  (let* ((info (list :context '(:magent-sampling-gptel t)
                      :tool-use (list (list :id "call-1"
                                            :name 'emacs_eval
                                            :args '(:sexp (+ 20 22)
 							 :missing nil)))))
          (tool-call (car (plist-get info :tool-use))))
-    (magent-llm-gptel--sanitize-info info)
+    (magent-sampling-gptel--sanitize-info info)
     (should (equal (plist-get tool-call :name) "emacs_eval"))
     (should (equal (plist-get tool-call :args)
                    '(:sexp ["+" 20 22])))))
 
 (ert-deftest magent-test-llm-gptel-sanitizes-assistant-tool-call-history ()
   "Test assistant tool-call history is safe for gptel JSON encoding."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let* ((func (list :name 'emacs_eval
                      :arguments '(:sexp (+ 20 22)
 					:ignored nil)))
@@ -10329,9 +10329,9 @@
                         :content :null
                         :tool_calls (vector tool-call)))
          (data (list :messages (vector message)))
-         (info (list :context '(:magent-llm-gptel t)
+         (info (list :context '(:magent-sampling-gptel t)
                      :data data)))
-    (magent-llm-gptel--sanitize-info info)
+    (magent-sampling-gptel--sanitize-info info)
     (should (equal (plist-get func :name) "emacs_eval"))
     (should (stringp (plist-get func :arguments)))
     (should (equal (let ((json-object-type 'plist)
@@ -10345,15 +10345,15 @@
   (require 'magent-agent-loop)
   (let ((loop (magent-agent-loop-create)))
     (magent-agent-loop-apply-event
-     loop (magent-llm-text-delta-event "hel"))
+     loop (magent-sampling-text-delta-event "hel"))
     (magent-agent-loop-apply-event
-     loop (magent-llm-text-delta-event "lo"))
+     loop (magent-sampling-text-delta-event "lo"))
     (magent-agent-loop-apply-event
-     loop (magent-llm-reasoning-delta-event "think"))
+     loop (magent-sampling-reasoning-delta-event "think"))
     (magent-agent-loop-apply-event
-     loop (magent-llm-tool-call-event "call-1" "read_file" '(:path "README.org")))
+     loop (magent-sampling-tool-call-event "call-1" "read_file" '(:path "README.org")))
     (magent-agent-loop-apply-event
-     loop (magent-llm-tool-call-batch-end-event))
+     loop (magent-sampling-tool-call-batch-end-event))
     (should (equal (magent-agent-loop-text loop) "hello"))
     (should (equal (magent-agent-loop-reasoning loop) "think"))
     (should (= (length (magent-agent-loop-tool-calls loop)) 1))
@@ -10366,14 +10366,14 @@
         (failed-loop (magent-agent-loop-create)))
     (magent-agent-loop-apply-event
      completed-loop
-     (magent-llm-completed-event "done" '(:total 4) 'stop))
+     (magent-sampling-completed-event "done" '(:total 4) 'stop))
     (should (eq (magent-agent-loop-status completed-loop) 'completed))
     (should (equal (magent-agent-loop-result completed-loop) "done"))
     (should (equal (magent-agent-loop-usage completed-loop) '(:total 4)))
     (should (eq (magent-agent-loop-stop-reason completed-loop) 'stop))
     (magent-agent-loop-apply-event
      failed-loop
-     (magent-llm-error-event "boom"))
+     (magent-sampling-error-event "boom"))
     (should (eq (magent-agent-loop-status failed-loop) 'failed))
     (should (equal (magent-agent-loop-error failed-loop) "boom"))))
 
@@ -10382,9 +10382,9 @@
   (require 'magent-agent-loop)
   (let ((loop (magent-agent-loop-create)))
     (magent-agent-loop-apply-event
-     loop (magent-llm-text-delta-event "Checking buffers. "))
+     loop (magent-sampling-text-delta-event "Checking buffers. "))
     (magent-agent-loop-apply-event
-     loop (magent-llm-completed-event "Done."))
+     loop (magent-sampling-completed-event "Done."))
     (should (equal (magent-agent-loop-result loop)
                    "Checking buffers. Done."))))
 
@@ -10394,21 +10394,21 @@
   (let ((loop (magent-agent-loop-create)))
     (magent-agent-loop-begin-sample loop)
     (magent-agent-loop-apply-event
-     loop (magent-llm-text-delta-event "Investigating. "))
+     loop (magent-sampling-text-delta-event "Investigating. "))
     (magent-agent-loop-apply-event
-     loop (magent-llm-tool-call-event
+     loop (magent-sampling-tool-call-event
            "call-1" "read_file" '(:path "one.el")))
     (magent-agent-loop-begin-sample loop)
     (magent-agent-loop-apply-event
-     loop (magent-llm-text-delta-event "Verifying. "))
+     loop (magent-sampling-text-delta-event "Verifying. "))
     (magent-agent-loop-apply-event
-     loop (magent-llm-tool-call-event
+     loop (magent-sampling-tool-call-event
            "call-2" "read_file" '(:path "two.el")))
     (magent-agent-loop-begin-sample loop)
     (magent-agent-loop-apply-event
-     loop (magent-llm-text-delta-event "Fixed."))
+     loop (magent-sampling-text-delta-event "Fixed."))
     (magent-agent-loop-apply-event
-     loop (magent-llm-completed-event "Fixed."))
+     loop (magent-sampling-completed-event "Fixed."))
     (should (equal (magent-agent-loop-sample-text loop) "Fixed."))
     (should (equal (magent-agent-loop-result loop) "Fixed."))
     (should (equal (magent-agent-loop-text loop)
@@ -10422,10 +10422,10 @@
   (let ((loop (magent-agent-loop-create)))
     (magent-agent-loop-begin-sample loop)
     (magent-agent-loop-apply-event
-     loop (magent-llm-text-delta-event "Keep this. "))
+     loop (magent-sampling-text-delta-event "Keep this. "))
     (magent-agent-loop-begin-sample loop)
     (magent-agent-loop-apply-event
-     loop (magent-llm-text-delta-event "<tool>discard</tool>"))
+     loop (magent-sampling-text-delta-event "<tool>discard</tool>"))
     (magent-agent-loop-discard-sample-text loop)
     (should (equal (magent-agent-loop-text loop) "Keep this. "))
     (should (equal (magent-agent-loop-sample-text loop) ""))
@@ -10436,9 +10436,9 @@
   (require 'magent-agent-loop)
   (let ((loop (magent-agent-loop-create)))
     (magent-agent-loop-apply-event
-     loop (magent-llm-reasoning-delta-event "MAGENT_TOOL_OK=42"))
+     loop (magent-sampling-reasoning-delta-event "MAGENT_TOOL_OK=42"))
     (magent-agent-loop-apply-event
-     loop (magent-llm-completed-event ""))
+     loop (magent-sampling-completed-event ""))
     (should (equal (magent-agent-loop-result loop)
                    ""))))
 
@@ -10447,7 +10447,7 @@
   (require 'magent-agent-loop)
   (let* ((forwarded nil)
          (sampled-request nil)
-         (request (magent-llm-request-create
+         (request (magent-sampling-request-create
                    :prompt '((user . "hello"))
                    :stream t
                    :callback (lambda (event) (push event forwarded))))
@@ -10455,13 +10455,13 @@
                 :request request
                 :sampler (lambda (sample-request)
                            (setq sampled-request sample-request)
-                           (funcall (magent-llm-request-callback sample-request)
-                                    (magent-llm-text-delta-event "hi"))
-                           (funcall (magent-llm-request-callback sample-request)
-                                    (magent-llm-completed-event "hi"))
+                           (funcall (magent-sampling-request-callback sample-request)
+                                    (magent-sampling-text-delta-event "hi"))
+                           (funcall (magent-sampling-request-callback sample-request)
+                                    (magent-sampling-completed-event "hi"))
                            'sample-started))))
     (should (eq (magent-agent-loop-start loop) 'sample-started))
-    (should (magent-llm-request-p sampled-request))
+    (should (magent-sampling-request-p sampled-request))
     (should (not (eq sampled-request request)))
     (should (equal (magent-agent-loop-text loop) "hi"))
     (should (equal (magent-agent-loop-result loop) "hi"))
@@ -10513,14 +10513,14 @@
          (loop (magent-test--loop-create-for-session
                 session "Run large command"
                 :request-context context
-                :request (magent-llm-request-create :tools (list tool))))
+                :request (magent-sampling-request-create :tools (list tool))))
          provider-result
          done)
     (unwind-protect
         (progn
           (magent-agent-loop-apply-event
            loop
-           (magent-llm-tool-call-event
+           (magent-sampling-tool-call-event
             "spill-call" "bash" '("large")
             '(:id "spill-call" :name "bash")
             nil
@@ -10624,14 +10624,14 @@
                 (lambda (path)
                   (magent-test-tool-result (format "read %s" path)))
                 :async nil))
-         (request (magent-llm-request-create :tools (list tool)))
+         (request (magent-sampling-request-create :tools (list tool)))
          (loop (magent-test--loop-create-for-session
                 session "Read README"
                 :request request))
          done)
     (magent-agent-loop-apply-event
      loop
-     (magent-llm-tool-call-event
+     (magent-sampling-tool-call-event
       "call-1" "read_file" '("README.org") '(:id "call-1" :name "read_file")))
     (magent-agent-loop-dispatch-tool-calls
      loop
@@ -10669,11 +10669,11 @@
                  :async nil))
          (loop (magent-test--loop-create-for-session
                 session "Use missing tool"
-                :request (magent-llm-request-create :tools (list known))))
+                :request (magent-sampling-request-create :tools (list known))))
          done)
     (magent-agent-loop-apply-event
      loop
-     (magent-llm-tool-call-event
+     (magent-sampling-tool-call-event
       "call-1" "missing_tool" '(:x 1) '(:id "call-1" :name "missing_tool")))
     (magent-agent-loop-dispatch-tool-calls
      loop
@@ -10695,7 +10695,7 @@
   (require 'magent-agent-loop)
   (let* ((session (magent-session-create :id "session-1"))
          (sampled-prompt nil)
-         (request (magent-llm-request-create
+         (request (magent-sampling-request-create
                    :prompt '((prompt . "old"))
                    :system "system"
                    :stream t))
@@ -10704,7 +10704,7 @@
                 :request request
                 :sampler (lambda (sample-request)
                            (setq sampled-prompt
-                                 (magent-llm-request-prompt sample-request))
+                                 (magent-sampling-request-prompt sample-request))
                            'continued))))
     (magent-agent-loop-record-tool-result
      loop nil '(:path "README.org") '(:id "call-1" :name "read_file")
@@ -10788,7 +10788,7 @@
   "Test loop start exposes its abort controller on request context."
   (require 'magent-agent-loop)
   (let* ((context (magent-request-context-create))
-         (request (magent-llm-request-create
+         (request (magent-sampling-request-create
                    :prompt '((prompt . "hello"))))
          (loop (magent-agent-loop-create
                 :request request
@@ -10816,7 +10816,7 @@
               ((symbol-function 'magent-agent-loop--abort-request-handle)
                (lambda (handle)
                  (setq aborted-handle handle))))
-      (let* ((request (magent-llm-request-create
+      (let* ((request (magent-sampling-request-create
                        :prompt '((prompt . "hello"))
                        :callback (lambda (event) (push event events))))
              (loop (magent-agent-loop-create
@@ -10831,7 +10831,7 @@
         (should (eq (magent-agent-loop-status loop) 'failed))
         (should (string-match-p "Request timed out after 5 seconds"
                                 (magent-agent-loop-error loop)))
-        (should (eq (magent-llm-event-type (car events)) 'error))
+        (should (eq (magent-sampling-event-type (car events)) 'error))
         (should-not (magent-agent-loop-request-timeout-timer loop))
         (should-not cancelled)))))
 
@@ -10847,7 +10847,7 @@
                (lambda (timer)
                  (setq cancelled timer))))
       (let* ((sampled-request nil)
-             (request (magent-llm-request-create
+             (request (magent-sampling-request-create
                        :prompt '((prompt . "hello"))))
              (loop (magent-agent-loop-create
                     :request request
@@ -10856,8 +10856,8 @@
                                'provider-handle))))
         (magent-agent-loop-start loop)
         (let ((timer (magent-agent-loop-request-timeout-timer loop)))
-          (funcall (magent-llm-request-callback sampled-request)
-                   (magent-llm-completed-event "done"))
+          (funcall (magent-sampling-request-callback sampled-request)
+                   (magent-sampling-completed-event "done"))
           (should (eq cancelled timer))
           (should-not (magent-agent-loop-request-timeout-timer loop)))))))
 
@@ -10875,7 +10875,7 @@
               ((symbol-function 'cancel-timer) #'ignore)
               ((symbol-function 'magent-agent-loop--abort-request-handle)
                (lambda (handle) (setq aborted-handle handle))))
-      (let* ((request (magent-llm-request-create
+      (let* ((request (magent-sampling-request-create
                        :prompt '((prompt . "hello"))))
              (loop (magent-agent-loop-create
                     :request request
@@ -10883,8 +10883,8 @@
                                (setq sampled-request sample-request)
                                'provider-handle))))
         (magent-agent-loop-start loop)
-        (funcall (magent-llm-request-callback sampled-request)
-                 (magent-llm-tool-call-event
+        (funcall (magent-sampling-request-callback sampled-request)
+                 (magent-sampling-tool-call-event
                   "call-1" "read_file" '(:path "README.org")))
         (should (eq (magent-agent-loop-status loop) 'tool-pending))
         (apply (car scheduled) (cdr scheduled))
@@ -10903,20 +10903,20 @@
                  (setq scheduled-count (1+ scheduled-count))
                  (list :timer fn args)))
               ((symbol-function 'cancel-timer) #'ignore))
-      (let* ((request (magent-llm-request-create
+      (let* ((request (magent-sampling-request-create
                        :prompt '((prompt . "hello"))))
              (loop (magent-agent-loop-create
                     :request request
                     :sampler
                     (lambda (sample-request)
                       (let ((callback
-                             (magent-llm-request-callback sample-request)))
+                             (magent-sampling-request-callback sample-request)))
                         (funcall callback
-                                 (magent-llm-tool-call-event
+                                 (magent-sampling-tool-call-event
                                   "call-1" "read_file"
                                   '(:path "README.org")))
                         (funcall callback
-                                 (magent-llm-tool-call-batch-end-event)))
+                                 (magent-sampling-tool-call-batch-end-event)))
                       'provider-handle))))
         (magent-agent-loop-start loop)
         (should (= scheduled-count 1))
@@ -12043,7 +12043,7 @@
 
 (ert-deftest magent-test-gptel-model-catalog-distinguishes-providers ()
   "Identical provider model names receive distinct opaque ACP ids."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let* ((gptel--known-backends nil)
          (_first
           (gptel-make-openai "First Provider" :key "key"
@@ -12051,7 +12051,7 @@
          (_second
           (gptel-make-openai "Second/Provider" :key "key"
                              :models '(shared-model)))
-         (catalog (magent-llm-gptel-model-catalog))
+         (catalog (magent-sampling-gptel-model-catalog))
          (ids (mapcar #'magent-model-descriptor-id catalog))
          (names (mapcar #'magent-model-descriptor-name catalog)))
     (should (= (length catalog) 2))
@@ -12109,15 +12109,19 @@
 
 (ert-deftest magent-test-gptel-model-route-capabilities-and-removal-fail-loud ()
   "Known tool limits and removed registered routes are enforced."
-  (require 'magent-llm-gptel)
+  (require 'magent-sampling-gptel)
   (let* ((gptel--known-backends nil)
          (backend
           (gptel-make-openai
            "Capabilities" :key "key"
-           :models '((magent-tool-model :capabilities (tool-use json))
+           :models '((magent-tool-use-model :capabilities (tool-use json))
+                     (magent-tool-model :capabilities (tool reasoning))
                      (magent-no-tool-model :capabilities (json))
                      magent-unknown-tool-model)))
-         (supported
+         (tool-use-supported
+          (magent-model-route-create
+           :backend backend :model 'magent-tool-use-model))
+         (tool-supported
           (magent-model-route-create
            :backend backend :model 'magent-tool-model))
          (unsupported
@@ -12126,14 +12130,16 @@
          (unknown
           (magent-model-route-create
            :backend backend :model 'magent-unknown-tool-model)))
-    (should (eq (magent-llm-gptel-route-tool-capability supported)
+    (should (eq (magent-sampling-gptel-route-tool-capability tool-use-supported)
                 'supported))
-    (should (eq (magent-llm-gptel-route-tool-capability unsupported)
+    (should (eq (magent-sampling-gptel-route-tool-capability tool-supported)
+                'supported))
+    (should (eq (magent-sampling-gptel-route-tool-capability unsupported)
                 'unsupported))
-    (should (eq (magent-llm-gptel-route-tool-capability unknown)
+    (should (eq (magent-sampling-gptel-route-tool-capability unknown)
                 'unknown))
     (setq gptel--known-backends nil)
-    (should-error (magent-llm-gptel-validate-route supported)
+    (should-error (magent-sampling-gptel-validate-route tool-use-supported)
                   :type 'error)))
 
 (ert-deftest magent-test-acp-session-response-advertises-effort-config ()
@@ -12865,8 +12871,8 @@
       (should (equal (map-elt content-block 'type) "text"))
       (should (equal (map-elt content-block 'text) "done")))))
 
-(ert-deftest magent-test-acp-observer-preserves-tool-title-on-completion ()
-  "Test completion updates do not replace a descriptive tool title."
+(ert-deftest magent-test-acp-observer-preserves-factual-tool-title-on-completion ()
+  "Test tool UI omits model reason while completion preserves its title."
   (require 'magent-acp)
   (let* (notifications
          (client `((:notification-handlers
@@ -12897,7 +12903,7 @@
            (start (nth 0 updates))
            (complete (nth 1 updates)))
       (should (equal (map-elt start 'sessionUpdate) "tool_call"))
-      (should (equal (map-elt start 'title) summary))
+      (should (equal (map-elt start 'title) "capability in lisp"))
       (should (equal (map-elt start 'kind) "read"))
       (should (equal (map-nested-elt start '(rawInput pattern))
                      "capability"))
@@ -12986,21 +12992,34 @@
          (observer (magent-acp--observer client "session-1")))
     (funcall observer
              '(:type tool-call-start
-		     :tool-id "tool-1"
-		     :name "bash"
-		     :kind bash
-		     :summary "pwd"
-		     :raw-input (:command "pwd"
-					  :timeout nil
-					  :reason "Print current directory")))
+               :tool-id "tool-1"
+               :name "bash"
+               :kind bash
+               :summary "[Print current directory] pwd"
+               :raw-input (:command "pwd"
+                           :timeout nil
+                           :reason "Print current directory")))
     (let* ((update (map-nested-elt (car notifications) '(params update)))
            (raw-input (map-elt update 'rawInput)))
       (should (equal (map-elt update 'sessionUpdate) "tool_call"))
+      (should (equal (map-elt update 'title) "pwd"))
       (should (equal raw-input
                      '((command . "pwd")
                        (reason . "Print current directory"))))
       (should (equal (map-elt raw-input 'command) "pwd"))
       (should (equal (mapcar #'car raw-input) '(command reason))))))
+
+(ert-deftest magent-test-acp-tool-title-strips-reason-from-eval-input ()
+  "Test execute tools without a command retain their factual input title."
+  (require 'magent-acp)
+  (should
+   (equal
+    (magent-acp--tool-display-title
+     '(:name "emacs_eval"
+       :kind emacs_eval
+       :summary "[Inspect value] (+ 20 22)"
+       :raw-input (:sexp "(+ 20 22)" :reason "Inspect value")))
+    "(+ 20 22)")))
 
 (ert-deftest magent-test-acp-approval-provider-normalizes-raw-input ()
   "Test permission requests expose rawInput as an ACP object."
@@ -13012,12 +13031,14 @@
                           (push request requests)))))))
     (funcall (magent-acp--approval-provider client "session-1")
              '(:request-id "request-1"
-			   :tool-name "bash"
-			   :summary "pwd"
-			   :perm-key bash
-			   :args (:command "pwd" :timeout nil)))
-    (let ((raw-input (map-nested-elt (car requests)
-                                     '(params toolCall rawInput))))
+				   :tool-name "bash"
+				   :summary "[Print current directory] pwd"
+				   :perm-key bash
+				   :args (:command "pwd" :timeout nil)))
+    (let* ((tool-call (map-nested-elt (car requests) '(params toolCall)))
+           (raw-input (map-elt tool-call 'rawInput)))
+      (should (equal (map-elt tool-call 'title)
+                     "[Print current directory] pwd"))
       (should (equal raw-input '((command . "pwd"))))
       (should (equal (map-elt raw-input 'command) "pwd")))))
 
@@ -13098,7 +13119,7 @@
            :id "session-1"
            :magent-session (magent-session-create :agent agent)))
          (descriptor-b
-          (cl-find backend-b (magent-llm-gptel-model-catalog)
+          (cl-find backend-b (magent-sampling-gptel-model-catalog)
                    :key #'magent-model-descriptor-backend))
          response)
     (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
@@ -15783,7 +15804,7 @@
                  (list :timer timer-count fn args)))
               ((symbol-function 'cancel-timer)
                (lambda (timer) (push timer cancelled))))
-      (let* ((request (magent-llm-request-create
+      (let* ((request (magent-sampling-request-create
                        :prompt '((prompt . "hello"))))
              (loop (magent-agent-loop-create
                     :request request
@@ -15792,13 +15813,13 @@
                                'provider-handle))))
         (magent-agent-loop-start loop)
         (let ((initial (magent-agent-loop-request-timeout-timer loop)))
-          (funcall (magent-llm-request-callback sampled-request)
-                   (magent-llm-text-delta-event "progress"))
+          (funcall (magent-sampling-request-callback sampled-request)
+                   (magent-sampling-text-delta-event "progress"))
           (let ((reset (magent-agent-loop-request-timeout-timer loop)))
             (should (member initial cancelled))
             (should-not (equal initial reset))
-            (funcall (magent-llm-request-callback sampled-request)
-                     (magent-llm-completed-event "done"))
+            (funcall (magent-sampling-request-callback sampled-request)
+                     (magent-sampling-completed-event "done"))
             (should (member reset cancelled))
             (should-not (magent-agent-loop-request-timeout-timer loop))))))))
 

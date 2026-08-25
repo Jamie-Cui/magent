@@ -22,7 +22,7 @@
 (require 'magent-agent-registry)
 (require 'magent-config)
 (require 'magent-json)
-(require 'magent-llm-gptel)
+(require 'magent-sampling-gptel)
 (require 'magent-protocol)
 (require 'magent-runtime-api)
 (require 'magent-session)
@@ -105,19 +105,19 @@ all protocol traffic.  Keep that implementation detail off the TRAMP host."
   "Return the current effective route for RUNTIME-SESSION or gptel defaults."
   (if runtime-session
       (magent-runtime-session-effective-model-route runtime-session)
-    (magent-llm-gptel-validate-route
-     (magent-llm-gptel-default-route))))
+    (magent-sampling-gptel-validate-route
+     (magent-sampling-gptel-default-route))))
 
 (defun magent-acp--effective-model-descriptor (&optional runtime-session)
   "Return the catalog descriptor effective for RUNTIME-SESSION."
-  (when (and (magent-llm-gptel-model-catalog)
+  (when (and (magent-sampling-gptel-model-catalog)
              (if runtime-session
                  (magent-runtime-session-model-routing-configured-p
                   runtime-session)
                (or (default-value 'gptel-backend)
                    (default-value 'gptel-model))))
     (let* ((route (magent-acp--effective-model-route runtime-session))
-           (descriptor (magent-llm-gptel-descriptor-for-route route)))
+           (descriptor (magent-sampling-gptel-descriptor-for-route route)))
       (unless descriptor
         (error "Magent route %s:%s is absent from the gptel model registry"
                (gptel-backend-name (magent-model-route-backend route))
@@ -133,7 +133,7 @@ all protocol traffic.  Keep that implementation detail off the TRAMP host."
       (availableModels
        . ,(vconcat
            (mapcar #'magent-acp--model-descriptor-entry
-                   (magent-llm-gptel-model-catalog)))))))
+                   (magent-sampling-gptel-model-catalog)))))))
 
 (defun magent-acp--model-option-entry (descriptor)
   "Return an ACP config option value for model DESCRIPTOR."
@@ -149,11 +149,11 @@ all protocol traffic.  Keep that implementation detail off the TRAMP host."
          (current-value
           (if explicit
               (let ((descriptor
-                     (magent-llm-gptel-descriptor-for-route explicit)))
+                     (magent-sampling-gptel-descriptor-for-route explicit)))
                 (unless descriptor
                   (error "Explicit Magent model route is absent from gptel"))
                 (magent-model-descriptor-id descriptor))
-            magent-llm-gptel-auto-model-id)))
+            magent-sampling-gptel-auto-model-id)))
     `((id . "model")
       (name . "Model")
       (description . "Provider and model for future Magent turns in this session.")
@@ -163,14 +163,14 @@ all protocol traffic.  Keep that implementation detail off the TRAMP host."
       (options
        . ,(vconcat
            (cons
-            `((value . ,magent-llm-gptel-auto-model-id)
+            `((value . ,magent-sampling-gptel-auto-model-id)
               (name . ,(format "Auto → %s"
                                (if effective
                                    (magent-model-descriptor-name effective)
                                  "Unconfigured")))
               (description . "Use the selected agent model, then gptel defaults."))
             (mapcar #'magent-acp--model-option-entry
-                    (magent-llm-gptel-model-catalog))))))))
+                    (magent-sampling-gptel-model-catalog))))))))
 
 (defun magent-acp--effort-option-entry (effort)
   "Return ACP config option value entry for EFFORT."
@@ -666,6 +666,28 @@ Each handler runs inside the CLIENT's context buffer (via
     ((or 'bash 'emacs_eval) "execute")
     (_ "other")))
 
+(defun magent-acp--tool-display-title (event)
+  "Return a factual ACP title for tool-call EVENT.
+
+Magent's internal summary may prefix the tool's actual arguments with a
+model-authored `reason'.  Keep that richer summary for approvals and audit,
+but omit the reason prefix from the ordinary tool-call UI."
+  (let* ((summary (plist-get event :summary))
+         (raw-input (plist-get event :raw-input))
+         (reason (magent-acp--alist-plist-get raw-input 'reason))
+         (reason-prefix (and (stringp reason)
+                             (not (string-empty-p reason))
+                             (format "[%s] " reason))))
+    (cond
+     ((and (stringp summary)
+           reason-prefix
+           (string-prefix-p reason-prefix summary))
+      (substring summary (length reason-prefix)))
+     ((and (stringp summary) (not (string-empty-p summary)))
+      summary)
+     ((plist-get event :name))
+     (t "tool"))))
+
 (defun magent-acp--observer (client session-id)
   "Return runtime observer that converts Magent events to ACP updates."
   (let ((stream-kind nil)
@@ -711,9 +733,7 @@ Each handler runs inside the CLIENT's context buffer (via
             client session-id
             `((sessionUpdate . "tool_call")
               (toolCallId . ,(plist-get event :tool-id))
-              (title . ,(or (plist-get event :summary)
-                            (plist-get event :name)
-                            "tool"))
+              (title . ,(magent-acp--tool-display-title event))
               (kind . ,(magent-acp--tool-kind (plist-get event :kind)))
               (status . "in_progress")
               (rawInput . ,(magent-acp--raw-input-object
@@ -1044,14 +1064,14 @@ does not activate overlays or install a session into the runtime registry."
           (magent-acp--runtime-session-by-id session-id expected-scope)))
     (unless runtime-session
       (error "Unknown session: %s" session-id))
-    (if (equal model-id magent-llm-gptel-auto-model-id)
+    (if (equal model-id magent-sampling-gptel-auto-model-id)
         (magent-runtime-session-clear-model-route runtime-session)
-      (let ((descriptor (magent-llm-gptel-model-descriptor model-id)))
+      (let ((descriptor (magent-sampling-gptel-model-descriptor model-id)))
         (unless descriptor
           (error "Unknown Magent model: %s" model-id))
         (magent-runtime-session-set-model-route
          runtime-session
-         (magent-llm-gptel-descriptor-route descriptor 'session))))
+         (magent-sampling-gptel-descriptor-route descriptor 'session))))
     (magent-acp--session-response runtime-session)))
 
 (defun magent-acp--handle-set-config-option (params &optional expected-scope)
@@ -1072,14 +1092,14 @@ does not activate overlays or install a session into the runtime registry."
        (magent-runtime-session-set-capabilities-enabled
         runtime-session (equal value "enabled")))
       ("model"
-       (if (equal value magent-llm-gptel-auto-model-id)
+       (if (equal value magent-sampling-gptel-auto-model-id)
            (magent-runtime-session-clear-model-route runtime-session)
-         (let ((descriptor (magent-llm-gptel-model-descriptor value)))
+         (let ((descriptor (magent-sampling-gptel-model-descriptor value)))
            (unless descriptor
              (error "Unknown Magent model: %s" value))
            (magent-runtime-session-set-model-route
             runtime-session
-            (magent-llm-gptel-descriptor-route descriptor 'session)))))
+            (magent-sampling-gptel-descriptor-route descriptor 'session)))))
       (_
        (error "Unknown Magent config option: %s" config-id)))
     (magent-acp--session-response runtime-session)))

@@ -10,7 +10,7 @@
 ;;; Commentary:
 
 ;; Magent-owned turn loop state.  This module consumes normalized
-;; `magent-llm-event' values instead of raw gptel callback/FSM details,
+;; `magent-sampling-event' values instead of raw gptel callback/FSM details,
 ;; and owns tool execution, continuation, and abort handling.
 
 ;;; Code:
@@ -21,7 +21,7 @@
 (require 'magent-config)
 (require 'magent-json)
 (require 'magent-lifecycle-events)
-(require 'magent-llm)
+(require 'magent-sampling)
 (require 'magent-protocol)
 (require 'magent-runtime)
 (require 'magent-session)
@@ -200,16 +200,16 @@ being normalized into structured tool calls."
   "Apply normalized LLM EVENT to LOOP and return LOOP."
   (unless (magent-agent-loop-p loop)
     (error "Expected magent-agent-loop, got: %S" loop))
-  (unless (magent-llm-event-p event)
-    (error "Expected magent-llm-event, got: %S" event))
-  (pcase (magent-llm-event-type event)
+  (unless (magent-sampling-event-p event)
+    (error "Expected magent-sampling-event, got: %S" event))
+  (pcase (magent-sampling-event-type event)
     ('text-delta
-     (let ((text (or (magent-llm-event-text event) "")))
+     (let ((text (or (magent-sampling-event-text event) "")))
        (push text (magent-agent-loop-text-chunks loop))
        (push text (magent-agent-loop-sample-text-chunks loop)))
      (setf (magent-agent-loop-status loop) 'streaming))
     ('reasoning-delta
-     (push (or (magent-llm-event-text event) "")
+     (push (or (magent-sampling-event-text event) "")
            (magent-agent-loop-reasoning-chunks loop))
      (setf (magent-agent-loop-status loop) 'reasoning))
     ('reasoning-end
@@ -220,25 +220,25 @@ being normalized into structured tool calls."
     ('tool-call-batch-end
      (setf (magent-agent-loop-status loop) 'tool-pending)
      (magent-agent-loop-set-tool-continuation
-      loop (magent-llm-event-continuation event)))
+      loop (magent-sampling-event-continuation event)))
     ('completed
      (setf (magent-agent-loop-status loop) 'completed
            (magent-agent-loop-result loop)
            (let ((result (magent-agent-loop--combined-result
                           (magent-agent-loop-sample-text loop)
-                          (magent-llm-event-text event))))
+                          (magent-sampling-event-text event))))
              result)
            (magent-agent-loop-usage loop)
-           (magent-llm-event-usage event)
+           (magent-sampling-event-usage event)
            (magent-agent-loop-stop-reason loop)
-           (magent-llm-event-stop-reason event)))
+           (magent-sampling-event-stop-reason event)))
     ('error
      (setf (magent-agent-loop-status loop) 'failed
            (magent-agent-loop-error loop)
-           (magent-llm-event-message event)))
+           (magent-sampling-event-message event)))
     ('usage
      (setf (magent-agent-loop-usage loop)
-           (magent-llm-event-usage event))))
+           (magent-sampling-event-usage event))))
   loop)
 
 (defun magent-agent-loop-transcript (loop)
@@ -729,14 +729,14 @@ carry provider-specific ids and names."
 
 (defun magent-agent-loop--tool-args (event)
   "Return tool arguments from normalized tool-call EVENT."
-  (or (magent-llm-event-arguments event)
-      (plist-get (magent-llm-event-raw event) :args)))
+  (or (magent-sampling-event-arguments event)
+      (plist-get (magent-sampling-event-raw event) :args)))
 
 (defun magent-agent-loop--tool-raw-call (event)
   "Return raw provider call from normalized tool-call EVENT."
-  (or (magent-llm-event-raw event)
-      (list :id (magent-llm-event-id event)
-            :name (magent-llm-event-name event)
+  (or (magent-sampling-event-raw event)
+      (list :id (magent-sampling-event-id event)
+            :name (magent-sampling-event-name event)
             :args (magent-agent-loop--tool-args event))))
 
 (defun magent-agent-loop--find-tool (loop name)
@@ -744,7 +744,7 @@ carry provider-specific ids and names."
   (cl-find-if
    (lambda (tool)
      (equal (magent-agent-loop--tool-name tool nil) name))
-   (magent-llm-request-tools (magent-agent-loop-request loop))))
+   (magent-sampling-request-tools (magent-agent-loop-request loop))))
 
 (defun magent-agent-loop--plist-args-p (args)
   "Return non-nil when ARGS looks like an Elisp plist."
@@ -934,7 +934,7 @@ Elisp tool function after preserving it in the normalized raw arguments."
   "Convert normalized tool-call EVENT to orchestrator call shape.
 Return `(TOOL-SPEC ARG-VALUES nil RAW-CALL)' or nil when the tool is not
 available in LOOP's request tools."
-  (let* ((name (magent-llm-event-name event))
+  (let* ((name (magent-sampling-event-name event))
          (tool-spec (magent-agent-loop--find-tool loop name)))
     (when tool-spec
       (let* ((raw-call (magent-agent-loop--tool-raw-call event))
@@ -953,7 +953,7 @@ available in LOOP's request tools."
         (list tool-spec
               (magent-agent-loop--tool-arg-values
                tool-spec args textual-dsml-p)
-              (magent-llm-event-result-callback event)
+              (magent-sampling-event-result-callback event)
               raw-call)))))
 
 (defun magent-agent-loop--invalid-tool-arguments-result (loop event err)
@@ -966,14 +966,14 @@ available in LOOP's request tools."
            :output error-message :error error-message)))
     (magent-agent-loop-record-tool-result
      loop nil (magent-agent-loop--tool-args event) raw-call result)
-    (when-let* ((result-callback (magent-llm-event-result-callback event)))
+    (when-let* ((result-callback (magent-sampling-event-result-callback event)))
       (funcall result-callback error-message))
     result))
 
 (defun magent-agent-loop--unknown-tool-result (loop event known-tool-names)
   "Record and return an unknown-tool result for EVENT."
   (let* ((raw-call (magent-agent-loop--tool-raw-call event))
-         (name (or (magent-llm-event-name event)
+         (name (or (magent-sampling-event-name event)
                    (plist-get raw-call :name)
                    "unknown"))
          (error-message
@@ -986,7 +986,7 @@ available in LOOP's request tools."
            :output error-message :error error-message)))
     (magent-agent-loop-record-tool-result
      loop nil (magent-agent-loop--tool-args event) raw-call result)
-    (when-let* ((result-callback (magent-llm-event-result-callback event)))
+    (when-let* ((result-callback (magent-sampling-event-result-callback event)))
       (funcall result-callback error-message))
     result))
 
@@ -1011,7 +1011,7 @@ request after model-visible tool output has been recorded."
     (error "Expected magent-tool-orchestrator, got: %S" orchestrator))
   (let* ((events (nreverse (copy-sequence
                             (magent-agent-loop-tool-calls loop))))
-         (tools (magent-llm-request-tools (magent-agent-loop-request loop)))
+         (tools (magent-sampling-request-tools (magent-agent-loop-request loop)))
          (known-tool-names
           (delq nil
                 (mapcar (lambda (tool)
@@ -1082,20 +1082,20 @@ session, the existing request prompt is reused."
   (unless (magent-agent-loop-p loop)
     (error "Expected magent-agent-loop, got: %S" loop))
   (let ((request (magent-agent-loop-request loop)))
-    (unless (magent-llm-request-p request)
-      (error "Agent loop requires a magent-llm-request"))
-    (magent-llm-request-create
+    (unless (magent-sampling-request-p request)
+      (error "Agent loop requires a magent-sampling-request"))
+    (magent-sampling-request-create
      :prompt (if-let* ((session (magent-agent-loop-session loop)))
                  (magent-session-context-view
                   session 'provider (magent-agent-loop-turn-id loop))
-               (magent-llm-request-prompt request))
-     :system (magent-llm-request-system request)
-     :tools (magent-llm-request-tools request)
-     :model (magent-llm-request-model request)
-     :backend (magent-llm-request-backend request)
-     :stream (magent-llm-request-stream request)
-     :callback (magent-llm-request-callback request)
-     :metadata (magent-llm-request-metadata request))))
+               (magent-sampling-request-prompt request))
+     :system (magent-sampling-request-system request)
+     :tools (magent-sampling-request-tools request)
+     :model (magent-sampling-request-model request)
+     :backend (magent-sampling-request-backend request)
+     :stream (magent-sampling-request-stream request)
+     :callback (magent-sampling-request-callback request)
+     :metadata (magent-sampling-request-metadata request))))
 
 (defun magent-agent-loop-continue (loop)
   "Continue LOOP with a new sampling request from current session state."
@@ -1149,7 +1149,7 @@ provider request has emitted no event for `magent-request-timeout' seconds."
                    (magent-agent-loop-abort-controller loop))
                   (magent-agent-loop--abort-request-handle
                    (magent-agent-loop-request-handle loop))
-                  (let ((event (magent-llm-error-event
+                  (let ((event (magent-sampling-error-event
                                 timeout-message
                                 (list :status 'timeout
                                       :timeout magent-request-timeout))))
@@ -1213,10 +1213,10 @@ the sampler return value."
   (let* ((request (magent-agent-loop-request loop))
          (sampler (magent-agent-loop-sampler loop))
          (original-callback (and request
-                                 (magent-llm-request-callback request)))
+                                 (magent-sampling-request-callback request)))
          (terminal-event-seen nil))
-    (unless (magent-llm-request-p request)
-      (error "Agent loop requires a magent-llm-request"))
+    (unless (magent-sampling-request-p request)
+      (error "Agent loop requires a magent-sampling-request"))
     (unless sampler
       (error "Agent loop requires a sampler"))
     (setf (magent-agent-loop-status loop) 'running)
@@ -1227,21 +1227,21 @@ the sampler return value."
         (setf (magent-agent-loop-turn-id loop)
               (magent-request-context-turn-id request-context))))
     (let ((loop-request
-           (magent-llm-request-create
-            :prompt (magent-llm-request-prompt request)
-            :system (magent-llm-request-system request)
-            :tools (magent-llm-request-tools request)
-            :model (magent-llm-request-model request)
-            :backend (magent-llm-request-backend request)
-            :stream (magent-llm-request-stream request)
-            :metadata (magent-llm-request-metadata request)
+           (magent-sampling-request-create
+            :prompt (magent-sampling-request-prompt request)
+            :system (magent-sampling-request-system request)
+            :tools (magent-sampling-request-tools request)
+            :model (magent-sampling-request-model request)
+            :backend (magent-sampling-request-backend request)
+            :stream (magent-sampling-request-stream request)
+            :metadata (magent-sampling-request-metadata request)
             :callback (lambda (event)
                         (unless (magent-agent-loop--aborted-p loop)
-                          (when-let* (((eq (magent-llm-event-type event)
+                          (when-let* (((eq (magent-sampling-event-type event)
                                            'tool-call-batch-end))
                                       (continuation
-                                       (magent-llm-event-continuation event)))
-                            (magent-llm-event-set-continuation
+                                       (magent-sampling-event-continuation event)))
+                            (magent-sampling-event-set-continuation
                              event
                              (lambda (&rest args)
                                (setq terminal-event-seen nil)
@@ -1249,7 +1249,7 @@ the sampler return value."
                                (magent-agent-loop--schedule-request-timeout
                                 loop original-callback)
                                (apply continuation args))))
-                          (if (memq (magent-llm-event-type event)
+                          (if (memq (magent-sampling-event-type event)
                                     '(tool-call-batch-end completed error))
                               (progn
                                 (setq terminal-event-seen t)

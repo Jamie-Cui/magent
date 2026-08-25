@@ -322,7 +322,7 @@ Request builder 接收 immutable sampling context：
  :request-context <magent-request-context>)
 #+end_src
 
-返回一个完整 ~magent-llm-request~ 和 canonical header：
+返回一个完整 ~magent-sampling-request~ 和 canonical header：
 
 #+begin_src elisp
 (:phase "plan"
@@ -622,8 +622,8 @@ profile，避免 UI 中途切 agent 后重标历史。
 | ~lisp/magent-tool-orchestrator.el~ | spec-based permission flow、execute-one reentrant core、nested lineage |
 | ~lisp/magent-agent-loop.el~ | sampling epoch、request builder、sample item、continuation compatibility |
 | ~lisp/magent-agent.el~ | per-epoch route/capability/prompt assembly、single/plan-execute controller |
-| ~lisp/magent-llm.el~ | model route、canonical header、request/epoch structs |
-| ~lisp/magent-llm-gptel.el~ | continuation origin metadata；仍只负责 gptel adapter |
+| ~lisp/magent-sampling.el~ | model route、canonical header、request/epoch structs |
+| ~lisp/magent-sampling-gptel.el~ | continuation origin metadata；仍只负责 gptel adapter |
 | ~lisp/magent-runtime.el~ | request context 的 route override、epoch/phase controller reference |
 | ~lisp/magent-agent-info.el~ | ~tool-presentation~ 与 validated ~loop-policy~ |
 | ~lisp/magent-agent-file.el~ | 新 frontmatter parse/save；unknown/invalid values fail loud |

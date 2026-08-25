@@ -95,10 +95,10 @@ Orchestrates the tool-calling loop and LLM communication.
 
 *Key Files:*
 - ~magent-agent-loop.el~ — Active Magent-owned loop, tool dispatch, serial queueing, abort helpers, continuation outcomes
-- ~magent-llm.el~ — Provider-neutral request/event protocol
-- ~magent-llm-gptel.el~ — Thin ~gptel-request~ sampling adapter
+- ~magent-sampling.el~ — Provider-neutral request/event protocol
+- ~magent-sampling-gptel.el~ — Thin ~gptel-request~ sampling adapter
 
-*What it does:* ~magent-agent-loop.el~ consumes normalized LLM events, records assistant/tool state into the session, dispatches tools through ~magent-tool-orchestrator~, and returns continuation outcomes after model-visible tool output is recorded. ~magent-agent-run-turn~ owns provider-native tool continuation, completes empty responses explicitly, and fails directly at an optional sampling limit. Reasoning is kept separate from assistant text. ~magent-llm-gptel.el~ still calls ~gptel-request~; Magent does not rewrite provider transport.
+*What it does:* ~magent-agent-loop.el~ consumes normalized LLM events, records assistant/tool state into the session, dispatches tools through ~magent-tool-orchestrator~, and returns continuation outcomes after model-visible tool output is recorded. ~magent-agent-run-turn~ owns provider-native tool continuation, completes empty responses explicitly, and fails directly at an optional sampling limit. Reasoning is kept separate from assistant text. ~magent-sampling-gptel.el~ still calls ~gptel-request~; Magent does not rewrite provider transport.
 
 ** Layer 6: Supported Frontend
 
@@ -239,7 +239,7 @@ Trace a request through these files in order:
 2. ~magent-action.el~ / ~magent-skills.el~ — Resolve registered slash commands or scope-aware ~/$skill~ descriptors
 3. ~magent-runtime-api.el~ / ~magent-runtime-queue.el~ / ~magent-ledger.el~ — Record, queue, and start ordinary or Action-owned turns
 4. ~magent-agent.el~ — Build the prompt and select agent, skills, capabilities, and tools
-5. ~magent-llm-gptel.el~ / ~magent-agent-loop.el~ — Sample through gptel and own normalized continuation outcomes
+5. ~magent-sampling-gptel.el~ / ~magent-agent-loop.el~ — Sample through gptel and own normalized continuation outcomes
 6. ~magent-tool-orchestrator.el~ / ~magent-tools.el~ — Resolve permissions and execute tool implementations
 
 ** Step 4: Understand Permissions
@@ -301,8 +301,8 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 
 ** Agent Loop & LLM Integration
 - *magent-agent-loop.el* — Active normalized event loop, tool dispatch, queueing, guards, abort, continuation
-- *magent-llm.el* — Provider-neutral request/event protocol
-- *magent-llm-gptel.el* — ~gptel-request~ adapter
+- *magent-sampling.el* — Provider-neutral request/event protocol
+- *magent-sampling-gptel.el* — ~gptel-request~ adapter
 
 ** User Interface
 - *magent-agent-shell.el* — Supported agent-shell config and prompt routing
@@ -337,7 +337,7 @@ These areas require careful attention when modifying:
 
 *Approach carefully:* Any changes to loop state, tool callback ordering, final-response retry policy, or abort handling can hang a turn or corrupt session history. Add focused ERT coverage first, then verify live with tool-use prompts when Emacs is available.
 
-** 2. magent-llm-gptel.el (Medium Complexity)
+** 2. magent-sampling-gptel.el (Medium Complexity)
 *Why it's complex:* It is intentionally the only place that may touch gptel callback/FSM details. It converts provider callback shapes into normalized Magent events without letting gptel's tool-loop semantics leak into the main loop.
 
 *Approach carefully:* Keep provider transport concerns here and loop behavior in ~magent-agent-loop.el~. Do not add new main-loop dependencies on gptel private FSM handlers.

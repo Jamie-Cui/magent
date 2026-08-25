@@ -1,4 +1,4 @@
-;;; magent-llm.el --- Provider-neutral LLM request events  -*- lexical-binding: t; -*-
+;;; magent-sampling.el --- Provider-neutral sampling request/event protocol  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -18,7 +18,7 @@
 
 (require 'cl-lib)
 
-(defconst magent-llm-event-types
+(defconst magent-sampling-event-types
   '(text-delta
     reasoning-delta
     reasoning-end
@@ -27,7 +27,7 @@
     completed
     error
     usage)
-  "Valid normalized LLM event types.")
+  "Valid normalized sampling event types.")
 
 (cl-defstruct (magent-model-route
                (:constructor magent-model-route-create)
@@ -70,8 +70,8 @@ must never contain credentials or backend connection settings."
    :profile-agent profile-agent
    :phase phase))
 
-(cl-defstruct (magent-llm-request
-               (:constructor magent-llm-request--create)
+(cl-defstruct (magent-sampling-request
+               (:constructor magent-sampling-request--create)
                (:copier nil))
   prompt
   system
@@ -82,8 +82,8 @@ must never contain credentials or backend connection settings."
   callback
   metadata)
 
-(cl-defstruct (magent-llm-event
-               (:constructor magent-llm-event--create)
+(cl-defstruct (magent-sampling-event
+               (:constructor magent-sampling-event--create)
                (:copier nil))
   type
   text
@@ -96,58 +96,58 @@ must never contain credentials or backend connection settings."
   message
   metadata)
 
-(defvar magent-llm--event-result-callbacks
+(defvar magent-sampling--event-result-callbacks
   (make-hash-table :test #'eq :weakness 'key)
   "Runtime result callbacks keyed by tool-call event identity.")
 
-(defvar magent-llm--event-continuations
+(defvar magent-sampling--event-continuations
   (make-hash-table :test #'eq :weakness 'key)
   "Runtime provider continuations keyed by batch-end event identity.")
 
-(defun magent-llm-event-result-callback (event)
+(defun magent-sampling-event-result-callback (event)
   "Return EVENT's runtime tool-result callback, if any."
-  (gethash event magent-llm--event-result-callbacks))
+  (gethash event magent-sampling--event-result-callbacks))
 
-(defun magent-llm-event-set-result-callback (event callback)
+(defun magent-sampling-event-set-result-callback (event callback)
   "Set EVENT's runtime tool-result CALLBACK and return it."
   (if callback
-      (puthash event callback magent-llm--event-result-callbacks)
-    (remhash event magent-llm--event-result-callbacks))
+      (puthash event callback magent-sampling--event-result-callbacks)
+    (remhash event magent-sampling--event-result-callbacks))
   callback)
 
-(defun magent-llm-event-continuation (event)
+(defun magent-sampling-event-continuation (event)
   "Return EVENT's runtime provider continuation, if any."
-  (gethash event magent-llm--event-continuations))
+  (gethash event magent-sampling--event-continuations))
 
-(defun magent-llm-event-set-continuation (event continuation)
+(defun magent-sampling-event-set-continuation (event continuation)
   "Set EVENT's runtime provider CONTINUATION and return it."
   (if continuation
-      (puthash event continuation magent-llm--event-continuations)
-    (remhash event magent-llm--event-continuations))
+      (puthash event continuation magent-sampling--event-continuations)
+    (remhash event magent-sampling--event-continuations))
   continuation)
 
-(defun magent-llm-event-type-p (type)
-  "Return non-nil when TYPE is a valid normalized LLM event type."
-  (memq type magent-llm-event-types))
+(defun magent-sampling-event-type-p (type)
+  "Return non-nil when TYPE is a valid normalized sampling event type."
+  (memq type magent-sampling-event-types))
 
-(defun magent-llm--coerce-event-type (type)
+(defun magent-sampling--coerce-event-type (type)
   "Return TYPE as a valid event type symbol, or signal an error."
   (let ((symbol (cond
                  ((symbolp type) type)
                  ((stringp type) (intern type))
                  (t type))))
-    (unless (magent-llm-event-type-p symbol)
-      (error "Invalid LLM event type: %S" type))
+    (unless (magent-sampling-event-type-p symbol)
+      (error "Invalid sampling event type: %S" type))
     symbol))
 
-(defun magent-llm-request-create (&rest args)
-  "Create a `magent-llm-request' from keyword ARGS.
+(defun magent-sampling-request-create (&rest args)
+  "Create a `magent-sampling-request' from keyword ARGS.
 Recognized keys are `:prompt', `:system', `:tools', `:model',
 `:backend', `:stream', `:callback', and `:metadata'."
   (let ((callback (plist-get args :callback)))
     (when (and callback (not (functionp callback)))
-      (error "LLM request callback is not callable: %S" callback))
-    (magent-llm-request--create
+      (error "sampling request callback is not callable: %S" callback))
+    (magent-sampling-request--create
      :prompt (plist-get args :prompt)
      :system (plist-get args :system)
      :tools (plist-get args :tools)
@@ -157,11 +157,11 @@ Recognized keys are `:prompt', `:system', `:tools', `:model',
      :callback callback
      :metadata (plist-get args :metadata))))
 
-(defun magent-llm-event-create (type &rest props)
-  "Create a normalized `magent-llm-event' of TYPE with PROPS."
+(defun magent-sampling-event-create (type &rest props)
+  "Create a normalized `magent-sampling-event' of TYPE with PROPS."
   (let ((event
-         (magent-llm-event--create
-          :type (magent-llm--coerce-event-type type)
+         (magent-sampling-event--create
+          :type (magent-sampling--coerce-event-type type)
           :text (plist-get props :text)
           :id (plist-get props :id)
           :name (plist-get props :name)
@@ -171,30 +171,30 @@ Recognized keys are `:prompt', `:system', `:tools', `:model',
           :stop-reason (plist-get props :stop-reason)
           :message (plist-get props :message)
           :metadata (plist-get props :metadata))))
-    (magent-llm-event-set-result-callback
+    (magent-sampling-event-set-result-callback
      event (plist-get props :result-callback))
-    (magent-llm-event-set-continuation
+    (magent-sampling-event-set-continuation
      event (plist-get props :continuation))
     event))
 
-(defun magent-llm-text-delta-event (text &optional metadata)
+(defun magent-sampling-text-delta-event (text &optional metadata)
   "Create a text delta event for TEXT and optional METADATA."
-  (magent-llm-event-create 'text-delta :text text :metadata metadata))
+  (magent-sampling-event-create 'text-delta :text text :metadata metadata))
 
-(defun magent-llm-reasoning-delta-event (text &optional metadata)
+(defun magent-sampling-reasoning-delta-event (text &optional metadata)
   "Create a reasoning delta event for TEXT and optional METADATA."
-  (magent-llm-event-create 'reasoning-delta :text text :metadata metadata))
+  (magent-sampling-event-create 'reasoning-delta :text text :metadata metadata))
 
-(defun magent-llm-reasoning-end-event (&optional metadata)
+(defun magent-sampling-reasoning-end-event (&optional metadata)
   "Create a reasoning end event with optional METADATA."
-  (magent-llm-event-create 'reasoning-end :metadata metadata))
+  (magent-sampling-event-create 'reasoning-end :metadata metadata))
 
-(defun magent-llm-tool-call-event
+(defun magent-sampling-tool-call-event
     (id name arguments &optional raw metadata result-callback)
   "Create a tool call event with ID, NAME, ARGUMENTS, RAW, and METADATA.
 RESULT-CALLBACK, when non-nil, accepts the model-visible tool result so the
 provider adapter can retain its native continuation context."
-  (magent-llm-event-create 'tool-call
+  (magent-sampling-event-create 'tool-call
                            :id id
                            :name name
                            :arguments arguments
@@ -202,47 +202,47 @@ provider adapter can retain its native continuation context."
                            :metadata metadata
                            :result-callback result-callback))
 
-(defun magent-llm-tool-call-batch-end-event (&optional metadata continuation)
+(defun magent-sampling-tool-call-batch-end-event (&optional metadata continuation)
   "Create a tool-call batch-end event with METADATA and CONTINUATION.
 CONTINUATION, when non-nil, resumes the provider request after every tool result
 callback in the batch has been called."
-  (magent-llm-event-create 'tool-call-batch-end
+  (magent-sampling-event-create 'tool-call-batch-end
                            :metadata metadata
                            :continuation continuation))
 
-(defun magent-llm-completed-event (&optional text usage stop-reason metadata)
+(defun magent-sampling-completed-event (&optional text usage stop-reason metadata)
   "Create a completed event with TEXT, USAGE, STOP-REASON, and METADATA."
-  (magent-llm-event-create 'completed
+  (magent-sampling-event-create 'completed
                            :text text
                            :usage usage
                            :stop-reason stop-reason
                            :metadata metadata))
 
-(defun magent-llm-error-event (message &optional metadata)
+(defun magent-sampling-error-event (message &optional metadata)
   "Create an error event with MESSAGE and optional METADATA."
-  (magent-llm-event-create 'error :message message :metadata metadata))
+  (magent-sampling-event-create 'error :message message :metadata metadata))
 
-(defun magent-llm-event-to-plist (event)
+(defun magent-sampling-event-to-plist (event)
   "Convert EVENT to a plist without nil-valued optional keys."
-  (let ((plist (list :type (magent-llm-event-type event))))
-    (dolist (slot '((:text . magent-llm-event-text)
-                    (:id . magent-llm-event-id)
-                    (:name . magent-llm-event-name)
-                    (:arguments . magent-llm-event-arguments)
-                    (:raw . magent-llm-event-raw)
-                    (:usage . magent-llm-event-usage)
-                    (:stop-reason . magent-llm-event-stop-reason)
-                    (:message . magent-llm-event-message)
-                    (:metadata . magent-llm-event-metadata)
-                    (:result-callback . magent-llm-event-result-callback)
-                    (:continuation . magent-llm-event-continuation)))
+  (let ((plist (list :type (magent-sampling-event-type event))))
+    (dolist (slot '((:text . magent-sampling-event-text)
+                    (:id . magent-sampling-event-id)
+                    (:name . magent-sampling-event-name)
+                    (:arguments . magent-sampling-event-arguments)
+                    (:raw . magent-sampling-event-raw)
+                    (:usage . magent-sampling-event-usage)
+                    (:stop-reason . magent-sampling-event-stop-reason)
+                    (:message . magent-sampling-event-message)
+                    (:metadata . magent-sampling-event-metadata)
+                    (:result-callback . magent-sampling-event-result-callback)
+                    (:continuation . magent-sampling-event-continuation)))
       (let ((value (funcall (cdr slot) event)))
         (when value
           (setq plist (append plist (list (car slot) value))))))
     plist))
 
-(defun magent-llm-event-from-plist (plist)
-  "Create a `magent-llm-event' from PLIST."
+(defun magent-sampling-event-from-plist (plist)
+  "Create a `magent-sampling-event' from PLIST."
   (let ((type (plist-get plist :type))
         (copy (copy-sequence plist))
         result)
@@ -251,7 +251,7 @@ callback in the batch has been called."
             (value (pop copy)))
         (unless (eq key :type)
           (setq result (append result (list key value))))))
-    (apply #'magent-llm-event-create type result)))
+    (apply #'magent-sampling-event-create type result)))
 
-(provide 'magent-llm)
-;;; magent-llm.el ends here
+(provide 'magent-sampling)
+;;; magent-sampling.el ends here
