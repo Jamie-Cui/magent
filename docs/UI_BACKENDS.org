@@ -58,6 +58,21 @@ explicit command registration and invocation belong in ~magent-action.el~.
   latest, or prompt-based session flow for both the Magent entry command and
   Magent selected from the generic agent-shell picker.  It defaults to ~prompt~,
   offering new and saved sessions from the current scope.
+- ACP exposes one native ~model~ session option containing every model from
+  every backend registered with gptel.  Display names use ~provider:model~;
+  opaque ids keep same-named models from different providers distinct.
+  Selecting a model stores a session-local route without mutating gptel's
+  global backend or model variables.  ~Auto~ clears that route and displays the
+  currently resolved agent/default model.
+
+Model routing is resolved and frozen when a runtime submission is created.
+The precedence for a user-facing turn is session route, explicit agent model,
+then gptel defaults.  A child agent instead prefers its own explicit model over
+the frozen parent route and otherwise inherits the parent.  The route object
+also retains agent-profile and phase fields as an API seam for future
+per-agent or per-phase policy; there is no phase router in the current runtime.
+Switching the session model affects only later submissions, not active work,
+already queued work, or a provider-native tool continuation.
 
 * Session Lifecycle
 
@@ -68,10 +83,10 @@ history.  The source and fork retain separate ids and diverge after creation.
 
 Forking is exact-scope and fail-closed: the requested cwd must resolve to the
 source session's scope, and the source must have no active or queued work.
-Stable frontend options such as the selected agent, effort, and automatic
-capability setting are inherited.  Session approval overrides, child-agent
-jobs, and one-shot skills are deliberately reset.  Referenced spilled tool
-outputs are copied into the fork's private session storage.
+Stable frontend options such as the selected agent, model route, effort, and
+automatic capability setting are inherited.  Session approval overrides,
+child-agent jobs, and one-shot skills are deliberately reset.  Referenced
+spilled tool outputs are copied into the fork's private session storage.
 
 * Development Boundary
 
@@ -106,4 +121,6 @@ entry surfaces; it must not infer skills from the Action registry.
 - ACP session config exposes ~Automatic capabilities~. Disabling it suppresses
   contextual capability auto-resolution for future turns in that session while
   retaining explicitly selected instruction skills.
+- Model routes are session-local in memory.  Cross-Emacs persistence of an
+  explicit route is not yet implemented; a loaded session returns to ~Auto~.
 - Forking an active turn and forking across project scopes are not supported.

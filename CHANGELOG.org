@@ -14,6 +14,11 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Added
 
+- Cross-provider model selection through agent-shell's native ACP model option.
+  Magent catalogs every gptel-registered backend/model, keeps selections
+  session-local, freezes routes per submission, and supports ~Auto~ fallback to
+  agent or gptel defaults.  Child agents may override inherited routes with
+  their own explicit model.
 - A documented Semantic Versioning policy, public compatibility boundary, and
   repeatable release checklist.
 - The initial release baseline: the agent-shell and in-process ACP frontend,

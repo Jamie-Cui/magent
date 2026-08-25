@@ -26,6 +26,7 @@
   tool-names
   skills
   agent
+  model-route
   effort
   observer
   approval-provider

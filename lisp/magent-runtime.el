@@ -101,6 +101,8 @@ wins; when all functions return nil, scope is derived from
   parent-request-id
   (agent-depth 0)
   project-root
+  model-route
+  parent-model-route
   model
   backend
   temperature

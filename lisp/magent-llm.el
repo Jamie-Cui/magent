@@ -29,6 +29,47 @@
     usage)
   "Valid normalized LLM event types.")
 
+(cl-defstruct (magent-model-route
+               (:constructor magent-model-route-create)
+               (:copier nil))
+  "One immutable provider/model selection for a sampling request.
+BACKEND is a provider adapter object and MODEL is its provider-facing model
+identifier.  SOURCE records which policy layer selected the route.  The
+optional PROFILE-AGENT and PHASE fields make the same contract reusable by
+future per-agent and per-phase request builders."
+  backend
+  model
+  source
+  profile-agent
+  phase)
+
+(cl-defstruct (magent-model-descriptor
+               (:constructor magent-model-descriptor-create)
+               (:copier nil))
+  "Frontend-safe metadata for one selectable model route.
+ID is an opaque stable identifier.  NAME and DESCRIPTION are display values.
+BACKEND-NAME is safe durable metadata, while BACKEND is the live adapter
+object used only inside the runtime.  CAPABILITIES is provider metadata and
+must never contain credentials or backend connection settings."
+  id
+  name
+  description
+  backend-name
+  backend
+  model
+  capabilities)
+
+(defun magent-model-route-relabel (route source &optional profile-agent phase)
+  "Return a new ROUTE attributed to SOURCE, PROFILE-AGENT, and PHASE."
+  (unless (magent-model-route-p route)
+    (error "Expected Magent model route, got: %S" route))
+  (magent-model-route-create
+   :backend (magent-model-route-backend route)
+   :model (magent-model-route-model route)
+   :source source
+   :profile-agent profile-agent
+   :phase phase))
+
 (cl-defstruct (magent-llm-request
                (:constructor magent-llm-request--create)
                (:copier nil))

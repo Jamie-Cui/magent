@@ -311,8 +311,8 @@
             "\"ext:flymake\" t t)")
         nil t)))))
 
-(ert-deftest magent-test-gptel-adapter-does-not-declare-private-state ()
-  "Test the gptel adapter does not hide private variable API changes."
+(ert-deftest magent-test-gptel-adapter-isolates-private-model-registry ()
+  "Only the documented cross-provider registry exception is declared."
   (let ((adapter-file
          (expand-file-name "lisp/magent-llm-gptel.el"
                            magent-test--root-directory))
@@ -327,7 +327,7 @@
                (when (string-prefix-p "gptel--" (symbol-name variable))
                  (push variable declarations)))))
         (end-of-file nil)))
-    (should-not declarations)))
+    (should (equal declarations '(gptel--known-backends)))))
 
 (ert-deftest magent-test-melpazoid-recipe-packages-production-libraries ()
   "Test the MELPA recipe includes all production libraries and runtime data."
@@ -1958,7 +1958,8 @@
 (ert-deftest magent-test-agent-run-turn-records-runtime-inheritance ()
   "Test request context records inherited runtime sampling settings."
   (require 'magent-agent)
-  (let* ((backend (gptel-make-openai "inherited" :key "key"))
+  (let* ((backend (gptel-make-openai
+                    "inherited" :key "key" :models '(parent-model)))
          (gptel-backend backend)
          (gptel-model 'parent-model)
          (gptel-temperature 0.42)
@@ -1976,8 +1977,11 @@
                          :id "req"
                          :scope "/tmp/project"
                          :session session
-                         :backend backend
-                         :model 'parent-model
+                         :model-route
+                         (magent-model-route-create
+                          :backend backend
+                          :model 'parent-model
+                          :source 'session)
                          :temperature 0.42))
          (capability-resolution
           (magent-capability-resolution-create
@@ -2013,6 +2017,8 @@
        request-state))
     (let* ((request (magent-agent-loop-request captured-loop))
            (metadata (magent-llm-request-metadata request)))
+      (should (eq (magent-llm-request-backend request) backend))
+      (should (eq (magent-llm-request-model request) 'parent-model))
       (should (eq (magent-request-context-model request-state) 'parent-model))
       (should (eq (magent-request-context-backend request-state) backend))
       (should (= (magent-request-context-temperature request-state) 0.42))
@@ -2034,7 +2040,8 @@
   "Inherited and capability skills share one normalized request-state value."
   (require 'magent-agent)
   (require 'magent-capability)
-  (let* ((backend (gptel-make-openai "skills" :key "key"))
+  (let* ((backend (gptel-make-openai
+                    "skills" :key "key" :models '(skills-model)))
          (gptel-backend backend)
          (gptel-model 'skills-model)
          (agent (magent-agent-info-create
@@ -2071,7 +2078,8 @@
 (ert-deftest magent-test-agent-run-turn-startup-error-respects-context-ownership ()
   "Startup errors close owned contexts and preserve inherited contexts."
   (require 'magent-agent)
-  (let* ((gptel-backend (gptel-make-openai "startup" :key "key"))
+  (let* ((gptel-backend (gptel-make-openai
+                          "startup" :key "key" :models '(startup-model)))
          (gptel-model 'startup-model)
          (agent-permission '((bash . allow) (* . deny)))
          (request-permission '((bash . deny) (* . allow)))
@@ -2136,7 +2144,8 @@
   "Test project-scoped runtime turns tell the model the current repo root."
   (require 'magent-agent)
   (require 'magent-capability)
-  (let* ((backend (gptel-make-openai "scope-root" :key "key"))
+  (let* ((backend (gptel-make-openai
+                    "scope-root" :key "key" :models '(scope-model)))
          (gptel-backend backend)
          (gptel-model 'scope-model)
          (magent-system-prompt "Global system.")
@@ -2859,7 +2868,9 @@
 (ert-deftest magent-test-agent-run-turn-keeps-streaming-for-tool-requests ()
   "Test tool-enabled requests still use streaming provider sampling."
   (require 'magent-agent)
-  (let* ((backend (gptel-make-openai "tools" :key "key"))
+  (let* ((backend (gptel-make-openai
+                    "tools" :key "key"
+                    :models '((tool-model :capabilities (tool-use)))))
          (gptel-backend backend)
          (gptel-model 'tool-model)
          (agent (magent-agent-info-create
@@ -2890,6 +2901,48 @@
     (let ((request (magent-agent-loop-request captured-loop)))
       (should (magent-llm-request-tools request))
       (should (magent-llm-request-stream request)))))
+
+(ert-deftest magent-test-agent-run-turn-rejects-known-tool-incapable-route ()
+  "A model explicitly lacking tool support fails before provider sampling."
+  (require 'magent-agent)
+  (let* ((gptel--known-backends nil)
+         (backend
+          (gptel-make-openai
+           "No Tools" :key "key"
+           :models '((magent-text-only-model :capabilities (json)))))
+         (gptel-backend backend)
+         (gptel-model 'magent-text-only-model)
+         (session (magent-session-create :id "no-tools"))
+         (request-state
+          (magent-request-context-create
+           :session session
+           :model-route
+           (magent-model-route-create
+            :backend backend :model 'magent-text-only-model
+            :source 'session)))
+         (agent
+          (magent-agent-info-create :name "build" :mode 'primary))
+         (tool
+          (gptel-make-tool
+           :name "read_file" :description "Read"
+           :args '((:name "path" :type string)) :function #'ignore))
+         sampled)
+    (cl-letf (((symbol-function 'magent-tools-get-gptel-tools-for-permission)
+               (lambda (&rest _args) (list tool)))
+              ((symbol-function 'magent-agent-loop-start)
+               (lambda (_loop) (setq sampled t)))
+              ((symbol-function 'magent-session-save-deferred-for-session)
+               #'ignore)
+              ((symbol-function 'magent-log) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
+              ((symbol-function 'magent-lifecycle-events-begin-turn)
+               (lambda (_title) 'turn))
+              ((symbol-function 'magent-lifecycle-events-end-turn) #'ignore))
+      (should-error
+       (magent-test--run-turn
+        "read" nil agent nil nil nil nil nil nil request-state)
+       :type 'error))
+    (should-not sampled)))
 
 (ert-deftest magent-test-llm-gptel-applies-temperature-metadata ()
   "Test the gptel adapter applies request temperature metadata."
@@ -6236,7 +6289,14 @@
 (ert-deftest magent-test-tools-spawn-agent-creates-durable-job ()
   "Test spawn_agent records a child job and uses summary-only UI."
   (require 'magent-tools)
-  (let* ((parent-session (magent-session-create :id "parent"))
+  (let* ((gptel--known-backends nil)
+         (parent-backend
+          (gptel-make-openai
+           "parent" :key "key" :models '(parent-model)))
+         (parent-route
+          (magent-model-route-create
+           :backend parent-backend :model 'parent-model :source 'session))
+         (parent-session (magent-session-create :id "parent"))
          (parent-context (magent-request-context-create
                           :id "req-parent"
                           :scope "/tmp/project-parent"
@@ -6246,6 +6306,7 @@
                           :origin-context 'origin
                           :agent-depth 0
                           :project-root "/tmp/project-parent"
+                          :model-route parent-route
                           :model 'parent-model
                           :temperature 0.2
                           :top-p 0.9
@@ -6290,7 +6351,19 @@
                    (setq stopped context)))
                 ((symbol-function 'magent-agent-run-turn)
                  (lambda (&rest args)
-                   (let ((request-state (plist-get args :request-context)))
+                   (let* ((request-state (plist-get args :request-context))
+                          (route
+                           (magent-agent-resolve-model-route
+                            (plist-get args :agent)
+                            :parent-route
+                            (magent-request-context-parent-model-route
+                             request-state))))
+                   (setf (magent-request-context-model-route request-state)
+                         route
+                         (magent-request-context-model request-state)
+                         (magent-model-route-model route)
+                         (magent-request-context-backend request-state)
+                         (magent-model-route-backend route))
                    (setq captured
                          (list :prompt (plist-get args :prompt)
                                :agent (plist-get args :agent)
@@ -6349,6 +6422,8 @@
       (should (equal (magent-request-context-project-root child-state) "/tmp/project-parent"))
       (should (= (magent-request-context-agent-depth child-state) 1))
       (should (eq (magent-request-context-model child-state) 'parent-model))
+      (should (eq (magent-request-context-parent-model-route child-state)
+                  parent-route))
       (should (= (magent-request-context-temperature child-state) 0.2))
       (should (= (magent-request-context-top-p child-state) 0.9))
       (should (eq (magent-request-context-effort child-state) 'xhigh))
@@ -11942,12 +12017,124 @@
 (ert-deftest magent-test-acp-models-use-model-id ()
   "Test ACP available model entries expose modelId for agent-shell."
   (require 'magent-acp)
-  (let* ((gptel-model 'test-model)
+  (let* ((gptel--known-backends nil)
+         (gptel-backend
+          (gptel-make-openai "Test" :key "key" :models '(test-model)))
+         (gptel-model 'test-model)
          (models (magent-acp--models))
          (available (map-elt models 'availableModels))
          (entry (aref available 0)))
-    (should (equal (map-elt entry 'modelId) "test-model"))
+    (should (equal (map-elt entry 'modelId)
+                   "gptel/Test/test-model"))
+    (should (equal (map-elt entry 'name) "Test:test-model"))
     (should-not (assq 'id entry))))
+
+(ert-deftest magent-test-acp-models-tolerate-unselected-registered-backends ()
+  "ACP initialization remains usable before gptel defaults are selected."
+  (require 'magent-acp)
+  (let* ((gptel--known-backends nil)
+         (_backend
+          (gptel-make-openai "Configured" :key "key" :models '(model-a)))
+         (gptel-backend nil)
+         (gptel-model nil)
+         (models (magent-acp--models)))
+    (should (equal (map-elt models 'currentModelId) "unconfigured"))
+    (should (= (length (map-elt models 'availableModels)) 1))))
+
+(ert-deftest magent-test-gptel-model-catalog-distinguishes-providers ()
+  "Identical provider model names receive distinct opaque ACP ids."
+  (require 'magent-llm-gptel)
+  (let* ((gptel--known-backends nil)
+         (_first
+          (gptel-make-openai "First Provider" :key "key"
+                             :models '(shared-model)))
+         (_second
+          (gptel-make-openai "Second/Provider" :key "key"
+                             :models '(shared-model)))
+         (catalog (magent-llm-gptel-model-catalog))
+         (ids (mapcar #'magent-model-descriptor-id catalog))
+         (names (mapcar #'magent-model-descriptor-name catalog)))
+    (should (= (length catalog) 2))
+    (should (= (length (delete-dups (copy-sequence ids))) 2))
+    (should (equal (sort names #'string<)
+                   '("First Provider:shared-model"
+                     "Second/Provider:shared-model")))
+    (should (member "gptel/Second%2FProvider/shared-model" ids))))
+
+(ert-deftest magent-test-model-route-resolver-preserves-priority-and-phase-seam ()
+  "Session, agent, parent, and gptel routes resolve in documented order."
+  (require 'magent-agent)
+  (let* ((gptel--known-backends nil)
+         (backend-a
+          (gptel-make-openai
+           "A" :key "key" :models '(default-a agent-a)))
+         (backend-b
+          (gptel-make-openai
+           "B" :key "key" :models '(session-b parent-b)))
+         (gptel-backend backend-a)
+         (gptel-model 'default-a)
+         (explicit
+          (magent-model-route-create
+           :backend backend-b :model 'session-b :source 'session))
+         (parent
+          (magent-model-route-create
+           :backend backend-b :model 'parent-b :source 'request))
+         (profile-agent
+          (magent-agent-info-create
+           :name "explore" :mode 'subagent
+           :model (cons backend-a 'agent-a)))
+         (plain-agent
+          (magent-agent-info-create :name "plain" :mode 'subagent))
+         (primary
+          (magent-agent-resolve-model-route
+           profile-agent :explicit-route explicit :phase 'execute))
+         (profile-child
+          (magent-agent-resolve-model-route
+           profile-agent :parent-route parent :phase 'explore))
+         (inherited-child
+          (magent-agent-resolve-model-route plain-agent :parent-route parent))
+         (automatic
+          (magent-agent-resolve-model-route plain-agent)))
+    (should (eq (magent-model-route-backend primary) backend-b))
+    (should (eq (magent-model-route-model primary) 'session-b))
+    (should (eq (magent-model-route-source primary) 'session))
+    (should (eq (magent-model-route-phase primary) 'execute))
+    (should (eq (magent-model-route-model profile-child) 'agent-a))
+    (should (eq (magent-model-route-source profile-child) 'agent))
+    (should (eq (magent-model-route-phase profile-child) 'explore))
+    (should (eq (magent-model-route-model inherited-child) 'parent-b))
+    (should (eq (magent-model-route-source inherited-child) 'parent))
+    (should (eq (magent-model-route-model automatic) 'default-a))
+    (should (eq (magent-model-route-source automatic) 'gptel))))
+
+(ert-deftest magent-test-gptel-model-route-capabilities-and-removal-fail-loud ()
+  "Known tool limits and removed registered routes are enforced."
+  (require 'magent-llm-gptel)
+  (let* ((gptel--known-backends nil)
+         (backend
+          (gptel-make-openai
+           "Capabilities" :key "key"
+           :models '((magent-tool-model :capabilities (tool-use json))
+                     (magent-no-tool-model :capabilities (json))
+                     magent-unknown-tool-model)))
+         (supported
+          (magent-model-route-create
+           :backend backend :model 'magent-tool-model))
+         (unsupported
+          (magent-model-route-create
+           :backend backend :model 'magent-no-tool-model))
+         (unknown
+          (magent-model-route-create
+           :backend backend :model 'magent-unknown-tool-model)))
+    (should (eq (magent-llm-gptel-route-tool-capability supported)
+                'supported))
+    (should (eq (magent-llm-gptel-route-tool-capability unsupported)
+                'unsupported))
+    (should (eq (magent-llm-gptel-route-tool-capability unknown)
+                'unknown))
+    (setq gptel--known-backends nil)
+    (should-error (magent-llm-gptel-validate-route supported)
+                  :type 'error)))
 
 (ert-deftest magent-test-acp-session-response-advertises-effort-config ()
   "Test ACP session responses advertise thought level options."
@@ -12893,12 +13080,26 @@
         :option-id "allow_once")))
     (should (equal captured '("req-1" allow-once)))))
 
-(ert-deftest magent-test-acp-set-model-accepts-current-gptel-model ()
-  "Test ACP session/set_model works for agent-shell bootstrap."
+(ert-deftest magent-test-acp-set-model-switches-provider-without-global-mutation ()
+  "ACP model selection stores a cross-provider session route only."
   (require 'magent-acp)
-  (let* ((gptel-model 'test-model)
+  (let* ((gptel--known-backends nil)
+         (backend-a
+          (gptel-make-openai "Provider A" :key "key" :models '(model-a)))
+         (backend-b
+          (gptel-make-openai "Provider B" :key "key" :models '(model-b)))
+         (gptel-backend backend-a)
+         (gptel-model 'model-a)
          (magent-default-agent "build")
-         (runtime-session (magent-runtime-session-create :id "session-1"))
+         (agent (magent-agent-info-create
+                 :name "build" :mode 'primary :description "Build"))
+         (runtime-session
+          (magent-runtime-session-create
+           :id "session-1"
+           :magent-session (magent-session-create :agent agent)))
+         (descriptor-b
+          (cl-find backend-b (magent-llm-gptel-model-catalog)
+                   :key #'magent-model-descriptor-backend))
          response)
     (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
                (lambda (session-id _scope)
@@ -12907,17 +13108,63 @@
               ((symbol-function 'magent-runtime-session-agent-name)
                (lambda (_session) "build"))
               ((symbol-function 'magent-agent-registry-primary-agents)
-               (lambda ()
-                 (list (magent-agent-info-create
-                        :name "build"
-                        :description "Build")))))
+               (lambda () (list agent))))
       (setq response
             (magent-acp--handle-set-model
              '((sessionId . "session-1")
-               (modelId . "test-model"))))
+               (modelId . "gptel/Provider%20B/model-b"))))
       (should (equal (map-nested-elt response '(models currentModelId))
-                     "test-model"))
-      (should (equal (map-elt response 'sessionId) "session-1")))))
+                     (magent-model-descriptor-id descriptor-b)))
+      (should (eq (magent-model-route-backend
+                   (magent-runtime-session-model-route-option runtime-session))
+                  backend-b))
+      (should (eq (magent-model-route-model
+                   (magent-runtime-session-model-route-option runtime-session))
+                  'model-b))
+      (should (eq gptel-backend backend-a))
+      (should (eq gptel-model 'model-a)))))
+
+(ert-deftest magent-test-acp-model-auto-clears-route-and-shows-effective-model ()
+  "The model config Auto value clears only the session override."
+  (require 'magent-acp)
+  (let* ((gptel--known-backends nil)
+         (backend-a
+          (gptel-make-openai "Provider A" :key "key" :models '(model-a)))
+         (backend-b
+          (gptel-make-openai "Provider B" :key "key" :models '(model-b)))
+         (gptel-backend backend-a)
+         (gptel-model 'model-a)
+         (agent (magent-agent-info-create :name "build" :mode 'primary))
+         (runtime-session
+          (magent-runtime-session-create
+           :id "session-auto"
+           :magent-session (magent-session-create :agent agent)))
+         (route-b
+          (magent-model-route-create :backend backend-b :model 'model-b))
+         response)
+    (magent-runtime-session-set-model-route runtime-session route-b)
+    (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
+               (lambda (_id _scope) runtime-session))
+              ((symbol-function 'magent-agent-registry-primary-agents)
+               (lambda () (list agent))))
+      (setq response
+            (magent-acp--handle-set-config-option
+             '((sessionId . "session-auto")
+               (configId . "model")
+               (value . "auto")))))
+    (should-not
+     (magent-runtime-session-model-route-option runtime-session))
+    (should (equal (map-nested-elt response '(models currentModelId))
+                   "gptel/Provider%20A/model-a"))
+    (let* ((options (append (map-elt response 'configOptions) nil))
+           (model-option
+            (cl-find "model" options :key (lambda (option)
+                                             (map-elt option 'id))
+                     :test #'equal))
+           (auto-entry (aref (map-elt model-option 'options) 0)))
+      (should (equal (map-elt model-option 'currentValue) "auto"))
+      (should (equal (map-elt auto-entry 'name)
+                     "Auto → Provider A:model-a")))))
 
 (ert-deftest magent-test-acp-set-config-option-updates-effort ()
   "Test ACP session/set_config_option updates Magent effort."
@@ -12979,6 +13226,7 @@
                             (current-buffer)))))
     (should (eq identifier 'magent))
     (should (eq (map-elt config :identifier) 'magent))
+    (should-not (map-elt config :default-model-id))
     (should (eq (car agent-shell-agent-configs)
                 #'magent-agent-shell-make-config))
     (should (eq (cadr agent-shell-agent-configs) other-maker))
@@ -13524,6 +13772,50 @@
     (should (equal (magent-thread-scope
                     (magent-session-thread-ledger session))
                    "/tmp/project"))))
+
+(ert-deftest magent-test-runtime-submit-freezes-cross-provider-route ()
+  "Queued submissions retain the effective route from submission time."
+  (require 'magent-runtime-api)
+  (let* ((gptel--known-backends nil)
+         (backend-a
+          (gptel-make-openai "Freeze A" :key "key" :models '(model-a)))
+         (backend-b
+          (gptel-make-openai "Freeze B" :key "key" :models '(model-b)))
+         (gptel-backend backend-a)
+         (gptel-model 'model-a)
+         (magent-runtime-queue--active nil)
+         (magent-runtime-queue--pending nil)
+         (magent-runtime-queue--arbiter-active nil)
+         (magent-runtime-queue--arbiter-pending nil)
+         (magent-runtime-queue--arbiter-ticket-adapters
+          (make-hash-table :test #'eq))
+         (agent (magent-agent-info-create :name "build" :mode 'primary))
+         (runtime-session
+          (magent-runtime-session-create
+           :id "freeze-session" :scope 'global
+           :magent-session (magent-session-create :agent agent)))
+         (blocker (magent-runtime-submission-create :id "blocker")))
+    (magent-runtime-queue-submit blocker #'ignore)
+    (cl-letf (((symbol-function 'magent-session-save-deferred-for-session)
+               #'ignore))
+      (magent-runtime-session-set-model-route
+       runtime-session
+       (magent-model-route-create :backend backend-a :model 'model-a))
+      (magent-runtime-submit runtime-session "first")
+      (magent-runtime-session-set-model-route
+       runtime-session
+       (magent-model-route-create :backend backend-b :model 'model-b))
+      (magent-runtime-submit runtime-session "second"))
+    (let* ((queued magent-runtime-queue--pending)
+           (first-route
+            (magent-runtime-submission-model-route (nth 0 queued)))
+           (second-route
+            (magent-runtime-submission-model-route (nth 1 queued))))
+      (should (= (length queued) 2))
+      (should (eq (magent-model-route-backend first-route) backend-a))
+      (should (eq (magent-model-route-model first-route) 'model-a))
+      (should (eq (magent-model-route-backend second-route) backend-b))
+      (should (eq (magent-model-route-model second-route) 'model-b)))))
 
 (ert-deftest magent-test-runtime-submit-carries-exact-tool-names ()
   "Explicit runtime tool names reach the request context unchanged."
@@ -16458,6 +16750,9 @@
          (magent-tool-result-model-preview-length 20)
          (payload (make-string 200 ?f))
          (agent (magent-agent-info-create :name "build" :mode 'primary))
+         (model-route
+          (magent-model-route-create
+           :backend 'test-backend :model 'test-model :source 'session))
          (source
           (magent-session-create :id "fork-source" :agent agent
                                  :approval-overrides '((bash . allow))
@@ -16465,6 +16760,7 @@
          (source-runtime
           (magent-runtime-session-create
            :id "fork-source" :scope 'global :magent-session source
+           :model-route model-route
            :effort 'xhigh :pending-skills '(one-shot)
            :metadata '(:capabilities-enabled nil))))
     (unwind-protect
@@ -16490,6 +16786,8 @@
                    (magent-session--scope-storage-directory 'global))))
             (should (eq (magent-session-get-if-present 'global) source))
             (should (eq (magent-runtime-session-effort fork-runtime) 'xhigh))
+            (should (eq (magent-runtime-session-model-route fork-runtime)
+                        model-route))
             (should-not
              (magent-runtime-session-capabilities-enabled-p fork-runtime))
             (should-not (magent-runtime-session-pending-skills fork-runtime))
@@ -16643,9 +16941,9 @@
   "Runtime structs expose the current request and submission contract."
   (require 'magent-agent-loop)
   (should (= (length (magent-lifecycle-events-context-create)) 6))
-  (should (= (length (magent-request-context-create)) 29))
+  (should (= (length (magent-request-context-create)) 31))
   (should (= (length (magent-agent-loop-create)) 23))
-  (should (= (length (magent-runtime-submission-create)) 23)))
+  (should (= (length (magent-runtime-submission-create)) 24)))
 
 (provide 'magent-test)
 ;;; magent-test.el ends here

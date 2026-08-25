@@ -104,6 +104,32 @@ was not already emitted as text deltas."
                skill-name
                (mapconcat #'symbol-name missing ", "))))))
 
+(cl-defun magent-agent-resolve-model-route
+    (agent &key explicit-route parent-route phase)
+  "Resolve and validate the model route for AGENT.
+EXPLICIT-ROUTE is a request or session selection and has highest priority.
+An explicit model on AGENT takes precedence over PARENT-ROUTE, which lets a
+child agent override its inherited parent route.  Otherwise the current gptel
+defaults are used.  PHASE is retained as a policy seam for future request
+builders without adding a phase router today."
+  (unless (magent-agent-info-p agent)
+    (error "Expected Magent agent info, got: %S" agent))
+  (let* ((agent-route (magent-agent-info-model-route agent))
+         (selected (or explicit-route
+                       agent-route
+                       parent-route
+                       (magent-llm-gptel-default-route)))
+         (source (cond
+                  (explicit-route
+                   (or (magent-model-route-source explicit-route) 'request))
+                  (agent-route 'agent)
+                  (parent-route 'parent)
+                  (t 'gptel)))
+         (route
+          (magent-model-route-relabel
+           selected source (magent-agent-info-name agent) phase)))
+    (magent-llm-gptel-validate-route route)))
+
 (defun magent-agent--fail-request-turn
     (session turn-id request-scope detail)
   "Fail SESSION's TURN-ID with DETAIL.
@@ -312,12 +338,16 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
       (magent-agent-info-apply-gptel-overrides
        agent
        (lambda ()
-         (let* ((inherited-backend
-                 (and request-state
-                      (magent-request-context-backend request-state)))
-                (inherited-model
-                 (and request-state
-                      (magent-request-context-model request-state)))
+         (let* ((route
+                 (magent-agent-resolve-model-route
+                  agent
+                  :explicit-route
+                  (and request-state
+                       (magent-request-context-model-route request-state))
+                  :parent-route
+                  (and request-state
+                       (magent-request-context-parent-model-route
+                        request-state))))
                 (inherited-temperature
                  (and request-state
                       (magent-request-context-temperature request-state)))
@@ -327,11 +357,12 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                 (inherited-effort
                  (and request-state
                       (magent-request-context-effort request-state)))
-                (backend (or inherited-backend gptel-backend))
-                (model (or inherited-model gptel-model))
+                (backend (magent-model-route-backend route))
+                (model (magent-model-route-model route))
                 (temperature (or inherited-temperature
+                                 (magent-agent-info-temperature agent)
                                  (and (boundp 'gptel-temperature)
-                                      gptel-temperature)))
+                                      (default-value 'gptel-temperature))))
                 (top-p (or inherited-top-p
                            (magent-agent-info-top-p agent)))
                 (effort-option (or inherited-effort
@@ -343,10 +374,12 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
              (setf (magent-request-context-project-root request-state)
                    (or (magent-request-context-project-root request-state)
                        request-project-root)
+                   (magent-request-context-model-route request-state)
+                   route
                    (magent-request-context-model request-state)
-                   (or (magent-request-context-model request-state) model)
+                   model
                    (magent-request-context-backend request-state)
-                   (or (magent-request-context-backend request-state) backend)
+                   backend
                    (magent-request-context-temperature request-state)
                    (or (magent-request-context-temperature request-state)
                        temperature)
@@ -366,10 +399,11 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                        request-context)
                    (magent-request-context-permission-profile request-state)
                    effective-permission))
-           (magent-log "INFO agent=%s backend=%s model=%s tools=[%s]"
+           (magent-log "INFO agent=%s backend=%s model=%s route-source=%s tools=[%s]"
                        (magent-agent-info-name agent)
                        (gptel-backend-name backend)
                        model
+                       (magent-model-route-source route)
                        (mapconcat #'gptel-tool-name tools ", "))
            (when resolved-skill-names
              (magent-log "INFO active skills=[%s]"
@@ -379,6 +413,13 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                   (gptel-temperature temperature)
                   (request-tools
                    (magent-agent-loop-tools-for-provider tools))
+                  (_tool-capability-preflight
+                   (when (and request-tools
+                              (eq (magent-llm-gptel-route-tool-capability route)
+                                  'unsupported))
+                     (error
+                      "Magent model %s on backend %s does not support tools"
+                      model (gptel-backend-name backend))))
                   (gptel-tools request-tools)
                   (live-p (or request-live-p
                               (and request-state
