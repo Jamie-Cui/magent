@@ -11,7 +11,7 @@
 
 - *语言：* Emacs Lisp
 - *主要依赖：* [[https://github.com/karthink/gptel][gptel]]，负责全部 LLM 通信
-- *要求：* Emacs 29.1+，gptel，compat，yaml，acp，agent-shell，ripgrep
+- *要求：* Emacs 29.1+，gptel，compat，yaml，acp，agent-shell；project search 需要 ripgrep 或 Git
 - *目标：* 在 live Emacs runtime 内提供 AI-assisted coding，同时保持 provider transport 在 gptel 内，并让工具访问显式、可审计
 
 * 当前 Agent 工作流

@@ -36,11 +36,15 @@ Canonical tool catalog 为每个工具声明唯一 locality：
 |----------+-------+------|
 | ~local~ | ~emacs_read~、~emacs_eval~、~emacs_eval_live~、~read_tool_output~、child-agent tools、~web_search~ | 在 Emacs host 执行；~emacs_eval~ 只把 TRAMP project root 当作数据传给本地 child。 |
 | ~tramp-file~ | ~read_file~、~write_file~、~edit_file~、~glob~ | 本地 Elisp 调用 Emacs file API；remote resource 通过 TRAMP 访问，不启动 project-host process。 |
-| ~project-process~ | ~bash~、~grep~ | 唯一允许在 project host 启动的工具；remote execution 显式使用 TRAMP process handler。 |
+| ~project-process~ | ~bash~、~grep~ | 唯一允许在 project host 启动的工具；remote execution 显式使用 TRAMP process handler；search 选择 ~rg~ 或同主机的 ~git grep~。 |
 
 Execution locality 绝不只由 ambient ~default-directory~ 决定。
 project-process executable 必须在 project host 上解析；失败就在该边界明确返回，
-不会回退到本地主机或本地 home。受信任的 Action argv Step 与 Doctor process
+不会回退到本地主机或本地 home。
+~grep~ tool 只会在同一 project host 缺少 ~rg~ 时选择
+~git grep --no-index --exclude-standard~，不会静默替换为 recursive/ignore
+语义不够 portable 的普通 ~grep~。Git backend 使用 POSIX extended regex，并在
+tool-result metadata 中记录 backend identity。受信任的 Action argv Step 与 Doctor process
 probe 均为 local-only，并拒绝 remote working directory。这是 locality/failure
 契约，不是 OS sandbox。
 

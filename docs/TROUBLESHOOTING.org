@@ -260,7 +260,9 @@ Expected final status files include ~:status passed~, ~:repo-source~ paths under
   user's loaded packages.
 - For ~emacs_eval_live~: treat the timeout as best effort only. A blocking C
   primitive or process-wide failure may still hang or crash the live Emacs.
-- For grep: Verify ripgrep is installed on the project host: ~which rg~
+- For grep: Search prefers ripgrep (~which rg~) and falls back to
+  ~git grep --no-index --exclude-standard~ (~which git~) on the project host.
+  If neither executable exists there, the tool fails explicitly.
 
 *** TRAMP project startup or a tool call hangs
 *Problem:* Starting Magent from a remote file/Dired buffer or using a project
@@ -274,8 +276,8 @@ tool blocks Emacs.
 *Solution:*
 - Keep the ACP placeholder, Actions, Doctor, and ~emacs_eval~ local; a remote
   process in those paths is a bug.
-- Install ~bash~ and ~rg~ on the remote project host for their respective
-  ~project-process~ tools.
+- Install ~bash~ plus either ~rg~ or Git on the remote project host for their
+  respective ~project-process~ tools.
 - Remote file tools still use synchronous Emacs/TRAMP file APIs. A broken SSH
   transport can therefore block an explicit file operation; repair or abort
   the TRAMP connection before retrying.

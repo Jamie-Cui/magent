@@ -36,11 +36,16 @@ The canonical tool catalog declares one locality for every tool:
 |----------+-------+----------|
 | ~local~ | ~emacs_read~, ~emacs_eval~, ~emacs_eval_live~, ~read_tool_output~, child-agent tools, ~web_search~ | Runs on the Emacs host. ~emacs_eval~ passes the TRAMP project root to the local child as data. |
 | ~tramp-file~ | ~read_file~, ~write_file~, ~edit_file~, ~glob~ | Local Elisp uses Emacs file APIs; a remote resource is accessed through TRAMP, without starting a project-host process. |
-| ~project-process~ | ~bash~, ~grep~ | The only tools allowed to start on the project host. Remote execution uses the TRAMP process handler explicitly. |
+| ~project-process~ | ~bash~, ~grep~ | The only tools allowed to start on the project host. Remote execution uses the TRAMP process handler explicitly; search selects ~rg~ or same-host ~git grep~. |
 
 Execution locality never comes from ambient ~default-directory~ alone.  A
 project-process executable is resolved on the project host and failure is
 reported there; there is no fallback to the local host or home directory.
+The ~grep~ tool may select ~git grep --no-index --exclude-standard~ only when
+~rg~ is absent on that same host.  It does not silently substitute basic
+~grep~, whose recursive and ignore semantics are not portable.  The Git
+backend uses POSIX extended regular expressions and reports its identity in
+tool-result metadata.
 Trusted Action argv Steps and Doctor process probes are local-only and reject a
 remote working directory.  This is a locality and failure contract, not an OS
 sandbox.

@@ -422,8 +422,8 @@ CALLBACK is called with success message or error."
      (magent-tools--fail
       callback (format "Error writing file: %s" (error-message-string err))))))
 
-(defun magent-tools--grep-records (output)
-  "Parse NUL-delimited ripgrep OUTPUT into (PATH TAIL) records."
+(defun magent-tools--grep-nul-tail-records (output)
+  "Parse OUTPUT records shaped as PATH NUL LINE:TEXT newline."
   (let ((position 0)
         (output-length (length output))
         records)
@@ -435,28 +435,100 @@ CALLBACK is called with success message or error."
                               output-length))
                  (path (substring output position nul))
                  (tail (substring output (1+ nul) newline)))
-            (when (string-match-p "\\`[0-9]+:" tail)
-              (push (list path tail) records))
+            (when (string-match "\\`\\([0-9]+\\):\\(.*\\)\\'" tail)
+              (push (list path (match-string 1 tail) (match-string 2 tail))
+                    records))
             (setq position (min output-length (1+ newline)))))))
     (nreverse records)))
 
-(defun magent-tools--grep-display-output (output)
-  "Render NUL-delimited ripgrep OUTPUT in conventional path:line form."
-  (if-let* ((records (magent-tools--grep-records output)))
+(defun magent-tools--git-grep-records (output)
+  "Parse git grep OUTPUT records shaped as PATH NUL LINE NUL TEXT newline."
+  (let ((position 0)
+        (output-length (length output))
+        records)
+    (while (< position output-length)
+      (let ((path-end (string-match "\0" output position)))
+        (if (null path-end)
+            (setq position output-length)
+          (let ((line-end (string-match "\0" output (1+ path-end))))
+            (if (null line-end)
+                (setq position output-length)
+              (let* ((newline (or (string-match "\n" output (1+ line-end))
+                                  output-length))
+                     (path (substring output position path-end))
+                     (line (substring output (1+ path-end) line-end))
+                     (text (substring output (1+ line-end) newline)))
+                (when (string-match-p "\\`[0-9]+\\'" line)
+                  (push (list path line text) records))
+                (setq position (min output-length (1+ newline)))))))))
+    (nreverse records)))
+
+(defun magent-tools--grep-records (output &optional backend)
+  "Parse backend-specific OUTPUT into (PATH LINE TEXT) records.
+BACKEND defaults to `ripgrep'."
+  (if (eq backend 'git-grep)
+      (magent-tools--git-grep-records output)
+    (magent-tools--grep-nul-tail-records output)))
+
+(defun magent-tools--grep-display-output (output &optional backend)
+  "Render backend-specific OUTPUT in conventional path:line:text form."
+  (if-let* ((records (magent-tools--grep-records output backend)))
       (mapconcat (lambda (record)
-                   (format "%s:%s" (car record) (cadr record)))
+                   (format "%s:%s:%s"
+                           (nth 0 record) (nth 1 record) (nth 2 record)))
                  records "\n")
     output))
 
-(defun magent-tools--grep-revisions (output directory)
-  "Return file revision alist parsed from ripgrep OUTPUT in DIRECTORY."
-  (let ((paths (mapcar #'car (magent-tools--grep-records output)))
+(defun magent-tools--grep-revisions (output directory &optional backend)
+  "Return file revisions parsed from backend-specific OUTPUT in DIRECTORY."
+  (let ((paths (mapcar #'car (magent-tools--grep-records output backend)))
         revisions)
     (dolist (path (delete-dups paths))
       (let ((absolute (expand-file-name path directory)))
         (when (file-regular-p absolute)
           (push (cons path (magent-tools--file-revision absolute)) revisions))))
     (sort revisions (lambda (left right) (string< (car left) (car right))))))
+
+(defun magent-tools--grep-backend (directory)
+  "Return the first available search backend on DIRECTORY's project host.
+The fixed preference order is ripgrep, then git grep."
+  (or (when-let* ((program (magent-tools--project-executable
+                            magent-grep-program directory)))
+        (list :name 'ripgrep :program program))
+      (when-let* ((program (magent-tools--project-executable "git" directory)))
+        (list :name 'git-grep :program program))
+      (error (concat "no supported search executable found on project host; "
+                     "tried %s and git")
+             magent-grep-program)))
+
+(defun magent-tools--grep-command (backend pattern target case-sensitive)
+  "Return BACKEND command for PATTERN and TARGET.
+CASE-SENSITIVE controls case folding."
+  (let ((program (plist-get backend :program)))
+    (pcase (plist-get backend :name)
+      ('ripgrep
+       (cons program
+             (append
+              (list "--no-heading" "--with-filename" "--null"
+                    "--line-number" "--color=never")
+              (unless case-sensitive (list "--ignore-case"))
+              (list "--" pattern target))))
+      ('git-grep
+       (cons program
+             (append
+              (list "--no-pager" "grep" "--no-index" "--exclude-standard"
+                    "-I" "-n" "-z" "--no-color" "--extended-regexp")
+              (unless case-sensitive (list "--ignore-case"))
+              (list "-e" pattern "--" target))))
+      (_ (error "Unknown grep backend: %S" (plist-get backend :name))))))
+
+(defun magent-tools--grep-result-metadata
+    (backend revisions &optional truncated limit)
+  "Return result metadata for BACKEND and REVISIONS.
+TRUNCATED and LIMIT describe host-enforced result bounding."
+  (append
+   (list :backend (symbol-name backend) :revisions revisions)
+   (when truncated (list :truncated t :limit limit))))
 
 (defun magent-tools--format-grep-output (matches revisions)
   "Return MATCHES with a deterministic REVISIONS header."
@@ -469,7 +541,8 @@ CALLBACK is called with success message or error."
             matches)))
 
 (defun magent-tools--grep (callback pattern path &optional case-sensitive)
-  "Search for PATTERN in files under PATH using ripgrep asynchronously.
+  "Search asynchronously for PATTERN in files under PATH.
+Prefer ripgrep, then fall back to git grep on the project host.
 If CASE-SENSITIVE is nil, performs case-insensitive search.
 CALLBACK is called with matching lines or error message."
   (let (buf proc)
@@ -481,26 +554,18 @@ CALLBACK is called with matching lines or error message."
             (error "Missing required argument 'path' (got %S)" path))
           (let* ((resolved (magent-tools--resolve-path path))
                  (directory-p (file-directory-p resolved))
-                 (default-directory
+                 (search-directory
                   (if directory-p
                       (file-name-as-directory resolved)
                     (or (file-name-directory resolved)
                         (magent-tools--request-project-root))))
-                 (target (if directory-p
-                             "."
-                           (if (file-remote-p resolved)
-                               (file-local-name resolved)
-                             resolved)))
+                 (default-directory search-directory)
+                 (target (if directory-p "." (file-name-nondirectory resolved)))
                  (limit (max 1 magent-grep-max-matches))
-                 (program (or (magent-tools--project-executable
-                               magent-grep-program default-directory)
-                              (error "ripgrep executable not found on project host: %s"
-                                     magent-grep-program)))
-                 (args (append
-                        (list "--no-heading" "--with-filename" "--null"
-                              "--line-number" "--color=never")
-                        (unless case-sensitive (list "--ignore-case"))
-                        (list "--" pattern target)))
+                 (backend (magent-tools--grep-backend search-directory))
+                 (backend-name (plist-get backend :name))
+                 (command (magent-tools--grep-command
+                           backend pattern target case-sensitive))
                  (finished nil)
                  (truncated nil))
             (setq buf (generate-new-buffer " *magent-grep*"))
@@ -516,8 +581,9 @@ CALLBACK is called with matching lines or error message."
                            (trimmed (string-trim-right output))
                            (revisions
                             (magent-tools--grep-revisions
-                             trimmed default-directory))
-                           (matches (magent-tools--grep-display-output trimmed))
+                             trimmed search-directory backend-name))
+                           (matches (magent-tools--grep-display-output
+                                     trimmed backend-name))
                            (rendered
                             (magent-tools--format-grep-output
                              matches revisions)))
@@ -531,8 +597,8 @@ CALLBACK is called with matching lines or error message."
                           :status 'completed
                           :success t
                           :exit-code 0
-                          :metadata (list :truncated t :limit limit
-                                          :revisions revisions)
+                          :metadata (magent-tools--grep-result-metadata
+                                     backend-name revisions t limit)
                           :output (format "%s%s[results truncated after %d matches]"
                                           rendered
                                           (if (string-empty-p rendered) "" "\n")
@@ -542,7 +608,8 @@ CALLBACK is called with matching lines or error message."
                           :status 'completed
                           :success t
                           :exit-code exit-code
-                          :metadata (list :revisions revisions)
+                          :metadata (magent-tools--grep-result-metadata
+                                     backend-name revisions)
                           :output (if (string-blank-p output)
                                       "No matches found"
                                     rendered)))
@@ -551,6 +618,8 @@ CALLBACK is called with matching lines or error message."
                           :status 'completed
                           :success t
                           :exit-code exit-code
+                          :metadata (magent-tools--grep-result-metadata
+                                     backend-name nil)
                           :output "No matches found"))
                         (t
                          (let ((message
@@ -562,14 +631,16 @@ CALLBACK is called with matching lines or error message."
                             :status 'failed
                             :success nil
                             :exit-code exit-code
+                            :metadata (magent-tools--grep-result-metadata
+                                       backend-name nil)
                             :output message
                             :error message)))))))))
               (setq proc
                     (magent-tools--start-project-process
-                     "grep" default-directory
+                     "grep" search-directory
                      :name "magent-grep"
                      :buffer buf
-                     :command (cons program args)
+                     :command command
                      :noquery t
                      :filter
                      (lambda (process chunk)
@@ -2221,7 +2292,7 @@ See `magent-agent-loop-filter-display-args'.")
 (defvar magent-tools--grep-tool
   (gptel-make-tool
    :name "grep"
-   :description "Search for a regex pattern in files under a directory using ripgrep (rg). Respects .gitignore. Returns matching lines with file paths and line numbers."
+   :description "Search for a regex pattern in files under a directory. Prefers ripgrep (rg) and falls back to git grep with POSIX extended regex on the same project host. Respects Git ignore rules and returns matching lines with file paths and line numbers."
    :args (list '(:name "pattern"
                        :type string
                        :description "Regex pattern to search for")

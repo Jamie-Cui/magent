@@ -277,7 +277,8 @@ make EMACSCLIENT="emacsclient -s magent-live-test" test-live-smoke
   ~emacs -Q --batch~，看不到 live buffer 或用户已加载的 package。
 - ~emacs_eval_live~：timeout 只属于 best effort；阻塞的 C primitive 或进程级
   failure 仍可能卡死、崩溃 live Emacs。
-- grep：确认 project host 上已安装 ripgrep： ~which rg~ 。
+- grep：project host 上优先使用 ripgrep（~which rg~），找不到时回退到
+  ~git grep --no-index --exclude-standard~（~which git~）；两者都不存在时明确失败。
 
 *** TRAMP project 启动或 tool call 卡住
 
@@ -294,7 +295,8 @@ Emacs。
 
 - ACP placeholder、Action、Doctor 与 ~emacs_eval~ 必须保持本地；这些路径出现
   remote process 属于 bug。
-- 在 remote project host 上为对应 ~project-process~ tool 安装 ~bash~ 和 ~rg~。
+- 在 remote project host 上为对应 ~project-process~ tool 安装 ~bash~，并安装
+  ~rg~ 或 Git 之一。
 - Remote file tool 仍使用同步 Emacs/TRAMP file API；损坏的 SSH transport 因此
   仍可能阻塞一次显式 file operation。修复或中止 TRAMP connection 后再重试。
 

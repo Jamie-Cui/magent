@@ -324,11 +324,11 @@ extensions."
   :group 'magent)
 
 (defcustom magent-grep-program "rg"
-  "Ripgrep executable used by the grep tool on the project host.
+  "Preferred ripgrep executable used by the grep tool on the project host.
 The name is resolved independently on local and TRAMP project hosts.  An
 explicit path therefore names a path on whichever host owns the project.
-If it cannot be resolved there, grep fails without falling back to another
-host."
+If it cannot be resolved there, Magent falls back to `git grep --no-index'
+on the same host.  It never falls back to a process on another host."
   :type 'string
   :group 'magent)
 

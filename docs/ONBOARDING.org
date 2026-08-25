@@ -11,7 +11,7 @@
 
 - *Languages:* Emacs Lisp
 - *Primary Dependency:* [[https://github.com/karthink/gptel][gptel]] (handles all LLM communication)
-- *Requirements:* Emacs 29.1+, gptel, compat, yaml, acp, agent-shell, ripgrep
+- *Requirements:* Emacs 29.1+, gptel, compat, yaml, acp, agent-shell; ripgrep or Git for project search
 - *Purpose:* Provide AI-assisted coding capabilities inside the live Emacs runtime, while keeping provider transport in gptel and keeping tool access explicit and auditable
 
 * Current Agent Workflow

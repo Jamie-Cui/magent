@@ -24,7 +24,7 @@ sandboxing, seatbelt, bubblewrap, and shell isolation parity are out of scope.
 - acp 0.13.1+
 - agent-shell 0.66.1+
 - package-lint (development only)
-- ripgrep (for grep tool)
+- ripgrep or Git (for grep tool tests; ripgrep is preferred)
 
 ** Building
 

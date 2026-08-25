@@ -15465,6 +15465,10 @@
             (while (and (null single-result) (< (float-time) deadline))
               (accept-process-output nil 0.05)))
           (should (magent-tool-result-success-p single-result))
+          (should (equal (plist-get
+                          (magent-tool-result-metadata single-result)
+                          :backend)
+                         "ripgrep"))
           (let* ((output (magent-tool-result-output-string single-result))
                  (revisions (plist-get
                              (magent-tool-result-metadata single-result)
@@ -15492,6 +15496,105 @@
             (should (= count 2))))
       (delete-directory root t))))
 
+(ert-deftest magent-test-tools-grep-backend-selection-is-ordered ()
+  "Search backend selection prefers ripgrep and falls back only to git."
+  (require 'magent-tools)
+  (let (available calls)
+    (cl-letf (((symbol-function 'magent-tools--project-executable)
+               (lambda (program _directory)
+                 (push program calls)
+                 (and (member program available) (concat "/bin/" program)))))
+      (setq available (list magent-grep-program "git")
+            calls nil)
+      (should (equal (magent-tools--grep-backend "/tmp/")
+                     `(:name ripgrep :program ,(concat "/bin/"
+                                                       magent-grep-program))))
+      (should (equal (nreverse calls) (list magent-grep-program)))
+      (setq available '("git")
+            calls nil)
+      (should (equal (magent-tools--grep-backend "/tmp/")
+                     '(:name git-grep :program "/bin/git")))
+      (should (equal (nreverse calls) (list magent-grep-program "git")))
+      (setq available nil
+            calls nil)
+      (should-error (magent-tools--grep-backend "/tmp/") :type 'error)
+      (should (equal (nreverse calls) (list magent-grep-program "git"))))))
+
+(ert-deftest magent-test-tools-grep-does-not-fall-back-to-basic-grep ()
+  "Missing ripgrep and Git fail before any project process starts."
+  (require 'magent-tools)
+  (let ((root (make-temp-file "magent-no-grep-backend-" t))
+        started
+        result)
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-tools--project-executable)
+                   (lambda (&rest _args) nil))
+                  ((symbol-function 'magent-tools--start-project-process)
+                   (lambda (&rest _args) (setq started t))))
+          (let ((magent-tools--request-context
+                 (magent-request-context-create
+                  :scope root :project-root root)))
+            (magent-tools--grep (lambda (value) (setq result value))
+                                "needle" "." t))
+          (should-not started)
+          (should-not (magent-tool-result-success-p result))
+          (should (string-match-p
+                   "tried .* and git"
+                   (magent-tool-result-output-string result))))
+      (delete-directory root t))))
+
+(ert-deftest magent-test-tools-git-grep-command-is-self-contained ()
+  "The git fallback works inside or outside a Git worktree."
+  (require 'magent-tools)
+  (let ((command
+         (magent-tools--grep-command
+          '(:name git-grep :program "/usr/bin/git")
+          "pattern" "." nil)))
+    (should (equal (car command) "/usr/bin/git"))
+    (dolist (argument '("--no-pager" "grep" "--no-index"
+                        "--exclude-standard" "-I" "-n" "-z"
+                        "--no-color" "--extended-regexp" "--ignore-case"
+                        "-e" "pattern" "--" "."))
+      (should (member argument command)))))
+
+(ert-deftest magent-test-tools-git-grep-fallback-honors-ignore-files ()
+  "git fallback searches untracked files and honors ignores outside a repo."
+  (require 'magent-tools)
+  (let ((git-program (executable-find "git")))
+    (skip-unless git-program)
+    (let* ((root (make-temp-file "magent-git-grep-root-" t))
+           (file (expand-file-name "untracked.txt" root))
+           (ignored (expand-file-name "ignored.txt" root))
+           (original-resolver
+            (symbol-function 'magent-tools--project-executable))
+           result)
+      (unwind-protect
+          (progn
+            (with-temp-file file (insert "fallback needle\n"))
+            (with-temp-file ignored (insert "ignored needle\n"))
+            (with-temp-file (expand-file-name ".gitignore" root)
+              (insert "ignored.txt\n"))
+            (cl-letf (((symbol-function 'magent-tools--project-executable)
+                       (lambda (program directory)
+                         (if (equal program magent-grep-program)
+                             nil
+                           (funcall original-resolver program directory)))))
+              (magent-tools--grep
+               (lambda (value) (setq result value)) "needle" root t)
+              (let ((deadline (+ (float-time) 5)))
+                (while (and (null result) (< (float-time) deadline))
+                  (accept-process-output nil 0.05))))
+            (should (magent-tool-result-success-p result))
+            (should (equal (plist-get (magent-tool-result-metadata result)
+                                      :backend)
+                           "git-grep"))
+            (should (string-match-p "untracked.txt:1:fallback needle"
+                                    (magent-tool-result-output-string result)))
+            (should-not (string-match-p
+                         "ignored needle"
+                         (magent-tool-result-output-string result))))
+        (delete-directory root t)))))
+
 (ert-deftest magent-test-tools-grep-revision-parser-stops-before-match-text ()
   "NUL-delimited grep parsing ignores colon-number-colon in matched text."
   (require 'magent-tools)
@@ -15508,6 +15611,26 @@
                          (magent-tools--file-revision file)))
           (should (equal (magent-tools--grep-display-output raw)
                          "sample.txt:1:value:12:tail")))
+      (delete-directory root t))))
+
+(ert-deftest magent-test-tools-git-grep-parser-preserves-colons ()
+  "git grep parsing keeps colons in both filenames and matching text."
+  (require 'magent-tools)
+  (let* ((root (make-temp-file "magent-git-grep-revision-" t))
+         (file (expand-file-name "sample:12.txt" root))
+         (raw (concat "sample:12.txt" (string 0) "1" (string 0)
+                      "value:34:tail"))
+         revisions)
+    (unwind-protect
+        (progn
+          (with-temp-file file (insert "value:34:tail\n"))
+          (setq revisions
+                (magent-tools--grep-revisions raw root 'git-grep))
+          (should (equal (mapcar #'car revisions) '("sample:12.txt")))
+          (should (equal (cdar revisions)
+                         (magent-tools--file-revision file)))
+          (should (equal (magent-tools--grep-display-output raw 'git-grep)
+                         "sample:12.txt:1:value:34:tail")))
       (delete-directory root t))))
 
 (ert-deftest magent-test-tools-glob-double-star-keeps-prefix ()
