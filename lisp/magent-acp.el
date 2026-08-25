@@ -493,13 +493,22 @@ model as ambiguous prompt text."
    `((sessionUpdate . "agent_message_chunk")
      (content . ,(magent-acp--content-block text)))))
 
-(defun magent-acp--complete-prompt-request (on-success status result)
-  "Complete ACP prompt callback ON-SUCCESS from runtime STATUS and RESULT."
-  (funcall
-   on-success
-   `((stopReason . ,(magent-acp--stop-reason status result))
-     ,@(unless (eq status 'completed)
-         `((error . ,(magent-execution-result-content-string result)))))))
+(defun magent-acp--complete-prompt-request
+    (on-success on-failure status result)
+  "Complete an ACP prompt from runtime STATUS and RESULT.
+Return protocol-defined terminal conditions through ON-SUCCESS.  Report other
+runtime failures through ON-FAILURE instead of inventing a non-standard ACP
+stop reason."
+  (if-let* ((stop-reason (magent-acp--stop-reason status result)))
+      (funcall on-success `((stopReason . ,stop-reason)))
+    (magent-acp--call-failure
+     on-failure
+     (acp-make-error
+      :code -32603
+      :message (magent-execution-result-content-string result)
+      :data (and (magent-execution-result-p result)
+                 (magent-json-safe-value
+                  (magent-execution-result-metadata result)))))))
 
 (defun magent-acp--notify (client method params)
   "Deliver incoming ACP notification METHOD PARAMS to CLIENT subscribers.
@@ -672,13 +681,10 @@ Each handler runs inside the CLIENT's context buffer (via
                      (content . [])))
                 (error nil)))))
           ('turn-error
-           (reset-stream)
-           (magent-acp--session-update
-            client session-id
-            `((sessionUpdate . "agent_message_chunk")
-              (content . ,(magent-acp--content-block
-                           (format "Error: %s"
-                                   (or (plist-get event :message) "")))))))
+           ;; The pending session/prompt request reports this through its
+           ;; JSON-RPC error response.  Do not misrepresent transport/runtime
+           ;; failures as assistant-authored message content.
+           (reset-stream))
           ('turn-complete
            (reset-stream)
            (when-let* ((scope (magent-acp--client-session-scope
@@ -778,16 +784,31 @@ Each handler runs inside the CLIENT's context buffer (via
 (defun magent-acp--wrap-callback (client buffer callback)
   "Return CALLBACK wrapped to run in CLIENT/BUFFER context."
   (when callback
-    (lambda (&rest args)
-      (with-temp-buffer
-        (with-current-buffer (or (magent-acp--callback-buffer client buffer)
-                                 (current-buffer))
-          (apply callback args))))))
+    (let ((maximum-arity (cdr (func-arity callback))))
+      (lambda (&rest args)
+        (with-temp-buffer
+          (with-current-buffer
+              (or (magent-acp--callback-buffer client buffer)
+                  (current-buffer))
+            ;; acp.el currently supplies a two-argument failure callback,
+            ;; while older callers use the documented one-argument shape.
+            ;; Keep the transport wrapper compatible with both contracts.
+            (apply callback
+                   (if (and (numberp maximum-arity)
+                            (> (length args) maximum-arity))
+                       (cl-subseq args 0 maximum-arity)
+                     args))))))))
 
 (defun magent-acp--call-failure (on-failure error)
   "Call ON-FAILURE with ERROR."
   (when on-failure
-    (funcall on-failure error)))
+    (let ((raw-message `((jsonrpc . "2.0") (error . ,error)))
+          (arity (func-arity on-failure)))
+      (if (or (eq (cdr arity) 'many)
+              (and (numberp (cdr arity))
+                   (>= (cdr arity) 2)))
+          (funcall on-failure error raw-message)
+        (funcall on-failure error)))))
 
 (defun magent-acp--scope-equal-p (left right)
   "Return non-nil when session scopes LEFT and RIGHT are equal."
@@ -993,14 +1014,17 @@ switching semantics."
     ('completed "end_turn")
     ('cancelled "cancelled")
     (_
-     (let ((failure-status
+     (let ((failure-kind
             (and (magent-execution-result-p result)
-                 (plist-get (magent-execution-result-metadata result) :status))))
-       (pcase failure-status
+                 (let ((metadata
+                        (magent-execution-result-metadata result)))
+                   (or (plist-get metadata :status)
+                       (plist-get metadata :reason))))))
+       (pcase failure-kind
          ('sampling-limit "max_turn_requests")
          ('max-tokens "max_tokens")
          ('refusal "refusal")
-         (_ "error"))))))
+         (_ nil))))))
 
 (defun magent-acp--handle-request (client request on-success on-failure)
   "Handle ACP REQUEST from CLIENT."
@@ -1115,7 +1139,7 @@ switching semantics."
                 :on-complete
                 (lambda (status result)
                   (magent-acp--complete-prompt-request
-                   on-success status result))))
+                   on-success on-failure status result))))
               (skill-command
                (let ((skill-name (plist-get skill-command :name)))
                  (magent-runtime-submit
@@ -1138,7 +1162,7 @@ switching semantics."
                   :on-complete
                   (lambda (status result)
                     (magent-acp--complete-prompt-request
-                     on-success status result)))))
+                     on-success on-failure status result)))))
               (t
                (magent-runtime-submit
                 runtime-session (plist-get input :display-text)
@@ -1155,7 +1179,7 @@ switching semantics."
                 :on-complete
                 (lambda (status result)
                   (magent-acp--complete-prompt-request
-                   on-success status result)))))))
+                   on-success on-failure status result)))))))
           (_
            (error "Unsupported ACP method: %s" method))))
     (error

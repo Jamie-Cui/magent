@@ -213,6 +213,58 @@ requests, so Magent normalizes this boundary before curl serializes it."
     (when (magent-llm-gptel--managed-info-p info)
       (magent-llm-gptel--sanitize-info info))))
 
+(defun magent-llm-gptel--curl-provider-error (buffer info)
+  "Return a structured provider error from curl response BUFFER.
+INFO is gptel request metadata containing the curl write-out UUID.  Try each
+HTTP header boundary before the write-out marker so proxy and redirect header
+blocks do not hide an otherwise valid JSON error response."
+  (when-let* (((buffer-live-p buffer))
+              (uuid (plist-get info :uuid)))
+    (with-current-buffer buffer
+      (save-excursion
+        (goto-char (point-max))
+        (when (search-backward uuid nil t)
+          (let ((response-end (max (point-min) (1- (point)))))
+            (goto-char (point-min))
+            (catch 'provider-error
+              (while (re-search-forward "\r?\n\r?\n" response-end t)
+                (let* ((body (string-trim
+                              (buffer-substring-no-properties
+                               (point) response-end)))
+                       (response
+                        (and (not (string-empty-p body))
+                             (ignore-errors
+                               (gptel--json-read-string body))))
+                       (provider-error
+                        (and response
+                             (gptel--parse-response-error response))))
+                  (when provider-error
+                    (throw 'provider-error provider-error)))))))))))
+
+(defun magent-llm-gptel--capture-curl-provider-error (buffer info)
+  "Capture a structured provider error from curl BUFFER into gptel INFO."
+  (when-let* ((provider-error
+               (magent-llm-gptel--curl-provider-error buffer info)))
+    (if (plist-member info :magent-provider-error)
+        (plist-put info :magent-provider-error provider-error)
+      (nconc info (list :magent-provider-error provider-error))))
+  info)
+
+(defun magent-llm-gptel--capture-curl-error-before-cleanup-a
+    (process _status)
+  "Capture a Magent provider error before gptel destroys PROCESS state."
+  (when-let* ((requests
+               (and (boundp 'gptel--request-alist)
+                    (symbol-value 'gptel--request-alist)))
+              (entry (alist-get process requests))
+              (fsm (car entry))
+              (info (gptel-fsm-info fsm))
+              ((magent-llm-gptel--managed-info-p info))
+              (http-status (plist-get info :http-status))
+              ((not (member http-status '("100" "200")))))
+    (magent-llm-gptel--capture-curl-provider-error
+     (process-buffer process) info)))
+
 (defun magent-llm-gptel--install-boundary-advice ()
   "Install adapter-local gptel boundary sanitization advice."
   (unless (advice-member-p #'magent-llm-gptel--reset-reasoning-block-a
@@ -238,7 +290,15 @@ requests, so Magent normalizes this boundary before curl serializes it."
                              'gptel-curl--parse-stream)
       (advice-add 'gptel-curl--parse-stream
                   :around
-                  #'magent-llm-gptel--sanitize-after-parse-stream-a))))
+                  #'magent-llm-gptel--sanitize-after-parse-stream-a)))
+  (when (fboundp 'gptel-curl--stream-cleanup)
+    (unless
+        (advice-member-p
+         #'magent-llm-gptel--capture-curl-error-before-cleanup-a
+         'gptel-curl--stream-cleanup)
+      (advice-add
+       'gptel-curl--stream-cleanup
+       :before #'magent-llm-gptel--capture-curl-error-before-cleanup-a))))
 
 (defun magent-llm-gptel--make-state ()
   "Create adapter-local streaming state."
@@ -584,18 +644,35 @@ context remains paused for Magent recovery."
     (dolist (key '(:status :http-status :error :tokens :stop-reason))
       (when-let* ((value (plist-get info key)))
         (setq metadata (append metadata (list key value)))))
+    (when-let* ((provider-error (plist-get info :magent-provider-error)))
+      (setq metadata
+            (append metadata
+                    (list :provider-error
+                          (magent-json-safe-value provider-error)))))
     metadata))
+
+(defun magent-llm-gptel--provider-error-message (provider-error)
+  "Return a concise message for structured PROVIDER-ERROR."
+  (cond
+   ((stringp provider-error) provider-error)
+   ((listp provider-error)
+    (let ((message (or (plist-get provider-error :message)
+                       (plist-get provider-error :detail))))
+      (if (stringp message)
+          message
+        (format "%S" provider-error))))
+   (provider-error (format "%S" provider-error))))
 
 (defun magent-llm-gptel--error-message (info)
   "Return the most useful provider error message from gptel INFO."
-  (let ((provider-error (plist-get info :error))
+  (let ((captured-error (plist-get info :magent-provider-error))
+        (provider-error (plist-get info :error))
         (status (plist-get info :status)))
     (cond
-     ((stringp provider-error) provider-error)
-     ((and (listp provider-error)
-           (stringp (plist-get provider-error :message)))
-      (plist-get provider-error :message))
-     (provider-error (format "%S" provider-error))
+     (captured-error
+      (magent-llm-gptel--provider-error-message captured-error))
+     (provider-error
+      (magent-llm-gptel--provider-error-message provider-error))
      (status (format "%s" status))
      (t "gptel request failed"))))
 

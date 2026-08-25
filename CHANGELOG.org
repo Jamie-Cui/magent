@@ -20,3 +20,10 @@ intentional tagged release is planned as ~v0.2.0~.
   Magent-owned tool loop, permission and approval controls, durable sessions
   and child-agent jobs, Elisp-native Actions, instruction skills, automatic
   capabilities, Doctor, and memory workflows.
+
+** Fixed
+
+- Preserve structured provider error responses before gptel cleanup and report
+  runtime failures through ACP errors, so agent-shell shows the actionable
+  provider message instead of a generic JSON parse error followed by an unknown
+  stop reason.
