@@ -20,3 +20,17 @@ intentional tagged release is planned as ~v0.2.0~.
   Magent-owned tool loop, permission and approval controls, durable sessions
   and child-agent jobs, Elisp-native Actions, instruction skills, automatic
   capabilities, Doctor, and memory workflows.
+
+** Changed
+
+- Narrowed ~magent-agent-shell.el~ to Magent's ACP config, the single
+  ~magent-start~ compatibility entry, and an isolated temporary context
+  compatibility block. Interactive buffers, prompts, queues, slash menus,
+  skills, and interrupts now use agent-shell's native commands directly.
+
+** Removed
+
+- Removed redundant ~magent-agent-shell-*~ commands for shell creation, prompt
+  submission, region/symbol helpers, interruption, Action selection, and
+  one-shot skill selection, together with private busy-state recovery and
+  request handoff machinery.

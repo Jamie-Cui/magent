@@ -60,7 +60,7 @@
                      "\\`magit-section-"
                      "\\`acp-"
                      "\\`shell-maker-"
-                     "\\`agent-shell-"
+                     "\\`agent-shell-[0-9]"
                      "\\`cond-let-"
                      "\\`yaml-[0-9]"
                      "\\`llama-"
@@ -121,6 +121,36 @@
     (unless value
       (ert-fail (or message "Timed out waiting for live Magent condition")))
     value))
+
+(defun magent-live-test--agent-shell-state-option-complete-p
+    (state option-key complete-key)
+  "Return non-nil when STATE finished OPTION-KEY as COMPLETE-KEY."
+  (let ((getter (map-nested-elt state (list :agent-config option-key))))
+    (or (not (functionp getter))
+        (not (ignore-errors (funcall getter)))
+        (map-elt state complete-key))))
+
+(defun magent-live-test--agent-shell-bootstrap-complete-p (buffer)
+  "Return non-nil when BUFFER's real agent-shell bootstrap is complete."
+  (with-current-buffer buffer
+    (and (map-elt agent-shell--state :initialized)
+         (map-nested-elt agent-shell--state '(:session :id))
+         (or (not (map-elt agent-shell--state :needs-authentication))
+             (map-elt agent-shell--state :authenticated))
+         (magent-live-test--agent-shell-state-option-complete-p
+          agent-shell--state :default-model-id :set-model)
+         (magent-live-test--agent-shell-state-option-complete-p
+          agent-shell--state :default-session-mode-id :set-session-mode))))
+
+(defun magent-live-test--agent-shell-runtime-session (buffer)
+  "Return the Magent runtime session bound to agent-shell BUFFER."
+  (with-current-buffer buffer
+    (when-let* ((session-id
+                 (map-nested-elt agent-shell--state '(:session :id)))
+                (client (map-elt agent-shell--state :client))
+                (scope (magent-acp--client-session-scope client session-id)))
+      (or (magent-runtime-session-from-id session-id scope)
+          (magent-acp--runtime-session-by-id session-id scope)))))
 
 (defun magent-live-test--redact-sensitive-text (text)
   "Return TEXT with likely provider secrets redacted."
@@ -853,16 +883,13 @@ return that path."
       (unwind-protect
           (progn
             (setq source-buffer
-                  (agent-shell--start
-                   :config config
-                   :no-focus t
-                   :new-session t
-                   :session-strategy 'new))
+                  (agent-shell-start :config config))
             (magent-live-test--wait-until
              (lambda ()
                (and (buffer-live-p source-buffer)
                     (with-current-buffer source-buffer
-                      (and (magent-agent-shell--bootstrap-complete-p)
+                      (and (magent-live-test--agent-shell-bootstrap-complete-p
+                            source-buffer)
                            (not (map-elt agent-shell--state
                                          :active-requests))
                            (map-elt agent-shell--state
@@ -872,7 +899,8 @@ return that path."
              10
              "Magent source agent-shell did not finish initialization")
             (let* ((source-runtime
-                    (magent-agent-shell--runtime-session source-buffer))
+                    (magent-live-test--agent-shell-runtime-session
+                     source-buffer))
                    (source-session
                     (magent-runtime-session-magent-session source-runtime))
                    (source-thread
@@ -902,7 +930,8 @@ return that path."
                           (let ((fork-id
                                  (map-nested-elt
                                   agent-shell--state '(:session :id))))
-                            (and (magent-agent-shell--bootstrap-complete-p)
+                            (and (magent-live-test--agent-shell-bootstrap-complete-p
+                                  fork-buffer)
                                  (not (map-elt agent-shell--state
                                                :active-requests))
                                  fork-id
@@ -910,7 +939,8 @@ return that path."
                  10
                  "Magent forked agent-shell did not finish initialization")
                 (let* ((fork-runtime
-                        (magent-agent-shell--runtime-session fork-buffer))
+                        (magent-live-test--agent-shell-runtime-session
+                         fork-buffer))
                        (fork-session
                         (magent-runtime-session-magent-session fork-runtime))
                        (source-transcript

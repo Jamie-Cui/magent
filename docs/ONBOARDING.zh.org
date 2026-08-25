@@ -169,11 +169,11 @@ Agent modes：
 
 Skill 只支持注入 system prompt 的 instruction Markdown，不加载 companion Elisp。
 
-Instruction skills 可以作为下一次请求的一次性上下文。Agent-shell frontend 提供
-~magent-agent-shell-toggle-skill-for-next-request~。ACP 还会把每个可见 instruction
-skill 发布成 ~/$name~；这会在一次普通 turn 中显式选择 skill。Skill 永远不会进入
-Action registry。Elisp-native Action 通过 ~magent-action-register~ 单独注册，并可用
-~magent-agent-shell-run-command~ 选择。~/skills~ 不请求 provider，直接列出相同的
+Instruction skills 可以作为下一次请求的一次性上下文。ACP 会在 agent-shell 中把每个
+可见 instruction skill 发布成 ~/$name~；提交或从 slash menu 选择它，会在一次普通
+turn 中显式应用 skill。Skill 永远不会进入 Action registry。Elisp-native Action 通过
+~magent-action-register~ 单独注册，并以 ~/name~ 从 agent-shell slash menu 选择。
+~/skills~ 不请求 provider，直接列出相同的
 descriptors。内置 ~/init~ 命令用于初始化或刷新项目根目录 ~AGENTS.md~。
 
 每个 turn 都从 selected agent 的 base prompt 开始，随后加入 project context、从项目
@@ -417,7 +417,7 @@ Skill instructions for the agent.
 - *Child-agent architecture:* ~docs/AGENT_JOBS.org~
 - *Interactive help:* ~M-x magent-action-run-doctor~
 - *Frontend:* ~M-x magent-start~ 。
-- *Skills:* ~M-x magent-agent-shell-toggle-skill-for-next-request~ 。
+- *Skills:* 从 agent-shell slash menu 选择 ~/$name~ 。
 - *Logs:* 使用 ~C-x b~ 打开 ~*magent-log*~ 。
 - *Agent selection:* 在 agent-shell buffer 运行 ~M-x agent-shell-set-session-mode~ 。
 

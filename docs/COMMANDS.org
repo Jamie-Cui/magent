@@ -132,8 +132,8 @@ skipped checks plus remaining risk.
 
 ** Alternate Invocation And Extension
 
-~M-x magent-agent-shell-run-command~ selects and runs any registered slash
-command. The bundled one-turn prompt Actions are data entries in
+agent-shell advertises registered slash commands and runs the selected ~/name~
+input. The bundled one-turn prompt Actions are data entries in
 ~magent-action-builtins.el~; third-party packages use the same public Action API:
 
 #+begin_src emacs-lisp
@@ -388,6 +388,5 @@ belonging to unrelated Magent conversations.
   and should reuse its agent, context, and transcript.
 - Use Doctor or a Memory command when maintenance or sanitized diagnosis needs
   its own durable session; choose slash or M-x according to the current UI.
-- Use ~magent-start~, ~magent-agent-shell-prompt-region~, and
-  ~magent-agent-shell-ask-at-point~ for free-form requests rather than a
-  predefined workflow.
+- Use ~magent-start~ to enter Magent, then agent-shell's native prompt and
+  context commands for free-form requests rather than a predefined workflow.
