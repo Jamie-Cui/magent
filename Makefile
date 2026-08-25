@@ -52,7 +52,7 @@ SRCS = $(shell sed -e '/^[[:space:]]*\#/d' -e '/^[[:space:]]*$$/d' "$(SOURCE_MAN
 
 COMPILED = $(SRCS:.el=.elc)
 
-.PHONY: all compile lint check-declare package-lint clean purge test test-unit test-benchmark test-live test-live-smoke coverage help \
+.PHONY: all compile lint check-declare package-lint deps-check clean purge test test-unit test-benchmark test-live test-live-smoke coverage help \
 	benchmark benchmark-prepare benchmark-run benchmark-test
 
 all: compile
@@ -66,6 +66,7 @@ help:
 	@echo "  lint          - Validate declarations and package metadata"
 	@echo "  check-declare - Validate declarations in production Elisp files"
 	@echo "  package-lint  - Run package-lint with warnings treated as failures"
+	@echo "  deps-check    - Report direct dependencies available from ELPA archives"
 	@echo "  clean         - Remove build files and Harbor trial containers/networks"
 	@echo "  purge         - Clean plus benchmark Docker images and Harbor task cache"
 	@echo "  help          - Show this help message"
@@ -102,6 +103,12 @@ package-lint:
 		--eval '(setq package-lint-main-file (expand-file-name "lisp/magent.el") package-lint-batch-fail-on-warnings t)' \
 		-f package-lint-batch-and-exit $(SRCS)
 
+deps-check:
+	@echo "Checking direct ELPA dependencies..." 1>&2
+	@$(EMACS_BATCH) \
+		-l scripts/check-elpa-deps.el \
+		--eval '(magent-elpa-deps-check-batch "lisp/magent.el")'
+
 lisp/%.elc: lisp/%.el
 	@echo "Compiling $<..."
 	@out=$$($(EMACS_BATCH) $(LOADPATH) $(BYTE_COMPILE_FLAGS) -f batch-byte-compile $< 2>&1); \
@@ -115,6 +122,7 @@ test-unit:
 	@echo "Running unit tests..."
 	@$(EMACS_BATCH) $(LOADPATH) \
 		-l ert \
+		-l test/check-elpa-deps-test.el \
 		-l test/magent-test.el \
 		-f ert-run-tests-batch-and-exit
 
