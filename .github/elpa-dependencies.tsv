@@ -1,0 +1,6 @@
+package	minimum	candidate	source	status
+gptel	0.9.8	20260823.1828	melpa	newer-available
+yaml	1.0.0	20260605.834	melpa	newer-available
+compat	30.1.0.0	31.0.0.2	gnu	newer-available
+acp	0.13.1	20260821.1448	melpa	newer-available
+agent-shell	0.66.1	20260823.1937	melpa	newer-available
