@@ -62,6 +62,9 @@ All files must include:
 - Use ~;;;~ for section headers
 - Use ~;;~ for inline comments
 - Update README.org for user-facing changes
+- Add user-visible changes to the ~Unreleased~ section of ~CHANGELOG.org~
+- Read ~docs/RELEASING.org~ before changing a public compatibility contract,
+  package version, or release artifact
 - Update AGENTS.md for developer-facing changes
 - Update ~docs/AGENT_JOBS.org~ for child-agent lifecycle changes
 - Update the relevant plan before stopping interrupted plan-driven work
@@ -142,12 +145,13 @@ license identifier.
 
 * Pull Request Process
 
-1. *Fork and branch* — Create a feature branch from ~dev~
+1. *Fork and branch* — Create a feature branch from ~master~
 2. *Make changes* — Follow code style and add tests
 3. *Test* — Run ~make test~ and verify manually
-4. *Document* — Update relevant docs, including CI/package docs when build metadata changes
+4. *Document* — Update relevant docs and ~CHANGELOG.org~, including
+   CI/package docs when build metadata changes
 5. *Commit* — Use conventional commits: ~feat:~, ~fix:~, ~docs:~, ~test:~
-6. *Submit PR* — Target the ~dev~ branch
+6. *Submit PR* — Target the ~master~ branch
 
 * Areas for Contribution
 

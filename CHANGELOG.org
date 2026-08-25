@@ -1,0 +1,22 @@
+#+TITLE: Changelog
+#+OPTIONS: toc:2 num:nil
+
+All notable user-visible changes to Magent are recorded here.  Entries are
+grouped by release and by ~Added~, ~Changed~, ~Deprecated~, ~Removed~, ~Fixed~,
+or ~Security~ when applicable.
+
+Magent follows Semantic Versioning as defined in
+[[file:docs/RELEASING.org][docs/RELEASING.org]].  There were no release tags before this changelog was
+introduced: version ~0.1.0~ was an untagged development preview, and the first
+intentional tagged release is planned as ~v0.2.0~.
+
+* Unreleased
+
+** Added
+
+- A documented Semantic Versioning policy, public compatibility boundary, and
+  repeatable release checklist.
+- The initial release baseline: the agent-shell and in-process ACP frontend,
+  Magent-owned tool loop, permission and approval controls, durable sessions
+  and child-agent jobs, Elisp-native Actions, instruction skills, automatic
+  capabilities, Doctor, and memory workflows.

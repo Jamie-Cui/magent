@@ -23,10 +23,12 @@ Welcome to the Magent documentation. Magent is an Emacs Lisp AI coding agent wit
 
 ** Contribution
 - [[file:CONTRIBUTING.html][CONTRIBUTING.org]] — Contribution guidelines, code style, testing, and PR process
+- [[file:RELEASING.html][RELEASING.org]] — Versioning policy, public compatibility boundary, changelog rules, and release checklist
 - [[file:TROUBLESHOOTING.html#github-actions-failures][TROUBLESHOOTING.org]] — CI, live smoke, and melpazoid failure notes
 
 ** Project Root Documentation
 - [[https://github.com/jamie-cui/magent/blob/master/README.org][../README.org]] — Main project README with features, installation, and usage
+- [[https://github.com/jamie-cui/magent/blob/master/CHANGELOG.org][../CHANGELOG.org]] — Release history and current unreleased changes
 - [[https://github.com/jamie-cui/magent/blob/master/AGENTS.md][../AGENTS.md]] — Development guide for agentic coding tools with build commands, architecture notes, and repository conventions
 
 * Quick Links
@@ -52,12 +54,14 @@ Welcome to the Magent documentation. Magent is an Emacs Lisp AI coding agent wit
 5. [[file:AGENT_JOBS.html][AGENT_JOBS.org]] — Current child-agent job architecture
 6. [[file:UI_BACKENDS.html][UI_BACKENDS.org]] — Current frontend support boundary
 7. [[file:DOCTOR.html][DOCTOR.org]] — Doctor data boundary and extension contract
+8. [[file:RELEASING.html][RELEASING.org]] — Versioning and release process
 
 ** CI And Packaging
 1. [[https://github.com/jamie-cui/magent/blob/master/README.org][../README.org]] — Public workflow badges and development commands
 2. [[file:CONTRIBUTING.html#continuous-integration][CONTRIBUTING.org]] — Local and CI verification sequence
 3. [[file:TROUBLESHOOTING.html#github-actions-failures][TROUBLESHOOTING.org]] — Known GitHub Actions failure signatures
 4. [[https://github.com/jamie-cui/magent/blob/master/AGENTS.md#testing][../AGENTS.md]] — Agent-facing test, coverage, live smoke, and melpazoid notes
+5. [[file:RELEASING.html][RELEASING.org]] — Release gates and artifact checks
 
 * Documentation Standards
 

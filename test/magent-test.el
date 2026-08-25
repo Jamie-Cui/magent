@@ -356,6 +356,17 @@
                     (magent-test-source-files
                      magent-test--root-directory)))))
 
+(ert-deftest magent-test-melpazoid-treats-warnings-as-errors ()
+  "Test melpazoid warnings fail CI."
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name ".github/workflows/melpazoid.yml"
+                       magent-test--root-directory))
+    (should
+     (re-search-forward
+      "^[[:space:]]*WARN_IS_ERROR:[[:space:]]*true[[:space:]]*$"
+      nil t))))
+
 (ert-deftest magent-test-package-dependencies-use-stable-agent-shell ()
   "Test package metadata requires the reviewed stable frontend releases."
   (let ((main-file (expand-file-name "lisp/magent.el"

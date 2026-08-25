@@ -11,6 +11,12 @@ tool access, an Elisp-native slash-command extension API through
 
 homepage: https://jamie-cui.github.io/magent/
 
+* Releases
+
+Magent follows Semantic Versioning.  See [[file:CHANGELOG.org][CHANGELOG.org]] for release history and
+current development status, and [[file:docs/RELEASING.org][docs/RELEASING.org]] for the versioning policy,
+public compatibility boundary, and release checklist.
+
 * Agent Workflow
 
 Magent now uses a durable child-agent lifecycle for collaborative agent work: spawn, message, wait, list, resume/inspect, and close. The lifecycle is implemented on top of the Magent-owned agent loop while provider integration stays with ~gptel-request~.
