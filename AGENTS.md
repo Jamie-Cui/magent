@@ -227,6 +227,10 @@ commands for interaction.
 
 - All files use `;;; -*- lexical-binding: t; -*-`
 - Use Conventional Commits for commit messages.
+- Keep the canonical package version in the `Package-Version` header of
+  `lisp/magent.el`; Git tags and GitHub Releases use the matching `vX.Y.Z`.
+  Record user-visible changes in `CHANGELOG.org` and follow
+  `docs/RELEASING.org` for compatibility and release decisions.
 - Core, built-in agent, slash-command, and internal runtime prompts are editable Org files under `prompts/`; every bundled Org prompt must also appear exactly once in `prompts/manifest.txt`; skill prompts remain self-contained in `skills/*/SKILL.md`
 - Tool implementations follow pattern: `magent-tools--<name>` (internal fn) + `magent-tools--<name>-tool` (gptel-tool var)
 - Byte-compile warnings suppressed: `cl-functions`

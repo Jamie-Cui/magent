@@ -1,0 +1,185 @@
+#+title: Releasing Magent
+#+magent_lang: en
+#+magent_alt_url: /RELEASING.zh.html
+#+options: toc:2 num:nil
+
+This document defines Magent's versioning policy, compatibility boundary, and
+release procedure.  It is the canonical release policy; the release history
+lives in [[https://github.com/jamie-cui/magent/blob/master/CHANGELOG.org][CHANGELOG.org]].
+
+* Initial Release Baseline
+
+When this policy was adopted, the source declared version ~0.1.0~ and Magent
+had not published a Git tag or GitHub Release.  The ~0.1.0~ line is therefore
+an untagged development preview.  The first intentional tagged release is
+~v0.2.0~, establishing the baseline for subsequent compatibility decisions.
+
+* Version Source of Truth
+
+- The tracked source of truth is the ~Package-Version~ header in
+  ~lisp/magent.el~.
+- Package metadata uses ~X.Y.Z~ without a leading ~v~.  Git tags and GitHub
+  Releases use ~vX.Y.Z~.
+- After removing the tag's leading ~v~, the tag and ~Package-Version~ must be
+  identical, including any pre-release suffix.
+- Generated package descriptors such as ~magent-pkg.el~ must agree with the
+  header, but are not a second hand-maintained version source.
+- The Python package under ~benchmark/~ has an independent lifecycle and is not
+  required to share Magent's version.
+
+Magent intentionally has no root ~VERSION~ file.  A hand-maintained ~VERSION~
+would duplicate the package header without adding information.  If future
+release tooling requires a raw version file, it should generate and validate
+that file from ~lisp/magent.el~ rather than make maintainers update both.
+
+* Semantic Versioning Policy
+
+Magent follows [[https://semver.org/][Semantic Versioning 2.0.0]].  The highest-impact change included in a
+release determines the version bump.
+
+** Before ~1.0.0~
+
+The ~0.Y.Z~ series communicates active development while still giving users a
+predictable upgrade signal.
+
+| Change                                                        | Next version |
+|---------------------------------------------------------------+--------------|
+| New functionality or any backward-incompatible public change | ~0.(Y+1).0~  |
+| Backward-compatible bug or security fix only                  | ~0.Y.(Z+1)~  |
+| Documentation, test, CI, or internal-only maintenance         | No release required on its own |
+
+Examples:
+
+- ~0.2.0~ to ~0.2.1~ for a compatible session-save bug fix.
+- ~0.2.1~ to ~0.3.0~ for a new Action feature.
+- ~0.2.1~ to ~0.3.0~ when a tool argument, public command, or file format is
+  changed incompatibly.
+
+** From ~1.0.0~ Onward
+
+| Change                                        | Version component |
+|-----------------------------------------------+-------------------|
+| Backward-incompatible public change           | Major             |
+| Backward-compatible functionality             | Minor             |
+| Backward-compatible bug or security fix only  | Patch             |
+
+Deprecating public functionality requires at least a minor release.  Removing
+or incompatibly changing it requires a major release.
+
+** Public Compatibility Boundary
+
+Unless a document explicitly marks an interface experimental, the release
+version covers:
+
+- documented interactive commands and ~defcustom~ options;
+- documented public Elisp functions, including the ~magent-action~ extension
+  API;
+- project-facing agent, skill, capability, permission, and Action definition
+  formats under ~.magent/~;
+- canonical tool names, arguments, approval behavior, and result contracts;
+- supported session and Action persistence formats, including whether sessions
+  created by an earlier release remain readable;
+- documented agent-shell/ACP frontend behavior; and
+- minimum supported Emacs and direct package dependency versions.
+
+Increasing a minimum supported runtime or dependency version is a breaking
+change.  Internal symbols containing ~--~, implementation details, tests,
+benchmarks, and undocumented provider-adapter internals are not public API.
+User-visible behavioral changes should still be recorded in ~CHANGELOG.org~.
+
+** Commit Signals
+
+Magent uses Conventional Commits as input to release decisions:
+
+- ~fix:~ normally indicates a patch change;
+- ~feat:~ normally indicates a minor change;
+- ~!~ or a ~BREAKING CHANGE:~ footer indicates a compatibility break;
+- ~docs:~, ~test:~, ~ci:~, and ~chore:~ do not require a release by themselves;
+  and
+- ~refactor:~ is classified by its observable compatibility impact.
+
+The actual public effect wins when a commit prefix and the change disagree.
+Before ~1.0.0~, both compatible features and breaking changes increment the
+minor component.  From ~1.0.0~ onward, a breaking change increments the major
+component.
+
+* Pre-releases
+
+Prefer stable releases unless external testing is useful.  When needed, use an
+Emacs-compatible SemVer suffix and keep it identical in the package header and
+tag, for example:
+
+#+begin_example
+Package-Version: 0.3.0-pre.1
+Git tag:          v0.3.0-pre.1
+#+end_example
+
+Increment ~pre.1~, ~pre.2~, and so on.  A pre-release is not a compatibility
+promise for the associated final version.  Do not use build metadata in package
+versions unless its ordering and package-archive behavior have first been
+validated.
+
+* Changelog Policy
+
+- Every user-visible pull request adds a concise entry under ~Unreleased~.
+- Describe effects for users and extension authors, not commit mechanics.
+- Put breaking changes first and label them ~BREAKING~.
+- At release time, rename the accumulated section to ~X.Y.Z - YYYY-MM-DD~ and
+  create a new empty ~Unreleased~ section above it.
+- Do not rewrite the notes or artifacts of an existing release.  Correct a
+  released defect with a new version.
+
+* Release Procedure
+
+** Prepare the Release Pull Request
+
+1. Start from current ~master~ and create a release branch.
+2. Confirm the intended version from all changes since the previous tag.  For
+   the first formal release, use ~0.2.0~ and treat ~0.1.0~ as the untagged
+   development preview.
+3. Update ~Package-Version~ in ~lisp/magent.el~.
+4. Finalize ~CHANGELOG.org~: move the relevant ~Unreleased~ entries under the
+   version and release date, and leave a fresh ~Unreleased~ section.
+5. Verify package requirements, the MELPA recipe, ~source-files.txt~, and
+   bundled runtime data remain aligned.
+6. From a clean checkout, run:
+
+#+begin_src sh
+make clean
+make compile
+make lint
+make test
+#+end_src
+
+7. Obtain green required CI for supported Emacs versions, coverage, MELPA
+   packaging, ELPA dependency compatibility, and documentation.
+8. Merge the release pull request into ~master~.  Do not tag a feature branch.
+
+** Tag and Publish
+
+1. Update the local ~master~ with a fast-forward-only pull.
+2. Verify that ~Package-Version~, the changelog release heading, and the
+   intended tag agree.
+3. Create an annotated tag; use a signed tag when signing is configured:
+
+#+begin_src sh
+git tag -a v0.2.0 -m "Magent v0.2.0"
+git push origin v0.2.0
+#+end_src
+
+4. Create the GitHub Release from that tag and copy the matching changelog
+   section into the release notes.
+5. Verify that the release tag installs from a clean Emacs configuration and
+   contains all production Elisp, prompts, and bundled skills.
+
+Tags and published release artifacts are immutable.  If a problem is found
+after publication, fix it on ~master~ and publish a new patch release rather
+than moving or replacing the tag.
+
+* ~1.0.0~ Readiness
+
+Publish ~1.0.0~ when maintainers are prepared to preserve the documented public
+compatibility boundary: installation and supported frontend behavior are
+reliable, the Action extension API and project formats are documented, and
+persistence compatibility has an explicit policy.  Reaching ~1.0.0~ is a
+compatibility commitment, not a measure of feature count.

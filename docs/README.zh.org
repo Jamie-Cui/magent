@@ -26,11 +26,13 @@
 ** 贡献
 
 - [[file:../CONTRIBUTING.zh.html][CONTRIBUTING.zh.org]] ：贡献流程、代码风格、测试和 PR 要求。
+- [[file:../RELEASING.zh.html][RELEASING.zh.org]] ：版本规则、公开兼容边界、changelog 规则和 release checklist。
 - [[file:../TROUBLESHOOTING.zh.html#github-actions-失败][TROUBLESHOOTING.zh.org#github-actions-失败]] ：CI、live smoke 和 melpazoid 常见失败。
 
 ** 仓库根目录文档
 
 - [[https://github.com/jamie-cui/magent/blob/master/README.org][../README.org]] ：主 README，包含特性、安装和使用说明。
+- [[https://github.com/jamie-cui/magent/blob/master/CHANGELOG.org][../CHANGELOG.org]] ：发布历史和当前 unreleased changes。
 - [[https://github.com/jamie-cui/magent/blob/master/AGENTS.md][../AGENTS.md]] ：面向 agentic coding 工具的开发指南，包含构建命令、架构要点和仓库约定。
 
 * 推荐阅读路径
@@ -59,6 +61,7 @@
 5. [[file:../AGENT_JOBS.zh.html][AGENT_JOBS.zh.org]]：child-agent job 架构。
 6. [[file:../UI_BACKENDS.zh.html][UI_BACKENDS.zh.org]]：当前 frontend 支持边界。
 7. [[file:../DOCTOR.zh.html][DOCTOR.zh.org]]：Doctor 数据边界和扩展契约。
+8. [[file:../RELEASING.zh.html][RELEASING.zh.org]]：版本和发布流程。
 
 ** CI 与打包
 
@@ -66,6 +69,7 @@
 2. [[file:../CONTRIBUTING.zh.html#持续集成][CONTRIBUTING.zh.org#持续集成]]：本地和 CI 验证顺序。
 3. [[file:../TROUBLESHOOTING.zh.html#github-actions-失败][TROUBLESHOOTING.zh.org#github-actions-失败]]：GitHub Actions 失败特征。
 4. [[https://github.com/jamie-cui/magent/blob/master/AGENTS.md#testing][../AGENTS.md#testing]]：面向 agent 的测试、coverage、live smoke 和 melpazoid 说明。
+5. [[file:../RELEASING.zh.html][RELEASING.zh.org]]：release gates 和 artifact checks。
 
 * 文档维护标准
 

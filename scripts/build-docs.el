@@ -44,6 +44,7 @@
            ("Child Agents" . "/AGENT_JOBS.html")
            ("UI Backends" . "/UI_BACKENDS.html")
            ("Troubleshooting" . "/TROUBLESHOOTING.html")
+           ("Releasing" . "/RELEASING.html")
            ("Contributing" . "/CONTRIBUTING.html")))
     (zh . (("总览" . "/zh/")
            ("命令" . "/COMMANDS.zh.html")
@@ -53,6 +54,7 @@
            ("子 Agent" . "/AGENT_JOBS.zh.html")
            ("UI 后端" . "/UI_BACKENDS.zh.html")
            ("故障排查" . "/TROUBLESHOOTING.zh.html")
+           ("发布" . "/RELEASING.zh.html")
            ("贡献" . "/CONTRIBUTING.zh.html")))))
 
 (defun magent-docs--external-url-p (url)
@@ -171,6 +173,8 @@ REPLACEMENTS is an alist of string placeholders to string values."
                  "UI_BACKENDS.zh.org"
                  "TROUBLESHOOTING.org"
                  "TROUBLESHOOTING.zh.org"
+                 "RELEASING.org"
+                 "RELEASING.zh.org"
                  "CONTRIBUTING.org"
                  "CONTRIBUTING.zh.org")))
     (cl-sort files #'<

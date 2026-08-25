@@ -1,0 +1,165 @@
+#+title: 发布 Magent
+#+magent_lang: zh
+#+magent_alt_url: /RELEASING.html
+#+options: toc:2 num:nil
+
+本文定义 Magent 的版本规则、兼容边界和发布流程，是 canonical release
+policy；发布历史记录在
+[[https://github.com/jamie-cui/magent/blob/master/CHANGELOG.org][CHANGELOG.org]]。
+
+* 初始发布基线
+
+采用本规则时，源码声明为 ~0.1.0~，且 Magent 尚未发布任何 Git tag 或 GitHub
+Release。因此 ~0.1.0~ 属于未打 tag 的 development preview；第一个有意维护的
+正式 tag 是 ~v0.2.0~，它将成为后续兼容性判断的基线。
+
+* 版本唯一真相源
+
+- 受 Git 跟踪的唯一真相源是 ~lisp/magent.el~ 中的 ~Package-Version~ header。
+- Package metadata 使用不带 ~v~ 的 ~X.Y.Z~；Git tag 和 GitHub Release 使用
+  ~vX.Y.Z~。
+- 去掉 tag 开头的 ~v~ 后，它必须与 ~Package-Version~ 完全相同，包括
+  pre-release suffix。
+- ~magent-pkg.el~ 等 generated package descriptors 必须与 header 一致，但不作为
+  第二份手工维护的版本来源。
+- ~benchmark/~ 下的 Python package 有独立生命周期，不要求与 Magent 同版本。
+
+Magent 有意不添加根目录 ~VERSION~ 文件。手工维护的 ~VERSION~ 只会重复 package
+header，不能提供额外信息。如果未来 release tooling 必须读取 raw version file，
+应从 ~lisp/magent.el~ 生成并验证它，而不是要求 maintainer 同时修改两处。
+
+* Semantic Versioning 规则
+
+Magent 遵循 [[https://semver.org/][Semantic Versioning 2.0.0]]。一次 release 包含的最高影响级别
+决定版本增量。
+
+** ~1.0.0~ 之前
+
+~0.Y.Z~ 表示项目仍在快速开发，但仍为用户提供可预测的升级信号。
+
+| 变化                                               | 下一个版本 |
+|----------------------------------------------------+------------|
+| 新功能，或任何不向后兼容的公开变化                 | ~0.(Y+1).0~ |
+| 仅包含向后兼容的 bug fix 或 security fix           | ~0.Y.(Z+1)~ |
+| 仅文档、测试、CI 或内部维护                        | 无需单独发布 |
+
+示例：
+
+- ~0.2.0~ 到 ~0.2.1~：修复 session 保存问题且保持兼容。
+- ~0.2.1~ 到 ~0.3.0~：新增 Action 功能。
+- ~0.2.1~ 到 ~0.3.0~：不兼容地修改 tool 参数、公开命令或文件格式。
+
+** ~1.0.0~ 起
+
+| 变化                                      | 递增部分 |
+|-------------------------------------------+----------|
+| 不向后兼容的公开变化                      | Major    |
+| 向后兼容的新功能                          | Minor    |
+| 仅向后兼容的 bug fix 或 security fix      | Patch    |
+
+弃用公开功能至少需要 minor release；删除或不兼容地修改它需要 major release。
+
+** 公开兼容边界
+
+除非文档明确标记为 experimental，release version 覆盖：
+
+- 文档化的 interactive commands 和 ~defcustom~ options；
+- 文档化的 public Elisp functions，包括 ~magent-action~ extension API；
+- ~.magent/~ 下供项目使用的 agent、skill、capability、permission 和 Action
+  definition formats；
+- canonical tool names、arguments、approval behavior 和 result contracts；
+- 支持的 session 与 Action persistence formats，包括旧 release 创建的 session
+  是否仍可读取；
+- 文档化的 agent-shell/ACP frontend behavior；以及
+- 最低支持的 Emacs 和 direct package dependency versions。
+
+提高最低 runtime 或 dependency version 属于 breaking change。包含 ~--~ 的内部
+symbols、implementation details、tests、benchmarks 和未文档化的 provider-adapter
+internals 不属于 public API；但 user-visible behavior change 仍应记录到
+~CHANGELOG.org~。
+
+** Commit 信号
+
+Magent 使用 Conventional Commits 辅助 release 判断：
+
+- ~fix:~ 通常表示 patch change；
+- ~feat:~ 通常表示 minor change；
+- ~!~ 或 ~BREAKING CHANGE:~ footer 表示 compatibility break；
+- ~docs:~、~test:~、~ci:~ 和 ~chore:~ 本身不要求发布；
+- ~refactor:~ 按实际可观察的兼容影响分类。
+
+如果 commit prefix 与实际影响不一致，以 public effect 为准。~1.0.0~ 之前，兼容新
+功能和 breaking change 都递增 minor；~1.0.0~ 起，breaking change 递增 major。
+
+* Pre-release
+
+除非确实需要外部测试，否则优先发布 stable release。需要时，使用 Emacs 可正确
+排序的 SemVer suffix，并确保 package header 与 tag 完全一致，例如：
+
+#+begin_example
+Package-Version: 0.3.0-pre.1
+Git tag:          v0.3.0-pre.1
+#+end_example
+
+依次递增 ~pre.1~、~pre.2~。Pre-release 不承诺满足对应 final version 的兼容要求。
+在确认排序和 package archive behavior 之前，不要在 package version 中使用 build
+metadata。
+
+* Changelog 规则
+
+- 每个 user-visible pull request 都在 ~Unreleased~ 下添加一条简洁记录。
+- 描述对用户和 extension author 的影响，而不是 commit mechanics。
+- Breaking changes 放在最前，并标记为 ~BREAKING~。
+- 发布时，把累计内容改为 ~X.Y.Z - YYYY-MM-DD~，并在上方创建新的空
+  ~Unreleased~ section。
+- 不重写已发布版本的 notes 或 artifacts；已发布问题用新版本修复。
+
+* 发布流程
+
+** 准备 Release Pull Request
+
+1. 从最新 ~master~ 创建 release branch。
+2. 根据上一个 tag 以来的全部变化确认版本。第一个正式 release 使用 ~0.2.0~，并将
+   ~0.1.0~ 视为 untagged development preview。
+3. 更新 ~lisp/magent.el~ 中的 ~Package-Version~。
+4. 整理 ~CHANGELOG.org~：把相关 ~Unreleased~ entries 移到带 version 和 date 的
+   section，并留下新的 ~Unreleased~ section。
+5. 确认 package requirements、MELPA recipe、~source-files.txt~ 和 bundled runtime
+   data 保持一致。
+6. 在 clean checkout 中运行：
+
+#+begin_src sh
+make clean
+make compile
+make lint
+make test
+#+end_src
+
+7. 确认 supported Emacs versions、coverage、MELPA packaging、ELPA dependency
+   compatibility 和 documentation 的 required CI 全部通过。
+8. 把 release pull request 合入 ~master~；不要在 feature branch 上打正式 tag。
+
+** Tag 与发布
+
+1. 用 fast-forward-only pull 更新本地 ~master~。
+2. 确认 ~Package-Version~、changelog release heading 和目标 tag 完全一致。
+3. 创建 annotated tag；已配置 signing 时使用 signed tag：
+
+#+begin_src sh
+git tag -a v0.2.0 -m "Magent v0.2.0"
+git push origin v0.2.0
+#+end_src
+
+4. 从该 tag 创建 GitHub Release，并把对应 changelog section 复制到 release notes。
+5. 从 clean Emacs configuration 验证 release tag 可安装，且包含全部 production
+   Elisp、prompts 和 bundled skills。
+
+Tag 和已发布 artifacts 不可变。发布后发现问题时，应在 ~master~ 修复并发布新的
+patch release，不得移动或替换原 tag。
+
+* ~1.0.0~ 准入条件
+
+当 maintainer 愿意维护文档化的公开兼容边界时再发布 ~1.0.0~：安装和 supported
+frontend behavior 足够可靠，Action extension API 和 project formats 已有完整文档，
+且 persistence compatibility 有明确政策。~1.0.0~ 是兼容性承诺，不是 feature
+数量指标。

@@ -67,6 +67,9 @@ Makefile 会自动探测 ~~/.emacs.d/elpa/~ 下的 ELPA dependency directories�
 - 用 ~;;;~ 做 section headers。
 - 用 ~;;~ 做 inline comments。
 - 用户可见变化更新 ~README.org~ 。
+- User-visible changes 添加到 ~CHANGELOG.org~ 的 ~Unreleased~ section。
+- 修改 public compatibility contract、package version 或 release artifact 前阅读
+  ~docs/RELEASING.zh.org~。
 - 面向开发者的变化更新 ~AGENTS.md~ 或 ~docs/~ 中对应文档。
 - child-agent lifecycle 变化更新 ~docs/AGENT_JOBS.org~ 。
 - plan-driven 工作中断前，更新相关 plan 或 task note。
@@ -138,12 +141,13 @@ Package metadata 保持集中在 ~magent.el~ 和 ~magent-pkg.el~ 。不要在 se
 
 * Pull Request 流程
 
-1. *Fork and branch* ：从 ~dev~ 创建 feature branch。
+1. *Fork and branch* ：从 ~master~ 创建 feature branch。
 2. *Make changes* ：遵循代码风格并添加测试。
 3. *Test* ：运行 ~make test~ 并做必要手动验证。
-4. *Document* ：更新相关文档；构建元数据变化要同步更新 CI/package docs。
+4. *Document* ：更新相关文档和 ~CHANGELOG.org~；构建元数据变化要同步更新
+   CI/package docs。
 5. *Commit* ：使用 Conventional Commits，例如 ~feat:~ 、 ~fix:~ 、 ~docs:~ 、 ~test:~ 。
-6. *Submit PR* ：目标分支为 ~dev~ 。
+6. *Submit PR* ：目标分支为 ~master~ 。
 
 * 可贡献方向
 
