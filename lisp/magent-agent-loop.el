@@ -493,12 +493,12 @@ across Magent's own serial tool queue without claiming OS-level isolation."
                        :error "Error: Tool execution interrupted")))
                     (error
                      (complete
-                      (let ((message
+                      (let ((failure-message
                              (format "Error: Tool execution failed: %s"
                                      (error-message-string err))))
                         (magent-tool-result-create
                          :status 'failed :success nil
-                         :output message :error message)))))
+                         :output failure-message :error failure-message)))))
                 (complete
                  (condition-case err
                      (apply fn fn-args)

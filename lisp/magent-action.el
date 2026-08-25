@@ -1041,19 +1041,19 @@ Project Action files are not currently supported."
          (setq finalization-error err))))
     (when finalization-error
       (let ((original-status status)
-            (message
+            (finalization-message
              (format "Action finalization failed: %s"
                      (error-message-string finalization-error))))
         (setq status 'failed
               result
               (magent-execution-result-failed
-               message
+               finalization-message
                (list :status 'finalization-error
                      :original-status original-status))
               fallback-response nil)
         (setf (magent-action-invocation-status invocation) status
               (magent-action-invocation-result invocation) result)
-        (magent-log "ERROR %s" message)))
+        (magent-log "ERROR %s" finalization-message)))
     ;; A stale callback must not clear a newer invocation installed for the
     ;; same control session after live reload or extension-managed recovery.
     (when (and control-session
