@@ -28,6 +28,10 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Changed
 
+- Restyled the generated documentation as a compact Texinfo-style manual with
+  adjacent-page navigation, contents links, and localized language controls;
+  synchronized the bilingual onboarding module map with all production
+  sources and added build-time validation for page/navigation metadata.
 - Tool-call headings now emphasize factual operations instead of repeating
   model-authored reason summaries, while approval and audit records retain the
   richer summary.

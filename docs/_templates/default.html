@@ -3,36 +3,25 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{{title}} | {{site_title}}</title>
+    <title>{{title}} ({{site_title}})</title>
     <meta name="description" content="{{description}}">
+{{head_links}}
+    <link rel="alternate" hreflang="{{alternate_lang}}" href="{{alternate_href}}">
     <link rel="stylesheet" href="{{stylesheet_href}}">
   </head>
   <body>
-    <a class="skip-link" href="#content">Skip to content</a>
-    <header class="topbar">
-      <a class="brand" href="{{brand_href}}">
-        <span class="brand-mark">M</span>
-        <span>
-          <strong>Magent</strong>
-          <small>eMacs-native LLM AGENT</small>
-        </span>
-      </a>
-      <nav class="top-actions" aria-label="Language">
-        <a class="language-switch" href="{{language_url}}">{{language_label}}</a>
-      </nav>
+    <a class="skip-link" href="#content">{{skip_label}}</a>
+    <header class="nav-panel" aria-label="{{navigation_label}}">
+{{pager}}
     </header>
-    <div class="page-shell">
-      <aside class="sidebar" aria-label="Documentation">
-        <nav>
-{{nav}}
-        </nav>
-      </aside>
-      <main id="content" class="content">
-        <article class="doc-card">
-          <h1>{{title}}</h1>
+    <hr>
+    <main id="content" class="document">
+      <h1>{{title}}</h1>
 {{content}}
-        </article>
-      </main>
-    </div>
+    </main>
+    <hr>
+    <footer class="nav-panel" aria-label="{{navigation_label}}">
+{{pager}}
+    </footer>
   </body>
 </html>
