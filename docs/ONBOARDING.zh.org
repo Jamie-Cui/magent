@@ -3,7 +3,7 @@
 #+magent_alt_url: /ONBOARDING.html
 #+options: toc:nil num:nil
 
-*更新日期：* 2026-07-07
+*更新日期：* 2026-08-27
 
 * 项目概览
 
@@ -274,6 +274,75 @@ API。
 ** Step 7：测试
 
 看 ~test/magent-test.el~ 。测试用 ~cl-letf~ mock ~gptel-request~ 和 UI functions，并绑定 registry/session 到 fresh state。这是理解 public API surface 的好入口。
+
+* 文件地图
+
+** 核心入口与配置
+- *magent.el* — package 入口、公开 autoload 与 lazy runtime bootstrap
+- *magent-log.el* — UI-neutral logging sinks 与 headless fallback
+- *magent-prompt.el* — 基于 manifest 的 prompt 加载与 placeholder 渲染
+- *magent-config.el* — UI-neutral runtime 与 feature 配置
+- *magent-json.el* — JSON-safe serialization helpers
+- *magent-redaction.el* — Magent-owned、fail-closed 的 outbound redaction
+- *magent-project-instructions.el* — 有界、按 scope 发现 ~AGENTS.md~ 并注入 prompt
+
+** Protocol、状态与持久化
+- *magent-protocol.el* — wire protocol 类型与 normalized runtime events
+- *magent-lifecycle-events.el* — structured lifecycle event sinks 与 context helpers
+- *magent-ledger.el* — canonical thread/turn/item 状态机、journal 与 snapshot
+- *magent-session.el* — ledger projections、scoped JSON persistence 与 spill storage
+- *magent-agent-job.el* — durable child-agent job 状态、runtime registry 与 JSON shape
+- *magent-audit.el* — tool decision 的 live-buffer 或 JSONL audit records
+
+** Sampling 与 Runtime
+- *magent-sampling.el* — provider-neutral request/event contract
+- *magent-sampling-gptel.el* — 单次请求的 ~gptel-request~ adapter
+- *magent-runtime.el* — static initialization 与 project-local overlay activation
+- *magent-runtime-queue.el* — global execution queue 与 session-scoped cancellation
+- *magent-runtime-api.el* — frontend-neutral runtime session 与 submission API
+- *magent-agent-loop.el* — normalized event loop、serial tool queue、abort 与 continuation
+
+** Actions
+- *magent-action.el* — Workflow DSL、managed Steps、layered registry 与 Invocation lifecycle
+- *magent-action-controls.el* — ~/compact~ 等 core current-session controls
+- *magent-action-skills.el* — scope-aware ~/skills~ Action projection
+- *magent-action-builtins.el* — prompt Action definitions 与 built-in registration
+- *magent-action-session.el* — isolated Action persistence、ledger 与 cancellation
+- *magent-action-session-view.el* — isolated Action session 列表与查看
+- *magent-action-builtin-doctor.el* — trusted probes 与一次脱敏、无工具分析
+- *magent-action-builtin-memory.el* — Emacs profile memory 扫描、持久化与注入
+
+** Agent System
+- *magent-agent.el* — prompt 装配、request-local agent/tool resolution 与 loop startup
+- *magent-agent-info.el* — agent metadata struct 与 helpers
+- *magent-agent-builtins.el* — 7 个 built-in agent definitions
+- *magent-agent-registry.el* — agent registry 与 project overlays
+- *magent-agent-file.el* — 从 ~.magent/agent/*.md~ 加载 custom agent
+- *magent-permission.el* — 带 glob pattern 的 tool access control
+
+** Tools、Skills 与 Capabilities
+- *magent-tools.el* — 16 个 ~gptel-tool~ implementation 的 canonical catalog
+- *magent-tool-orchestrator.el* — permission、approval、audit 与 tool-call orchestration
+- *magent-approval.el* — sensitive operation 的 user approval prompts
+- *magent-file-loader.el* — 共用的 file-backed frontmatter parser
+- *magent-skills.el* — instruction-skill registry、overlays、descriptors 与 inspection
+- *magent-skill-manager.el* — lazy、network-aware 的用户 skill discovery 与 installation
+- *magent-capability.el* — capability definitions、resolution 与 file-backed loading
+
+** 受支持的 Frontend
+- *magent-acp.el* — in-process ACP adapter
+- *magent-agent-shell.el* — Magent agent-shell 配置与隔离的 context compatibility
+
+** CI 与 Package Data
+- *.github/workflows/test.yml* — byte-compilation、unit tests 与 deterministic live smoke tests
+- *.github/workflows/coverage.yml* — batch ~testcover~ 与 coverage artifact upload
+- *.github/workflows/melpazoid.yml* — MELPA-style package checks
+- *test/coverage.el* — ~make coverage~ 使用的 coverage runner
+
+Magent 除 Elisp 外还打包 runtime data。~prompts/~ 与 ~skills/~ 必须继续包含在
+melpazoid/MELPA recipe 中；所有 bundled Org prompt 也必须在
+~prompts/manifest.txt~ 中恰好出现一次。此文件地图应始终与
+~source-files.txt~ 中的所有 production files 对齐。
 
 * 复杂热点
 

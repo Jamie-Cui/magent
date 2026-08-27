@@ -3,7 +3,7 @@
 #+magent_alt_url: /ONBOARDING.zh.html
 #+options: toc:nil num:nil
 
-*Updated:* 2026-07-07
+*Updated:* 2026-08-27
 
 * Project Overview
 
@@ -275,44 +275,60 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 * File Map
 
 ** Core Entry & Configuration
-- *magent.el* — Mode definition, keybindings, lazy initialization
-- *magent-log.el* — UI-neutral logging mechanism and sink registry
+- *magent.el* — Package entry point, public autoloads, and lazy runtime bootstrap
+- *magent-log.el* — UI-neutral logging sinks and headless fallback
+- *magent-prompt.el* — Manifest-backed prompt loading and placeholder rendering
 - *magent-config.el* — UI-neutral runtime and feature customization
 - *magent-json.el* — JSON-safe serialization helpers
+- *magent-redaction.el* — Fail-closed outbound redaction owned by Magent
+- *magent-project-instructions.el* — Bounded, scoped ~AGENTS.md~ discovery and prompt injection
 
-** State Management
-- *magent-session.el* — Conversation history, per-project sessions, JSON persistence
+** Protocol, State & Persistence
+- *magent-protocol.el* — Wire protocol types and normalized runtime events
+- *magent-lifecycle-events.el* — Structured lifecycle event sinks and context helpers
+- *magent-ledger.el* — Canonical thread/turn/item state machine, journal, and snapshot
+- *magent-session.el* — Ledger projections, scoped JSON persistence, and spill storage
+- *magent-agent-job.el* — Durable child-agent job state, runtime registry, and JSON shape
+- *magent-audit.el* — Live-buffer or JSONL audit records for tool decisions
+
+** Sampling & Runtime
+- *magent-sampling.el* — Provider-neutral request/event contract
+- *magent-sampling-gptel.el* — One-request ~gptel-request~ adapter
 - *magent-runtime.el* — Static initialization and project-local overlay activation
-- *magent-audit.el* — Live-buffer or JSONL-file audit records for permissions and sensitive actions
+- *magent-runtime-queue.el* — Global execution queue and session-scoped cancellation
+- *magent-runtime-api.el* — Frontend-neutral runtime session and submission API
+- *magent-agent-loop.el* — Normalized event loop, serial tool queue, abort, and continuation
+
+** Actions
+- *magent-action.el* — Workflow DSL, managed Steps, layered registry, and Invocation lifecycle
+- *magent-action-controls.el* — Core current-session controls such as ~/compact~
+- *magent-action-skills.el* — Scope-aware ~/skills~ Action projection
+- *magent-action-builtins.el* — Prompt Action definitions and built-in registration
+- *magent-action-session.el* — Isolated Action persistence, ledger, and cancellation
+- *magent-action-session-view.el* — Isolated Action session listing and inspection
+- *magent-action-builtin-doctor.el* — Trusted probes and one sanitized, tool-free analysis
+- *magent-action-builtin-memory.el* — Emacs profile memory scanning, persistence, and injection
 
 ** Agent System
-- *magent-agent.el* — Core processing: builds prompts, filters tools, calls gptel
+- *magent-agent.el* — Prompt assembly, request-local agent/tool resolution, and loop startup
 - *magent-agent-info.el* — Agent metadata struct and helpers
 - *magent-agent-builtins.el* — 7 built-in agent definitions
 - *magent-agent-registry.el* — Agent registry and project overlays
 - *magent-agent-file.el* — Custom agent loader from ~.magent/agent/*.md~
 - *magent-permission.el* — Tool access control with glob patterns
 
-** Tools & Skills
-- *magent-tools.el* — canonical catalog of 16 gptel-tool implementations
-- *magent-skills.el* — Skill registry, built-in skills, file loading, commands
-- *magent-capability.el* — Capability definitions, resolution, and file-backed loading
+** Tools, Skills & Capabilities
+- *magent-tools.el* — Canonical catalog of 16 ~gptel-tool~ implementations
+- *magent-tool-orchestrator.el* — Permission, approval, audit, and tool-call orchestration
 - *magent-approval.el* — User approval prompts for sensitive operations
+- *magent-file-loader.el* — Shared file-backed frontmatter parser
+- *magent-skills.el* — Instruction-skill registry, overlays, descriptors, and inspection
+- *magent-skill-manager.el* — Lazy, network-aware user skill discovery and installation
+- *magent-capability.el* — Capability definitions, resolution, and file-backed loading
 
-** Agent Loop & LLM Integration
-- *magent-agent-loop.el* — Active normalized event loop, tool dispatch, queueing, guards, abort, continuation
-- *magent-sampling.el* — Provider-neutral request/event protocol
-- *magent-sampling-gptel.el* — ~gptel-request~ adapter
-
-** User Interface
-- *magent-agent-shell.el* — Supported agent-shell config and prompt routing
+** Supported Frontend
 - *magent-acp.el* — In-process ACP adapter
-- *magent-runtime-api.el* — UI/backend-facing runtime API
-- *magent-runtime-queue.el* — Runtime queue and session-scoped cancellation
-- *magent-file-loader.el* — Shared frontmatter parser
-
-** Events
-- *magent-lifecycle-events.el* — Structured lifecycle hooks for turns, subagents, and tool calls
+- *magent-agent-shell.el* — Magent agent-shell configuration and isolated context compatibility
 
 ** CI And Package Data
 - *.github/workflows/test.yml* — Byte-compilation, unit tests, and deterministic live smoke tests
@@ -326,7 +342,8 @@ must remain included in the melpazoid/MELPA recipe because ~magent-config.el~,
 at runtime. This includes internal prompt layers such as the runtime trust
 policy, not only ~prompts/system.org~. Every bundled Org prompt must also appear
 exactly once in ~prompts/manifest.txt~; the unit suite checks the manifest against
-the directory.
+the directory. Keep this map aligned with every production file in
+~source-files.txt~.
 
 * Complexity Hotspots
 

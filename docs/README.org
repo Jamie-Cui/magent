@@ -69,5 +69,9 @@ When adding new documentation:
 - Place user-facing docs in project root (README.org)
 - Place developer docs in ~docs/~
 - Use Org for docs under ~docs/~; generated HTML is build output under ~_site/~.
-- Update this index when adding new files
+- Add paired English/Chinese pages and reciprocal ~magent_alt_url~ metadata
+  unless a page is intentionally language-specific.
+- Update this index and ~magent-docs--navigation~ when adding public pages. The
+  docs builder rejects duplicate URLs, missing navigation entries, language
+  mismatches, and non-reciprocal explicit translation links.
 - Keep stable docs or active task notes updated before stopping work so another machine can resume from git

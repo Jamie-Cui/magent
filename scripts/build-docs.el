@@ -43,6 +43,7 @@
            ("Agent Workflow" . "/AGENT_WORKFLOW.html")
            ("Child Agents" . "/AGENT_JOBS.html")
            ("UI Backends" . "/UI_BACKENDS.html")
+           ("Doctor" . "/DOCTOR.html")
            ("Troubleshooting" . "/TROUBLESHOOTING.html")
            ("Releasing" . "/RELEASING.html")
            ("Contributing" . "/CONTRIBUTING.html")))
@@ -53,6 +54,8 @@
            ("Agent 工作流" . "/AGENT_WORKFLOW.zh.html")
            ("子 Agent" . "/AGENT_JOBS.zh.html")
            ("UI 后端" . "/UI_BACKENDS.zh.html")
+           ("Doctor" . "/DOCTOR.zh.html")
+           ("PTC 与多模型计划" . "/PTC_MULTI_MODEL_PLAN.zh.html")
            ("故障排查" . "/TROUBLESHOOTING.zh.html")
            ("发布" . "/RELEASING.zh.html")
            ("贡献" . "/CONTRIBUTING.zh.html")))))
@@ -171,6 +174,9 @@ REPLACEMENTS is an alist of string placeholders to string values."
                  "AGENT_JOBS.zh.org"
                  "UI_BACKENDS.org"
                  "UI_BACKENDS.zh.org"
+                 "DOCTOR.org"
+                 "DOCTOR.zh.org"
+                 "PTC_MULTI_MODEL_PLAN.zh.org"
                  "TROUBLESHOOTING.org"
                  "TROUBLESHOOTING.zh.org"
                  "RELEASING.org"
@@ -184,19 +190,158 @@ REPLACEMENTS is an alist of string placeholders to string values."
                                                  :test #'string=)))
                       (or position 999))))))
 
-(defun magent-docs--nav-html (lang current-url)
-  "Return navigation HTML for LANG, marking CURRENT-URL."
-  (mapconcat
-   (lambda (item)
-     (let ((title (car item))
-           (url (cdr item)))
-       (format "<a href=\"%s\"%s>%s</a>"
-               (magent-docs--html-escape
-                (magent-docs--relative-url current-url url))
-               (if (string= url current-url) " aria-current=\"page\"" "")
-               (magent-docs--html-escape title))))
-   (cdr (assq lang magent-docs--navigation))
-   "\n"))
+(defun magent-docs--page-descriptors ()
+  "Return validated metadata descriptors for top-level documentation pages."
+  (mapcar
+   (lambda (file)
+     (let* ((metadata (magent-docs--page-metadata file))
+            (lang-name (magent-docs--metadata metadata "magent_lang"))
+            (title (magent-docs--metadata metadata "title")))
+       (unless (member lang-name '("en" "zh"))
+         (error "%s must declare #+magent_lang as en or zh"
+                (file-relative-name file magent-docs--repo-root)))
+       (unless (and title (not (string-empty-p title)))
+         (error "%s must declare a non-empty #+title"
+                (file-relative-name file magent-docs--repo-root)))
+       (list :file file
+             :url (magent-docs--page-url file metadata)
+             :lang (intern lang-name)
+             :alt-url (magent-docs--metadata metadata "magent_alt_url"))))
+   (magent-docs--page-files)))
+
+(defun magent-docs--validate-site-map ()
+  "Validate page URLs, navigation coverage, and explicit translation pairs."
+  (let ((descriptors (magent-docs--page-descriptors))
+        (pages-by-url (make-hash-table :test #'equal))
+        (navigation-by-url (make-hash-table :test #'equal)))
+    (dolist (descriptor descriptors)
+      (let ((url (plist-get descriptor :url))
+            (file (plist-get descriptor :file)))
+        (when-let* ((existing (gethash url pages-by-url)))
+          (error "Duplicate documentation URL %s from %s and %s"
+                 url
+                 (file-relative-name (plist-get existing :file)
+                                     magent-docs--repo-root)
+                 (file-relative-name file magent-docs--repo-root)))
+        (puthash url descriptor pages-by-url)))
+    (dolist (language-navigation magent-docs--navigation)
+      (let ((lang (car language-navigation)))
+        (dolist (item (cdr language-navigation))
+          (let* ((url (cdr item))
+                 (descriptor (gethash url pages-by-url)))
+            (unless descriptor
+              (error "Navigation target %s has no documentation page" url))
+            (unless (eq lang (plist-get descriptor :lang))
+              (error "Navigation target %s is listed under %s, not %s"
+                     url lang (plist-get descriptor :lang)))
+            (when (gethash url navigation-by-url)
+              (error "Documentation URL %s appears more than once in navigation"
+                     url))
+            (puthash url t navigation-by-url)))))
+    (dolist (descriptor descriptors)
+      (let* ((url (plist-get descriptor :url))
+             (alt-url (plist-get descriptor :alt-url))
+             (file (plist-get descriptor :file)))
+        (unless (gethash url navigation-by-url)
+          (error "%s is not represented in documentation navigation"
+                 (file-relative-name file magent-docs--repo-root)))
+        (when alt-url
+          (let ((alternate (gethash alt-url pages-by-url)))
+            (unless alternate
+              (error "%s points to missing alternate page %s"
+                     (file-relative-name file magent-docs--repo-root)
+                     alt-url))
+            (unless (equal (plist-get alternate :alt-url) url)
+              (error "Alternate links are not reciprocal: %s -> %s"
+                     url alt-url))))))
+    (message "Validated %d documentation pages and navigation entries"
+             (length descriptors))))
+
+(defun magent-docs--navigation-context (lang current-url)
+  "Return the navigation context for LANG at CURRENT-URL."
+  (let* ((items (cdr (assq lang magent-docs--navigation)))
+         (position (cl-position current-url items :key #'cdr :test #'string=))
+         (contents (car items)))
+    `((contents . ,contents)
+      (previous . ,(and position (> position 0) (nth (1- position) items)))
+      (next . ,(and position (< position (1- (length items)))
+                    (nth (1+ position) items))))))
+
+(defun magent-docs--link-html (current-url item &optional rel accesskey)
+  "Return an HTML link from CURRENT-URL to ITEM.
+ITEM is a cons of label and URL.  REL and ACCESSKEY are optional attributes."
+  (format "<a href=\"%s\"%s%s>%s</a>"
+          (magent-docs--html-escape
+           (magent-docs--relative-url current-url (cdr item)))
+          (if rel
+              (format " rel=\"%s\"" (magent-docs--html-escape rel))
+            "")
+          (if accesskey
+              (format " accesskey=\"%s\"" (magent-docs--html-escape accesskey))
+            "")
+          (magent-docs--html-escape (car item))))
+
+(defun magent-docs--pager-html (lang current-url language-url language-label)
+  "Return Texinfo-style page navigation HTML.
+LANG and CURRENT-URL select adjacent pages.  LANGUAGE-URL and LANGUAGE-LABEL
+describe the translated version of the current page."
+  (let* ((context (magent-docs--navigation-context lang current-url))
+         (contents (alist-get 'contents context))
+         (previous (alist-get 'previous context))
+         (next (alist-get 'next context))
+         (next-label (if (eq lang 'zh) "下一页" "Next"))
+         (previous-label (if (eq lang 'zh) "上一页" "Previous"))
+         (up-label (if (eq lang 'zh) "上一级" "Up"))
+         (relations
+          (delq nil
+                (list
+                 (when next
+                   (format "%s: %s" next-label
+                           (magent-docs--link-html current-url next "next" "n")))
+                 (when previous
+                   (format "%s: %s" previous-label
+                           (magent-docs--link-html current-url previous "prev" "p")))
+                 (unless (string= current-url (cdr contents))
+                   (format "%s: %s" up-label
+                           (magent-docs--link-html current-url contents "up" "u"))))))
+         (utilities
+          (list
+           (magent-docs--link-html
+            current-url
+            (cons (if (eq lang 'zh) "目录" "Contents") (cdr contents))
+            "contents")
+           (format "<a href=\"%s\" hreflang=\"%s\">%s</a>"
+                   (magent-docs--html-escape
+                    (magent-docs--relative-url current-url language-url))
+                   (if (eq lang 'zh) "en" "zh")
+                   (magent-docs--html-escape language-label))
+           (format "<a href=\"https://github.com/jamie-cui/magent\">%s</a>"
+                   (if (eq lang 'zh) "源代码" "Source")))))
+    (format "      <p>%s%s[%s]</p>"
+            (if relations (mapconcat #'identity relations ", ") "")
+            (if relations " &nbsp; " "")
+            (mapconcat #'identity utilities "] ["))))
+
+(defun magent-docs--head-links-html (lang current-url)
+  "Return link metadata for LANG at CURRENT-URL."
+  (let* ((context (magent-docs--navigation-context lang current-url))
+         (contents (alist-get 'contents context))
+         (previous (alist-get 'previous context))
+         (next (alist-get 'next context))
+         (links
+          (list
+           (format "    <link rel=\"start contents\" href=\"%s\">"
+                   (magent-docs--html-escape
+                    (magent-docs--relative-url current-url (cdr contents))))
+           (when previous
+             (format "    <link rel=\"prev\" href=\"%s\">"
+                     (magent-docs--html-escape
+                      (magent-docs--relative-url current-url (cdr previous)))))
+           (when next
+             (format "    <link rel=\"next\" href=\"%s\">"
+                     (magent-docs--html-escape
+                      (magent-docs--relative-url current-url (cdr next))))))))
+    (mapconcat #'identity (delq nil links) "\n")))
 
 (defun magent-docs--configure-plantuml ()
   "Configure Org Babel PlantUML support."
@@ -283,6 +428,7 @@ REPLACEMENTS is an alist of string placeholders to string values."
                                              magent-docs--site-description))
          (alt-url (magent-docs--metadata metadata "magent_alt_url"
                                          (if (eq lang 'zh) "/" "/zh/")))
+         (language-label (if (eq lang 'zh) "English" "中文"))
          (template (magent-docs--read-file magent-docs--template-file))
          (body (magent-docs--export-page-body file))
          (document
@@ -292,13 +438,17 @@ REPLACEMENTS is an alist of string placeholders to string values."
              ("{{title}}" . ,(magent-docs--html-escape title))
              ("{{site_title}}" . ,(magent-docs--html-escape magent-docs--site-title))
              ("{{description}}" . ,(magent-docs--html-escape description))
+             ("{{head_links}}" . ,(magent-docs--head-links-html lang url))
+             ("{{alternate_lang}}" . ,(if (eq lang 'zh) "en" "zh"))
+             ("{{alternate_href}}" . ,(magent-docs--relative-url url alt-url))
+             ("{{skip_label}}" . ,(if (eq lang 'zh) "跳到正文" "Skip to content"))
+             ("{{navigation_label}}" . ,(if (eq lang 'zh)
+                                              "文档导航"
+                                            "Document navigation"))
              ("{{stylesheet_href}}" . ,(magent-docs--relative-url
                                          url "/assets/css/site.css"))
-             ("{{brand_href}}" . ,(magent-docs--relative-url
-                                    url (if (eq lang 'zh) "/zh/" "/")))
-             ("{{language_url}}" . ,(magent-docs--relative-url url alt-url))
-             ("{{language_label}}" . ,(if (eq lang 'zh) "English" "中文"))
-             ("{{nav}}" . ,(magent-docs--nav-html lang url))
+             ("{{pager}}" . ,(magent-docs--pager-html
+                               lang url alt-url language-label))
              ("{{content}}" . ,body)))))
     (message "Rendering %s -> %s" (file-relative-name file magent-docs--repo-root) url)
     (magent-docs--write-file (magent-docs--output-path url) document)))
@@ -313,6 +463,7 @@ REPLACEMENTS is an alist of string placeholders to string values."
 
 (defun magent-docs-build ()
   "Build Magent documentation site."
+  (magent-docs--validate-site-map)
   (when (file-directory-p magent-docs--site-root)
     (delete-directory magent-docs--site-root t))
   (make-directory magent-docs--site-root t)

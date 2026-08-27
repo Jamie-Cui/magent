@@ -101,6 +101,7 @@ Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and perm
 ```
 magent.el (package entry point and lazy runtime bootstrap)
   ├─ magent-log.el               (UI-neutral logging sinks and headless fallback)
+  ├─ magent-prompt.el            (manifest-backed prompt loading and rendering)
   ├─ magent-config.el            (UI-neutral runtime and feature defcustoms)
   ├─ magent-json.el              (JSON-safe serialization helpers)
   ├─ magent-redaction.el         (fail-closed Magent-owned outbound redaction)
@@ -114,6 +115,8 @@ magent.el (package entry point and lazy runtime bootstrap)
   ├─ magent-runtime-api.el       (UI/backend-facing runtime session and prompt API)
   ├─ magent-project-instructions.el (bounded scoped AGENTS.md discovery and prompt injection)
   ├─ magent-action.el            (Workflow DSL, Step runtime, layered Action registry, Invocation lifecycle)
+  ├─ magent-action-controls.el   (core current-session controls such as /compact)
+  ├─ magent-action-skills.el     (scope-aware /skills Action projection)
   ├─ magent-action-builtins.el   (data-defined prompt Actions and built-in registration)
   ├─ magent-action-session.el    (isolated Action persistence, ledger, and cancellation)
   ├─ magent-action-session-view.el (isolated Action session listing and inspection)
@@ -136,7 +139,8 @@ magent.el (package entry point and lazy runtime bootstrap)
   ├─ magent-acp.el               (in-process ACP adapter for agent-shell)
   ├─ magent-agent-shell.el       (agent-shell config and isolated context compatibility)
   ├─ magent-file-loader.el       (shared file-backed definition loader and frontmatter parser)
-  └─ magent-skills.el            (skill registry, built-in skill definitions, file loading, and interactive commands)
+  ├─ magent-skills.el            (skill registry, built-in definitions, overlays, and descriptors)
+  └─ magent-skill-manager.el     (lazy user skill discovery, installation, and deletion)
 ```
 
 ### Core Flow

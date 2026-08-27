@@ -219,6 +219,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-default-agent~                         | ~"build"~                           | Default agent for new sessions                                                                 |
 | ~magent-default-effort~                        | ~nil~                                 | Default reasoning effort; nil/auto uses provider default                                       |
 | ~magent-agent-shell-session-strategy~          | ~prompt~                              | Prompt to start new or load a saved session; also supports ~new~ and ~latest~                     |
+| ~magent-action-enabled-builtins~               | ~(doctor memory)~                    | Optional isolated Action groups; changes refresh discovery for future invocations               |
 | ~magent-skill-directories~                     | ~user-emacs-directory/magent/skills/~ | Ordered user skill roots; later entries override earlier entries                               |
 | ~magent-load-custom-agents~                    | ~t~                                   | Load custom agents from ~.magent/agent/*.md~                                                     |
 | ~magent-audit~                                 | ~buffer~                              | Audit destination: live buffer, nil to disable, or a JSONL file path                            |

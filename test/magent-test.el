@@ -222,6 +222,22 @@
                         magent-test--root-directory)
       nil t)
 
+(defun magent-test--documented-module-map (file start-regexp end-regexp)
+  "Return production module names documented in FILE between section bounds."
+  (with-temp-buffer
+    (insert-file-contents (expand-file-name file magent-test--root-directory))
+    (goto-char (point-min))
+    (should (re-search-forward start-regexp nil t))
+    (let ((start (point)))
+      (should (re-search-forward end-regexp nil t))
+      (narrow-to-region start (match-beginning 0)))
+    (goto-char (point-min))
+    (let (modules)
+      (while (re-search-forward
+              "\\bmagent\\(?:-[[:alnum:]_-]+\\)?\\.el\\b" nil t)
+        (push (match-string-no-properties 0) modules))
+      (sort (delete-dups modules) #'string<))))
+
 (ert-deftest magent-test-source-manifest-covers-production-elisp ()
   "Test every production Elisp module appears once in the source manifest."
   (let* ((manifest (magent-test-source-files magent-test--root-directory))
@@ -239,6 +255,27 @@
     (should (= (length manifest)
                (length (delete-dups (copy-sequence manifest)))))
     (should (equal sorted-manifest (sort actual #'string<)))))
+
+(ert-deftest magent-test-production-source-manifest-is-documented ()
+  "Test architecture maps cover exactly the production source manifest."
+  (let ((expected
+         (sort
+          (mapcar #'file-name-nondirectory
+                  (magent-test-source-files magent-test--root-directory))
+          #'string<)))
+    (dolist (spec '(("AGENTS.md"
+                     "^### Module Dependency Graph$"
+                     "^### Core Flow$")
+                    ("docs/ONBOARDING.org"
+                     "^\\* File Map$"
+                     "^\\* Complexity Hotspots$")
+                    ("docs/ONBOARDING.zh.org"
+                     "^\\* 文件地图$"
+                     "^\\* 复杂热点$")))
+      (should
+       (equal expected
+              (magent-test--documented-module-map
+               (nth 0 spec) (nth 1 spec) (nth 2 spec)))))))
 
 (ert-deftest magent-test-readme-vc-recipe-selects-lisp-directory ()
   "Test the documented package-vc recipe loads Magent from lisp/."
