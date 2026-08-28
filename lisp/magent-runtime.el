@@ -51,39 +51,39 @@ wins; when all functions return nil, scope is derived from
 
 (defconst magent-runtime--overlay-specs
   '((:name agents
-     :state-variable magent-agent-registry--agents
-     :static-feature magent-agent-registry
-     :static magent-agent-initialize-static
-     :load-project-feature magent-agent-file
-     :load-project magent-agent-file-load-project-scope
-     :unload-project-feature magent-agent-registry
-     :unload-project magent-agent-registry-remove-project-scope
-     :project-enabled magent-load-custom-agents)
+           :state-variable magent-agent-registry--agents
+           :static-feature magent-agent-registry
+           :static magent-agent-initialize-static
+           :load-project-feature magent-agent-file
+           :load-project magent-agent-file-load-project-scope
+           :unload-project-feature magent-agent-registry
+           :unload-project magent-agent-registry-remove-project-scope
+           :project-enabled magent-load-custom-agents)
     (:name skills
-     :state-variables (magent-skills--registry
-                       magent-skills--scope-catalog)
-     :static-feature magent-skills
-     :static magent-skills-initialize-static
-     :load-project-feature magent-skills
-     :load-project magent-skills-load-project-scope
-     :unload-project-feature magent-skills
-     :unload-project magent-skills-remove-project-scope)
+           :state-variables (magent-skills--registry
+                             magent-skills--scope-catalog)
+           :static-feature magent-skills
+           :static magent-skills-initialize-static
+           :load-project-feature magent-skills
+           :load-project magent-skills-load-project-scope
+           :unload-project-feature magent-skills
+           :unload-project magent-skills-remove-project-scope)
     (:name actions
-     :state-variable magent-action--registry
-     :static-feature magent-action
-     :static magent-action-initialize-static
-     :load-project-feature magent-action
-     :load-project magent-action-load-project-scope
-     :unload-project-feature magent-action
-     :unload-project magent-action-remove-project-scope)
+           :state-variable magent-action--registry
+           :static-feature magent-action
+           :static magent-action-initialize-static
+           :load-project-feature magent-action
+           :load-project magent-action-load-project-scope
+           :unload-project-feature magent-action
+           :unload-project magent-action-remove-project-scope)
     (:name capabilities
-     :state-variable magent-capability--registry
-     :static-feature magent-capability
-     :static magent-capability-initialize-static
-     :load-project-feature magent-capability
-     :load-project magent-capability-load-project-scope
-     :unload-project-feature magent-capability
-     :unload-project magent-capability-remove-project-scope))
+           :state-variable magent-capability--registry
+           :static-feature magent-capability
+           :static magent-capability-initialize-static
+           :load-project-feature magent-capability
+           :load-project magent-capability-load-project-scope
+           :unload-project-feature magent-capability
+           :unload-project magent-capability-remove-project-scope))
   "Ordered overlay pipeline for Magent runtime definitions.")
 
 (cl-defstruct (magent-request-context
@@ -137,7 +137,7 @@ wins; when all functions return nil, scope is derived from
 (defun magent-request-context-session-id (context)
   "Return CONTEXT's session id, if available."
   (when-let* ((session (and context
-                           (magent-request-context-session context))))
+                            (magent-request-context-session context))))
     (magent-session-get-id session)))
 
 (defun magent-request-context-audit-snapshot (context)
@@ -203,7 +203,7 @@ objects, and other live runtime state so lifecycle sinks and completed
 The observer receives a Magent-native plist event.  Observer errors are
 isolated so UI/backend rendering cannot break the active agent turn."
   (when-let* ((observer (and context
-                            (magent-request-context-observer context))))
+                             (magent-request-context-observer context))))
     (setf (magent-request-context-observer-seq context)
           (1+ (or (magent-request-context-observer-seq context) 0)))
     (let ((event (append
@@ -365,7 +365,7 @@ When FORCE is non-nil, reload the overlay even if SCOPE is unchanged."
            (setq magent-runtime--active-project-scope previous-scope)
            (signal (car err) (cdr err)))))))
   (when-let* ((session (and (not (eq scope 'global))
-                           (magent-session-get-if-present scope))))
+                            (magent-session-get-if-present scope))))
     (magent-session-refresh-agent session))
   (when (eq scope 'global)
     (when-let* ((session (magent-session-get-if-present 'global)))

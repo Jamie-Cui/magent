@@ -2740,7 +2740,9 @@
                             "** Findings\n- None\n"
                             "** Recommended Actions\n- None\n"
                             "** Limitations\n- Test transport"))
-         request events completion (sample-count 0))
+         (route (magent-model-route-create
+                 :backend 'doctor-backend :model 'doctor-model))
+         request route-args events completion (sample-count 0))
     (unwind-protect
         (progn
           (magent-session-install 'global parent)
@@ -2754,6 +2756,11 @@
                        (error "Doctor must not enter the runtime queue")))
                     ((symbol-function 'magent-session-save-deferred-for-session)
                      #'ignore)
+                    ((symbol-function
+                      'magent-runtime-session-effective-model-route)
+                     (lambda (&rest args)
+                       (setq route-args args)
+                       route))
                     ((symbol-function 'magent-sampling-gptel-sample)
                      (lambda (value)
                        (setq request value)
@@ -2770,7 +2777,12 @@
           (ert-info ((format "Doctor completion: %S" completion))
             (should (= sample-count 1)))
           (should-not (magent-sampling-request-tools request))
-          (should-not (magent-sampling-request-stream request))
+          (should (magent-sampling-request-stream request))
+          (should (eq (magent-sampling-request-backend request)
+                      'doctor-backend))
+          (should (eq (magent-sampling-request-model request)
+                      'doctor-model))
+          (should (equal route-args (list runtime nil 'doctor)))
           (should (eq (car completion) 'completed))
           (should (cl-find 'assistant-delta events
                            :key (lambda (event) (plist-get event :type))))
@@ -2831,6 +2843,8 @@
          (runtime (magent-runtime-session-create
                    :id "session-parent" :scope 'global
                    :magent-session parent))
+         (route (magent-model-route-create
+                 :backend 'doctor-backend :model 'doctor-model))
          (request-buffer (generate-new-buffer " *doctor-cancel-test*"))
          aborted invocation)
     (unwind-protect
@@ -2841,7 +2855,10 @@
            :required t)
           (let ((magent-action--allow-core-registration t))
             (magent-action-builtin-doctor-register))
-          (cl-letf (((symbol-function 'magent-sampling-gptel-sample)
+          (cl-letf (((symbol-function
+                      'magent-runtime-session-effective-model-route)
+                     (lambda (&rest _) route))
+                    ((symbol-function 'magent-sampling-gptel-sample)
                      (lambda (_request) request-buffer))
                     ((symbol-function 'gptel-abort)
                      (lambda (buffer) (setq aborted buffer)))
@@ -11636,13 +11653,42 @@
                      '("auto-skill"))))))
 
 (ert-deftest magent-test-action-run-doctor-dispatches-action ()
-  "Test the Doctor M-x wrapper dispatches through `magent-action-run'."
-  (let (captured)
-    (cl-letf (((symbol-function 'magent-action-run)
-               (lambda (name &rest args)
-                 (setq captured (cons name args)))))
-      (magent-action-run-doctor))
-    (should (equal (car captured) "doctor"))))
+  "Test the Doctor M-x wrapper dispatches and shows live buffer progress."
+  (let (captured displayed)
+    (unwind-protect
+        (cl-letf (((symbol-function 'display-buffer)
+                   (lambda (buffer &rest _)
+                     (setq displayed buffer)))
+                  ((symbol-function 'magent-action-run)
+                   (lambda (name &rest args)
+                     (setq captured (cons name args))
+                     (let ((observer (plist-get args :observer)))
+                       (funcall observer
+                                '(:type action-progress
+                                  :text "Running doctor probe test..."))
+                       (funcall observer
+                                (list :type 'assistant-delta
+                                      :text "* Diagnosis\nHealthy"))
+                       (funcall observer
+                                (list :type 'action-completed
+                                      :status 'completed
+                                      :result
+                                      (magent-execution-result-completed
+                                       "* Diagnosis\nHealthy"))))
+                     nil)))
+          (magent-action-run-doctor)
+          (should (equal (car captured) "doctor"))
+          (should (functionp (plist-get (cdr captured) :observer)))
+          (should (buffer-live-p displayed))
+          (with-current-buffer displayed
+            (should (derived-mode-p 'special-mode))
+            (should buffer-read-only)
+            (goto-char (point-min))
+            (should (search-forward "Status: Completed" nil t))
+            (should (search-forward "Running doctor probe test..." nil t))
+            (should (search-forward "* Diagnosis\nHealthy" nil t))))
+      (when (buffer-live-p displayed)
+        (kill-buffer displayed)))))
 
 (ert-deftest magent-test-acp-request-sender-initialize ()
   "Test in-process ACP request sender handles initialize."

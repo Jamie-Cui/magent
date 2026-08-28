@@ -1644,8 +1644,9 @@ SOURCE-START is the absolute position corresponding to the start of TEXT."
       :submission-adapter submission-adapter))))
 
 (cl-defun magent-action-run
-    (action &key argument options on-complete)
-  "Run interactive-exposed ACTION from the current Emacs context."
+    (action &key argument options observer on-complete)
+  "Run interactive-exposed ACTION from the current Emacs context.
+OBSERVER receives Action lifecycle events when non-nil."
   (magent-runtime-ensure-initialized)
   (let* ((origin-buffer (current-buffer))
          (origin-directory default-directory)
@@ -1667,6 +1668,7 @@ SOURCE-START is the absolute position corresponding to the start of TEXT."
       :parent-session parent-session
       :argument argument
       :options options
+      :observer observer
       :on-complete on-complete
       :interactive-p t))))
 

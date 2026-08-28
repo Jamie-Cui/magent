@@ -49,6 +49,12 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Fixed
 
+- Show a live ~*Magent Doctor*~ progress buffer for
+  ~M-x magent-action-run-doctor~, retaining the terminal diagnosis or failure
+  instead of leaving interactive Doctor runs silent until completion.
+- Make ~/doctor~ analyze through the originating session's effective model
+  route and the same streaming gptel path as ordinary Magent turns, avoiding
+  empty diagnoses caused by an unrelated global route or non-stream response.
 - Accept both ~tool~ and ~tool-use~ capability markers from gptel model
   metadata, preventing tool-capable providers such as DeepSeek from being
   rejected before sampling.

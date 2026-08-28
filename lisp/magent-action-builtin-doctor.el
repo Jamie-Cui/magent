@@ -40,6 +40,8 @@
 (declare-function magent-agent-info-name "magent-agent-info" t t)
 (declare-function magent-approval-pending-count "magent-approval")
 (declare-function magent-runtime-pending-count "magent-runtime-api")
+(declare-function magent-runtime-session-effective-model-route
+                  "magent-runtime-api" t t)
 (declare-function magent-runtime-queue-active-submission
                   "magent-runtime-queue")
 (declare-function magent-runtime-submission-id
@@ -88,6 +90,90 @@
   '("* Diagnosis" "** Summary" "** Findings"
     "** Recommended Actions" "** Limitations")
   "Required headings in a structured doctor response.")
+
+(defvar-local magent-doctor--interactive-status "Starting"
+  "Status shown in the current interactive Doctor buffer.")
+
+(defvar-local magent-doctor--interactive-progress nil
+  "Progress messages shown in the current interactive Doctor buffer.")
+
+(defvar-local magent-doctor--interactive-result ""
+  "Result text shown in the current interactive Doctor buffer.")
+
+(defvar-local magent-doctor--interactive-session-id nil
+  "Isolated Action session id shown in the current Doctor buffer.")
+
+(defun magent-doctor--interactive-render (buffer)
+  "Render the current interactive Doctor state in BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Magent Doctor\n\n")
+        (insert (format "Status: %s\n" magent-doctor--interactive-status))
+        (when magent-doctor--interactive-session-id
+          (insert (format "Session: %s\n"
+                          magent-doctor--interactive-session-id)))
+        (insert "\nThis diagnostic runs in an isolated Action session.\n")
+        (if magent-doctor--interactive-progress
+            (progn
+              (insert "\nProgress\n")
+              (dolist (message (reverse magent-doctor--interactive-progress))
+                (insert "- " message "\n")))
+          (insert "\nStarting local diagnostic collection...\n"))
+        (unless (string-empty-p magent-doctor--interactive-result)
+          (insert "\nResult\n\n" magent-doctor--interactive-result)
+          (unless (string-suffix-p "\n" magent-doctor--interactive-result)
+            (insert "\n")))
+        (insert "\nUse M-x magent-action-cancel to cancel an active run.\n")
+        (goto-char (point-min))))))
+
+(defun magent-doctor--interactive-buffer ()
+  "Create, initialize, and display a buffer for an interactive Doctor run."
+  (let ((buffer (generate-new-buffer "*Magent Doctor*")))
+    (with-current-buffer buffer
+      (special-mode)
+      (setq-local magent-doctor--interactive-status "Starting"
+                  magent-doctor--interactive-progress nil
+                  magent-doctor--interactive-result ""
+                  magent-doctor--interactive-session-id nil)
+      (magent-doctor--interactive-render buffer))
+    (display-buffer buffer)
+    buffer))
+
+(defun magent-doctor--interactive-status-label (status)
+  "Return a display label for terminal Doctor STATUS."
+  (pcase status
+    ('completed "Completed")
+    ('cancelled "Cancelled")
+    ('failed "Failed")
+    (_ (capitalize (format "%s" status)))))
+
+(defun magent-doctor--interactive-observe (buffer event)
+  "Project Doctor EVENT into the interactive Doctor BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (pcase (plist-get event :type)
+        ('action-progress
+         (setq magent-doctor--interactive-status "Running")
+         (when-let* ((text (plist-get event :text)))
+           (unless (member text magent-doctor--interactive-progress)
+             (push text magent-doctor--interactive-progress))))
+        ('assistant-delta
+         (setq magent-doctor--interactive-status "Finishing")
+         (when-let* ((text (plist-get event :text)))
+           (setq magent-doctor--interactive-result
+                 (concat magent-doctor--interactive-result text))))
+        ('action-completed
+         (setq magent-doctor--interactive-status
+               (magent-doctor--interactive-status-label
+                (plist-get event :status)))
+         (when (string-empty-p magent-doctor--interactive-result)
+           (when-let* ((result (plist-get event :result)))
+             (setq magent-doctor--interactive-result
+                   (or (magent-execution-result-content-string result) "")))))
+        (_ nil))
+      (magent-doctor--interactive-render buffer))))
 
 (defun magent-doctor--normalize-id (id)
   "Return ID as a stable probe registry key."
@@ -791,9 +877,22 @@ output data."
            state 'failed
            "Doctor analysis failed with a redacted error"))))))))
 
+(defun magent-doctor--analysis-route (context)
+  "Return the effective model route for Doctor CONTEXT.
+Slash invocations retain their originating runtime session as the Action's
+control session even though Doctor itself runs in an isolated session.  Use
+that route so Doctor follows the user's active model selection.  Interactive
+invocations without a control session use the current gptel defaults."
+  (if-let* ((runtime-session
+             (magent-action-invocation-control-session context)))
+      (magent-runtime-session-effective-model-route
+       runtime-session nil 'doctor)
+    (magent-sampling-gptel-default-route)))
+
 (defun magent-doctor--start-analysis (context state results)
   "Start one tool-free provider analysis for CONTEXT over RESULTS."
   (let* ((bundle (magent-doctor--bounded-bundle results))
+         (route (magent-doctor--analysis-route context))
          (prompt (concat (magent-prompt-read "internal/doctor-user.org")
                          "\n\n"
                          (magent-json-encode bundle)))
@@ -802,9 +901,9 @@ output data."
            :prompt prompt
            :system (magent-prompt-read "internal/doctor-system.org")
            :tools nil
-           :stream nil
-           :backend (and (boundp 'gptel-backend) gptel-backend)
-           :model (and (boundp 'gptel-model) gptel-model)
+           :stream t
+           :backend (magent-model-route-backend route)
+           :model (magent-model-route-model route)
            :metadata (list :temperature
                            (and (boundp 'gptel-temperature)
                                 gptel-temperature)
@@ -926,11 +1025,33 @@ output data."
   "Run Magent Doctor in an isolated Action session.
 With prefix argument SELECT-PROBES, review probe selection in the minibuffer."
   (interactive "P")
-  (let ((debug-on-error nil)
+  (let ((buffer (magent-doctor--interactive-buffer))
+        (debug-on-error nil)
         (debug-on-quit nil)
         (debug-on-signal nil))
-    (magent-action-run
-     "doctor" :options (list :select-probes (and select-probes t)))))
+    (condition-case err
+        (let ((invocation
+               (magent-action-run
+                "doctor"
+                :options (list :select-probes (and select-probes t))
+                :observer
+                (lambda (event)
+                  (magent-doctor--interactive-observe buffer event)))))
+          (when-let* (((magent-action-invocation-p invocation))
+                      (session (magent-action-invocation-session invocation)))
+            (with-current-buffer buffer
+              (setq magent-doctor--interactive-session-id
+                    (magent-session-get-id session))
+              (magent-doctor--interactive-render buffer)))
+          invocation)
+      (error
+       (magent-doctor--interactive-observe
+        buffer
+        (list :type 'action-completed
+              :status 'failed
+              :result (magent-execution-result-failed
+                       (error-message-string err))))
+       (signal (car err) (cdr err))))))
 
 (magent-doctor--register-builtins)
 
