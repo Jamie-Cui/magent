@@ -224,38 +224,14 @@ their overlays are inactive so live frontend sessions remain scope-correct.")
                      (magent-skill-name right))))))
 
 (defun magent-skills--rebase-project-catalogs ()
-  "Rebase cached project catalogs on the current global snapshot."
-  (let ((global-skills
-         (copy-sequence
-          (gethash nil magent-skills--scope-catalog))))
-    (maphash
-     (lambda (scope skills)
-       (when scope
-         (let* ((project-skills
-                 (cl-remove-if-not
-                  (lambda (skill)
-                    (equal
-                     scope
-                     (magent-session-canonical-scope
-                      (magent-skill-source-scope skill))))
-                  skills))
-                (project-names
-                 (mapcar #'magent-skill-name project-skills))
-                (rebased
-                 (append
-                  project-skills
-                  (cl-remove-if
-                   (lambda (skill)
-                     (member (magent-skill-name skill) project-names))
-                   global-skills))))
-           (puthash
-            scope
-            (sort rebased
-                  (lambda (left right)
-                    (string< (magent-skill-name left)
-                             (magent-skill-name right))))
-            magent-skills--scope-catalog))))
-     magent-skills--scope-catalog)))
+  "Rebase cached project catalogs on the current registry state."
+  (maphash
+   (lambda (scope _skills)
+     (when scope
+       (puthash scope
+                (magent-skills--registry-skills-for-scope scope)
+                magent-skills--scope-catalog)))
+   magent-skills--scope-catalog))
 
 (defun magent-skills--record-scope-catalog (&optional scope)
   "Record effective skills for SCOPE from the active registry."
@@ -465,8 +441,8 @@ names collide.  The final entry is the canonical installation target."
 
 (defconst magent-skills--frontmatter-keys
   '(:name :description :type :tools :requires-project
-    :capability :title :family :source :source-name :capability-skills
-    :modes :features :files :prompt-keywords :disclosure :risk)
+          :capability :title :family :source :source-name :capability-skills
+          :modes :features :files :prompt-keywords :disclosure :risk)
   "Supported SKILL.md frontmatter keys.")
 
 (defun magent-skills--validate-frontmatter (frontmatter)

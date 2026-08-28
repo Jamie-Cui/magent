@@ -9,6 +9,9 @@
 和当前项目状态，但不会把通用 Emacs 或 shell 工具交给 LLM。两个入口执行同一个
 Action，并在 ~magent-session-directory/actions/doctor~ 下创建独立 Action session。
 
+M-x 入口启动后会立即显示 ~*Magent Doctor*~ buffer，持续展示本地 probe 和
+provider 分析进度，并在同一个 buffer 中保留最终诊断或失败信息，不再静默后台运行。
+
 使用 ~/doctor select~ 或给 M-x 命令传递 prefix argument，可以在 minibuffer 中
 审查适用的 probes；
 core runtime probe 始终保留。
@@ -22,7 +25,9 @@ Doctor 分为两个阶段：
 
 Provider request 不包含工具，也不进入普通 Magent agent loop 或 runtime
 queue。它可以和普通对话并发，但不会把 Action session 安装成用户当前
-session。
+session。~/doctor~ 使用发起请求的 runtime session 的有效 model route；M-x
+入口回退到当前 gptel defaults。Sampling 使用 gptel streaming 路径，但 Doctor
+只公开完成后的诊断结果。
 
 Doctor 不会主动采集 gptel backend 对象、API key、~auth-source~、环境变量、
 HTTP headers 或原始 ~*gptel-log*~。绝对路径会被规范化为 ~$PROJECT~、

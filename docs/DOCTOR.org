@@ -10,6 +10,11 @@ and current-project state without giving an LLM general Emacs or shell access.
 Both entry points execute the same Action and create an isolated Action session
 under ~magent-session-directory/actions/doctor~.
 
+The M-x entry point immediately displays a ~*Magent Doctor*~ buffer.  It keeps
+the local probe and provider-analysis progress visible, then retains the final
+diagnosis or failure in that buffer instead of running silently in the
+background.
+
 Use ~/doctor select~ or a prefix argument with the M-x command to review the
 applicable probe selection. Core runtime diagnostics are always included.
 
@@ -23,6 +28,9 @@ Doctor uses two phases:
 The provider request has no tools and does not enter the normal Magent agent
 loop or runtime queue.  It may run concurrently with an ordinary conversation,
 but it does not install its Action session as the user's current session.
+~/doctor~ follows the originating runtime session's effective model route;
+the M-x entry point falls back to the current gptel defaults.  Sampling uses
+gptel's streaming path while Doctor exposes only the completed diagnosis.
 
 Doctor never intentionally collects a gptel backend object, API keys,
 ~auth-source~, environment variables, HTTP headers, or raw ~*gptel-log*~

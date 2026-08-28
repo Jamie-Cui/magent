@@ -719,6 +719,55 @@ return that path."
        (when (file-directory-p magent-session-directory)
          (delete-directory magent-session-directory t)))))
 
+(ert-deftest magent-live-test-doctor-mx-shows-live-progress-buffer ()
+  "Run the Doctor M-x path with visible progress and a retained result."
+  :tags '(:magent-live-smoke)
+  (require 'magent)
+  (magent-live-test--with-isolated-runtime
+    (let ((diagnosis (concat "* Diagnosis\n** Summary\nHealthy\n"
+                             "** Findings\n- None\n"
+                             "** Recommended Actions\n- None\n"
+                             "** Limitations\n- Stub transport"))
+          (magent-bypass-permission t)
+          buffer)
+      (unwind-protect
+          (progn
+            (when-let* ((stale (get-buffer "*Magent Doctor*")))
+              (kill-buffer stale))
+            (cl-letf (((symbol-function 'magent-sampling-gptel-sample)
+                       (lambda (request)
+                         (run-at-time
+                          0.05 nil
+                          (lambda ()
+                            (funcall
+                             (magent-sampling-request-callback request)
+                             (magent-sampling-event-create
+                              'completed :text diagnosis))))
+                         nil)))
+              (should (commandp 'magent-action-run-doctor))
+              (magent-action-run-doctor)
+              (setq buffer (get-buffer "*Magent Doctor*"))
+              (should (buffer-live-p buffer))
+              (with-current-buffer buffer
+                (should (derived-mode-p 'special-mode))
+                (should buffer-read-only)
+                (goto-char (point-min))
+                (should (search-forward "Status: Running" nil t))
+                (should (search-forward "Running doctor probe" nil t)))
+              (magent-live-test--wait-until
+               (lambda ()
+                 (with-current-buffer buffer
+                   (goto-char (point-min))
+                   (search-forward "Status: Completed" nil t)))
+               5
+               "M-x Doctor did not complete in its progress buffer")
+              (with-current-buffer buffer
+                (goto-char (point-min))
+                (should (search-forward "* Diagnosis" nil t))
+                (should (search-forward "Healthy" nil t)))))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
 (ert-deftest magent-live-test-loop-runs-emacs-eval-and-continues ()
   "Run a live Magent turn through loop tool execution and continuation."
   :tags '(:magent-live-smoke)
@@ -996,6 +1045,29 @@ return that path."
       (magent-live-test--submit-prompt prompt)
       (let ((response (magent-live-test--wait-for-assistant 120)))
         (should (string-match-p "MAGENT_LIVE_OK" response))))))
+
+(ert-deftest magent-live-test-real-doctor-analysis ()
+  "Run Doctor through the active session route and real gptel provider."
+  :tags '(:magent-live)
+  (require 'magent)
+  (magent-live-test--require-real-gptel)
+  (magent-live-test--with-isolated-runtime
+    (let ((magent-bypass-permission t)
+          completion)
+      (magent-runtime-ensure-initialized)
+      (magent-action-invoke
+       "doctor" (magent-runtime-session-current)
+       :on-complete
+       (lambda (status result)
+         (setq completion (list status result))))
+      (magent-live-test--wait-until
+       (lambda () completion) 180 "Real Doctor analysis did not complete")
+      (ert-info ((format "Doctor completion: %S" completion))
+        (should (eq (car completion) 'completed)))
+      (let ((text (magent-execution-result-content-string
+                   (cadr completion))))
+        (should (string-match-p "^\\* Diagnosis$" text))
+        (should (string-match-p "^\\*\\* Limitations$" text))))))
 
 (ert-deftest magent-live-test-real-emacs-eval-tool ()
   "Send a real tool-use request through gptel and execute emacs_eval."
