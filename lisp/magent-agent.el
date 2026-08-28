@@ -20,7 +20,6 @@
 (require 'magent-lifecycle-events)
 (require 'magent-sampling)
 (require 'magent-sampling-gptel)
-(require 'magent-action-builtin-memory)
 (require 'magent-project-instructions)
 (require 'magent-protocol)
 (require 'magent-runtime)
@@ -157,14 +156,37 @@ idempotent so higher-level runtime error handling may safely repeat it."
     (magent-prompt-render "internal/project-context.org"
                           `((project-root . ,project-root)))))
 
+(defun magent-agent--context-provider-messages
+    (user-prompt request-context project-root)
+  "Return trusted provider context for USER-PROMPT.
+REQUEST-CONTEXT and PROJECT-ROOT are passed unchanged to every function in
+`magent-context-provider-functions'.  Provider failures and invalid values are
+logged without aborting the current turn."
+  (let (messages)
+    (dolist (provider magent-context-provider-functions (nreverse messages))
+      (condition-case err
+          (let ((message
+                 (funcall provider user-prompt request-context project-root)))
+            (cond
+             ((null message))
+             ((not (stringp message))
+              (magent-log
+               "WARN context provider %S returned a non-string value"
+               provider))
+             ((not (string-empty-p message))
+              (push message messages))))
+        (error
+         (magent-log "WARN context provider %S failed: %s"
+                     provider (error-message-string err)))))))
+
 (defun magent-agent--compose-system-message
     (global-system-message agent-role-message
-                           project-root memory-message skill-prompts
-                         &optional project-instructions)
+                           project-root context-provider-messages skill-prompts
+                           &optional project-instructions)
   "Return system prompt from GLOBAL-SYSTEM-MESSAGE and prompt context.
 AGENT-ROLE-MESSAGE supplements the universal contract instead of replacing it.
-PROJECT-ROOT contributes workspace context, MEMORY-MESSAGE is a selected
-Emacs profile memory block, and SKILL-PROMPTS are active skill prompts.
+PROJECT-ROOT contributes workspace context, CONTEXT-PROVIDER-MESSAGES are
+trusted request-local extension blocks, and SKILL-PROMPTS are active skills.
 PROJECT-INSTRUCTIONS contains scoped repository instructions discovered by
 Magent.
 The runtime trust policy is appended last so every built-in or custom agent
@@ -178,16 +200,16 @@ receives the same instruction-provenance and permission invariants."
             `((skills . ,(mapconcat #'identity skill-prompts "\n\n"))))))
         (runtime-policy
          (magent-prompt-read "internal/runtime-policy.org")))
-    (mapconcat #'identity
-               (delq nil
-                      (list global-system-message
-                            agent-role-message
-                            context-message
-                            project-instructions
-                            memory-message
-                           skills-message
-                           runtime-policy))
-               "\n\n")))
+    (mapconcat
+     #'identity
+     (delq nil
+           (append (list global-system-message
+                         agent-role-message
+                         context-message
+                         project-instructions)
+                   context-provider-messages
+                   (list skills-message runtime-policy)))
+     "\n\n")))
 
 (defun magent-agent--execute-turn
     (user-prompt &optional callback agent-info skill-names event-context
@@ -318,8 +340,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                      resolved-skill-names)
                             (magent-skills-get-instruction-prompts
                              resolved-skill-names)))
-           (memory-message
-            (magent-memory-system-message
+           (context-provider-messages
+            (magent-agent--context-provider-messages
              user-prompt request-context request-project-root))
            (project-instructions
             (magent-project-instructions-system-message
@@ -327,7 +349,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
            (system-msg
             (magent-agent--compose-system-message
              magent-system-prompt agent-role-msg
-             request-project-root memory-message skill-prompts
+             request-project-root context-provider-messages skill-prompts
              project-instructions)))
       (when capability-resolution
         (magent-lifecycle-events-emit

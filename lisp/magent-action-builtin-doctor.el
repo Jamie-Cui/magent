@@ -297,7 +297,6 @@ values.  Custom probes execute as trusted Emacs Lisp and are not sandboxed."
                    (when-let* ((source (magent-doctor--feature-source feature)))
                      (cons feature source)))
                  '(magent magent-action magent-action-session
-                   magent-action-builtin-memory
                    magent-action-builtin-doctor
                    magent-agent-loop magent-acp)))))))
 

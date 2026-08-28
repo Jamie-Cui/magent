@@ -211,6 +211,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | Option                                       | Default                             | Description                                                                                    |
 |----------------------------------------------+-------------------------------------+------------------------------------------------------------------------------------------------|
 | ~magent-system-prompt~                         | (built-in)                          | Default system prompt for agents                                                               |
+| ~magent-context-provider-functions~             | ~nil~                                 | Trusted request-local system-context contributors; failures are isolated                       |
 | ~magent-enable-tools~                          | default tool set                    | Globally enabled tool permission groups                                                        |
 | ~magent-project-root-function~                 | ~nil~                                 | Custom project root finder                                                                     |
 | ~magent-max-history~                           | ~100~                                 | Max messages in history                                                                        |
@@ -219,7 +220,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-default-agent~                         | ~"build"~                           | Default agent for new sessions                                                                 |
 | ~magent-default-effort~                        | ~nil~                                 | Default reasoning effort; nil/auto uses provider default                                       |
 | ~magent-agent-shell-session-strategy~          | ~prompt~                              | Prompt to start new or load a saved session; also supports ~new~ and ~latest~                     |
-| ~magent-action-enabled-builtins~               | ~(doctor memory)~                    | Optional isolated Action groups; changes refresh discovery for future invocations               |
+| ~magent-action-enabled-builtins~               | ~(doctor)~                           | Optional isolated Action groups; changes refresh discovery for future invocations               |
 | ~magent-skill-directories~                     | ~user-emacs-directory/magent/skills/~ | Ordered user skill roots; later entries override earlier entries                               |
 | ~magent-load-custom-agents~                    | ~t~                                   | Load custom agents from ~.magent/agent/*.md~                                                     |
 | ~magent-audit~                                 | ~buffer~                              | Audit destination: live buffer, nil to disable, or a JSONL file path                            |
@@ -304,25 +305,23 @@ next prompt.
 
 Elisp-native slash commands are registered through the public
 ~magent-action-register~ API and can be selected from agent-shell's slash menu.
-By default, agent-shell advertises twelve bundled
+By default, agent-shell advertises nine bundled
 commands: ~/explain~, ~/fix~, ~/init~, ~/review~, ~/test~,
-~/compact~, ~/authority~, ~/skills~, ~/doctor~, ~/memory-init~,
-~/memory-refresh~, and ~/memory-clear~. The five prompt commands own package
+~/compact~, ~/authority~, ~/skills~, and ~/doctor~. The five prompt commands own package
 Org resources and do not activate same-name skills.
 
-Doctor and Memory are optional built-in Action groups. Customize
-~magent-action-enabled-builtins~, or use ~setopt~, to change them at runtime:
+Doctor is an optional built-in Action group. Customize
+~magent-action-enabled-builtins~, or use ~setopt~, to disable it at runtime:
 
 #+begin_src elisp
-;; Keep Doctor, but remove the three memory-management Actions.
-(setopt magent-action-enabled-builtins '(doctor))
+;; Disable optional built-in maintenance Actions.
+(setopt magent-action-enabled-builtins nil)
 #+end_src
 
 The Action registry and active agent-shell command menus update immediately;
-an already running Action is allowed to finish. The ~memory~ entry controls
-~/memory-init~, ~/memory-refresh~, and ~/memory-clear~ together. It does not
-disable profile-memory injection, which is controlled separately by
-~magent-memory-enable-auto-injection~.
+an already running Action is allowed to finish. Trusted local extensions may
+register additional user-layer Actions with ~magent-action-register~ and add
+request-local context through ~magent-context-provider-functions~.
 
 Every instruction skill in the exact session scope is advertised as ~/$name~.
 ~/skills~ lists those descriptors locally. Submit ~/$name~ to select a skill
@@ -503,11 +502,6 @@ Tool availability is controlled by:
 Magent-owned maintenance workflows share one Action spec between agent-shell
 slash input and their M-x wrappers:
 
-- ~/memory-init~ or ~M-x magent-action-run-memory-init~ initializes Emacs profile memory.
-- ~/memory-refresh~ or ~M-x magent-action-run-memory-refresh~ refreshes the managed profile while keeping
-  user notes.
-- ~/memory-clear~ or ~M-x magent-action-run-memory-clear~ deactivates and clears the managed profile
-  while retaining user notes and a snapshot.
 - ~/doctor~ or ~M-x magent-action-run-doctor~ collects bounded local diagnostics
   and sends one sanitized, tool-free analysis request. Use ~/doctor select~ or
   ~C-u~ on the M-x command for manual probe selection.

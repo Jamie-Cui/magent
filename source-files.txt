@@ -14,7 +14,6 @@ lisp/magent-sampling.el
 lisp/magent-sampling-gptel.el
 lisp/magent-session.el
 lisp/magent-action.el
-lisp/magent-action-builtin-memory.el
 lisp/magent-agent-loop.el
 lisp/magent-approval.el
 lisp/magent-file-loader.el

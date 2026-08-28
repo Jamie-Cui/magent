@@ -24,10 +24,14 @@ intentional tagged release is planned as ~v0.2.0~.
 - The initial release baseline: the agent-shell and in-process ACP frontend,
   Magent-owned tool loop, permission and approval controls, durable sessions
   and child-agent jobs, Elisp-native Actions, instruction skills, automatic
-  capabilities, Doctor, and memory workflows.
+  capabilities, Doctor, and trusted context-provider extensions.
 
 ** Changed
 
+- Replaced the Emacs-profile-specific prompt dependency with the generic
+  ~magent-context-provider-functions~ extension point. Trusted local providers
+  contribute ordered request context without making optional failures fatal to
+  the agent turn.
 - Restyled the generated documentation as a compact Texinfo-style manual with
   adjacent-page navigation, contents links, and localized language controls;
   synchronized the bilingual onboarding module map with all production
@@ -42,6 +46,9 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Removed
 
+- Removed the bundled ~/memory-init~, ~/memory-refresh~, and ~/memory-clear~
+  Actions and their Emacs-profile implementation. Personal profile memory now
+  belongs in user configuration as a context provider and user-layer Actions.
 - Removed redundant ~magent-agent-shell-*~ commands for shell creation, prompt
   submission, region/symbol helpers, interruption, Action selection, and
   one-shot skill selection, together with private busy-state recovery and

@@ -11,20 +11,20 @@ Magent 把同一个 Action registry 投影为两类用户可见的 command 入�
 - *Interactive commands* 是选择了 interactive exposure 的 Action spec 对应的
   ~M-x~ wrapper。
 
-当前内置包默认提供 12 个 slash commands。Doctor 和三个 Memory Action 还提供
+当前内置包默认提供 9 个 slash commands。Doctor 还提供
 ~M-x magent-action-run-*~ wrapper，并使用独立 durable session。
 
-Doctor 和 Memory 是两个可选的内置 Action 组。可以 Customize
-~magent-action-enabled-builtins~，也可以用 ~setopt~ 在运行时打开或关闭它们：
+Doctor 是可选的内置 Action 组。可以 Customize
+~magent-action-enabled-builtins~，也可以用 ~setopt~ 在运行时关闭它：
 
 #+begin_src elisp
-;; 保留 Doctor，关闭 memory-init、memory-refresh 和 memory-clear。
-(setopt magent-action-enabled-builtins '(doctor))
+;; 关闭可选的内置维护 Action。
+(setopt magent-action-enabled-builtins nil)
 #+end_src
 
 Action registry 和活动 ACP command menu 会立即刷新；已经开始的 Action 不会被中断，
-配置只影响后续发现和调用。~memory~ 项只控制三个 memory management Action；profile
-memory 注入仍由 ~magent-memory-enable-auto-injection~ 独立控制。
+配置只影响后续发现和调用。可信本地扩展可以注册 user-layer Action，并通过
+~magent-context-provider-functions~ 提供 request-local context。
 
 * Slash Commands
 
@@ -55,9 +55,6 @@ instruction skill；skill 不存在或在当前 scope 不可用时，会在提�
 | ~/authority~ | 查看实际工具权限 | 不请求 provider，显示暴露状态、规则/override 来源、approval policy 和 execution boundary |
 | ~/skills~ | 列出当前 session scope 的 instruction skills | 本地发现，不请求 provider |
 | ~/doctor~ | 诊断 Magent 和当前 runtime | 使用有界 probes 和一次脱敏、无工具请求 |
-| ~/memory-init~ | 建立 Emacs profile memory | 在独立 Action session 中确认并执行 |
-| ~/memory-refresh~ | 刷新 managed profile memory | 在独立 Action session 中保留 user notes |
-| ~/memory-clear~ | 停用 managed memory | 确认后在本地清理生成内容 |
 
 ** ~/compact~
 
@@ -290,7 +287,7 @@ Magent 用户 skill 目录（通常是 ~~/.emacs.d/magent/skills/~），不会�
 
 * 独立 Action Workflows
 
-Doctor 和 Memory 既可以使用 slash name，也可以使用下列 M-x wrapper；两种入口
+Doctor 既可以使用 slash name，也可以使用下列 M-x wrapper；两种入口
 执行同一个 Action spec。每次运行都会在 ~magent-session-directory/actions~ 下建立独立 session，
 在原始对话中只记录一条紧凑 breadcrumb。
 
@@ -298,25 +295,7 @@ Magent 不迁移、也不读取旧 ~commands/~ Action-session 格式；旧文件
 
 | Emacs 命令                     | 工作流 | LLM 行为 |
 |--------------------------------+--------+----------|
-| ~magent-action-run-memory-init~       | 建立初始 Emacs profile memory | ~magent-memory-use-llm~ 非 nil 时使用当前 gptel provider |
-| ~magent-action-run-memory-refresh~    | 刷新 managed profile memory | ~magent-memory-use-llm~ 非 nil 时使用当前 gptel provider |
-| ~magent-action-run-memory-clear~      | 停用并清理 managed memory | 本地操作，不请求 LLM 总结 |
 | ~magent-action-run-doctor~            | 诊断 Magent 和当前 runtime 状态 | 发送一次经过脱敏且不带 tools 的分析请求 |
-
-** Memory 初始化与刷新
-
-~M-x magent-action-run-memory-init~ 发现有边界的 Emacs 配置来源，展示 scan plan 供用户
-确认，然后写入 managed profile memory 文件。~M-x magent-action-run-memory-refresh~
-重新扫描并保留 user notes。
-
-默认情况下，init 和 refresh 使用当前 gptel provider 总结经过清理的 source
-excerpts。把 ~magent-memory-use-llm~ 自定义为 nil，可以在不向 provider 发送
-配置片段的情况下写入确定性的 skeleton 和 source index。
-
-** Memory 清理
-
-~M-x magent-action-run-memory-clear~ 经确认后停用 managed profile 并清理生成内容，
-同时保留 user notes 和 snapshot。该工作流不会发起 LLM 总结请求。
 
 ** Doctor
 
@@ -331,7 +310,6 @@ excerpts。把 ~magent-memory-use-llm~ 自定义为 nil，可以在不向 provid
 |-----------------------------------+------|
 | ~magent-action-list-sessions~   | 选择已保存的 Action session，查看最终结果和执行活动 |
 | ~magent-action-cancel~          | 取消提供 cancellation 的活动 isolated Action |
-| ~magent-open-memory~              | 打开 managed Emacs profile memory 文件 |
 
 Action-session viewer 优先显示最终结果，并默认折叠详细 activity。Cancellation
 按 session 隔离，不会取消其他 Magent 对话所属的工作。
@@ -340,7 +318,6 @@ Action-session viewer 优先显示最终结果，并默认折叠详细 activity�
 
 - 当任务属于当前 coding conversation，并需要复用其 agent、上下文和 transcript
   时，使用 slash command。
-- 当 Magent 维护、profile-memory 管理或脱敏诊断需要独立 durable session 时，
-  按当前 UI 选择 slash 或 M-x 入口。
+- 当脱敏诊断需要独立 durable session 时，按当前 UI 选择 Doctor 的 slash 或 M-x 入口。
 - 对于不属于预定义工作流的自由请求，先使用 ~magent-start~ 进入 Magent，再使用
   agent-shell 自带的 prompt 与 context command。

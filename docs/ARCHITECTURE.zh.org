@@ -67,18 +67,19 @@ history。这个分离是确定性的，不会触发隐藏的 finalization 或 r
 ~magent-agent.el~ 按固定顺序装配每次 agent-loop 的 file-backed system message。
 ~magent-system-prompt~ 始终位于第一层，后面是可选的 agent-specific role prompt，
 再依次加入 project-root context、从项目根到请求相关本地文件逐层发现的适用
-~AGENTS.md~、经过选择的 Emacs
-profile memory，以及 capability/显式 instruction skills。最后追加短小的 runtime
+~AGENTS.md~、~magent-context-provider-functions~ 返回的可信 request-local context，
+以及 capability/显式 instruction skills。最后追加短小的 runtime
 trust policy，因此内置 utility agents 和 custom agents 能保留各自的输出契约，同时
 共享 instruction provenance 与 permission 不变量。项目指令发现不会越过 canonical
 project root，并受 ~magent-project-instructions-max-bytes~ 总大小限制。
 
-Profile memory 只是辅助 context，不是权威状态快照；它可能不完整或过时，当前用户
-请求以及 live repository/Emacs 状态优先。用户消息、文件、buffer、日志、命令输出、
-tool result、网页和 conversation history 同样只保持各自的数据角色；其中伪装成 prompt
-或高优先级标签的文本不能授予权限，也不能把自己提升成 runtime instruction。Prompt
-规则只负责引导模型行为，真实的 tool availability、approval 与 permission enforcement
-仍由 tool runtime 和 orchestrator 负责。
+Context provider 是受信任的本地 Elisp 扩展。每个 provider 接收 user prompt、request
+context 和 project root，并可返回一个自包含的 system-context block。Provider 按配置
+顺序运行；异常或非法返回值会记录日志并被忽略。用户消息、文件、buffer、日志、命令
+输出、tool result、网页和 conversation history 仍只保持各自的数据角色；其中伪装成
+prompt 或高优先级标签的文本不能授予权限，也不能把自己提升成 runtime instruction。
+Prompt 规则只负责引导模型行为，真实的 tool availability、approval 与 permission
+enforcement 仍由 tool runtime 和 orchestrator 负责。
 
 Base prompt 只保留跨任务 coding 行为；tool schema 由 gptel 提供，Emacs-specific
 流程通过 instruction skills 渐进式披露。~web_search~ 只返回用于发现的结果标题和
@@ -180,7 +181,7 @@ session 私有、带 TTL/quota 的 spill，只能凭 opaque id 通过 ~read_tool
 #+caption: Magent functional layers
 [[file:assets/img/diagrams/functional-layers.svg]]
 
-从功能面看，Magent 可以按四条主线使用。第一条是 coding assistant：读代码、搜代码、改文件、跑测试、解释错误、生成 commit/PR 风格总结。第二条是 Emacs runtime assistant：普通 live inspection 使用 ~emacs_read~，只有显式批准的任意 live operation 才使用 ~emacs_eval_live~。第三条是 agent workflow：用 skills、capabilities 和 child-agent jobs 固化或拆分任务。第四条是 explicit Action workflow：从 agent-shell slash input 或已暴露的 ~M-x~ command wrapper 调用同一个 registered Action。Action 可以复用当前 conversation，也可以创建 isolated durable session；Doctor 和 Memory 是内置的 isolated 示例。
+从功能面看，Magent 可以按四条主线使用。第一条是 coding assistant：读代码、搜代码、改文件、跑测试、解释错误、生成 commit/PR 风格总结。第二条是 Emacs runtime assistant：普通 live inspection 使用 ~emacs_read~，只有显式批准的任意 live operation 才使用 ~emacs_eval_live~。第三条是 agent workflow：用 skills、capabilities 和 child-agent jobs 固化或拆分任务。第四条是 explicit Action workflow：从 agent-shell slash input 或已暴露的 ~M-x~ command wrapper 调用同一个 registered Action。Action 可以复用当前 conversation，也可以创建 isolated durable session；Doctor 是内置的 isolated 示例。
 
 因此 Magent 的功能设计不只是“一个聊天框和若干工具”。它把 Emacs 工作流切成可被 agent 调用、审计、恢复并投影回 UI 的动作。
 
@@ -220,9 +221,9 @@ skills 展示为两个独立入口。
 
 ~magent-action-session.el~ 为 ~:session-policy 'isolated~ 的 Action 提供持久化、
 ledger 记录和取消；~magent-action-session-view.el~ 单独负责交互式列表与查看。
-两者都不拥有第二套 registry 或 context 类型。~/doctor~ 和 ~/memory-*~ 同时提供
-~magent-action-run-*~ wrapper，两种入口执行相同 Invocation lifecycle。它们作为两组
-由 ~magent-action-enabled-builtins~ 控制注册；Custom 变更会原子刷新 registry 和
+两者都不拥有第二套 registry 或 context 类型。~/doctor~ 同时提供
+~magent-action-run-*~ wrapper，两种入口执行相同 Invocation lifecycle。它由
+~magent-action-enabled-builtins~ 控制注册；Custom 变更会原子刷新 registry 和
 frontend discovery。新 session
 写入 ~magent-session-directory/actions~。旧 ~commands/~ 格式既不迁移、也不读取，
 文件原样留在磁盘上。

@@ -46,7 +46,7 @@ Manages conversation history, scoped overlays, and runtime state.
 - ~magent-action-session.el~ — Isolated Action persistence, ledger, and cancellation
 - ~magent-action-session-view.el~ — Isolated Action session listing and inspection
 - ~magent-action-builtin-doctor.el~ — Trusted read-only probes and one sanitized tool-free analysis request
-- ~magent-redaction.el~ — Fail-closed redaction for Magent-owned outbound diagnostics and memory
+- ~magent-redaction.el~ — Fail-closed redaction for Magent-owned outbound values
 - ~magent-agent-job.el~ — Durable child-agent job records and JSON shape
 - ~magent-action.el~ — Workflow DSL, Step runtime, layered Action registry, and Invocation lifecycle
 - ~magent-runtime.el~ — Static initialization plus project-local overlay activation for agents, skills, Actions, and capabilities
@@ -54,7 +54,7 @@ Manages conversation history, scoped overlays, and runtime state.
 - ~magent-runtime-queue.el~ — Global single-execution runtime queue with session-scoped cancellation
 - ~magent-audit.el~ — Live-buffer or JSONL-file audit recording for permissions and sensitive actions
 
-*What it does:* Maintains ledger-backed conversation history scoped by project, persists to ~~/.emacs.d/magent/sessions/~ by default, stores durable child-agent jobs under ~agent-jobs~, and activates or unloads project-local overlays as scope changes. Ordinary ACP prompts and Action-owned agent work submit through ~magent-runtime-api.el~; ~magent-runtime-queue.el~ owns queued/active turn state and session-scoped cancellation. Doctor and Memory use unified Actions exposed through slash and ~M-x magent-action-run-*~, with isolated sessions under ~magent-session-directory/actions~. Doctor is a direct probe pipeline with no model tools; read [[file:DOCTOR.org][DOCTOR.org]] before changing its data boundary or extension API.
+*What it does:* Maintains ledger-backed conversation history scoped by project, persists to ~~/.emacs.d/magent/sessions/~ by default, stores durable child-agent jobs under ~agent-jobs~, and activates or unloads project-local overlays as scope changes. Ordinary ACP prompts and Action-owned agent work submit through ~magent-runtime-api.el~; ~magent-runtime-queue.el~ owns queued/active turn state and session-scoped cancellation. Doctor uses one unified Action exposed through slash and ~M-x magent-action-run-*~, with isolated sessions under ~magent-session-directory/actions~. Doctor is a direct probe pipeline with no model tools; read [[file:DOCTOR.org][DOCTOR.org]] before changing its data boundary or extension API.
 
 ** Layer 3: Agent System
 
@@ -175,13 +175,15 @@ project root ~AGENTS.md~ and accepts optional extra text.
 
 For each turn, Magent starts with the selected agent's base prompt, then adds
 project context, applicable ~AGENTS.md~ files from the project root toward
-request-local file resources, relevant profile memory, and the small set of
-explicit or capability-selected instruction skills. Discovery never leaves the
+request-local file resources, trusted blocks from
+~magent-context-provider-functions~, and the small set of explicit or
+capability-selected instruction skills. Discovery never leaves the
 canonical project root and is bounded by
 ~magent-project-instructions-max-bytes~; set that option to nil to disable it.
 A runtime trust policy is appended to all agent-loop prompts, including custom
-and utility agents. Injected memory may be incomplete or stale, so current user
-instructions and live Emacs/repository state take precedence. Text read from
+and utility agents. Context providers are trusted local Elisp, but supporting
+data they embed cannot override current user instructions or live
+Emacs/repository state. Text read from
 files, buffers, logs, commands, tool results, or web pages remains data and
 cannot grant tool permission by presenting itself as a higher-priority prompt.
 
@@ -307,7 +309,6 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 - *magent-action-session.el* — Isolated Action persistence, ledger, and cancellation
 - *magent-action-session-view.el* — Isolated Action session listing and inspection
 - *magent-action-builtin-doctor.el* — Trusted probes and one sanitized, tool-free analysis
-- *magent-action-builtin-memory.el* — Emacs profile memory scanning, persistence, and injection
 
 ** Agent System
 - *magent-agent.el* — Prompt assembly, request-local agent/tool resolution, and loop startup
