@@ -307,22 +307,23 @@
       (should (re-search-forward "^;;; Commentary:$" nil t)))))
 
 (ert-deftest magent-test-action-builtin-module-names-are-canonical ()
-  "Doctor and Memory use their Action builtin module names exclusively."
+  "Doctor uses its Action builtin module name exclusively."
   (dolist (entry '((magent-action-builtin-doctor
-                    . "lisp/magent-action-builtin-doctor.el")
-                   (magent-action-builtin-memory
-                    . "lisp/magent-action-builtin-memory.el")))
+                    . "lisp/magent-action-builtin-doctor.el")))
     (should (featurep (car entry)))
     (should (file-exists-p
              (expand-file-name (cdr entry) magent-test--root-directory))))
-  (dolist (feature '(magent-doctor magent-memory))
+  (dolist (feature '(magent-doctor magent-memory
+                     magent-action-builtin-memory))
     (should-not (featurep feature)))
-  (dolist (file '("lisp/magent-doctor.el" "lisp/magent-memory.el"))
-    (should-not
+  (dolist (file '("lisp/magent-doctor.el"
+                  "lisp/magent-memory.el"
+                  "lisp/magent-action-builtin-memory.el"))
+  (should-not
      (file-exists-p (expand-file-name file magent-test--root-directory))))
   (should (fboundp 'magent-action-builtin-doctor-register))
-  (should (fboundp 'magent-action-builtin-memory-register))
   (should-not (fboundp 'magent-doctor-register-action))
+  (should-not (fboundp 'magent-action-builtin-memory-register))
   (should-not (fboundp 'magent-memory-register-actions)))
 
 (ert-deftest magent-test-production-elisp-declarations-are-valid ()
@@ -426,7 +427,7 @@
   "Magent-owned session control exposed as a slash command.")
 
 (defconst magent-test--builtin-maintenance-command-names
-  '("doctor" "memory-clear" "memory-init" "memory-refresh")
+  '("doctor")
   "Magent-owned isolated workflows exposed as slash commands.")
 
 (ert-deftest magent-test-bundled-command-docs-match-runtime-inventory ()
@@ -434,10 +435,10 @@
   (let ((names (append magent-test--builtin-control-command-names
                        magent-test--builtin-maintenance-command-names
                        magent-test--builtin-slash-command-names)))
-    (should (= (length names) 12))
-    (dolist (entry '(("README.org" . "twelve bundled")
-                     ("docs/COMMANDS.org" . "twelve slash commands")
-                     ("docs/COMMANDS.zh.org" . "12 个 slash commands")))
+    (should (= (length names) 9))
+    (dolist (entry '(("README.org" . "nine bundled")
+                     ("docs/COMMANDS.org" . "nine slash commands")
+                     ("docs/COMMANDS.zh.org" . "9 个 slash commands")))
       (with-temp-buffer
         (insert-file-contents
          (expand-file-name (car entry) magent-test--root-directory))
@@ -558,15 +559,11 @@
                      magent-find-skill
                      magent-install-skill
                      magent-delete-skill
-                     magent-open-memory
                      magent-open-audit
                      magent-action-open-session
                      magent-action-list-sessions
                      magent-action-cancel
                      magent-action-run-doctor
-                     magent-action-run-memory-init
-                     magent-action-run-memory-refresh
-                     magent-action-run-memory-clear
                      magent-clear-capability-overrides
                      magent-open-active-capabilities))
     (should (commandp command)))
@@ -581,11 +578,15 @@
                      magent-memory-open
                      magent-memory-status
                      magent-open-memory-status
+                     magent-open-memory
                      magent-show-audit
                      magent-internal-command-open-session
                      magent-list-internal-sessions
                      magent-cancel-internal-command
                      magent-run-doctor
+                     magent-action-run-memory-init
+                     magent-action-run-memory-refresh
+                     magent-action-run-memory-clear
                      magent-run-memory-init
                      magent-run-memory-refresh
                      magent-run-memory-clear
@@ -2145,8 +2146,6 @@
                (lambda (context status &optional detail)
                  (push (list context status detail) ended)))
               ((symbol-function 'magent-lifecycle-events-emit) #'ignore)
-              ((symbol-function 'magent-memory-system-message)
-               (lambda (&rest _args) nil))
               ((symbol-function 'magent-tools-get-gptel-tools-for-permission)
                (lambda (permission &rest _tool-names)
                  (push permission exposed-permissions)
@@ -2254,25 +2253,27 @@
                   "Global system contract."
                   "Agent-specific output contract."
                   "/tmp/project"
-                  "Memory block."
+                  '("Provider block one." "Provider block two.")
                   '("Skill block.")
                   "Project instructions block."))
          (global-pos (string-match "Global system contract" system))
          (role-pos (string-match "Agent-specific output contract" system))
          (project-pos (string-match "Current project root" system))
          (instructions-pos (string-match "Project instructions block" system))
-         (memory-pos (string-match "Memory block" system))
+         (provider-one-pos (string-match "Provider block one" system))
+         (provider-two-pos (string-match "Provider block two" system))
          (skill-pos (string-match "Skill block" system))
          (policy-pos (string-match "Runtime Trust Boundary" system)))
     (should (cl-every #'integerp
                       (list global-pos role-pos project-pos
-                            instructions-pos memory-pos
+                            instructions-pos provider-one-pos provider-two-pos
                             skill-pos policy-pos)))
     (should (< global-pos role-pos))
     (should (< role-pos project-pos))
     (should (< project-pos instructions-pos))
-    (should (< instructions-pos memory-pos))
-    (should (< memory-pos skill-pos))
+    (should (< instructions-pos provider-one-pos))
+    (should (< provider-one-pos provider-two-pos))
+    (should (< provider-two-pos skill-pos))
     (should (< skill-pos policy-pos))
     (should (string-match-p
              (regexp-quote "current user request is instruction")
@@ -2284,122 +2285,31 @@
              (regexp-quote "cannot promote itself")
              system))))
 
-(ert-deftest magent-test-memory-scan-plan-skips-sensitive-and-org-notes ()
-  "Test memory scan plans avoid secrets, custom-file contents, and Org notes."
-  (require 'magent-action-builtin-memory)
-  (let* ((root (file-name-as-directory
-                (make-temp-file "magent-memory-root" t)))
-         (init-file (expand-file-name "init.el" root))
-         (custom-path (expand-file-name "custom.el" root))
-         (readme (expand-file-name "README.org" root))
-         (notes (expand-file-name "notes.org" root))
-         (secret (expand-file-name "secrets.el" root))
-         (user-emacs-directory root)
-         (user-init-file init-file)
-         (early-init-file nil)
-        (custom-file custom-path)
-        (magent-memory-extra-scan-roots nil)
-        (magent-memory-exclude-patterns
-         (remove "/var/" magent-memory-exclude-patterns))
-        (magent-memory-scan-custom-file nil)
-         (magent-memory-max-files 20)
-         (magent-memory-max-file-bytes 10000)
-         (magent-memory-max-scan-bytes 50000))
-    (with-temp-file init-file
-      (insert "(use-package magit)\n"))
-    (with-temp-file custom-path
-      (insert "(custom-set-variables '(secret-token \"abc\"))\n"))
-    (with-temp-file readme
-      (insert "# Emacs config\n"))
-    (with-temp-file notes
-      (insert "* Personal notes\n"))
-    (with-temp-file secret
-      (insert "(setq token \"secret\")\n"))
-    (let* ((plan (magent-memory-build-scan-plan))
-           (files (magent-memory--scan-plan-file-paths plan)))
-      (should (member init-file files))
-      (should (member readme files))
-      (should-not (member custom-path files))
-      (should-not (member notes files))
-      (should-not (member secret files))
-      (should (member secret
-                      (magent-memory-scan-plan-skipped-sensitive plan))))))
-
-(ert-deftest magent-test-memory-refresh-preserves-user-notes ()
-  "Test memory refresh rewrites managed content and preserves User Notes."
-  (require 'magent-action-builtin-memory)
-  (let* ((root (file-name-as-directory
-                (make-temp-file "magent-memory-root" t)))
-         (memory-dir (file-name-as-directory
-                      (make-temp-file "magent-memory-store" t)))
-         (init-file (expand-file-name "init.el" root))
-         (user-emacs-directory root)
-         (user-init-file init-file)
-         (early-init-file nil)
-         (custom-file nil)
-         (magent-memory-directory memory-dir)
-         (magent-memory-use-llm nil)
-         (magent-memory-open-after-write nil)
-         (magent-memory-extra-scan-roots nil))
-    (with-temp-file init-file
-      (insert "(use-package project)\n"))
-    (magent-memory-run
-     'init
-     :confirm-fn (lambda (_plan continue) (funcall continue t)))
-    (with-temp-buffer
-      (insert-file-contents (magent-memory-file))
-      (goto-char (point-max))
-      (insert "Prefer minibuffer-driven confirmations.\n")
-      (write-region (point-min) (point-max) (magent-memory-file)))
-    (magent-memory-run
-     'refresh
-     :confirm-fn (lambda (_plan continue) (funcall continue t)))
-    (with-temp-buffer
-      (insert-file-contents (magent-memory-file))
-      (let ((text (buffer-string)))
-        (should (string-match-p
-                 (regexp-quote "* Magent Managed Profile")
-                 text))
-        (should (string-match-p
-                 (regexp-quote "Prefer minibuffer-driven confirmations.")
-                 text))
-        (should (file-directory-p
-                 (magent-memory-snapshots-directory)))))))
-
-(ert-deftest magent-test-memory-profile-and-snapshots-use-private-modes ()
-  "Memory persistence enforces 0700 directories and 0600 files."
-  (require 'magent-action-builtin-memory)
-  (let* ((memory-dir (file-name-as-directory
-                      (make-temp-file "magent-memory-private-" t)))
-         (magent-memory-directory memory-dir)
-         (file (magent-memory-file))
-         (plan (magent-memory-scan-plan--create
-                :roots nil
-                :entry-files nil
-                :files nil
-                :skipped-sensitive nil
-                :skipped-excluded nil
-                :skipped-budget nil
-                :total-bytes 0
-                :generated-at (current-time)
-                :provider "test"
-                :model "test")))
-    (unwind-protect
-        (progn
-          (set-file-modes memory-dir #o755)
-          (with-temp-file file
-            (insert "old profile\n"))
-          (set-file-modes file #o644)
-          (magent-memory--write-profile
-           plan "* Magent Managed Profile\n" "private note")
-          (let* ((snapshots (magent-memory-snapshots-directory))
-                 (backup (car (directory-files snapshots t "\\.org\\'"))))
-            (should backup)
-            (should (= (logand (file-modes memory-dir) #o777) #o700))
-            (should (= (logand (file-modes snapshots) #o777) #o700))
-            (should (= (logand (file-modes file) #o777) #o600))
-            (should (= (logand (file-modes backup) #o777) #o600))))
-      (delete-directory memory-dir t))))
+(ert-deftest magent-test-agent-context-providers-preserve-order-and-isolate-errors ()
+  "Context providers contribute strings without breaking turns on bad output."
+  (let ((magent-context-provider-functions
+         (list (lambda (prompt context root)
+                 (format "first:%s:%s:%s" prompt context root))
+               (lambda (&rest _) (error "provider failed"))
+               (lambda (&rest _) :invalid)
+               (lambda (&rest _) "")
+               (lambda (&rest _) "second")))
+        logs)
+    (cl-letf (((symbol-function 'magent-log)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) logs))))
+      (should
+       (equal
+        (magent-agent--context-provider-messages
+         "prompt" '(:request t) "/tmp/project")
+        '("first:prompt:(:request t):/tmp/project" "second"))))
+    (should (= (length logs) 2))
+    (should (cl-some (lambda (message)
+                       (string-match-p "provider failed" message))
+                     logs))
+    (should (cl-some (lambda (message)
+                       (string-match-p "non-string" message))
+                     logs))))
 
 (ert-deftest magent-test-redaction-removes-labeled-and-unlabeled-secrets ()
   "Test outbound redaction removes secrets while retaining stable ids."
@@ -2434,153 +2344,6 @@
    (equal (magent-redaction-value
            '((OPENAI_API_KEY . "short-value") (safe . "visible")) t)
           '((OPENAI_API_KEY . "<redacted:key>") (safe . "visible")))))
-
-(ert-deftest magent-test-memory-clear-deactivates-and-preserves-user-notes ()
-  "Test memory clear writes inactive metadata and keeps local user notes."
-  (require 'magent-action-builtin-memory)
-  (let* ((root (file-name-as-directory
-                (make-temp-file "magent-memory-root" t)))
-         (memory-dir (file-name-as-directory
-                      (make-temp-file "magent-memory-store" t)))
-         (init-file (expand-file-name "init.el" root))
-         (user-emacs-directory root)
-         (user-init-file init-file)
-         (early-init-file nil)
-         (custom-file nil)
-         (magent-memory-directory memory-dir)
-         (magent-memory-use-llm nil)
-         (magent-memory-open-after-write nil)
-         (magent-memory-extra-scan-roots nil))
-    (unwind-protect
-        (progn
-          (with-temp-file init-file
-            (insert "(use-package project)\n"))
-          (magent-memory-run
-           'init :confirm-fn
-           (lambda (_plan continue) (funcall continue t)))
-          (with-temp-buffer
-            (insert-file-contents (magent-memory-file))
-            (goto-char (point-max))
-            (insert "Keep minibuffer confirmations.\n")
-            (write-region (point-min) (point-max) (magent-memory-file)))
-          (magent-memory-run
-           'clear :confirm-fn
-           (lambda (_plan continue) (funcall continue t)))
-          (let ((text (with-temp-buffer
-                        (insert-file-contents (magent-memory-file))
-                        (buffer-string))))
-            (should (string-match-p
-                     (regexp-quote "#+magent-active: false") text))
-            (should (string-match-p
-                     (regexp-quote "Keep minibuffer confirmations.") text))
-            (should-not (magent-memory-active-p))
-            (should-not (magent-memory-system-message "help with Emacs"))
-            (should (directory-files
-                     (magent-memory-snapshots-directory) nil "\\.org$"))))
-      (delete-directory root t)
-      (delete-directory memory-dir t))))
-
-(ert-deftest magent-test-memory-outbound-injection-redacts-user-secret ()
-  "Test prompt-time memory injection never emits a user-note secret."
-  (require 'magent-action-builtin-memory)
-  (let* ((memory-dir (file-name-as-directory
-                      (make-temp-file "magent-memory-store" t)))
-         (magent-memory-directory memory-dir)
-         (magent-memory-enable-auto-injection t)
-         (magent-memory-injection-max-chars 6000)
-         (secret "sk-MemoryCanaryAbCdEf1234567890"))
-    (unwind-protect
-        (progn
-          (with-temp-file (magent-memory-file)
-            (insert "#+magent-active: true\n\n"
-                    "* Magent Managed Profile\n"
-                    "** Overview\nUse Emacs daily.\n"
-                    "* User Notes\n"
-                    "api-key: " secret "\n"))
-          (cl-letf (((symbol-function 'magent-memory--relevant-request-p)
-                     (lambda (&rest _) t)))
-            (let ((message (magent-memory-system-message "Emacs api-key")))
-              (should message)
-              (should-not (string-match-p (regexp-quote secret) message))
-              (should (string-match-p "<redacted:key>" message)))))
-      (delete-directory memory-dir t))))
-
-(ert-deftest magent-test-action-memory-init-uses-isolated-action-session ()
-  "The memory M-x wrapper and slash spec share one isolated handler."
-  (require 'magent-action-session)
-  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
-         (magent-action-session-directory nil)
-         (magent-action--registry nil)
-         (magent-action--active-invocations (make-hash-table :test #'eq))
-         (magent-action-session--active-invocations
-          (make-hash-table :test #'equal))
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (magent-session--current-scope 'global)
-         (magent--current-session nil)
-         (parent (magent-session-create :id "session-parent"))
-         operation)
-    (unwind-protect
-        (progn
-          (magent-session-install 'global parent)
-          (magent-test--register-builtin-commands-only)
-          (cl-letf (((symbol-function 'magent-runtime-ensure-initialized)
-                     #'ignore)
-                    ((symbol-function 'magent-runtime-context-scope)
-                     (lambda () 'global))
-                    ((symbol-function 'magent-runtime-prepare-context)
-                     (lambda (&optional scope) (or scope 'global)))
-                    ((symbol-function 'magent-session-save-deferred-for-session)
-                     #'ignore)
-                    ((symbol-function 'magent-memory-run)
-                     (lambda (op &rest args)
-                       (setq operation op)
-                       (funcall (plist-get args :notify-fn)
-                                "memory init progress")
-                       (funcall (plist-get args :on-complete)
-                                'completed
-                                "memory init complete"))))
-            (magent-action-run-memory-init))
-          (let* ((files (magent-session-list-action-files "memory-init"))
-                 (meta (magent-session--read-file-metadata-cached (car files)))
-                 (spec (magent-action-get "memory-init" 'global 'interactive)))
-            (should (eq operation 'init))
-            (should (= (length files) 1))
-            (should (equal (plist-get meta :kind) "action"))
-            (should (equal (plist-get meta :status) "completed"))
-            (should (equal (magent-action-spec-session-policy spec) 'isolated))
-            (should (equal (magent-action-spec-exposure spec)
-                           '(slash interactive)))
-            (should (eq magent--current-session parent))))
-      (delete-directory magent-session-directory t))))
-
-(ert-deftest magent-test-action-memory-confirm-respects-bypass-permission ()
-  "Memory command confirmation continues to honor permission bypass."
-  (require 'magent-action-session)
-  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
-         (magent-action-session-directory nil)
-         (magent-bypass-permission t)
-         (magent-session--scoped-sessions (make-hash-table :test #'equal))
-         (spec (magent-action-spec-create
-                :name "memory-init"
-                :title "Initialize memory"
-                :exposure '(interactive)
-                :session-policy 'isolated
-                :workflow #'magent-test--empty-action-workflow))
-         (invocation (magent-action-invocation-create
-                      :id "invocation-memory"
-                      :spec spec
-                      :origin-scope 'global))
-         approved)
-    (unwind-protect
-        (progn
-          (magent-action-session-initialize invocation)
-          (cl-letf (((symbol-function 'magent-memory--interactive-confirm)
-                     (lambda (&rest _)
-                       (error "interactive confirmation must be bypassed"))))
-            (funcall (magent-memory--action-confirm-provider invocation 'init)
-                     nil (lambda (value) (setq approved value))))
-          (should approved))
-      (delete-directory magent-session-directory t))))
 
 (ert-deftest magent-test-action-session-save-is-explicit-and-step-saves-once ()
   "Action persistence avoids ambient rebinding and duplicate first-step saves."
@@ -2875,49 +2638,6 @@
             (should (equal (plist-get meta :status) "cancelled"))))
       (when (buffer-live-p request-buffer) (kill-buffer request-buffer))
       (delete-directory magent-session-directory t))))
-
-(ert-deftest magent-test-memory-system-message-selects-relevant-sections ()
-  "Test prompt-time memory injection selects bounded relevant sections."
-  (require 'magent-action-builtin-memory)
-  (let* ((memory-dir (file-name-as-directory
-                      (make-temp-file "magent-memory-store" t)))
-         (magent-memory-directory memory-dir)
-         (magent-memory-enable-auto-injection t)
-         (magent-memory-max-injected-sections 2)
-         (magent-memory-injection-max-chars 2000))
-    (make-directory memory-dir t)
-    (with-temp-file (magent-memory-file)
-      (insert "#+magent-active: true\n")
-      (insert "#+magent-generated-at: 2026-07-09T00:00:00+0800\n")
-      (insert "#+magent-generated-at-float: 1783526400.000\n")
-      (insert "#+magent-roots-json: []\n")
-      (insert "#+magent-source-files-json: []\n\n")
-      (insert "* Magent Managed Profile\n")
-      (dolist (heading magent-memory--managed-section-headings)
-        (insert "** " heading "\n")
-        (insert "Body for " heading ".\n"))
-      (insert "* User Notes\n")
-      (insert "For magent completion work, prefer concise status updates.\n"))
-    (let ((message (magent-memory-system-message
-                    "debug magent completion workflow"
-                    nil
-                    "/tmp/magent")))
-      (should message)
-      (should (string-match-p
-               (regexp-quote "* Magent Emacs Profile Memory")
-               message))
-      (should (string-match-p (regexp-quote "User Notes") message))
-      (should (<= (length message) 2100)))
-    (should-not
-     (magent-memory-system-message
-      "ignore magent memory and debug completion"
-      nil
-      "/tmp/magent"))
-    (should-not
-     (magent-memory-system-message
-      "review this git config"
-      nil
-      "/tmp/project"))))
 
 (ert-deftest magent-test-agent-run-turn-keeps-streaming-for-tool-requests ()
   "Test tool-enabled requests still use streaming provider sampling."
@@ -3391,17 +3111,6 @@
     (should (string-match-p "immediately after construction" prompt))
     (should (string-match-p "Spawn an explore agent when" prompt))
     (should (string-match-p "collected zero tests" prompt))))
-
-(ert-deftest magent-test-memory-prompt-declares-precedence ()
-  "Test injected profile memory cannot silently override current state."
-  (require 'magent-prompt)
-  (let ((prompt (magent-prompt-render
-                 "internal/memory-injection.org"
-                 '((memory . "Stored preference.")))))
-    (should (string-match-p "incomplete or stale" prompt))
-    (should (string-match-p "live Emacs or repository state take precedence"
-                            prompt))
-    (should (string-suffix-p "Stored preference." prompt))))
 
 (ert-deftest magent-test-builtin-agents-count ()
   "Test that all 7 built-in agents are created."
@@ -3926,29 +3635,22 @@
         (should (functionp (magent-action-spec-workflow command)))
         (should-not (magent-skills-get name))))))
 
-(ert-deftest magent-test-action-enabled-builtins-default-to-doctor-and-memory ()
-  "Doctor and Memory Actions remain available by default."
+(ert-deftest magent-test-action-enabled-builtins-default-to-doctor ()
+  "Doctor remains available by default."
   (should (equal (default-value 'magent-action-enabled-builtins)
-                 '(doctor memory))))
+                 '(doctor))))
 
 (ert-deftest magent-test-action-builtins-respect-enabled-groups ()
-  "Optional built-in groups control only Doctor and Memory registrations."
+  "The optional built-in group controls Doctor registration."
   (require 'magent-action-builtins)
   (let ((magent-action--registry nil))
     (magent-action-builtins-register nil)
     (should-not (magent-action-get "doctor" 'global))
-    (dolist (name '("memory-init" "memory-refresh" "memory-clear"))
-      (should-not (magent-action-get name 'global)))
     (dolist (name (append magent-test--builtin-control-command-names
                           magent-test--builtin-slash-command-names))
       (should (magent-action-get name 'global)))
     (magent-action-builtins-register '(doctor))
-    (should (magent-action-get "doctor" 'global))
-    (should-not (magent-action-get "memory-init" 'global))
-    (magent-action-builtins-register '(memory))
-    (should-not (magent-action-get "doctor" 'global))
-    (dolist (name '("memory-init" "memory-refresh" "memory-clear"))
-      (should (magent-action-get name 'global)))))
+    (should (magent-action-get "doctor" 'global))))
 
 (ert-deftest magent-test-action-enabled-builtins-refreshes-live-registry ()
   "Custom changes refresh Action discovery after runtime initialization."
@@ -3961,16 +3663,14 @@
               (changes 0))
           (add-hook 'magent-action-registry-changed-hook
                     (lambda () (cl-incf changes)))
-          (magent-action-builtins-register '(doctor memory))
+          (magent-action-builtins-register '(doctor))
           (setq changes 0)
-          (customize-set-variable 'magent-action-enabled-builtins '(doctor))
+          (customize-set-variable 'magent-action-enabled-builtins nil)
           (should (= changes 1))
-          (should (magent-action-get "doctor" 'global))
-          (should-not (magent-action-get "memory-init" 'global))
-          (customize-set-variable 'magent-action-enabled-builtins '(memory))
-          (should (= changes 2))
           (should-not (magent-action-get "doctor" 'global))
-          (should (magent-action-get "memory-init" 'global)))
+          (customize-set-variable 'magent-action-enabled-builtins '(doctor))
+          (should (= changes 2))
+          (should (magent-action-get "doctor" 'global)))
       (set-default 'magent-action-enabled-builtins original))))
 
 (ert-deftest magent-test-action-skills-lists-scope-without-provider ()
@@ -9290,34 +8990,34 @@
          (magent--current-session nil)
          (session (magent-session-create))
          (id (magent-session-get-id session))
-         (scope (magent-session-action-scope id "memory-init" 'global)))
+         (scope (magent-session-action-scope id "maintenance" 'global)))
     (unwind-protect
         (progn
           (dolist (entry '((kind . "action")
-                           (action . "memory-init")
+                           (action . "maintenance")
                            (status . "completed")
-                           (title . "Memory Init")
+                           (title . "Maintenance")
                            (origin-scope . global)))
             (magent-session-set-metadata-value session (car entry) (cdr entry)))
           (setq magent--current-session session
                 magent-session--current-scope scope)
-          (magent-test--record-session-entry session 'user "run memory init")
+          (magent-test--record-session-entry session 'user "run maintenance")
           (magent-test--save-current-session)
           (let* ((action-files
-                  (magent-session-list-action-files "memory-init"))
+                  (magent-session-list-action-files "maintenance"))
                  (file (car action-files))
                  (meta (magent-session--read-file-metadata-cached file))
                  (loaded (magent-session-read-file file))
                  (loaded-session (plist-get loaded :session)))
             (should (= (length action-files) 1))
-            (should (string-match-p "/actions/memory-init/" file))
+            (should (string-match-p "/actions/maintenance/" file))
             (should-not (member file (magent-session-list-files)))
             (should (equal (plist-get meta :kind) "action"))
-            (should (equal (plist-get meta :action) "memory-init"))
+            (should (equal (plist-get meta :action) "maintenance"))
             (should (equal (plist-get meta :status) "completed"))
             (should (equal (magent-session-metadata-value
                             loaded-session 'action)
-                           "memory-init"))))
+                           "maintenance"))))
       (delete-directory magent-session-directory t))))
 
 (ert-deftest magent-test-session-save-load-preserves-approval-overrides ()
@@ -12713,8 +12413,8 @@
           (should (equal (map-elt response 'stopReason) "end_turn")))
       (delete-directory magent-session-directory t))))
 
-(ert-deftest magent-test-acp-session-prompt-does-not-run-memory-slash-locally ()
-  "Test memory slash text is submitted as a normal prompt."
+(ert-deftest magent-test-acp-session-prompt-leaves-unknown-slash-unchanged ()
+  "Test unknown slash text is submitted as a normal prompt."
   (require 'magent-acp)
   (let* ((runtime-session (magent-runtime-session-create
                            :id "session-1" :scope 'global))
@@ -12739,12 +12439,12 @@
        '((:method . "session/prompt")
          (:params . ((sessionId . "session-1")
                      (prompt . [((type . "text")
-                                 (text . "/magent-memory-clear"))]))))
+                                 (text . "/custom-maintenance"))]))))
        (lambda (value) (setq response value))
        (lambda (err) (setq failure err))))
     (should-not failure)
     (should (equal submitted
-                   (list runtime-session "/magent-memory-clear")))
+                   (list runtime-session "/custom-maintenance")))
     (should (equal (map-elt response 'stopReason) "end_turn"))
     (should-not notifications)))
 
@@ -15196,135 +14896,6 @@
     (setcdr (assq 'payload event) '((input . "hello")))
     (should-error (magent-thread-event-from-alist event))))
 
-(ert-deftest magent-test-memory-async-commit-preserves-latest-user-notes ()
-  "Memory completion re-reads notes edited while the provider is sampling."
-  (require 'magent-action-builtin-memory)
-  (let* ((directory (make-temp-file "magent-memory-stale-" t))
-         (magent-memory-directory directory)
-         (magent-memory-open-after-write nil)
-         (magent-memory-use-llm t)
-         (magent-memory--operation-generation 0)
-         (magent-memory--active-operation nil)
-         callback)
-    (unwind-protect
-        (progn
-          (with-temp-file (magent-memory-file)
-            (insert "* Magent Managed Profile\n** Overview\nold\n\n* User Notes\nold note\n"))
-          (cl-letf (((symbol-function 'magent-memory--build-source-bundle)
-                     (lambda (_plan) "bundle"))
-                    ((symbol-function 'magent-memory--summarize-with-llm)
-                     (lambda (_plan _bundle fn)
-                       (setq callback fn)
-                       nil)))
-            (magent-memory--write-from-plan
-             'refresh (magent-memory--empty-plan) nil nil)
-            (with-temp-file (magent-memory-file)
-              (insert "* Magent Managed Profile\n** Overview\nold\n\n* User Notes\nlatest note\n"))
-            (funcall callback
-                     "* Magent Managed Profile\n** Overview\nnew\n"))
-          (with-temp-buffer
-            (insert-file-contents (magent-memory-file))
-            (should (string-match-p "latest note" (buffer-string)))
-            (should-not (string-match-p "old note" (buffer-string)))))
-      (delete-directory directory t))))
-
-(ert-deftest magent-test-memory-deleted-source-marks-profile-stale ()
-  "A source recorded by memory generation is stale when later deleted."
-  (require 'magent-action-builtin-memory)
-  (let* ((directory (make-temp-file "magent-memory-source-missing-" t))
-         (magent-memory-directory directory)
-         (missing (expand-file-name "deleted.el" directory)))
-    (unwind-protect
-        (progn
-          (with-temp-file (magent-memory-file) (insert "memory"))
-          (cl-letf (((symbol-function 'magent-memory--metadata)
-                     (lambda ()
-                       '(("active" . "true")
-                         ("generated-at-float" . "100"))))
-                    ((symbol-function 'magent-memory--metadata-json-list)
-                     (lambda (_metadata key)
-                       (pcase key
-                         ("roots-json" '("/root"))
-                         ("source-files-json" (list missing)))))
-                    ((symbol-function 'magent-memory-discover-roots)
-                     (lambda () '("/root"))))
-            (let ((status (magent-memory-stale-status)))
-              (should (plist-get status :stale))
-              (should (member (format "source missing: %s" missing)
-                              (plist-get status :reasons))))))
-      (delete-directory directory t))))
-
-(ert-deftest magent-test-memory-new-generation-cancels-stale-request ()
-  "A newer memory operation aborts and terminalizes the older generation."
-  (require 'magent-action-builtin-memory)
-  (let ((magent-memory-use-llm t)
-        (magent-memory--operation-generation 0)
-        (magent-memory--active-operation nil)
-        callbacks aborted completions)
-    (cl-letf (((symbol-function 'magent-memory--build-source-bundle)
-               (lambda (_plan) "bundle"))
-              ((symbol-function 'magent-memory--summarize-with-llm)
-               (lambda (_plan _bundle fn)
-                 (push fn callbacks)
-                 (generate-new-buffer " *magent-memory-test*")))
-              ((symbol-function 'magent-memory--abort-handle)
-               (lambda (handle)
-                 (push handle aborted)
-                 (when (buffer-live-p handle) (kill-buffer handle))))
-              ((symbol-function 'magent-memory--write-profile)
-               (lambda (&rest _args) (list :file "/tmp/memory.org"))))
-      (magent-memory--write-from-plan
-       'refresh (magent-memory--empty-plan) nil
-       (lambda (status _message) (push status completions)))
-      (magent-memory--write-from-plan
-       'refresh (magent-memory--empty-plan) nil
-       (lambda (status _message) (push status completions)))
-      (should (= (length aborted) 1))
-      (should (memq 'cancelled completions))
-      ;; The first callback is now stale and cannot complete or write.
-      (funcall (cadr callbacks) "* Magent Managed Profile\n")
-      (should-not (memq 'completed completions))
-      (funcall (car callbacks) "* Magent Managed Profile\n")
-      (should (memq 'completed completions)))))
-
-(ert-deftest magent-test-memory-supersession-callback-cannot-clobber-newest-operation ()
-  "A cancelled operation callback may reenter without leaking the middle run."
-  (require 'magent-action-builtin-memory)
-  (let ((magent-memory--operation-generation 0)
-        (magent-memory--active-operation nil)
-        newest
-        middle-confirmed
-        aborted
-        completions)
-    (cl-letf (((symbol-function 'magent-memory--abort-handle)
-               (lambda (handle)
-                 (when handle (push handle aborted)))))
-      (let ((old
-             (magent-memory--begin-operation
-              'old
-              (lambda (status _message)
-                (push (list 'old status) completions)
-                (setq newest
-                      (magent-memory--begin-operation 'newest nil))))))
-        (setf (magent-memory-operation-handle old) 'old-handle)
-        (let ((middle
-               (magent-memory-run
-                'clear
-                :confirm-fn
-                (lambda (_plan _continue) (setq middle-confirmed t))
-                :on-complete
-                (lambda (status _message)
-                  (push (list 'middle status) completions)))))
-          (should (magent-memory-operation-completed-p old))
-          (should (magent-memory-operation-completed-p middle))
-          (should-not middle-confirmed)
-          (should (eq magent-memory--active-operation newest))
-          (should (magent-memory--operation-current-p newest))
-          (should-not (magent-memory--operation-current-p middle))
-          (should (equal aborted '(old-handle)))
-          (should (member '(old cancelled) completions))
-          (should (member '(middle cancelled) completions)))))))
-
 (ert-deftest magent-test-doctor-zero-timeout-disables-local-deadline ()
   "A zero probe timeout runs without installing a local timeout."
   (require 'magent-action-builtin-doctor)
@@ -15359,27 +14930,6 @@
       (should-error
        (magent-doctor-run-process state "true" nil)
        :type 'error))))
-
-(ert-deftest magent-test-memory-stale-clear-confirmation-cannot-write ()
-  "A delayed clear approval cannot write after a newer operation supersedes it."
-  (require 'magent-action-builtin-memory)
-  (let ((magent-memory--operation-generation 0)
-        (magent-memory--active-operation nil)
-        old-continue new-continue (writes 0))
-    (cl-letf (((symbol-function 'magent-memory--write-profile)
-               (lambda (&rest _args)
-                 (cl-incf writes)
-                 (list :file "/tmp/memory.org"))))
-      (magent-memory-run
-       'clear :confirm-fn
-       (lambda (_plan continue) (setq old-continue continue)))
-      (magent-memory-run
-       'clear :confirm-fn
-       (lambda (_plan continue) (setq new-continue continue)))
-      (funcall old-continue t)
-      (should (= writes 0))
-      (funcall new-continue t)
-      (should (= writes 1)))))
 
 (ert-deftest magent-test-permission-child-intersection-preserves-resource-rules ()
   "Child permission intersections keep both profiles' resource rules."

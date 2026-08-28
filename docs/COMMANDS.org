@@ -11,24 +11,23 @@ Magent has one Action registry projected onto two user-facing command surfaces:
 - *Interactive commands* are ~M-x~ wrappers over Actions that opt into
   interactive exposure.
 
-The bundled package provides twelve slash commands by default. Doctor and the
-three Memory Actions also expose ~M-x magent-action-run-*~ wrappers and use
-isolated durable sessions.
+The bundled package provides nine slash commands by default. Doctor also
+exposes an ~M-x magent-action-run-*~ wrapper and uses an isolated durable
+session.
 
-Doctor and Memory are optional built-in Action groups. Customize
-~magent-action-enabled-builtins~, or change it with ~setopt~, to enable or
-disable either group at runtime:
+Doctor is an optional built-in Action group. Customize
+~magent-action-enabled-builtins~, or change it with ~setopt~, to disable it at
+runtime:
 
 #+begin_src elisp
-;; Keep Doctor; disable memory-init, memory-refresh, and memory-clear.
-(setopt magent-action-enabled-builtins '(doctor))
+;; Disable optional built-in maintenance Actions.
+(setopt magent-action-enabled-builtins nil)
 #+end_src
 
 The registry and active ACP command menus refresh immediately. A running
 Action is not interrupted; the setting applies to future discovery and
-invocation. The ~memory~ entry controls only the three memory-management
-Actions. Profile-memory injection remains independently controlled by
-~magent-memory-enable-auto-injection~.
+invocation. Trusted local extensions may register user-layer Actions and
+contribute request-local context through ~magent-context-provider-functions~.
 
 * Slash Commands
 
@@ -61,9 +60,6 @@ provider submission.
 | ~/authority~ | Show effective tool authority | Reports exposure, rule/override source, approval policy, and execution boundary without a provider request |
 | ~/skills~  | List instruction skills in this session scope | Local, provider-free discovery |
 | ~/doctor~  | Diagnose Magent and current runtime state | Uses bounded probes and one sanitized tool-free request |
-| ~/memory-init~ | Build Emacs profile memory | Uses an isolated Action session and confirmation |
-| ~/memory-refresh~ | Refresh managed profile memory | Preserves user notes in an isolated Action session |
-| ~/memory-clear~ | Deactivate managed memory | Confirms and clears generated content locally |
 
 ** ~/compact~
 
@@ -329,8 +325,8 @@ project-local ~.magent/skills/~ or ~~/.agents/skills/~.
 
 * Isolated Action Workflows
 
-Doctor and Memory can be invoked through their slash names or the M-x wrappers
-below. Both surfaces execute the same Action spec. Every run gets an isolated
+Doctor can be invoked through its slash name or the M-x wrapper below. Both
+surfaces execute the same Action spec. Every run gets an isolated
 session under ~magent-session-directory/actions~ and records only a compact
 breadcrumb in
 the originating conversation.
@@ -340,27 +336,7 @@ old files are left untouched on disk.
 
 | Emacs command                  | Workflow | LLM behavior |
 |--------------------------------+----------+--------------|
-| ~magent-action-run-memory-init~       | Build initial Emacs profile memory | Uses the current gptel provider when ~magent-memory-use-llm~ is non-nil |
-| ~magent-action-run-memory-refresh~    | Refresh managed profile memory | Uses the current gptel provider when ~magent-memory-use-llm~ is non-nil |
-| ~magent-action-run-memory-clear~      | Deactivate and clear managed memory | Local operation; does not request an LLM summary |
 | ~magent-action-run-doctor~            | Diagnose Magent and current runtime state | Sends one sanitized, tool-free analysis request |
-
-** Memory Initialization And Refresh
-
-~M-x magent-action-run-memory-init~ discovers bounded Emacs configuration sources,
-shows a scan plan for approval, and writes the managed profile memory file.
-~M-x magent-action-run-memory-refresh~ repeats the scan while preserving user notes.
-
-By default, init and refresh summarize sanitized source excerpts with the
-current gptel provider. Customize ~magent-memory-use-llm~ to ~nil~ to write a
-deterministic skeleton and source index without sending configuration excerpts
-to the provider.
-
-** Memory Clear
-
-~M-x magent-action-run-memory-clear~ deactivates the managed profile and clears its
-generated content after confirmation. User notes and a snapshot are retained.
-This workflow does not perform an LLM summarization request.
 
 ** Doctor
 
@@ -376,7 +352,6 @@ boundary.
 |-----------------------------------+---------|
 | ~magent-action-list-sessions~   | Select a saved Action session and inspect its final result and activity |
 | ~magent-action-cancel~          | Cancel an active isolated Action that exposes cancellation |
-| ~magent-open-memory~              | Open the managed Emacs profile memory file |
 
 Action-session viewers show the final result first and keep detailed activity
 collapsed by default. Cancellation is session-scoped and does not cancel work
@@ -386,7 +361,7 @@ belonging to unrelated Magent conversations.
 
 - Use a slash command when the task belongs to the current coding conversation
   and should reuse its agent, context, and transcript.
-- Use Doctor or a Memory command when maintenance or sanitized diagnosis needs
-  its own durable session; choose slash or M-x according to the current UI.
+- Use Doctor when sanitized diagnosis needs its own durable session; choose
+  slash or M-x according to the current UI.
 - Use ~magent-start~ to enter Magent, then agent-shell's native prompt and
   context commands for free-form requests rather than a predefined workflow.

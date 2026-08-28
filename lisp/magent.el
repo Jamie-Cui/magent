@@ -92,7 +92,6 @@
 (require 'magent-sampling-gptel)
 (require 'magent-action-session)
 (require 'magent-action-session-view)
-(require 'magent-action-builtin-memory)
 (require 'magent-action-builtin-doctor)
 (require 'magent-agent-loop)
 (require 'magent-session)

@@ -55,6 +55,19 @@ The default value is read from prompts/system.org in the package."
   :type 'string
   :group 'magent)
 
+(defcustom magent-context-provider-functions nil
+  "Trusted functions that contribute request-local system context.
+
+Each function is called with three arguments: the user prompt, the current
+`magent-request-context' (or nil), and the current project root (or nil).  It
+must return either a non-empty string containing one self-contained context
+block or nil.  Providers run as trusted local Elisp; failures and invalid
+return values are logged and ignored so an optional provider cannot break the
+agent turn.  Context blocks are inserted in list order before active skills
+and the final runtime trust policy."
+  :type '(repeat function)
+  :group 'magent)
+
 (defcustom magent-skill-search-endpoint "https://skills.sh/api/search"
   "HTTP endpoint used by `magent-find-skill'."
   :type 'string
@@ -266,19 +279,16 @@ start immediately or `latest' to load the most recent session automatically."
              (fboundp 'magent-action-builtins-register))
     (magent-action-builtins-register value)))
 
-(defcustom magent-action-enabled-builtins '(doctor memory)
+(defcustom magent-action-enabled-builtins '(doctor)
   "Optional built-in Action groups registered by Magent.
 
-The `doctor' entry controls the Doctor Action.  The `memory' entry controls
-the `memory-init', `memory-refresh', and `memory-clear' Actions as one group;
-it does not control profile-memory injection.  Other bundled prompt and
+The `doctor' entry controls the Doctor Action.  Other bundled prompt and
 session-control Actions are always registered.
 
 Changes made through Customize or `setopt' take effect immediately for future
 Action discovery and invocation.  An Action already in progress is allowed to
 finish."
-  :type '(set (const :tag "Doctor diagnostics" doctor)
-              (const :tag "Memory management" memory))
+  :type '(set (const :tag "Doctor diagnostics" doctor))
   :set #'magent-action--set-enabled-builtins
   :group 'magent)
 
@@ -511,86 +521,6 @@ metadata, for example a package workflow family or a debugging
 family.  A locally enabled capability can still override this for
 that one capability."
   :type '(repeat string)
-  :group 'magent)
-
-(defcustom magent-memory-directory
-  (expand-file-name "magent/memory/" user-emacs-directory)
-  "Directory where Magent stores local Emacs profile memory."
-  :type 'directory
-  :group 'magent)
-
-(defcustom magent-memory-file-name "emacs-profile.org"
-  "File name used for the active Emacs profile memory Org file."
-  :type 'string
-  :group 'magent)
-
-(defcustom magent-memory-use-llm t
-  "Whether memory init and refresh use the current gptel provider.
-When nil, Magent writes a deterministic skeleton and source index without
-sending any configuration excerpts to the provider."
-  :type 'boolean
-  :group 'magent)
-
-(defcustom magent-memory-open-after-write t
-  "Whether interactive memory init and refresh open the memory file."
-  :type 'boolean
-  :group 'magent)
-
-(defcustom magent-memory-enable-auto-injection t
-  "Whether Magent may inject relevant Emacs profile memory into prompts."
-  :type 'boolean
-  :group 'magent)
-
-(defcustom magent-memory-scan-custom-file nil
-  "Whether memory scans may read `custom-file' contents.
-When nil, the custom file path is recorded but its contents are not read."
-  :type 'boolean
-  :group 'magent)
-
-(defcustom magent-memory-max-scan-bytes 200000
-  "Maximum total bytes read during one Emacs profile memory scan."
-  :type 'integer
-  :group 'magent)
-
-(defcustom magent-memory-max-file-bytes 30000
-  "Maximum bytes read from any one file during memory scanning."
-  :type 'integer
-  :group 'magent)
-
-(defcustom magent-memory-max-files 80
-  "Maximum number of files read during one Emacs profile memory scan."
-  :type 'integer
-  :group 'magent)
-
-(defcustom magent-memory-extra-scan-roots nil
-  "Additional Emacs configuration roots included in memory scan plans."
-  :type '(repeat directory)
-  :group 'magent)
-
-(defcustom magent-memory-exclude-patterns
-  '("/\\.git/"
-    "/\\.cache/"
-    "/auto-save-list/"
-    "/eln-cache/"
-    "/elpa/"
-    "/straight/repos/"
-    "/straight/build/"
-    "/elpaca/repos/"
-    "/elpaca/builds/"
-    "/var/"
-    "/cache/")
-  "Regexps for paths excluded from Emacs profile memory scans."
-  :type '(repeat regexp)
-  :group 'magent)
-
-(defcustom magent-memory-injection-max-chars 6000
-  "Maximum characters of Emacs profile memory injected into a prompt."
-  :type 'integer
-  :group 'magent)
-
-(defcustom magent-memory-max-injected-sections 3
-  "Maximum number of memory sections injected into one prompt."
-  :type 'integer
   :group 'magent)
 
 (defcustom magent-doctor-probe-timeout 2

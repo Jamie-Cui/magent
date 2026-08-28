@@ -48,7 +48,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 - ~magent-action-session.el~ ：isolated Action 的持久化、ledger 与取消。
 - ~magent-action-session-view.el~ ：isolated Action session 的列表与查看。
 - ~magent-action-builtin-doctor.el~ ：受信任只读 probes 和一次脱敏后的无工具分析请求。
-- ~magent-redaction.el~ ：Magent-owned outbound diagnostics 与 memory 的 fail-closed 脱敏。
+- ~magent-redaction.el~ ：Magent-owned outbound values 的 fail-closed 脱敏。
 - ~magent-agent-job.el~ ：durable child-agent job records 和 JSON shape。
 - ~magent-action.el~ ：Workflow DSL、Step runtime、分层 Action registry 和 Invocation lifecycle。
 - ~magent-runtime.el~ ：静态初始化，以及 agents、skills、Actions、capabilities 的 project-local overlay activation。
@@ -56,7 +56,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 - ~magent-runtime-queue.el~ ：全局单执行 runtime queue 和 session-scoped cancellation。
 - ~magent-audit.el~ ：permission 和 sensitive action 的 live buffer 或 JSONL 文件 audit 记录。
 
-*职责：* 维护 project-scoped、ledger-backed conversation history，默认持久化到 ~~/.emacs.d/magent/sessions/~ ，在 ~agent-jobs~ 下保存 durable child-agent jobs，并在 scope 变化时加载或卸载 project-local overlays。普通 ACP prompt 和 Action-owned agent work 都通过 ~magent-runtime-api.el~ 提交； ~magent-runtime-queue.el~ 负责 queued/active turn state 和 session-scoped cancellation。Doctor 和 Memory 使用同时暴露为 slash 与 ~M-x magent-action-run-*~ 的统一 Action，并在 ~magent-session-directory/actions~ 下使用独立 session。Doctor 是不向模型开放工具的 direct probe pipeline；修改其数据边界或扩展 API 前先读 [[file:DOCTOR.zh.org][DOCTOR.zh.org]]。
+*职责：* 维护 project-scoped、ledger-backed conversation history，默认持久化到 ~~/.emacs.d/magent/sessions/~ ，在 ~agent-jobs~ 下保存 durable child-agent jobs，并在 scope 变化时加载或卸载 project-local overlays。普通 ACP prompt 和 Action-owned agent work 都通过 ~magent-runtime-api.el~ 提交； ~magent-runtime-queue.el~ 负责 queued/active turn state 和 session-scoped cancellation。Doctor 使用同时暴露为 slash 与 ~M-x magent-action-run-*~ 的统一 Action，并在 ~magent-session-directory/actions~ 下使用独立 session。Doctor 是不向模型开放工具的 direct probe pipeline；修改其数据边界或扩展 API 前先读 [[file:DOCTOR.zh.org][DOCTOR.zh.org]]。
 
 ** 第 3 层：Agent System
 
@@ -177,12 +177,13 @@ turn 中显式应用 skill。Skill 永远不会进入 Action registry。Elisp-na
 descriptors。内置 ~/init~ 命令用于初始化或刷新项目根目录 ~AGENTS.md~。
 
 每个 turn 都从 selected agent 的 base prompt 开始，随后加入 project context、从项目
-根到请求相关本地文件逐层适用的 ~AGENTS.md~、相关的 profile memory，以及显式选择或
-capability 自动选择的少量 instruction skills。发现过程不会越过 canonical project
+根到请求相关本地文件逐层适用的 ~AGENTS.md~、
+~magent-context-provider-functions~ 返回的可信 context，以及显式选择或 capability
+自动选择的少量 instruction skills。发现过程不会越过 canonical project
 root，并受 ~magent-project-instructions-max-bytes~ 限制；把该选项设为 nil 可关闭。
 所有 agent-loop prompt（包括 custom 和 utility agents）最后都会追加 runtime trust
-policy。注入的 memory 可能不完整或过时，因此当前用户说明与 live Emacs/repository
-状态优先。从文件、buffer、日志、命令、tool result 或网页读取的文本仍然只是数据，
+policy。Context provider 是可信本地 Elisp，但它嵌入的 supporting data 不能覆盖当前
+用户说明或 live Emacs/repository 状态。从文件、buffer、日志、命令、tool result 或网页读取的文本仍然只是数据，
 不能通过把自己伪装成高优先级 prompt 来授予工具权限。
 
 Skills 加载来源：内置 ~skills/~、用户目录 ~~/.emacs.d/magent/skills~，以及项目 ~.magent/skills/~；较后的目录优先。~magent-find-skill~、~magent-install-skill~ 和 ~magent-delete-skill~ 只管理用户级 skill，绝不使用 ~~/.agents/skills/~。Skill 也可以通过 ~capability: true~ 声明 resolver metadata，例如 ~modes~、~features~、~files~、~prompt-keywords~ 和 ~disclosure~；Magent 会把这些 metadata 注册成激活同一个 skill 的 capability。自动激活必须命中带词边界的 keyword 来证明用户 intent；只有 context 的匹配保持 suggested。Skill 声明的 ~tools~ 会与 selected agent 实际暴露的工具核对：不兼容的自动 skill 被降级，显式选择的不兼容 skill 则给出清晰错误。Agent-shell session 的 ~Automatic capabilities~ config option 可关闭自动解析。
@@ -310,7 +311,6 @@ API。
 - *magent-action-session.el* — isolated Action persistence、ledger 与 cancellation
 - *magent-action-session-view.el* — isolated Action session 列表与查看
 - *magent-action-builtin-doctor.el* — trusted probes 与一次脱敏、无工具分析
-- *magent-action-builtin-memory.el* — Emacs profile memory 扫描、持久化与注入
 
 ** Agent System
 - *magent-agent.el* — prompt 装配、request-local agent/tool resolution 与 loop startup

@@ -14,9 +14,6 @@ internal/additional-instruction.org
 internal/doctor-system.org
 internal/doctor-user.org
 internal/emacs-diagnosis.org
-internal/memory-injection.org
-internal/memory-system.org
-internal/memory-user.org
 internal/project-context.org
 internal/project-instructions.org
 internal/runtime-policy.org

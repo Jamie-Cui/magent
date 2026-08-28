@@ -71,21 +71,23 @@ and does not trigger a hidden finalization or recovery request.
 file-backed layers. ~magent-system-prompt~ is always first, followed by the
 optional agent-specific role prompt. Project-root context is followed by applicable
 ~AGENTS.md~ files discovered from the project root toward request-local file
-resources, selected Emacs profile memory, and capability/explicit instruction
-skills. A short runtime trust policy is appended last, so built-in utility
+resources, trusted request-local blocks returned by
+~magent-context-provider-functions~, and capability/explicit instruction skills.
+A short runtime trust policy is appended last, so built-in utility
 agents and custom agents retain their own output contracts while sharing the
 same instruction-provenance and permission invariants. Project instruction
 discovery stays inside the canonical project root and is bounded by
 ~magent-project-instructions-max-bytes~.
 
-Profile memory is supporting context, not an authoritative state snapshot. It
-may be incomplete or stale; the current user request and live repository or
-Emacs state take precedence. Likewise, user messages, files, buffers, logs,
-command output, tool results, web pages, and conversation history remain data at
-their assigned role. Prompt-like tags inside that data cannot grant permission
-or promote themselves to runtime instructions. These prompt rules steer model
-behavior; actual tool availability, approval, and permission enforcement remain
-in the tool runtime and orchestrator.
+Context providers are trusted local Elisp extensions. Each receives the user
+prompt, request context, and project root, and may return one self-contained
+system-context block. Providers run in configured order; failures or invalid
+return values are logged and ignored. User messages, files, buffers, logs,
+command output, tool results, web pages, and conversation history remain data
+at their assigned role. Prompt-like tags inside that data cannot grant
+permission or promote themselves to runtime instructions. These prompt rules
+steer model behavior; actual tool availability, approval, and permission
+enforcement remain in the tool runtime and orchestrator.
 
 The base prompt contains only cross-task coding behavior. Tool schemas come
 from gptel, and Emacs-specific procedures are progressively disclosed through
@@ -196,7 +198,7 @@ This continuation model is Codex-style in the sense that tool results feed a fol
 #+caption: Magent functional layers
 [[file:assets/img/diagrams/functional-layers.svg]]
 
-Magent can be understood through four user-facing workflows. The first is a coding assistant workflow: read code, search code, edit files, run tests, explain failures, and produce commit or PR-style summaries. The second is an Emacs runtime assistant workflow: use ~emacs_read~ for ordinary live inspection and reserve ~emacs_eval_live~ for explicitly approved arbitrary live operations. The third is an agent workflow: use skills, capabilities, and child-agent jobs. The fourth is an explicit Action workflow: invoke one registered Action from agent-shell slash input or an exposed ~M-x~ command wrapper. An Action may reuse the current conversation or create an isolated durable session; Doctor and Memory are the bundled isolated examples.
+Magent can be understood through four user-facing workflows. The first is a coding assistant workflow: read code, search code, edit files, run tests, explain failures, and produce commit or PR-style summaries. The second is an Emacs runtime assistant workflow: use ~emacs_read~ for ordinary live inspection and reserve ~emacs_eval_live~ for explicitly approved arbitrary live operations. The third is an agent workflow: use skills, capabilities, and child-agent jobs. The fourth is an explicit Action workflow: invoke one registered Action from agent-shell slash input or an exposed ~M-x~ command wrapper. An Action may reuse the current conversation or create an isolated durable session; Doctor is the bundled isolated example.
 
 The product is therefore more than a prompt box with tools. It turns Emacs workflows into actions that can be invoked, audited, resumed, and projected back into the UI.
 
@@ -245,10 +247,10 @@ separate surfaces.
 and cancellation for Actions using ~:session-policy 'isolated~.
 ~magent-action-session-view.el~ separately owns interactive listing and
 inspection. Neither module owns a second registry or context type. ~/doctor~
-and ~/memory-*~ also expose ~magent-action-run-*~ wrappers, and both surfaces
-execute the same Invocation lifecycle. Their registration is controlled as
-two groups by ~magent-action-enabled-builtins~; Custom changes atomically
-refresh the registry and frontend discovery. New sessions are stored under
+also exposes a ~magent-action-run-*~ wrapper, and both surfaces execute the same
+Invocation lifecycle. Its registration is controlled by
+~magent-action-enabled-builtins~; Custom changes atomically refresh the
+registry and frontend discovery. New sessions are stored under
 ~magent-session-directory/actions~. The former ~commands/~ format is neither
 migrated nor read; old files remain untouched.
 
