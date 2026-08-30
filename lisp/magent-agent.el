@@ -83,7 +83,7 @@ was not already emitted as text deltas."
       (and request-state
            (let ((scope (magent-request-context-scope request-state)))
              (and (stringp scope) scope)))
-      (ignore-errors (magent-project-root nil t))))
+      (magent-project-root nil t)))
 
 (defun magent-agent--capabilities-enabled-p (request-context)
   "Return whether capability resolution is enabled for REQUEST-CONTEXT."

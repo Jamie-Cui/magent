@@ -178,14 +178,15 @@ redacted.  Signal `magent-redaction-unsafe-value' for non-string input."
 PROJECT-ROOT is replaced before the home and temporary directories."
   (unless (stringp string)
     (signal 'magent-redaction-unsafe-value '("Expected path string")))
+  (unless (or (null project-root) (stringp project-root))
+    (signal 'magent-redaction-unsafe-value '("Expected project root string")))
   (let ((result string)
         (roots `((,project-root . "$PROJECT")
                  (,(expand-file-name "~") . "$HOME")
                  (,temporary-file-directory . "$TMP"))))
     (dolist (entry roots result)
       (when-let* ((root (car entry))
-                  (expanded (ignore-errors
-                              (directory-file-name (expand-file-name root))))
+                  (expanded (directory-file-name (expand-file-name root)))
                   ((not (string-empty-p expanded))))
         (setq result
               (replace-regexp-in-string

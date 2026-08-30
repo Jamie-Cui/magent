@@ -1302,7 +1302,7 @@ Return nil when BODY alone exceeds the configured session quota."
          (path (expand-file-name (concat safe-result ".txt") directory)))
     (unless (and (file-regular-p path)
                  (file-in-directory-p path directory))
-      (error "tool_result_not_found: %s" result-id))
+      (error "Error tool_result_not_found: %s" result-id))
     path))
 
 (defun magent-tool-output-spill-delete-session (scope session-id)

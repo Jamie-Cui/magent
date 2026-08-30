@@ -346,7 +346,7 @@ Returns t if ask, nil otherwise."
   "Return SESSION or the current Magent session."
   (or session
       (and (fboundp 'magent-session-get)
-           (ignore-errors (magent-session-get)))))
+           (magent-session-get))))
 
 (defun magent-permission-session-override (perm-key &optional session)
   "Return session override for PERM-KEY in SESSION, or nil if none."

@@ -211,11 +211,11 @@ Bundled and project-local skills are intentionally excluded."
           (condition-case err
               (progn
                 (when (plist-get status :error)
-                  (error "skills.sh request failed: %s"
+                  (error "Skills.sh request failed: %s"
                          (plist-get status :error)))
                 (unless (and (boundp 'url-http-response-status)
                              (= url-http-response-status 200))
-                  (error "skills.sh returned HTTP %s"
+                  (error "Skills.sh returned HTTP %s"
                          (if (boundp 'url-http-response-status)
                              url-http-response-status
                            "unknown")))
@@ -327,7 +327,7 @@ Bundled and project-local skills are intentionally excluded."
       (let ((status (apply #'process-file "git" nil t nil
                            "-c" "credential.helper=" arguments)))
         (unless (zerop status)
-          (error "git %s failed: %s"
+          (error "Git %s failed: %s"
                  (car arguments) (string-trim (buffer-string))))
         (string-trim (buffer-string))))))
 
@@ -582,7 +582,7 @@ Prefer SUBDIRECTORY, otherwise select EXPECTED-NAME or prompt when needed."
                     destination)))
     (unless
         (y-or-n-p
-         (format "%s %s?\nDescription: %s\nSource: %s\nCommit: %s\nDestination: %s\nFiles: %d (%s)%s\nProceed "
+         (format "%s %s?\nDescription: %s\nSource: %s\nCommit: %s\nDestination: %s\nFiles: %d (%s)%s\nProceed?"
                  (if existing-p "Reinstall" "Install")
                  (magent-skill-package-name package)
                  (magent-skill-package-description package)
@@ -623,7 +623,11 @@ Prefer SUBDIRECTORY, otherwise select EXPECTED-NAME or prompt when needed."
                  (magent-skill-manager--remove-path destination))
                (when (file-exists-p backup)
                  (rename-file backup destination))
-               (ignore-errors (magent-skills-reload))
+               (condition-case reload-error
+                   (magent-skills-reload)
+                 (error
+                  (message "Magent skill rollback reload failed: %s"
+                           (error-message-string reload-error))))
                (signal (car err) (cdr err)))))
         (when (and staging (file-exists-p staging))
           (delete-directory staging t))

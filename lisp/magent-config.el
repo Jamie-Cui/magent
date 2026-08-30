@@ -582,16 +582,15 @@ set by BODY.  BODY runs with `inhibit-read-only' bound to t."
   "Return the project root for DIRECTORY.
 Uses `magent-project-root-function' if set, then tries projectile
 and project.el.  Unless NO-FALLBACK is non-nil, return DIRECTORY
-(or `default-directory') if no project root can be determined."
+\=(or `default-directory') if no project root can be determined."
   (let ((default-directory (or directory default-directory)))
     (or (when (bound-and-true-p magent-project-root-function)
           (funcall magent-project-root-function))
         (when (fboundp 'projectile-project-root)
-          (ignore-errors (projectile-project-root)))
+          (projectile-project-root))
         (when (fboundp 'project-current)
-          (ignore-errors
-            (when-let* ((proj (project-current nil)))
-              (project-root proj))))
+          (when-let* ((proj (project-current nil)))
+            (project-root proj)))
         (unless no-fallback
           default-directory))))
 

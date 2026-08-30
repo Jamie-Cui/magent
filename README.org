@@ -4,6 +4,7 @@
 [[https://github.com/Jamie-Cui/magent/actions/workflows/test.yml][https://github.com/Jamie-Cui/magent/actions/workflows/test.yml/badge.svg]]
 [[https://github.com/Jamie-Cui/magent/actions/workflows/coverage.yml][https://github.com/Jamie-Cui/magent/actions/workflows/coverage.yml/badge.svg]]
 [[https://github.com/Jamie-Cui/magent/actions/workflows/melpazoid.yml][https://github.com/Jamie-Cui/magent/actions/workflows/melpazoid.yml/badge.svg]]
+[[https://melpa.org/#/magent][https://melpa.org/packages/magent-badge.svg]]
 
 An Emacs Lisp AI coding agent with multi-agent architecture, permission-based
 tool access, an Elisp-native slash-command extension API through
@@ -74,6 +75,25 @@ input or selected from agent-shell's slash menu.  The complete
 
 * Installation
 
+** Installing from MELPA
+
+Magent is available from [[https://melpa.org/#/magent][MELPA]].  Once MELPA is configured in
+~package-archives~, install Magent with:
+
+#+begin_example
+M-x package-refresh-contents RET
+M-x package-install RET magent RET
+#+end_example
+
+With ~use-package~:
+
+#+begin_src elisp
+(use-package magent
+  :ensure t
+  :config
+  (magent-agent-shell-ensure-config))
+#+end_src
+
 ** Manual Installation
 
 Add the project to your Emacs load path:
@@ -82,15 +102,6 @@ Add the project to your Emacs load path:
 (add-to-list 'load-path "/path/to/magent/lisp")
 (require 'magent)
 (magent-agent-shell-ensure-config)
-#+end_src
-
-** Using ~use-package~
-
-#+begin_src elisp
-(use-package magent
-  :load-path "/path/to/magent/lisp"
-  :config
-  (magent-agent-shell-ensure-config))
 #+end_src
 
 ** Installing from Git with ~use-package~
