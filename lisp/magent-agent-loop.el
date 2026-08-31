@@ -250,8 +250,10 @@ being normalized into structured tool calls."
 (defun magent-agent-loop--tool-name (tool-spec raw-call)
   "Return tool name from TOOL-SPEC or RAW-CALL."
   (or (and tool-spec
+           (fboundp 'gptel-tool-p)
+           (gptel-tool-p tool-spec)
            (fboundp 'gptel-tool-name)
-           (ignore-errors (gptel-tool-name tool-spec)))
+           (gptel-tool-name tool-spec))
       (plist-get raw-call :name)
       "unknown"))
 

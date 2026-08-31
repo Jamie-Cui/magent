@@ -179,8 +179,8 @@ objects, and other live runtime state so lifecycle sinks and completed
                                         (secure-hash 'sha256 canonical-root)
                                         0 16))
                       :agent (cond
-                              ((and agent (fboundp 'magent-agent-info-name))
-                               (ignore-errors (magent-agent-info-name agent)))
+                              ((magent-agent-info-p agent)
+                               (magent-agent-info-name agent))
                               ((symbolp agent) (symbol-name agent))
                               ((stringp agent) agent))
                       :turn-id
@@ -359,8 +359,12 @@ When FORCE is non-nil, reload the overlay even if SCOPE is unchanged."
            ;; restore the exact definitions that were active before the
            ;; switch.  The original activation error remains authoritative.
            (when target-project-scope
-             (ignore-errors
-               (magent-runtime--unload-project-overlay target-project-scope)))
+             (condition-case cleanup-error
+                 (magent-runtime--unload-project-overlay target-project-scope)
+               (error
+                (magent-log
+                 "WARN failed to unload partial project overlay during rollback: %s"
+                 (error-message-string cleanup-error)))))
            (magent-runtime--restore-overlay-state snapshot)
            (setq magent-runtime--active-project-scope previous-scope)
            (signal (car err) (cdr err)))))))

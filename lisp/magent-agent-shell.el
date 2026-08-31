@@ -32,7 +32,7 @@
 (declare-function agent-shell-start "agent-shell")
 
 (defconst magent-agent-shell--identifier 'magent
-  "agent-shell config identifier used by Magent.")
+  "Agent-shell config identifier used by Magent.")
 
 (defvar-local magent-agent-shell--owns-session-strategy-p nil
   "Non-nil when Magent installed the buffer-local session strategy.")
@@ -107,7 +107,7 @@ discovery."
 (defun magent-agent-shell--magent-buffer-p (buffer)
   "Return non-nil when BUFFER uses Magent's agent-shell config."
   (and (buffer-live-p buffer)
-       (eq (map-elt (ignore-errors (agent-shell-get-config buffer))
+       (eq (map-elt (agent-shell-get-config buffer)
                     :identifier)
            magent-agent-shell--identifier)))
 

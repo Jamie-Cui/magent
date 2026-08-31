@@ -51,7 +51,7 @@ If no frontmatter is found, returns (nil . CONTENT)."
 Return nil for nested or otherwise complex YAML so `yaml-parse-string' owns
 those cases.  Saved agent files use JSON-compatible scalar quoting, which is
 decoded here because yaml.el currently mishandles a doubled backslash before
-letters such as `t'."
+letters such as `q'."
   (let (result)
     (catch 'complex
       (dolist (line (split-string header "\n"))

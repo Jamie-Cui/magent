@@ -377,8 +377,9 @@ blocks do not hide an otherwise valid JSON error response."
                                (point) response-end)))
                        (response
                         (and (not (string-empty-p body))
-                             (ignore-errors
-                               (gptel--json-read-string body))))
+                             (condition-case nil
+                                 (gptel--json-read-string body)
+                               ((json-error json-parse-error) nil))))
                        (provider-error
                         (and response
                              (gptel--parse-response-error response))))
@@ -822,9 +823,11 @@ context remains paused for Magent recovery."
 
 (defun magent-sampling-gptel--tool-name (tool-spec raw-call)
   "Return the tool name from TOOL-SPEC or RAW-CALL."
-  (or (and (fboundp 'gptel-tool-name)
+  (or (and (fboundp 'gptel-tool-p)
            tool-spec
-           (ignore-errors (gptel-tool-name tool-spec)))
+           (gptel-tool-p tool-spec)
+           (fboundp 'gptel-tool-name)
+           (gptel-tool-name tool-spec))
       (plist-get raw-call :name)))
 
 (defun magent-sampling-gptel--tool-id (raw-call)

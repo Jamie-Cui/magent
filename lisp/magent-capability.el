@@ -543,7 +543,7 @@ source for contextual capability resolution."
                               (file-name-extension file-path))
             :major-mode major-mode
             :major-mode-family major-mode-family
-            :project-root (ignore-errors (magent-project-root nil t))
+            :project-root (magent-project-root nil t)
             :region-active (use-region-p)
             :buffer-modified-p (buffer-modified-p)
             :features features))))

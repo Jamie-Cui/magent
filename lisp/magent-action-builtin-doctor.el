@@ -240,13 +240,16 @@ values.  Custom probes execute as trusted Emacs Lisp and are not sandboxed."
   "Return the current provider name without printing its backend object."
   (or (and (boundp 'gptel-backend)
            gptel-backend
+           (fboundp 'gptel-backend-p)
+           (gptel-backend-p gptel-backend)
            (fboundp 'gptel-backend-name)
-           (ignore-errors (gptel-backend-name gptel-backend)))
+           (gptel-backend-name gptel-backend))
       "gptel"))
 
 (defun magent-doctor--feature-source (feature)
   "Return the library path for FEATURE, or nil."
-  (ignore-errors (locate-library (symbol-name feature))))
+  (and (symbolp feature)
+       (locate-library (symbol-name feature))))
 
 (defun magent-doctor--core-collector (context _state)
   "Collect bounded Magent runtime facts for CONTEXT."
@@ -462,8 +465,9 @@ output data."
                                 (bound-and-true-p eglot-managed-mode)))
               (connected
                . ,(magent-doctor--json-bool
-                   (and (fboundp 'eglot-current-server)
-                        (ignore-errors (eglot-current-server)))))))))
+                   (and (bound-and-true-p eglot-managed-mode)
+                        (fboundp 'eglot-current-server)
+                        (eglot-current-server))))))))
     '((status . "origin buffer is no longer live"))))
 
 (defun magent-doctor--buffer-tail (buffer &optional lines)
@@ -500,6 +504,15 @@ output data."
       (warnings . ,(magent-doctor--filtered-log-tail "*Warnings*" filter))
       (messages . ,(magent-doctor--filtered-log-tail "*Messages*" filter)))))
 
+(defun magent-doctor--directory-in-project-p (directory root)
+  "Return non-nil when DIRECTORY is within project ROOT.
+Return nil when either path is unavailable or cannot be inspected."
+  (and (stringp directory)
+       (stringp root)
+       (condition-case nil
+           (file-in-directory-p directory root)
+         (file-error nil))))
+
 (defun magent-doctor--compilation-predicate (context)
   "Return non-nil when CONTEXT has project compilation buffers."
   (when-let* ((root (magent-doctor--project-root context)))
@@ -507,7 +520,8 @@ output data."
      (lambda (buffer)
        (with-current-buffer buffer
          (and (derived-mode-p 'compilation-mode)
-              (ignore-errors (file-in-directory-p default-directory root)))))
+              (magent-doctor--directory-in-project-p
+               default-directory root))))
      (buffer-list))))
 
 (defun magent-doctor--compilation-collector (context _state)
@@ -518,8 +532,8 @@ output data."
       (when (and (< (length results) 3)
                  (with-current-buffer buffer
                    (and (derived-mode-p 'compilation-mode)
-                        (ignore-errors
-                          (file-in-directory-p default-directory root)))))
+                        (magent-doctor--directory-in-project-p
+                         default-directory root))))
         (push `((buffer . ,(buffer-name buffer))
                 (tail . ,(magent-doctor--buffer-tail buffer)))
               results)))

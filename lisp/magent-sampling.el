@@ -146,7 +146,7 @@ Recognized keys are `:prompt', `:system', `:tools', `:model',
 `:backend', `:stream', `:callback', and `:metadata'."
   (let ((callback (plist-get args :callback)))
     (when (and callback (not (functionp callback)))
-      (error "sampling request callback is not callable: %S" callback))
+      (error "Sampling request callback is not callable: %S" callback))
     (magent-sampling-request--create
      :prompt (plist-get args :prompt)
      :system (plist-get args :system)

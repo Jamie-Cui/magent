@@ -196,10 +196,12 @@ absolute versus project-relative spellings of the same resource."
     (setq line-count nil))
   (unless (or (null start-line)
               (and (integerp start-line) (> start-line 0)))
-    (error "start_line must be a positive integer (got %S)" start-line))
+    (error "Invalid input: start_line must be a positive integer (got %S)"
+           start-line))
   (unless (or (null line-count)
               (and (integerp line-count) (> line-count 0)))
-    (error "line_count must be a positive integer (got %S)" line-count))
+    (error "Invalid input: line_count must be a positive integer (got %S)"
+           line-count))
   (cons (or start-line 1)
         (or line-count magent-tools--read-file-default-line-count)))
 
@@ -267,17 +269,17 @@ included in the result header.  PAGE-MAX-CHARACTERS defaults to the fixed
   "Require PATH to match EXPECTED-REVISION or the sentinel \"absent\"."
   (unless (and (stringp expected-revision)
                (not (string-empty-p expected-revision)))
-    (error "expected_revision must be a non-empty string"))
+    (error "Invalid input: expected_revision must be a non-empty string"))
   (if (file-exists-p path)
       (progn
         (when (equal expected-revision "absent")
-          (error "stale_revision: %s already exists" path))
+          (error "Error stale_revision: %s already exists" path))
         (let ((actual (magent-tools--file-revision path)))
           (unless (equal actual expected-revision)
-            (error "stale_revision: expected %s but found %s for %s"
+            (error "Error stale_revision: expected %s but found %s for %s"
                    expected-revision actual path))))
     (unless (equal expected-revision "absent")
-      (error "stale_revision: %s no longer exists" path))))
+      (error "Error stale_revision: %s no longer exists" path))))
 
 (defun magent-tools--read-file
     (callback path source &optional start-line line-count)
@@ -289,7 +291,7 @@ LINE-COUNT defaults to `magent-tools--read-file-default-line-count'."
         (unless (stringp path)
           (error "Missing required argument 'path' (got %S)" path))
         (unless (member source '("disk" "live-buffer"))
-          (error "source must be either disk or live-buffer"))
+          (error "Invalid input: source must be either disk or live-buffer"))
         (let* ((path (magent-tools--resolve-path path))
                (range (magent-tools--read-range start-line line-count))
                (buffer (and (equal source "live-buffer")
@@ -306,7 +308,8 @@ LINE-COUNT defaults to `magent-tools--read-file-default-line-count'."
                             revision))
                    nil (list :source "disk" :revision revision))))
             (unless (buffer-live-p buffer)
-              (error "buffer_not_found: no live buffer is visiting %s" path))
+              (error "Error buffer_not_found: no live buffer is visiting %s"
+                     path))
             (with-current-buffer buffer
               (let* ((revision (magent-tools--buffer-revision))
                      (metadata
@@ -334,7 +337,7 @@ stale buffer from disk without running revert hooks or reinitializing modes."
   (when-let* ((buffer (find-buffer-visiting path)))
     (with-current-buffer buffer
       (when (buffer-modified-p)
-        (error "buffer_conflict: visiting buffer %S has unsaved changes"
+        (error "Error buffer_conflict: visiting buffer %S has unsaved changes"
                (buffer-name buffer)))
       (unless (verify-visited-file-modtime buffer)
         (if refresh-stale
@@ -342,9 +345,9 @@ stale buffer from disk without running revert hooks or reinitializing modes."
                   (after-revert-hook nil))
               (revert-buffer t t t)
               (unless (verify-visited-file-modtime buffer)
-                (error "disk_conflict: %s changed while refreshing buffer %S"
+                (error "Error disk_conflict: %s changed while refreshing buffer %S"
                        path (buffer-name buffer))))
-          (error "disk_conflict: %s changed on disk since buffer %S visited it"
+          (error "Error disk_conflict: %s changed on disk since buffer %S visited it"
                  path (buffer-name buffer)))))
     buffer))
 
@@ -382,9 +385,10 @@ Signal a descriptive error mentioning PATH when the match is not unique."
           (cl-incf count)))
       (cond
        ((= count 0)
-        (error "old_text not found in %s" path))
+        (error "Invalid input: old_text not found in %s" path))
        ((> count 1)
-        (error "old_text found %d times in %s (must be unique)" count path)))
+        (error "Invalid input: old_text found %d times in %s (must be unique)"
+               count path)))
       (goto-char (point-min))
       (search-forward old-text)
       (replace-match new-text t t))))
@@ -684,9 +688,9 @@ and bounded by `magent-glob-max-results' and
   (condition-case err
       (progn
         (unless (and (stringp pattern) (not (string-empty-p pattern)))
-          (error "pattern must be a non-empty string"))
+          (error "Invalid input: pattern must be a non-empty string"))
         (unless (stringp path)
-          (error "path must be a string"))
+          (error "Invalid input: path must be a string"))
         (dolist (setting
                  `((magent-glob-max-results . ,magent-glob-max-results)
                    (magent-glob-max-files-scanned
@@ -801,9 +805,9 @@ CALLBACK is called with success message or error."
   (condition-case err
       (progn
         (unless (and (stringp old-text) (not (string-empty-p old-text)))
-          (error "old_text must be a non-empty string"))
+          (error "Invalid input: old_text must be a non-empty string"))
         (unless (stringp new-text)
-          (error "new_text must be a string"))
+          (error "Invalid input: new_text must be a string"))
         (let ((path (magent-tools--resolve-path path)))
           (magent-tools--assert-file-revision path expected-revision)
           (if-let* ((buffer (magent-tools--clean-visiting-buffer path t)))
@@ -904,10 +908,10 @@ CALLBACK is called with success message or error."
       (condition-case err
           (progn
             (unless (and (stringp sexp) (not (string-blank-p sexp)))
-              (error "sexp must be a non-blank string"))
+              (error "Invalid input: sexp must be a non-blank string"))
             (setq timeout (or timeout magent-emacs-eval-timeout))
             (unless (and (numberp timeout) (> timeout 0))
-              (error "timeout must be a positive number"))
+              (error "Invalid input: timeout must be a positive number"))
             (setq input-file (make-temp-file "magent-eval-" nil ".el"))
             (with-temp-file input-file
               (let ((coding-system-for-write 'utf-8-unix))
@@ -1000,7 +1004,7 @@ Evaluation runs in the user's context buffer when known
              (form (car parsed))
              (_single-form
               (unless (string-blank-p (substring sexp (cdr parsed)))
-                (error "emacs_eval accepts exactly one Lisp form")))
+                (error "Invalid input: emacs_eval accepts exactly one Lisp form")))
              (cancelled nil)
              (completed nil)
              timer
@@ -1152,7 +1156,7 @@ Evaluation runs in the user's context buffer when known
     ("buffer_info"
      (let ((buffer (magent-tools--emacs-read-buffer target)))
        (unless (buffer-live-p buffer)
-         (error "buffer_not_found: %s" (or target "request origin")))
+         (error "Error buffer_not_found: %s" (or target "request origin")))
        (with-current-buffer buffer
          (list :name (buffer-name buffer)
                :file buffer-file-name
@@ -1166,7 +1170,7 @@ Evaluation runs in the user's context buffer when known
     ("current_context"
      (let ((buffer (magent-tools--emacs-read-buffer nil)))
        (unless (buffer-live-p buffer)
-         (error "request origin buffer is unavailable"))
+         (error "Request origin buffer is unavailable"))
        (with-current-buffer buffer
          (list :buffer (buffer-name buffer)
                :file buffer-file-name
@@ -1180,10 +1184,10 @@ Evaluation runs in the user's context buffer when known
                :modified (buffer-modified-p)))))
     ("symbol_info"
      (unless (and (stringp target) (not (string-empty-p target)))
-       (error "symbol_info requires target"))
+       (error "Invalid input: symbol_info requires target"))
      (let ((symbol (intern-soft target)))
        (unless symbol
-         (error "unknown_symbol: %s" target))
+         (error "Error unknown_symbol: %s" target))
        (list :name (symbol-name symbol)
              :bound (boundp symbol)
              :function-bound (fboundp symbol)
@@ -1194,10 +1198,10 @@ Evaluation runs in the user's context buffer when known
              (documentation-property symbol 'variable-documentation t))))
     ("key_binding"
      (unless (and (stringp target) (not (string-empty-p target)))
-       (error "key_binding requires a key sequence target"))
+       (error "Invalid input: key_binding requires a key sequence target"))
      (let ((buffer (magent-tools--emacs-read-buffer nil)))
        (unless (buffer-live-p buffer)
-         (error "request origin buffer is unavailable"))
+         (error "Request origin buffer is unavailable"))
        (with-current-buffer buffer
          (let ((binding (key-binding (kbd target) t)))
            (list :key target
@@ -1206,13 +1210,13 @@ Evaluation runs in the user's context buffer when known
                  :major-mode major-mode)))))
     ("hook_members"
      (unless (and (stringp target) (not (string-empty-p target)))
-       (error "hook_members requires a hook variable target"))
+       (error "Invalid input: hook_members requires a hook variable target"))
      (let ((symbol (intern-soft target))
            (buffer (magent-tools--emacs-read-buffer nil)))
        (unless (and symbol (boundp symbol))
-         (error "unknown_hook: %s" target))
+         (error "Error unknown_hook: %s" target))
        (unless (buffer-live-p buffer)
-         (error "request origin buffer is unavailable"))
+         (error "Request origin buffer is unavailable"))
        (with-current-buffer buffer
          (let ((value (symbol-value symbol)))
            (list :hook target
@@ -1230,13 +1234,13 @@ Evaluation runs in the user's context buffer when known
                  default-directory))
             (project (project-current nil default-directory)))
        (unless project
-         (error "no project for %s" default-directory))
+         (error "No project for %s" default-directory))
        (list :root (project-root project)
              :buffer-count
              (if (fboundp 'project-buffers)
                  (length (project-buffers project))
                0))))
-    (_ (error "unsupported emacs_read operation: %s" operation))))
+    (_ (error "Error: unsupported emacs_read operation: %s" operation))))
 
 (defun magent-tools--emacs-read (callback operation &optional target)
   "Run trusted read-only OPERATION against live Emacs state."
@@ -1286,11 +1290,11 @@ Evaluation runs in the user's context buffer when known
     (setq character-count nil))
   (unless (or (null start-character)
               (and (integerp start-character) (> start-character 0)))
-    (error "start_character must be a positive integer (got %S)"
+    (error "Invalid input: start_character must be a positive integer (got %S)"
            start-character))
   (unless (or (null character-count)
               (and (integerp character-count) (> character-count 0)))
-    (error "character_count must be a positive integer (got %S)"
+    (error "Invalid input: character_count must be a positive integer (got %S)"
            character-count))
   (let ((page-budget (max 1 magent-tool-output-spill-page-characters)))
     (cons (or start-character 1)
@@ -1596,8 +1600,10 @@ parent and child instead of flattening them to one decision per tool."
   "Return BACKEND as a JSON-safe name."
   (cond
    ((null backend) nil)
-   ((and (fboundp 'gptel-backend-name)
-         (ignore-errors (gptel-backend-name backend))))
+   ((and (fboundp 'gptel-backend-p)
+         (gptel-backend-p backend)
+         (fboundp 'gptel-backend-name))
+    (gptel-backend-name backend))
    (t (format "%s" backend))))
 
 (defun magent-tools--agent-inheritance-metadata
@@ -1713,7 +1719,7 @@ When IDS is nil, return all jobs in chronological creation order."
   (if ids
       (mapcar (lambda (id)
                 (or (magent-session-agent-job session id)
-                    (error "agent job '%s' not found" id)))
+                    (error "Error: agent job '%s' not found" id)))
               ids)
     (reverse (magent-session-agent-jobs session))))
 
@@ -2150,7 +2156,7 @@ MAX-RESULTS is the maximum number of results to return (default 5)."
 
 (defun magent-tools--web-search-callback (status callback query max-results)
   "Handle HTTP response for web search.
-STATUS is the url-retrieve status list.
+STATUS is the `url-retrieve' status list.
 CALLBACK is called with formatted results.
 QUERY is the original search query.
 MAX-RESULTS is the maximum number of results."
@@ -2242,7 +2248,7 @@ See `magent-agent-loop-filter-display-args'.")
    :function #'magent-tools--read-file
    :async t
    :category "magent")
-  "gptel-tool struct for read_file.")
+  "Tool definition for `read_file'.")
 
 (defvar magent-tools--write-file-tool
   (gptel-make-tool
@@ -2262,7 +2268,7 @@ See `magent-agent-loop-filter-display-args'.")
    :async t
    :confirm t
    :category "magent")
-  "gptel-tool struct for write_file.")
+  "Tool definition for `write_file'.")
 
 (defvar magent-tools--edit-file-tool
   (gptel-make-tool
@@ -2286,7 +2292,7 @@ See `magent-agent-loop-filter-display-args'.")
    :async t
    :confirm t
    :category "magent")
-  "gptel-tool struct for edit_file.")
+  "Tool definition for `edit_file'.")
 
 (defvar magent-tools--grep-tool
   (gptel-make-tool
@@ -2306,7 +2312,7 @@ See `magent-agent-loop-filter-display-args'.")
    :function #'magent-tools--grep
    :async t
    :category "magent")
-  "gptel-tool struct for grep.")
+  "Tool definition for `grep'.")
 
 (defvar magent-tools--glob-tool
   (gptel-make-tool
@@ -2322,7 +2328,7 @@ See `magent-agent-loop-filter-display-args'.")
    :function #'magent-tools--glob
    :async t
    :category "magent")
-  "gptel-tool struct for glob.")
+  "Tool definition for `glob'.")
 
 (defvar magent-tools--bash-tool
   (gptel-make-tool
@@ -2336,7 +2342,7 @@ See `magent-agent-loop-filter-display-args'.")
    :async t
    :confirm t
    :category "magent")
-  "gptel-tool struct for bash.")
+  "Tool definition for `bash'.")
 
 (defvar magent-tools--emacs-eval-tool
   (gptel-make-tool
@@ -2354,7 +2360,7 @@ See `magent-agent-loop-filter-display-args'.")
    :async t
    :confirm t
    :category "magent")
-  "gptel-tool struct for emacs_eval.")
+  "Tool definition for `emacs_eval'.")
 
 (defvar magent-tools--emacs-read-tool
   (gptel-make-tool
@@ -2374,7 +2380,7 @@ See `magent-agent-loop-filter-display-args'.")
    :function #'magent-tools--emacs-read
    :async t
    :category "magent")
-  "gptel-tool struct for emacs_read.")
+  "Tool definition for `emacs_read'.")
 
 (defvar magent-tools--read-tool-output-tool
   (gptel-make-tool
@@ -2395,7 +2401,7 @@ See `magent-agent-loop-filter-display-args'.")
    :function #'magent-tools--read-tool-output
    :async t
    :category "magent")
-  "gptel-tool struct for read_tool_output.")
+  "Tool definition for `read_tool_output'.")
 
 (defvar magent-tools--emacs-eval-live-tool
   (gptel-make-tool
@@ -2413,7 +2419,7 @@ See `magent-agent-loop-filter-display-args'.")
    :async t
    :confirm t
    :category "magent")
-  "gptel-tool struct for emacs_eval_live.")
+  "Tool definition for `emacs_eval_live'.")
 
 (defvar magent-tools--spawn-agent-tool
   (gptel-make-tool
@@ -2433,7 +2439,7 @@ See `magent-agent-loop-filter-display-args'.")
    :function #'magent-tools--spawn-agent
    :async t
    :category "magent")
-  "gptel-tool struct for spawn_agent.")
+  "Tool definition for `spawn_agent'.")
 
 (defvar magent-tools--send-agent-message-tool
   (gptel-make-tool
@@ -2449,7 +2455,7 @@ See `magent-agent-loop-filter-display-args'.")
    :function #'magent-tools--send-agent-message
    :async t
    :category "magent")
-  "gptel-tool struct for send_agent_message.")
+  "Tool definition for `send_agent_message'.")
 
 (defvar magent-tools--wait-agent-tool
   (gptel-make-tool
@@ -2471,7 +2477,7 @@ See `magent-agent-loop-filter-display-args'.")
    :function #'magent-tools--wait-agent
    :async t
    :category "magent")
-  "gptel-tool struct for wait_agent.")
+  "Tool definition for `wait_agent'.")
 
 (defvar magent-tools--list-agents-tool
   (gptel-make-tool
@@ -2485,7 +2491,7 @@ See `magent-agent-loop-filter-display-args'.")
    :function #'magent-tools--list-agents
    :async t
    :category "magent")
-  "gptel-tool struct for list_agents.")
+  "Tool definition for `list_agents'.")
 
 (defvar magent-tools--close-agent-tool
   (gptel-make-tool
@@ -2502,7 +2508,7 @@ See `magent-agent-loop-filter-display-args'.")
    :function #'magent-tools--close-agent
    :async t
    :category "magent")
-  "gptel-tool struct for close_agent.")
+  "Tool definition for `close_agent'.")
 
 (defvar magent-tools--web-search-tool
   (gptel-make-tool
@@ -2519,7 +2525,7 @@ See `magent-agent-loop-filter-display-args'.")
    :function #'magent-tools--web-search
    :async t
    :category "magent")
-  "gptel-tool struct for web_search.")
+  "Tool definition for `web_search'.")
 
 ;;; Canonical tool catalog
 
