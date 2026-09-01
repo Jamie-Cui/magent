@@ -480,10 +480,7 @@ across Magent's own serial tool queue without claiming OS-level isolation."
             (if-let* ((identity-error
                 (magent-agent-loop--resource-identity-error
                         resource-identity request-context fn-args)))
-                (complete
-                 (magent-tool-result-create
-                  :status 'failed :success nil
-                  :output identity-error :error identity-error))
+                (complete identity-error)
               (if async-p
                   (condition-case err
                       (apply fn #'complete fn-args)

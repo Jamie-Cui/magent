@@ -56,6 +56,10 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Fixed
 
+- Persist provider-reported usage on completed ledger turns, preserve failed
+  tool status in ACP fallback notifications, and keep resource-identity race
+  failures as one structured tool result instead of nesting their printed
+  representation in model-visible output.
 - Show a live ~*Magent Doctor*~ progress buffer for
   ~M-x magent-action-run-doctor~, retaining the terminal diagnosis or failure
   instead of leaving interactive Doctor runs silent until completion.
