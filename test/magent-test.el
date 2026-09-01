@@ -646,6 +646,25 @@
           (should (eq (magent-test--transcript-role assistant-msg) 'assistant))
           (should (equal (magent-test--transcript-content assistant-msg) "AI response")))))))
 
+(ert-deftest magent-test-agent-run-turn-persists-provider-usage ()
+  "Test completed turns retain provider usage reported by sampling."
+  (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
+        (gptel-model 'gpt-4o-mini)
+        (gptel-tools nil)
+        (gptel-use-tools nil)
+        (usage '(:input 7 :output 3 :total 10)))
+    (cl-letf (((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (funcall (plist-get kwargs :callback)
+                          t
+                          (list :content "Done" :tokens usage)))))
+      (magent-session-reset)
+      (magent-test--run-turn "Count usage" #'ignore))
+    (let* ((thread (magent-session-thread-ledger (magent-session-get)))
+           (turn (car (magent-thread-turns thread))))
+      (should (eq (magent-thread-turn-status turn) 'completed))
+      (should (equal (magent-thread-turn-usage turn) usage)))))
+
 (ert-deftest magent-test-agent-run-turn-renders-completed-delta-after-stream-prefix ()
   "Test final completion text after streamed prefix is still rendered."
   (let ((gptel-backend (gptel-make-openai "test" :key "test-key"))
@@ -12683,6 +12702,29 @@
       (should (equal (map-elt content-block 'type) "text"))
       (should (equal (map-elt content-block 'text) "done")))))
 
+(ert-deftest magent-test-acp-tool-result-fallback-preserves-failed-status ()
+  "Test minimal ACP tool fallback preserves the original failed status."
+  (require 'magent-acp)
+  (let ((calls 0)
+        fallback)
+    (cl-letf (((symbol-function 'magent-acp--session-update)
+               (lambda (_client _session-id update)
+                 (cl-incf calls)
+                 (if (= calls 1)
+                     (error "Primary tool update failed")
+                   (setq fallback update))))
+              ((symbol-function 'magent-log) #'ignore))
+      (funcall (magent-acp--observer nil "session-1")
+               '(:type tool-call-complete
+                 :tool-id "tool-1"
+                 :name "write_file"
+                 :status failed
+                 :output-preview "write failed")))
+    (should (= calls 2))
+    (should (equal (map-elt fallback 'sessionUpdate)
+                   "tool_call_update"))
+    (should (equal (map-elt fallback 'status) "failed"))))
+
 (ert-deftest magent-test-acp-observer-preserves-factual-tool-title-on-completion ()
   "Test tool UI omits model reason while completion preserves its title."
   (require 'magent-acp)
@@ -14598,7 +14640,12 @@
           (make-symbolic-link outside (expand-file-name "new" project))
           (setf (magent-agent-loop-tool-queue-busy queue) nil)
           (magent-agent-loop-tool-queue-run queue)
-          (should (string-match-p "resource identity changed" result))
+          (should
+           (equal result
+                  (concat
+                   "[Tool result: status=failed; exit-code=unavailable]\n"
+                   "Error: resource identity changed after permission evaluation")))
+          (should-not (string-match-p "#s(magent-tool-result" result))
           (should (equal (with-temp-buffer
                            (insert-file-contents outside)
                            (buffer-string))

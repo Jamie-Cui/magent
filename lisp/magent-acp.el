@@ -740,34 +740,35 @@ but omit the reason prefix from the ordinary tool-call UI."
                              (plist-get event :raw-input))))))
           ('tool-call-complete
            (reset-stream)
-           (condition-case err
-               (magent-acp--session-update
-                client session-id
-                `((sessionUpdate . "tool_call_update")
-                  (toolCallId . ,(or (plist-get event :tool-id) "unknown"))
-                  (status . ,(if (eq (plist-get event :status) 'failed)
-                                 "failed"
-                               "completed"))
-                  (content . ,(vector
-                               (magent-acp--tool-content
-                                (or (plist-get event :output-preview) ""))))))
-             (error
-              ;; If the full notification path crashes (e.g. due to
-              ;; agent-shell's alist merge tripping over plist data
-              ;; stored from the prior tool_call), send a minimal
-              ;; fallback so the tool-call status always transitions
-              ;; from in_progress/… to a terminal icon (✓/✗).
-              (magent-log "ERROR acp tool-call-complete failed, sending fallback: %s"
-                          (error-message-string err))
-              (condition-case nil
-                  (magent-acp--session-update
-                   client session-id
-                   `((sessionUpdate . "tool_call_update")
-                     (toolCallId . ,(or (plist-get event :tool-id) "unknown"))
-                     (title . "tool")
-                     (status . "completed")
-                     (content . [])))
-                (error nil)))))
+           (let ((status (if (eq (plist-get event :status) 'failed)
+                             "failed"
+                           "completed")))
+             (condition-case err
+                 (magent-acp--session-update
+                  client session-id
+                  `((sessionUpdate . "tool_call_update")
+                    (toolCallId . ,(or (plist-get event :tool-id) "unknown"))
+                    (status . ,status)
+                    (content . ,(vector
+                                 (magent-acp--tool-content
+                                  (or (plist-get event :output-preview) ""))))))
+               (error
+                ;; If the full notification path crashes (e.g. due to
+                ;; agent-shell's alist merge tripping over plist data
+                ;; stored from the prior tool_call), send a minimal
+                ;; fallback so the tool-call status always transitions
+                ;; from in_progress/… to a terminal icon (✓/✗).
+                (magent-log "ERROR acp tool-call-complete failed, sending fallback: %s"
+                            (error-message-string err))
+                (condition-case nil
+                    (magent-acp--session-update
+                     client session-id
+                     `((sessionUpdate . "tool_call_update")
+                       (toolCallId . ,(or (plist-get event :tool-id) "unknown"))
+                       (title . "tool")
+                       (status . ,status)
+                       (content . [])))
+                  (error nil))))))
           ('turn-error
            ;; The pending session/prompt request reports this through its
            ;; JSON-RPC error response.  Do not misrepresent transport/runtime
