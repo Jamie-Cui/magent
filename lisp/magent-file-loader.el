@@ -215,7 +215,7 @@ backslash, so a value such as `C:\\\\tmp' otherwise becomes a tab."
 (defun magent-file-loader-lexical-file-under-directory-p (filepath directory)
   "Return non-nil when FILEPATH's entry path is inside DIRECTORY.
 Unlike `magent-file-loader-file-under-directory-p', this ownership check does
-not follow the final symlink.  It is used to classify project overlay entries;
+not follow the final symlink.  It classifies project-owned definitions;
 resource access may still canonicalize the target independently."
   (and filepath directory
        (string-prefix-p

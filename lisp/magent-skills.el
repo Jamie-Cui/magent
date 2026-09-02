@@ -47,7 +47,7 @@ through these stages: understand intent -> write SKILL.md -> test in Emacs -> it
 ---
 name: skill-name
 description: When to trigger and what this skill does
-type: instruction
+type: instruction        # optional: instruction is the default
 tools: [bash, read_file] # optional: exact provider tool names this skill needs
 requires-project: true   # optional: reject the skill in global sessions
 capability: true         # optional: auto-activate this instruction skill by context
@@ -75,8 +75,10 @@ capability only exists to activate that same skill.
 
 ## Skill Locations
 
+- Codex user global: `~/.agents/skills/<name>/SKILL.md`
 - User global: `magent/skills/<name>/SKILL.md` under `user-emacs-directory`
-- Project-local: `.magent/skills/<name>/SKILL.md`
+- Project-local: `.agents/skills/<name>/SKILL.md` or
+  `.magent/skills/<name>/SKILL.md`
 
 Place each skill in its own subdirectory named after the skill.
 
@@ -170,12 +172,7 @@ use a skill - make it count."
 (defvar magent-skills--registry nil
   "Layered alist of (skill-name . magent-skill) definitions.
 For duplicate names the first entry is effective; lower-layer entries are
-kept so unloading a project overlay restores the previous definition.")
-
-(defvar magent-skills--scope-catalog (make-hash-table :test #'equal)
-  "Effective skill snapshots keyed by canonical project scope.
-The nil key stores the global snapshot.  Project snapshots are retained while
-their overlays are inactive so live frontend sessions remain scope-correct.")
+kept so each request scope can resolve its own effective definition.")
 
 (defun magent-skills--same-owner-p (left right)
   "Return non-nil when skills LEFT and RIGHT belong to the same layer."
@@ -184,11 +181,14 @@ their overlays are inactive so live frontend sessions remain scope-correct.")
        (equal (magent-skill-source-scope left)
               (magent-skill-source-scope right))))
 
-(defun magent-skills--effective-entries ()
-  "Return effective skill registry entries without shadowed duplicates."
-  (let (seen effective)
+(defun magent-skills--effective-entries (&optional scope)
+  "Return effective skill entries visible in SCOPE."
+  (let ((resolution-scope (magent-skills--resolution-scope scope))
+        seen effective)
     (dolist (entry magent-skills--registry)
-      (unless (member (car entry) seen)
+      (when (and (not (member (car entry) seen))
+                 (magent-skills--visible-in-scope-p
+                  (cdr entry) resolution-scope))
         (push (car entry) seen)
         (push entry effective)))
     (nreverse effective)))
@@ -208,40 +208,6 @@ their overlays are inactive so live frontend sessions remain scope-correct.")
     (or (null source-scope)
         (equal source-scope scope))))
 
-(defun magent-skills--registry-skills-for-scope (scope)
-  "Return effective registry skills visible in canonical SCOPE."
-  (let (seen skills)
-    (dolist (entry magent-skills--registry)
-      (let ((name (car entry))
-            (skill (cdr entry)))
-        (when (and (not (member name seen))
-                   (magent-skills--visible-in-scope-p skill scope))
-          (push name seen)
-          (push skill skills))))
-    (sort skills
-          (lambda (left right)
-            (string< (magent-skill-name left)
-                     (magent-skill-name right))))))
-
-(defun magent-skills--rebase-project-catalogs ()
-  "Rebase cached project catalogs on the current registry state."
-  (maphash
-   (lambda (scope _skills)
-     (when scope
-       (puthash scope
-                (magent-skills--registry-skills-for-scope scope)
-                magent-skills--scope-catalog)))
-   magent-skills--scope-catalog))
-
-(defun magent-skills--record-scope-catalog (&optional scope)
-  "Record effective skills for SCOPE from the active registry."
-  (let ((key (magent-skills--resolution-scope scope)))
-    (puthash key
-             (magent-skills--registry-skills-for-scope key)
-             magent-skills--scope-catalog)
-    (when (null key)
-      (magent-skills--rebase-project-catalogs))))
-
 (defun magent-skills--descriptor (skill)
   "Return frontend-neutral descriptor for SKILL."
   (magent-skill-descriptor-create
@@ -255,21 +221,12 @@ their overlays are inactive so live frontend sessions remain scope-correct.")
 
 (defun magent-skills-list-descriptors (&optional scope type)
   "Return effective skill descriptors for SCOPE, optionally limited to TYPE.
-When SCOPE is nil, use the currently active project overlay.  Results are
+When SCOPE is nil, use the current interactive project context.  Results are
 sorted by skill name and do not expose prompt bodies or executable handlers."
   (let* ((key (magent-skills--resolution-scope scope))
-         (active-key
-          (magent-session-canonical-scope
-           (or (magent-runtime-active-project-scope) 'global)))
          (skills
-          (if (equal key active-key)
-              (magent-skills--registry-skills-for-scope key)
-            (let ((cached (gethash key magent-skills--scope-catalog
-                                   'magent-skills--missing)))
-              (if (eq cached 'magent-skills--missing)
-                  (copy-sequence
-                   (gethash nil magent-skills--scope-catalog))
-                (copy-sequence cached))))))
+          (mapcar #'cdr
+                  (magent-skills--effective-entries (or key 'global)))))
     (setq skills
           (cl-remove-if
            (lambda (skill)
@@ -278,11 +235,15 @@ sorted by skill name and do not expose prompt bodies or executable handlers."
            skills))
     (mapcar
      #'magent-skills--descriptor
-     (if type
-         (cl-remove-if-not
-          (lambda (skill) (eq (magent-skill-type skill) type))
-          skills)
-       skills))))
+     (sort
+      (if type
+          (cl-remove-if-not
+           (lambda (skill) (eq (magent-skill-type skill) type))
+           skills)
+        skills)
+      (lambda (left right)
+        (string< (magent-skill-name left)
+                 (magent-skill-name right)))))))
 
 (defun magent-skills-resolve-descriptor (name &optional scope)
   "Return effective skill descriptor NAME for SCOPE, or nil."
@@ -290,21 +251,21 @@ sorted by skill name and do not expose prompt bodies or executable handlers."
            :key #'magent-skill-descriptor-name
            :test #'equal))
 
-(defun magent-skills-get (name)
-  "Get skill by NAME from registry."
-  (cdr (assoc name magent-skills--registry)))
+(defun magent-skills-get (name &optional scope)
+  "Return effective skill NAME visible in SCOPE."
+  (cdr (assoc name (magent-skills--effective-entries scope))))
 
-(defun magent-skills-list ()
-  "Return list of all registered skill names."
-  (mapcar #'car (magent-skills--effective-entries)))
+(defun magent-skills-list (&optional scope)
+  "Return registered skill names visible in SCOPE."
+  (mapcar #'car (magent-skills--effective-entries scope)))
 
-(defun magent-skills-list-by-type (type)
-  "Return list of skill names of TYPE."
+(defun magent-skills-list-by-type (type &optional scope)
+  "Return names of skills of TYPE visible in SCOPE."
   (delq nil
         (mapcar (lambda (entry)
                   (when (eq (magent-skill-type (cdr entry)) type)
                     (car entry)))
-                (magent-skills--effective-entries))))
+                (magent-skills--effective-entries scope))))
 
 (defun magent-skills-dedupe-names (names)
   "Return string NAMES without duplicates, preserving order."
@@ -314,10 +275,10 @@ sorted by skill name and do not expose prompt bodies or executable handlers."
         (push name seen)
         (push name result)))))
 
-(defun magent-skills-missing-tools (skill-name available-tools)
+(defun magent-skills-missing-tools (skill-name available-tools &optional scope)
   "Return SKILL-NAME's declared tools absent from AVAILABLE-TOOLS.
 Tool names may be strings or symbols.  An unknown skill has no requirements."
-  (when-let* ((skill (magent-skills-get skill-name)))
+  (when-let* ((skill (magent-skills-get skill-name scope)))
     (let ((available
            (mapcar (lambda (tool)
                      (if (symbolp tool) tool (intern (format "%s" tool))))
@@ -326,9 +287,9 @@ Tool names may be strings or symbols.  An unknown skill has no requirements."
                     (magent-skill-tools skill)))))
 
 (defun magent-skills-tool-requirements-satisfied-p
-    (skill-name available-tools)
+    (skill-name available-tools &optional scope)
   "Return non-nil when AVAILABLE-TOOLS includes all tools SKILL-NAME declares."
-  (null (magent-skills-missing-tools skill-name available-tools)))
+  (null (magent-skills-missing-tools skill-name available-tools scope)))
 
 (defun magent-skills-register (skill)
   "Register SKILL in the registry.
@@ -344,9 +305,7 @@ Shadowed lower-layer definitions remain registered for later restoration."
                                (magent-skills--same-owner-p
                                 (cdr entry) skill)))
                         magent-skills--registry))
-    (push (cons name skill) magent-skills--registry)
-    (magent-skills--record-scope-catalog
-     (or (magent-skill-source-scope skill) 'global)))
+    (push (cons name skill) magent-skills--registry))
   skill)
 
 (defun magent-skills-unregister (name)
@@ -354,34 +313,28 @@ Shadowed lower-layer definitions remain registered for later restoration."
   (setq magent-skills--registry
         (cl-remove-if (lambda (entry) (equal (car entry) name))
                       magent-skills--registry))
-  (maphash
-   (lambda (scope skills)
-     (puthash scope
-              (cl-remove name skills
-                         :key #'magent-skill-name
-                         :test #'equal)
-              magent-skills--scope-catalog))
-   magent-skills--scope-catalog)
-  (magent-skills--record-scope-catalog 'global))
+  nil)
 
 (defun magent-skills-clear ()
   "Clear all skills from registry."
-  (setq magent-skills--registry nil)
-  (clrhash magent-skills--scope-catalog))
+  (setq magent-skills--registry nil))
 
 ;;; Instruction skill prompts
 
-(defun magent-skills-get-instruction-prompts (&optional skill-names)
+(defun magent-skills-get-instruction-prompts (&optional skill-names scope)
   "Get combined prompts from instruction-type skills.
 If SKILL-NAMES is nil, return all instruction-type skill prompts.
 If SKILL-NAMES is a list, only include those skills."
   (let ((skills (if skill-names
-                    (delq nil (mapcar #'magent-skills-get skill-names))
+                    (delq nil
+                          (mapcar (lambda (name)
+                                    (magent-skills-get name scope))
+                                  skill-names))
                   (mapcar #'cdr
                           (cl-remove-if-not
                            (lambda (entry)
                              (eq (magent-skill-type (cdr entry)) 'instruction))
-                           (magent-skills--effective-entries))))))
+                           (magent-skills--effective-entries scope))))))
     (delq nil
           (mapcar (lambda (skill)
                     (when-let* ((prompt (magent-skill-prompt skill))
@@ -425,12 +378,19 @@ If SKILL-NAMES is a list, only include those skills."
         (expand-file-name "skills" dir)))
   "Directory containing built-in skills bundled with magent.")
 
+(defconst magent-skills--project-relative-directories
+  '(".agents/skills" ".magent/skills")
+  "Project-relative skill roots in increasing precedence order.")
+
 (defcustom magent-skill-directories
-  (list (expand-file-name "magent/skills" user-emacs-directory))
+  (list (expand-file-name ".agents/skills" (expand-file-name "~"))
+        (expand-file-name "magent/skills" user-emacs-directory))
   "List of directories to scan for skill files.
 Each directory can contain subdirectories with SKILL.md files.
 Later directories take precedence over earlier directories when skill
-names collide.  The final entry is the canonical installation target."
+names collide.  The final entry is the canonical installation target.
+The default reads Codex user skills while keeping Magent's own directory as
+the managed installation target."
   :type '(repeat directory)
   :group 'magent)
 
@@ -442,37 +402,53 @@ names collide.  The final entry is the canonical installation target."
 (defconst magent-skills--frontmatter-keys
   '(:name :description :type :tools :requires-project
           :capability :title :family :source :source-name :capability-skills
-          :modes :features :files :prompt-keywords :disclosure :risk)
-  "Supported SKILL.md frontmatter keys.")
+          :modes :features :files :prompt-keywords :disclosure :risk
+          :license :metadata :disable-model-invocation)
+  "Accepted SKILL.md frontmatter keys.
+The final three keys are passive cross-agent metadata; Magent does not
+interpret them.")
 
 (defun magent-skills--validate-frontmatter (frontmatter)
-  "Reject unsupported or incomplete skill FRONTMATTER."
+  "Reject unsupported skill FRONTMATTER or missing Codex core fields."
   (cl-loop for (key _value) on frontmatter by #'cddr
            unless (memq key magent-skills--frontmatter-keys)
            do (error "Unsupported skill frontmatter key: %s" key))
-  (dolist (key '(:name :description :type))
+  (dolist (key '(:name :description))
     (unless (plist-member frontmatter key)
       (error "Skill frontmatter is missing required key: %s" key)))
   frontmatter)
 
 (defun magent-skills-definition-directories (&optional scope)
   "Return skill definition directories for static loading and SCOPE.
-When SCOPE is non-nil, include that project's `.magent/skills'
-directory if it exists."
+When SCOPE is non-nil, include existing Codex and Magent project skill roots."
   (append (list magent-skills--builtin-dir)
           magent-skill-directories
-          (when scope
-            (magent-file-loader-project-subdir-for-scope
-             ".magent/skills" scope))))
+          (when scope (magent-skills--project-directories scope))))
+
+(defun magent-skills--project-directories (&optional scope)
+  "Return existing project skill roots for optional SCOPE."
+  (cl-loop for relative-dir in magent-skills--project-relative-directories
+           append
+           (if scope
+               (magent-file-loader-project-subdir-for-scope relative-dir scope)
+             (magent-file-loader-project-subdir relative-dir))))
 
 (defun magent-skills-classify-source (filepath)
   "Return a plist describing the source classification for FILEPATH."
-  (magent-file-loader-classify-source
-   filepath
-   :builtin-dirs (list magent-skills--builtin-dir)
-   :user-dirs magent-skill-directories
-   :project-relative-dir ".magent/skills"
-   :default-layer 'external))
+  (let ((base-source
+         (magent-file-loader-classify-source
+          filepath
+          :builtin-dirs (list magent-skills--builtin-dir)
+          :user-dirs magent-skill-directories
+          :default-layer 'external)))
+    (if (not (eq (plist-get base-source :layer) 'external))
+        base-source
+      (or (cl-loop
+           for relative-dir in magent-skills--project-relative-directories
+           for scope = (magent-file-loader-project-root-for-file
+                        filepath relative-dir)
+           when scope return (list :layer 'project :scope scope))
+          base-source))))
 
 (defun magent-skills--list-files (&optional directories)
   "List all SKILL.md files in DIRECTORIES or `magent-skill-directories'."
@@ -480,7 +456,7 @@ directory if it exists."
          (or directories
              (append (list magent-skills--builtin-dir)
                      magent-skill-directories
-                     (magent-file-loader-project-subdir ".magent/skills")))))
+                     (magent-skills--project-directories)))))
     (magent-file-loader-list-named-files-ordered
      ordered-directories magent-skill-file-name)))
 
@@ -556,35 +532,36 @@ Returns number of skills loaded."
 (defun magent-skills-initialize-static ()
   "Load built-in and user-global skill definitions."
   (magent-skills--register-builtin)
-  (prog1
-      (magent-skills-load-all (magent-skills-definition-directories))
-    (magent-skills--record-scope-catalog 'global)))
+  (magent-skills-load-all (magent-skills-definition-directories)))
 
 (defun magent-skills-load-project-scope (scope)
-  "Load project-local skill definitions for SCOPE."
-  (let ((count
-         (if-let* ((directories
-                    (magent-file-loader-project-subdir-for-scope
-                     ".magent/skills" scope)))
-             (magent-skills-load-all directories)
-           0)))
-    (magent-skills--record-scope-catalog scope)
-    count))
+  "Reload project-local skill definitions for SCOPE."
+  (magent-skills-remove-project-scope scope)
+  (if-let* ((directories (magent-skills--project-directories scope)))
+      (magent-skills-load-all directories)
+    0))
+
+(defun magent-skills--project-scopes ()
+  "Return project scopes to refresh from the skill registry and context."
+  (delete-dups
+   (delq nil
+         (cons
+          (magent-runtime-active-project-scope)
+          (mapcar
+           (lambda (entry)
+             (and (eq (magent-skill-source-layer (cdr entry)) 'project)
+                  (magent-skill-source-scope (cdr entry))))
+           magent-skills--registry)))))
 
 (defun magent-skills-reload ()
-  "Reload all skills from files.
-When a project overlay is currently active, restore that project's
-local skills after static definitions are reloaded."
-  (let ((project-scope (magent-runtime-active-project-scope)))
+  "Reload all file-backed skills, including known project scopes."
+  (let ((project-scopes (magent-skills--project-scopes)))
     (magent-file-loader-reload-file-backed-registry
      'magent-skills--registry
      #'magent-skill-file-path
      #'magent-skills-initialize-static)
-    (when project-scope
-      (magent-skills-load-project-scope project-scope))
-    (magent-skills--record-scope-catalog 'global)
-    (when project-scope
-      (magent-skills--record-scope-catalog project-scope))))
+    (dolist (scope project-scopes)
+      (magent-skills-load-project-scope scope))))
 
 (defun magent-skills-remove-project-scope (scope)
   "Remove project-local skills registered for SCOPE."

@@ -105,7 +105,7 @@ magent.el (package entry point and lazy runtime bootstrap)
   ├─ magent-config.el            (UI-neutral runtime and feature defcustoms)
   ├─ magent-json.el              (JSON-safe serialization helpers)
   ├─ magent-redaction.el         (fail-closed Magent-owned outbound redaction)
-  ├─ magent-runtime.el           (static init + project overlay activation)
+  ├─ magent-runtime.el           (static init + retained project definition loading)
   ├─ magent-protocol.el          (wire protocol types and event normalization)
   ├─ magent-lifecycle-events.el  (lifecycle event sinks and context helpers)
   ├─ magent-ledger.el            (thread/turn/item state machine, journal, snapshot)
@@ -132,13 +132,13 @@ magent.el (package entry point and lazy runtime bootstrap)
   ├─ magent-agent.el             (magent-agent-run-turn: builds prompts and starts the Magent loop)
   ├─ magent-agent-info.el        (agent metadata struct and helpers)
   ├─ magent-agent-builtins.el    (7 built-in agent definitions)
-  ├─ magent-agent-registry.el    (hash-table registry and project overlays)
+  ├─ magent-agent-registry.el    (scope-aware registry and project definitions)
   ├─ magent-agent-file.el        (loads custom agents from .magent/agent/*.md)
   ├─ magent-permission.el        (rule-based tool access control per agent)
   ├─ magent-acp.el               (in-process ACP adapter for agent-shell)
   ├─ magent-agent-shell.el       (agent-shell config and isolated context compatibility)
   ├─ magent-file-loader.el       (shared file-backed definition loader and frontmatter parser)
-  ├─ magent-skills.el            (skill registry, built-in definitions, overlays, and descriptors)
+  ├─ magent-skills.el            (scope-aware skill registry, definitions, and descriptors)
   └─ magent-skill-manager.el     (lazy user skill discovery, installation, and deletion)
 ```
 
@@ -146,7 +146,7 @@ magent.el (package entry point and lazy runtime bootstrap)
 
 1. **Entry point** (`magent.el`, `magent-agent-shell.el`): `magent.el` loads the package; supported interaction starts with the compatibility command `magent-start` or Magent selected from `agent-shell`. Static initialization is **lazy** — triggered on the first supported command.
 
-2. **Runtime** (`magent-runtime.el`): Owns the ordered initialization pipeline for agents, skills, slash commands, and capabilities. Static bundled definitions load once; project-local overlays under `.magent/` are activated and unloaded as session scope changes.
+2. **Runtime** (`magent-runtime.el`): Owns the ordered initialization pipeline for agents, skills, slash commands, and capabilities. Static bundled definitions load once. Project-local definitions under `.magent/` remain registered by canonical project scope; request paths resolve agents, skills, capabilities, and Actions against the runtime session's exact scope instead of unloading another project's definitions when the interactive context changes.
 
 3. **Actions** (`magent-action.el`, `magent-action-builtins.el`, `magent-action-session.el`, `magent-action-session-view.el`): Elisp-native Actions are registered through `magent-action-register`; slash commands and interactive commands are frontend projections. `:exposure` selects the projections, while `:session-policy` selects the current conversation or an isolated durable Action session. One deep Action module owns the generator Workflow DSL, managed Step runtime, layered registry, and Invocation lifecycle. Trusted Elisp owns control flow while managed agent, Answer, argv process, and callback Steps provide asynchronous suspension, exact-submission cancellation, and ledger activity. Elisp feature dependencies are declared with `:requires`; an agent Step's `:tools` is its exact provider allowlist, and Actions have no project-workspace requirement. Definitions resolve by `core > project > user > package > builtin`, and core names are reserved. ACP resolves slash discovery and dispatch against each runtime session's exact scope. Terminal results are claimed before cleanup, and finalization errors remain terminal failures.
 
@@ -154,13 +154,14 @@ magent.el (package entry point and lazy runtime bootstrap)
 
 5. **Supported frontend boundary** (`magent-agent-shell.el`, `magent-acp.el`, `magent-runtime-api.el`): `magent-agent-shell.el` supplies the agent-shell config, the sole compatibility command `magent-start`, and one isolated private context-compatibility block; it does not own buffer selection, prompt submission, queues, skills, Actions, busy-state recovery, or interruption. The config uses an in-process ACP client implemented by `magent-acp.el`. ACP routes registered slash input through `magent-action.el`, submits model turns through `magent-runtime-api.el`, and converts runtime observer events to ACP `session/update` messages. ACP prompt requests remain pending until the corresponding command invocation or ordinary Magent turn completes, fails, or is cancelled.
    - `magent-runtime-queue.el` owns the global single-execution queue and session-scoped cancellation
+   - `magent-runtime-api.el` freezes one `magent-request-context` per submission before queueing; the queue stores only lifecycle state and that context
    - Runtime emits Magent-native observer events; ACP conversion is isolated in `magent-acp.el`
    - ACP text/resource blocks are stored as structured turn metadata and reconstructed as user-role prompt context; local `file://` resources also provide scoped request paths
    - ACP session config exposes a per-session `Automatic capabilities` switch
    - `magent-agent-run-turn` is the backend entry point
    - See `docs/UI_BACKENDS.org` for the boundary contract
 
-6. **Agent processing** (`magent-agent.el`): `magent-agent-run-turn` is the UI-neutral entry point for runtime backends. Its internal execution path builds a gptel prompt list from the session, discovers applicable `AGENTS.md` files from project root toward request-local resources within a bounded project scope, collects ordered trusted request context from `magent-context-provider-functions`, applies per-agent overrides (model, temperature via `default-value` — intentionally avoids buffer-local gptel settings), resolves the request's exact tool names through the canonical catalog and agent permissions, then starts `magent-agent-loop`.
+6. **Agent processing** (`magent-agent.el`): `magent-agent-run-turn` is the UI-neutral entry point and accepts one canonical `magent-request-context`. Its internal execution path builds a gptel prompt list from the captured session, discovers applicable `AGENTS.md` files from project root toward request-local resources within a bounded project scope, collects ordered trusted request context from `magent-context-provider-functions`, applies per-agent overrides (model, temperature via `default-value` — intentionally avoids buffer-local gptel settings), resolves the request's exact tool names through the canonical catalog and agent permissions, then starts `magent-agent-loop`.
 
 7. **Tools** (`magent-tools.el`): one canonical catalog owns 16 `gptel-tool` structs, their names, permission keys, approval policies, and locality (`local`, `tramp-file`, or `project-process`) — `read_file`, `write_file`, `edit_file`, `grep`, `glob`, `bash`, `emacs_read`, `emacs_eval`, `emacs_eval_live`, `read_tool_output`, `spawn_agent`, `send_agent_message`, `wait_agent`, `list_agents`, `close_agent`, `web_search`. The control plane remains local for TRAMP projects. File tools use local Emacs file APIs through TRAMP; only `bash` and `grep` may start project-host processes, through the explicit project-process launcher, with no local-host fallback. Search prefers ripgrep and falls back on the same host to `git grep --no-index --exclude-standard`; it fails explicitly when neither exists. `read_file` requires `source=disk|live-buffer` and emits a revision; writes require the expected revision. `emacs_eval` uses a fresh local child Emacs and passes a remote project root as data, `emacs_read` provides fixed live queries, and `emacs_eval_live` is the explicit dangerous live escape hatch. Both arbitrary eval tools require once-only approval. Oversized results spill to session-private storage and are paged through `read_tool_output`. All implementations and persisted tool items use `magent-tool-result`; unstructured strings are rejected. `glob` traverses in bounded event-loop slices without following directory symlinks. Child-agent tools share `agent`; their runtime registry and event-driven wait observers live in `magent-agent-job.el`, and parent persistence is deferred. `web_search` uses DuckDuckGo via `url-retrieve` + `libxml-parse-html-region` (requires Emacs built with `--with-xml2`).
 
@@ -168,11 +169,11 @@ magent.el (package entry point and lazy runtime bootstrap)
 
 9. **Permissions** (`magent-permission.el`): Rules map tool names to `allow`/`deny`/`ask`, with optional file-pattern sub-rules (glob syntax). Resolution: exact tool match → file-pattern rules → wildcard (`*`) fallback → **default allow**. File-pattern rules are order-dependent (first match wins); more specific patterns must come before less specific ones.
 
-10. **Capabilities** (`magent-capability.el`): File-backed capability definitions score the current request context and attach matching instruction skills. Automatic activation requires a word-bounded prompt-keyword intent match in addition to context score; context-only matches remain suggested, and linked skills are filtered against the selected agent's exposed tools. Bundled, user, and project-local capability overlays all feed the same resolver.
+10. **Capabilities** (`magent-capability.el`): File-backed capability definitions score the current request context and attach matching instruction skills. Automatic activation requires a word-bounded prompt-keyword intent match in addition to context score; context-only matches remain suggested, and linked skills are filtered against the selected agent's exposed tools. Bundled, user, and scoped project-local capability definitions all feed the same resolver.
 
 11. **Session and workflow ledger** (`magent-ledger.el`, `magent-session.el`): The canonical agent workflow state is an explicit thread/turn/item ledger. Thread statuses are `not-loaded`, `idle`, `active`, `system-error`, and `closed`; turn statuses are `queued`, `in-progress`, `completed`, `interrupted`, `failed`, and `dropped`; item statuses are `pending`, `in-progress`, `completed`, `failed`, and `cancelled`. Tool call/result is one `tool` item lifecycle keyed by call id. Session JSON schema v6 is atomically replaced with a materialized `snapshot` and a bounded journal tail; other schemas and unknown fields are rejected. Consumers select explicit `ledger`, `transcript`, `provider`, `compaction`, or `audit` views. `agent-jobs` stores durable child-agent metadata. Action turns retain Action metadata. Isolated Action sessions are persisted under `actions/` and excluded from normal conversation listings.
 
-12. **Skills** (`magent-skills.el`): Skills are instruction-only Markdown injected into the system prompt. Executable extensions belong in trusted Elisp Actions or first-class catalog tools; skills are never converted into Action adapters, and companion Elisp next to `SKILL.md` is not loaded. The module contains the registry, built-in `skill-creator`, file-based loading, and interactive inspection commands. Skills load in priority order from (1) built-in `skills/`, (2) user directory `~/.emacs.d/magent/skills/<name>/SKILL.md`, and (3) project-local `.magent/skills/<name>/SKILL.md`.
+12. **Skills** (`magent-skills.el`): Skills are instruction-only Markdown injected into the system prompt. Executable extensions belong in trusted Elisp Actions or first-class catalog tools; skills are never converted into Action adapters, and companion Elisp next to `SKILL.md` is not loaded. The module contains the registry, built-in `skill-creator`, file-based loading, and interactive inspection commands. Skills load in priority order from (1) built-in `skills/`, (2) user directories `~/.agents/skills/<name>/SKILL.md` then `~/.emacs.d/magent/skills/<name>/SKILL.md`, and (3) project-local `.agents/skills/<name>/SKILL.md` then `.magent/skills/<name>/SKILL.md`.
 
 ### Gotchas
 
@@ -198,11 +199,13 @@ Custom agents: `.magent/agent/*.md` files with YAML frontmatter + markdown body 
 name: skill-name
 description: Brief description
 tools: [bash, read_file]
-type: instruction        # the only supported type
+type: instruction        # optional; the only supported explicit type
 requires-project: true   # optional: reject use from a global session
 ---
 
-Markdown body: system-prompt instructions. `type` must be `instruction`.
+Markdown body: system-prompt instructions. `name` and `description` are
+required. Omitted `type` defaults to `instruction`; an explicit `type` must be
+`instruction`. Known Codex host metadata is accepted but remains passive.
 ```
 
 ### Configuration

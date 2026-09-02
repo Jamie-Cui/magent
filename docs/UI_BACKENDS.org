@@ -44,9 +44,9 @@ explicit command registration and invocation belong in ~magent-action.el~.
    scope and invokes it through ~magent-action.el~. Ordinary prompts go
    directly to ~magent-runtime-api.el~. Command-owned turns and workflow steps
    also use that API; direct handlers may complete without a general agent turn.
-5. The runtime queue starts exactly one active turn at a time, builds a
-   ~magent-request-context~ with ~:ui-visibility 'none~, and calls
-   ~magent-agent-run-turn~.
+5. The runtime API freezes one ~magent-request-context~ with
+   ~:ui-visibility 'none~ before queueing.  The queue starts exactly one active
+   turn at a time and passes that context unchanged to ~magent-agent-run-turn~.
 6. The agent loop emits Magent-native observer events; ~magent-acp.el~ converts
    them to ACP ~session/update~ messages for agent-shell.
 7. ACP prompt requests remain pending until the corresponding ordinary turn or

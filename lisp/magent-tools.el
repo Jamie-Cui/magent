@@ -1756,6 +1756,8 @@ Return the child loop handle when startup succeeds."
            :scope (and parent-context
                        (magent-request-context-scope parent-context))
            :session child-session
+           :prompt prompt
+           :agent agent
            :approval-session parent-session
            :origin-buffer-name (and parent-context
                                     (magent-request-context-origin-buffer-name
@@ -1807,12 +1809,7 @@ Return the child loop handle when startup succeeds."
         (progn
           (setq child-loop
                 (magent-agent-run-turn
-                 :session child-session
-                 :prompt prompt
-                 :agent agent
-                 :context
-                 (magent-request-context-origin-context child-request-context)
-                 :request-context child-request-context
+                 child-request-context
                  :on-complete
                  (lambda (response)
                    (magent-lifecycle-events-stop-subagent subagent-context)
@@ -1870,7 +1867,8 @@ Return the child loop handle when startup succeeds."
 
 (defun magent-tools--spawn-agent (callback agent-name prompt &optional task-name)
   "Spawn a durable child-agent job using AGENT-NAME and PROMPT."
-  (let ((agent (magent-agent-registry-get agent-name)))
+  (let ((agent (magent-agent-registry-get
+                agent-name (magent-tools--parent-scope))))
     (cond
      ((null agent)
       (magent-tools--fail

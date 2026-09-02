@@ -7,8 +7,9 @@
 ;;; Commentary:
 
 ;; Global single-execution queue for Magent runtime submissions.  Each
-;; submission retains its runtime session object so cancellation remains
-;; identity-scoped even though the first implementation runs one turn at a time.
+;; submission retains its exact runtime session wrapper and one canonical
+;; request context.  Cancellation remains identity-scoped even though the
+;; first implementation runs one turn at a time.
 
 ;;; Code:
 
@@ -19,25 +20,14 @@
                (:constructor magent-runtime-submission-create)
                (:copier nil))
   id
-  session
-  session-id
-  prompt
-  context
-  tool-names
-  skills
-  agent
-  model-route
-  effort
-  observer
-  approval-provider
+  runtime-session
+  request-context
   on-complete
   starter
-  scope
   status
   submitted-at
   started-at
   finished-at
-  turn-id
   handle
   detail
   finalized)
@@ -73,6 +63,8 @@
 Callbacks keep the runtime queue independent of backend-specific token types.")
 
 (declare-function magent-runtime-session-magent-session
+                  "magent-runtime-api" t t)
+(declare-function magent-runtime-session-scope
                   "magent-runtime-api" t t)
 
 (defun magent-runtime-queue--set-ticket-adapters
@@ -291,7 +283,10 @@ was finished without a successor, or nil when TOKEN did not own the lease."
               (token (magent-runtime-arbiter-ticket-token ticket)))
     (let ((scope
            (pcase (magent-runtime-arbiter-ticket-owner ticket)
-             ('runtime (magent-runtime-submission-scope token))
+             ('runtime
+              (when-let* ((runtime-session
+                           (magent-runtime-submission-runtime-session token)))
+                (magent-runtime-session-scope runtime-session)))
              (_ (magent-runtime-queue--ticket-adapter-call
                  ticket :scope)))))
       (if (and scope (fboundp 'magent-session-scope-origin))
@@ -318,7 +313,7 @@ runtime session wrapper."
    (if runtime-session
        (cl-remove-if-not
         (lambda (submission)
-          (eq (magent-runtime-submission-session submission)
+          (eq (magent-runtime-submission-runtime-session submission)
               runtime-session))
         magent-runtime-queue--pending)
      magent-runtime-queue--pending)))
@@ -393,7 +388,8 @@ started."
   "Remove queued submissions for exact RUNTIME-SESSION and return them."
   (let (removed kept)
     (dolist (submission magent-runtime-queue--pending)
-      (if (eq (magent-runtime-submission-session submission) runtime-session)
+      (if (eq (magent-runtime-submission-runtime-session submission)
+              runtime-session)
           (progn
             (setf (magent-runtime-submission-status submission) 'cancelled
                   (magent-runtime-submission-finished-at submission) (float-time))
@@ -410,7 +406,7 @@ Return the removed submission, or nil when it is not queued."
   (let (removed kept)
     (dolist (submission magent-runtime-queue--pending)
       (if (and (null removed)
-               (eq (magent-runtime-submission-session submission)
+               (eq (magent-runtime-submission-runtime-session submission)
                    runtime-session)
                (equal (magent-runtime-submission-id submission)
                       submission-id))
@@ -426,7 +422,7 @@ Return the removed submission, or nil when it is not queued."
 (defun magent-runtime-queue--submission-session-object (submission)
   "Return the Magent session captured by runtime SUBMISSION, or nil."
   (when-let* ((runtime-session
-               (magent-runtime-submission-session submission)))
+               (magent-runtime-submission-runtime-session submission)))
     (when (fboundp 'magent-runtime-session-magent-session)
       (magent-runtime-session-magent-session runtime-session))))
 

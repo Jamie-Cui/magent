@@ -9,8 +9,9 @@
 
 ;;; Commentary:
 
-;; Agent processing for Magent.  Builds prompt lists from session history,
-;; applies per-agent gptel overrides, and starts the Magent-owned loop.
+;; Agent processing for Magent.  Consumes one canonical request context, builds
+;; prompt lists from session history, applies per-agent gptel overrides, and
+;; starts the Magent-owned loop.
 
 ;;; Code:
 
@@ -45,22 +46,17 @@
   (or (null request-live-p)
       (funcall request-live-p)))
 
-(defun magent-agent--ui-visible-p (request-state)
-  "Return non-nil when REQUEST-STATE allows UI writes."
-  (or (null request-state)
-      (magent-request-context-ui-visible-p request-state)))
-
-(defun magent-agent--completion-callback-text (loop event streaming-started)
+(defun magent-agent--completion-callback-text (loop event text-delta-seen)
   "Return assistant text that still needs a callback for EVENT.
 LOOP has already accumulated EVENT by the time this helper is called.
-When streaming has not started, the current sample result should be rendered.
-When streaming has started, render only the completed event's text that
+When no text delta was seen, the current sample result should be rendered.
+After text deltas, render only the completed event's text that
 was not already emitted as text deltas."
   (let ((result (magent-agent-loop-result loop))
         (event-text (magent-sampling-event-text event))
         (streamed (magent-agent-loop-sample-text loop)))
     (cond
-     ((not streaming-started)
+     ((not text-delta-seen)
       result)
      ((or (null event-text)
           (string-empty-p event-text))
@@ -93,12 +89,13 @@ was not already emitted as text deltas."
     magent-enable-capabilities))
 
 (defun magent-agent--validate-explicit-skill-tools
-    (skill-names available-tools)
+    (skill-names available-tools scope)
   "Signal when explicit SKILL-NAMES require tools outside AVAILABLE-TOOLS."
   (when (and skill-names (require 'magent-skills nil t))
     (dolist (skill-name skill-names)
       (when-let* ((missing
-                   (magent-skills-missing-tools skill-name available-tools)))
+                   (magent-skills-missing-tools
+                    skill-name available-tools scope)))
         (error "Skill '%s' requires unavailable tool(s): %s"
                skill-name
                (mapconcat #'symbol-name missing ", "))))))
@@ -212,69 +209,48 @@ receives the same instruction-provenance and permission invariants."
      "\n\n")))
 
 (cl-defun magent-agent--execute-turn
-    (&key user-prompt callback agent-info skill-names event-context
-          dispatch-context capability-resolution text-callback request-live-p
-          request-state)
+    (&key user-prompt callback capability-resolution request-state)
   "Execute USER-PROMPT through the Magent-owned agent loop.
 CALLBACK is called with one final `magent-execution-result'.
-AGENT-INFO is the agent to use (defaults to session agent or registry default).
-SKILL-NAMES is a list of skill name strings to activate for this request.
-EVENT-CONTEXT is an optional existing event context to reuse.
-DISPATCH-CONTEXT is an optional structured context plist captured at
-dispatch time.
 CAPABILITY-RESOLUTION is an optional precomputed capability resolver
 result for this turn.
-TEXT-CALLBACK receives streaming text chunks for this request.
-REQUEST-LIVE-P is an optional predicate used to discard stale backend
-callbacks after the UI has moved on to a newer request.
-REQUEST-STATE is an optional `magent-request-context' carrying runtime
-state for the request.
-When SKILL-NAMES is nil, the capability resolver may still auto-activate
-instruction skills for the turn.  Explicit skills are merged with and
-deduplicated against capability-selected skills.
+REQUEST-STATE is the canonical `magent-request-context' carrying request
+inputs and mutable execution state.  The capability resolver may auto-activate
+instruction skills in addition to the explicit skills captured there.
 
 The tool calling loop is managed by `magent-agent-loop'.  This function:
   1. Builds the prompt list from session history
   2. Retrieves per-agent overrides (backend, model, temperature, tools)
   3. Creates a normalized LLM request and starts loop execution
   4. Records the final response in the session via the callback"
-  (let* ((session (or (and request-state
-                           (magent-request-context-session request-state))
-                      (magent-session-get)))
-         (agent (or agent-info
-                    (magent-session-agent session)
-                    (magent-agent-registry-get-default)))
+  (let* ((session (magent-request-context-session request-state))
+         (request-scope (or (magent-request-context-scope request-state)
+                            (magent-session-current-scope)))
+         (dispatch-context
+          (magent-request-context-origin-context request-state))
+         (agent (or (magent-request-context-agent request-state)
+                    (and (magent-session-agent session)
+                         (magent-agent-registry-get
+                          (magent-agent-info-name
+                           (magent-session-agent session))
+                          request-scope))
+                    (magent-agent-registry-get-default request-scope)))
          (effective-permission
-          (or (and request-state
-                   (magent-request-context-permission-profile request-state))
+          (or (magent-request-context-permission-profile request-state)
               (magent-agent-info-permission agent)))
-         (request-scope
-          (or (and request-state
-                   (magent-request-context-scope request-state))
-              (magent-session-current-scope)))
-         (inherited-context
-          (or event-context
-              (and request-state
-                   (magent-request-context-event-context request-state))))
+         (inherited-context (magent-request-context-event-context request-state))
          (owns-context (null inherited-context))
          (context (or inherited-context
                       (magent-lifecycle-events-begin-turn
                        (format "Agent %s" (magent-agent-info-name agent)))))
-         (process-turn-id
-          (and request-state
-               (magent-request-context-turn-id request-state))))
+         (process-turn-id (magent-request-context-turn-id request-state)))
     (condition-case err
         (progn
-          (when request-state
-            (setf (magent-request-context-session request-state) session
-                  (magent-request-context-live-p request-state)
-                  (or (magent-request-context-live-p request-state)
-                      request-live-p)
-                  (magent-request-context-event-context request-state) context))
+          (setf (magent-request-context-agent request-state) agent
+                (magent-request-context-event-context request-state) context)
           ;; Freeze scalar audit attribution after the request-local agent is
           ;; selected.  Later UI/session mutations must not relabel this turn.
-          (when request-state
-            (magent-request-context-audit-snapshot request-state))
+          (magent-request-context-audit-snapshot request-state)
           (let* ((thread (magent-session-thread-ledger session))
                  (state-turn-id process-turn-id)
                  (state-turn
@@ -295,11 +271,10 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                         (and active-turn
                              (magent-thread-turn-id active-turn)))))
               (setq process-turn-id turn-id)
-              (when (and request-state turn-id)
-                (setf (magent-request-context-turn-id request-state)
-                      turn-id))))
-          (let* ((current-turn-id (and request-state
-                                       (magent-request-context-turn-id request-state)))
+              (when turn-id
+                (setf (magent-request-context-turn-id request-state) turn-id))))
+          (let* ((current-turn-id
+                  (magent-request-context-turn-id request-state))
                  (prompt-list (magent-session-context-view
                                session 'provider current-turn-id))
                  (agent-role-msg (magent-agent-info-prompt agent))
@@ -309,20 +284,15 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                  (tools
                   (magent-tools-get-gptel-tools-for-permission
                    effective-permission
-                   (if request-state
-                       (magent-request-context-tool-names request-state)
-                     :all)))
+                   (magent-request-context-tool-names request-state)))
                  (available-tool-names
                   (mapcar (lambda (tool) (intern (gptel-tool-name tool))) tools))
                  (explicit-skill-names
                   (magent-skills-dedupe-names
-                   (append skill-names
-                           (and request-state
-                                (magent-request-context-skill-names
-                                 request-state)))))
+                   (magent-request-context-skill-names request-state)))
                  (_skill-tool-validation
                   (magent-agent--validate-explicit-skill-tools
-                   explicit-skill-names available-tool-names))
+                   explicit-skill-names available-tool-names request-scope))
                  (capability-resolution
                   (or capability-resolution
                       (when (and
@@ -331,7 +301,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                              (require 'magent-capability nil t))
                         (magent-capability-resolve
                          user-prompt dispatch-context explicit-skill-names
-                         available-tool-names))))
+                         available-tool-names request-scope))))
                  (resolved-skill-names
                   (magent-skills-dedupe-names
                    (append
@@ -342,7 +312,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                  (skill-prompts (when (and (require 'magent-skills nil t)
                                            resolved-skill-names)
                                   (magent-skills-get-instruction-prompts
-                                   resolved-skill-names)))
+                                   resolved-skill-names request-scope)))
                  (context-provider-messages
                   (magent-agent--context-provider-messages
                    user-prompt dispatch-context request-project-root))
@@ -367,21 +337,16 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                        (magent-agent-resolve-model-route
                         agent
                         :explicit-route
-                        (and request-state
-                             (magent-request-context-model-route request-state))
+                        (magent-request-context-model-route request-state)
                         :parent-route
-                        (and request-state
-                             (magent-request-context-parent-model-route
-                              request-state))))
+                        (magent-request-context-parent-model-route
+                         request-state)))
                       (inherited-temperature
-                       (and request-state
-                            (magent-request-context-temperature request-state)))
+                       (magent-request-context-temperature request-state))
                       (inherited-top-p
-                       (and request-state
-                            (magent-request-context-top-p request-state)))
+                       (magent-request-context-top-p request-state))
                       (inherited-effort
-                       (and request-state
-                            (magent-request-context-effort request-state)))
+                       (magent-request-context-effort request-state))
                       (backend (magent-model-route-backend route))
                       (model (magent-model-route-model route))
                       (temperature (or inherited-temperature
@@ -395,35 +360,35 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                          (magent-effort-option-or-auto
                                           magent-default-effort)))
                       (effort (magent-effort-effective effort-option)))
-                 (when request-state
-                   (setf (magent-request-context-project-root request-state)
-                         (or (magent-request-context-project-root request-state)
-                             request-project-root)
-                         (magent-request-context-model-route request-state)
-                         route
-                         (magent-request-context-model request-state)
-                         model
-                         (magent-request-context-backend request-state)
-                         backend
-                         (magent-request-context-temperature request-state)
-                         (or (magent-request-context-temperature request-state)
-                             temperature)
-                         (magent-request-context-top-p request-state)
-                         (or (magent-request-context-top-p request-state)
-                             top-p)
-                         (magent-request-context-effort request-state)
-                         (or (magent-request-context-effort request-state)
-                             effort-option)
-                         (magent-request-context-skill-names request-state)
-                         (copy-sequence resolved-skill-names)
-                         (magent-request-context-capability-context request-state)
-                         (or (magent-request-context-capability-context request-state)
-                             (and capability-resolution
-                                  (magent-capability-resolution-to-plist
-                                   capability-resolution))
-                             dispatch-context)
-                         (magent-request-context-permission-profile request-state)
-                         effective-permission))
+                 (setf (magent-request-context-project-root request-state)
+                       (or (magent-request-context-project-root request-state)
+                           request-project-root)
+                       (magent-request-context-model-route request-state)
+                       route
+                       (magent-request-context-model request-state)
+                       model
+                       (magent-request-context-backend request-state)
+                       backend
+                       (magent-request-context-temperature request-state)
+                       (or (magent-request-context-temperature request-state)
+                           temperature)
+                       (magent-request-context-top-p request-state)
+                       (or (magent-request-context-top-p request-state)
+                           top-p)
+                       (magent-request-context-effort request-state)
+                       (or (magent-request-context-effort request-state)
+                           effort-option)
+                       (magent-request-context-skill-names request-state)
+                       (copy-sequence resolved-skill-names)
+                       (magent-request-context-capability-context request-state)
+                       (or (magent-request-context-capability-context
+                            request-state)
+                           (and capability-resolution
+                                (magent-capability-resolution-to-plist
+                                 capability-resolution))
+                           dispatch-context)
+                       (magent-request-context-permission-profile request-state)
+                       effective-permission)
                  (magent-log "INFO agent=%s backend=%s model=%s route-source=%s tools=[%s]"
                              (magent-agent-info-name agent)
                              (gptel-backend-name backend)
@@ -446,11 +411,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                             "Magent model %s on backend %s does not support tools"
                             model (gptel-backend-name backend))))
                         (gptel-tools request-tools)
-                        (live-p (or request-live-p
-                                    (and request-state
-                                         (magent-request-context-live-p
-                                          request-state))))
-                        (streaming-started nil)
+                        (live-p (magent-request-context-live-p request-state))
                         (text-delta-seen nil)
                         (assistant-item nil)
                         (reasoning-item nil)
@@ -460,8 +421,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                    (cl-labels
                        ((current-turn-id
                           ()
-                          (or (and request-state
-                                   (magent-request-context-turn-id request-state))
+                          (or (magent-request-context-turn-id request-state)
                               (and loop
                                    (magent-agent-loop-turn-id loop))
                               (and (magent-thread-active-turn
@@ -595,7 +555,6 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                 (and assistant-item
                                      (copy-tree
                                       (magent-thread-item-content assistant-item)))
-                                streaming-started nil
                                 text-delta-seen nil)
                           (magent-agent-loop-begin-sample loop))
                         (sample
@@ -687,29 +646,16 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                           response metadata)
                                        (magent-execution-result-failed
                                         response metadata)))))
-                        (start-streaming
-                          ()
-                          (close-reasoning)
-                          (setq streaming-started t))
                         (handle-completed-event
                           (event)
                           (let ((observer-text
                                  (magent-agent--completion-callback-text
-                                  loop event text-delta-seen))
-                                (callback-text
-                                 (magent-agent--completion-callback-text
-                                  loop event streaming-started)))
+                                  loop event text-delta-seen)))
                             (when (and (stringp observer-text)
                                        (not (string-empty-p observer-text)))
                               (magent-request-context-notify
                                request-state 'assistant-delta
-                               :text observer-text))
-                            (when (and (stringp callback-text)
-                                       (not (string-empty-p callback-text)))
-                              (start-streaming)
-                              (when (and text-callback
-                                         (magent-agent--ui-visible-p request-state))
-                                (funcall text-callback callback-text))))
+                               :text observer-text)))
                           (let* ((result (or (magent-agent-loop-result loop) ""))
                                  (empty-p (string-empty-p result))
                                  (metadata (and empty-p
@@ -727,7 +673,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                             (let ((event-type (magent-sampling-event-type event)))
                               (pcase event-type
                                 ('text-delta
-                                 (start-streaming)
+                                 (close-reasoning)
                                  (magent-lifecycle-events-emit
                                   'text-delta
                                   :context context
@@ -738,11 +684,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                  (magent-request-context-notify
                                   request-state 'assistant-delta
                                   :text (magent-sampling-event-text event))
-                                 (record-text-delta (magent-sampling-event-text event))
-                                 (when (and text-callback
-                                            (magent-agent--ui-visible-p request-state))
-                                   (funcall text-callback
-                                            (magent-sampling-event-text event))))
+                                 (record-text-delta
+                                  (magent-sampling-event-text event)))
                                 ('reasoning-delta
                                  (magent-request-context-notify
                                   request-state 'reasoning-delta
@@ -815,9 +758,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                             :request-context request-state
                             :event-context context
                             :owns-event-context-p owns-context
-                            :turn-id (and request-state
-                                          (magent-request-context-turn-id
-                                           request-state))
+                            :turn-id (magent-request-context-turn-id request-state)
                             :sampler #'magent-sampling-gptel-sample))
                      (sample)
                      loop)))))))
@@ -829,59 +770,23 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
            (magent-lifecycle-events-end-turn context 'failed message)))
        (signal (car err) (cdr err))))))
 
-(cl-defun magent-agent--prepare-request-state
-    (&key session request-state context observer approval-provider request-live-p)
-  "Return REQUEST-STATE configured for one SESSION turn.
-Existing request-state values retain precedence for CONTEXT, OBSERVER, and
-APPROVAL-PROVIDER.  REQUEST-LIVE-P can force the request to remain live."
-  (let ((request-state
-         (or request-state
-             (magent-request-context-create
-              :session session
-              :ui-visibility 'none))))
-    (setf (magent-request-context-session request-state) session
-          (magent-request-context-origin-context request-state)
-          (or (magent-request-context-origin-context request-state) context)
-          (magent-request-context-observer request-state)
-          (or (magent-request-context-observer request-state) observer)
-          (magent-request-context-approval-provider request-state)
-          (or (magent-request-context-approval-provider request-state)
-              approval-provider)
-          (magent-request-context-ui-visibility request-state)
-          (or (magent-request-context-ui-visibility request-state) 'none)
-          (magent-request-context-live-p request-state)
-          (or request-live-p
-              (magent-request-context-live-p request-state)))
-    request-state))
-
 (cl-defun magent-agent-run-turn
-    (&key session prompt agent skills context observer request-context
-          approval-provider capability-resolution on-complete request-live-p)
-  "Run one Magent turn for SESSION with PROMPT.
-This is the UI-neutral execution entry point.  OBSERVER receives
-Magent-native request events through REQUEST-CONTEXT.  ON-COMPLETE is
-called with one final `magent-execution-result'."
-  (unless session
-    (error ":session is required"))
-  (unless prompt
-    (error ":prompt is required"))
-  (let ((request-state
-         (magent-agent--prepare-request-state
-          :session session
-          :request-state request-context
-          :context context
-          :observer observer
-          :approval-provider approval-provider
-          :request-live-p request-live-p)))
-    (magent-agent--execute-turn
-     :user-prompt prompt
-     :callback on-complete
-     :agent-info agent
-     :skill-names skills
-     :dispatch-context context
-     :capability-resolution capability-resolution
-     :request-live-p (magent-request-context-live-p request-state)
-     :request-state request-state)))
+    (request-context &key capability-resolution on-complete)
+  "Run the turn captured by REQUEST-CONTEXT.
+This is the UI-neutral execution entry point.  REQUEST-CONTEXT is the single
+request envelope; ON-COMPLETE receives one final `magent-execution-result'."
+  (unless (magent-request-context-p request-context)
+    (error "Expected a Magent request context, got: %S" request-context))
+  (unless (magent-session-p
+           (magent-request-context-session request-context))
+    (error "Request context has no Magent session"))
+  (unless (stringp (magent-request-context-prompt request-context))
+    (error "Request context has no prompt"))
+  (magent-agent--execute-turn
+   :user-prompt (magent-request-context-prompt request-context)
+   :callback on-complete
+   :capability-resolution capability-resolution
+   :request-state request-context))
 
 (provide 'magent-agent)
 ;;; magent-agent.el ends here
