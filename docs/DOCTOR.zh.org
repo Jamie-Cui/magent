@@ -9,8 +9,18 @@
 和当前项目状态，但不会把通用 Emacs 或 shell 工具交给 LLM。两个入口执行同一个
 Action，并在 ~magent-session-directory/actions/doctor~ 下创建独立 Action session。
 
-M-x 入口启动后会立即显示 ~*Magent Doctor*~ buffer，持续展示本地 probe 和
-provider 分析进度，并在同一个 buffer 中保留最终诊断或失败信息，不再静默后台运行。
+M-x 入口启动后会立即显示一个只读 Org ~*Magent Doctor*~ buffer。持续保留的 Preflight、
+runtime/package 版本、Doctor 实际使用的 model route、结构化 probe tasks 和最终
+诊断都显示在同一个 buffer 中。Probe heading 会在 ~TODO~、~DONE~、~FAIL~ 和
+~KILL~ 之间变化。Probe 结果在分析前会限长并脱敏；task 只额外标记 omitted 和
+failure。如果 probe 读取的内容已经显示在某个 live Emacs buffer 中，task 会链接到
+该 buffer，而不复制冗长内容。独立 session 落盘后，其 session id 会链接到只读
+Action session viewer；该链接使用标准 Org link 语义，因此 ~embark-dwim~ 等
+Org-aware 命令也能打开它。
+
+Buffer 保留 ~#+startup: content~。Tasks 和 Diagnosis 是主要一级章节；Runtime
+和 Doctor model 归入 Environment，Preflight 保留在末尾。等待确认时自动展开
+Preflight，运行结束时自动展开 Diagnosis。
 
 使用 ~/doctor select~ 或给 M-x 命令传递 prefix argument，可以在 minibuffer 中
 审查适用的 probes；
@@ -41,8 +51,9 @@ HTTP headers 或原始 ~*gptel-log*~。绝对路径会被规范化为 ~$PROJECT~
 
 * 内置 Probes
 
-- ~core-runtime~：Magent source、mode、session、queue、approval、provider
-  名称和 model 名称；不会序列化 provider backend 对象。
+- ~core-runtime~：Magent、gptel、agent-shell、ACP 和 Emacs 版本，Magent
+  source、mode、session、queue、approval，以及安全的 Doctor model-route
+  metadata；不会序列化 provider backend 对象。
 - ~current-buffer~：不含 buffer 内容的 metadata。
 - ~project~：项目标识文件和只读 Git status。
 - ~diagnostics~：已有 Flymake、Flycheck 和 Eglot 状态。
@@ -86,9 +97,12 @@ build、test、编辑或以其他方式修改项目。
 使用 ~M-x magent-action-list-sessions~ 查看结果。Viewer 会优先显示最终诊断，
 默认折叠 probe activity；~TAB~ 切换当前 section，~S-TAB~ 切换全部 activity。
 
-使用 ~M-x magent-action-cancel~ 取消活动 Doctor。取消会终止 probe
-process 或 abort 直接 gptel request，将 Action session 标记为 cancelled，
-并保持用户当前 session 不变。
+使用 ~M-x magent-action-cancel~ 取消活动 Doctor。在交互式 Doctor buffer 中，
+也可以在未结束的 task 上按 ~C-c C-t~：该 heading 会标为 ~KILL~，并请求取消
+整个 Doctor，而不是只跳过该 probe。取消会终止活动 probe process 或 abort
+直接 gptel request，将 Action session 标记为 cancelled，并保持用户当前
+session 不变。内置 Elisp probes 是短时同步读取，因此 task 取消通常在外部 probe
+process 或 provider 分析阶段真正可操作。
 
 * 配置
 

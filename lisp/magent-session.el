@@ -1269,7 +1269,7 @@ message boundary."
                (equal (magent-thread-turn-id turn) current-turn-id))))
     (and (not workflow-control)
          (or (not workflow-activity) current-p)
-         (or (eq status 'completed)
+         (or (memq status '(completed interrupted))
              (and current-p (memq status '(queued in-progress)))))))
 
 (defun magent-session--compaction-turn-p (turn)
@@ -1300,10 +1300,12 @@ Returns a list in gptel's advanced format:
 Structured tool result messages are emitted as `(tool . PLIST)' entries so
 gptel can serialize historical tool calls/results for the active backend.
 
-Only completed turns are reused.  When an assistant reply is empty or a
-synthetic error string, Magent drops both that reply and its paired user
-prompt from future prompt reuse.  The final pending user prompt is still
-included so the current turn is preserved.
+Completed turns are reused in full.  Interrupted turns retain their user
+prompt and completed tool results, but discard any partial assistant reply so
+a follow-up such as \"continue\" can recover the cancelled request context.
+When a completed assistant reply is empty or a synthetic error string, Magent
+drops both that reply and its paired user prompt from future prompt reuse.  The
+final pending user prompt is still included so the current turn is preserved.
 
 When CURRENT-TURN-ID is non-nil, prompt generation stops after that turn.
 This prevents later queued user submissions from leaking into the active

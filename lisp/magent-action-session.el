@@ -333,11 +333,15 @@ When CANCELLABLE-ONLY is non-nil, omit invocations without owned work."
     (magent-action-session--record-parent-breadcrumb invocation status message)
     (magent-action-session-untrack invocation)
     (when (magent-action-invocation-interactive-p invocation)
-      (message "Magent %s %s: %s"
-               (magent-action-spec-name
-                (magent-action-invocation-spec invocation))
-               (magent-action-session--status-string status)
-               (or message (magent-action-session--session-id invocation))))
+      (let ((name (magent-action-spec-name
+                   (magent-action-invocation-spec invocation)))
+            (status-text (magent-action-session--status-string status)))
+        (if (eq status 'completed)
+            (message "Magent %s %s" name status-text)
+          (message "Magent %s %s: %s"
+                   name status-text
+                   (or message
+                       (magent-action-session--session-id invocation))))))
     fallback))
 
 (defun magent-action-session-untrack (invocation)

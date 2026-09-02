@@ -10,10 +10,21 @@ and current-project state without giving an LLM general Emacs or shell access.
 Both entry points execute the same Action and create an isolated Action session
 under ~magent-session-directory/actions/doctor~.
 
-The M-x entry point immediately displays a ~*Magent Doctor*~ buffer.  It keeps
-the local probe and provider-analysis progress visible, then retains the final
-diagnosis or failure in that buffer instead of running silently in the
-background.
+The M-x entry point immediately displays one read-only Org
+~*Magent Doctor*~ buffer.  The same buffer retains preflight, runtime/package
+versions, the effective Doctor model route, structured probe tasks, and the
+final diagnosis.  Probe headings move through ~TODO~, ~DONE~, ~FAIL~, or
+~KILL~.  Probe results are bounded and redacted before analysis; tasks call out
+only omissions and failures.  When a probe reads information already shown in
+a live Emacs buffer, the task links to that buffer instead of copying its
+potentially noisy contents.  Once the isolated session has been saved, its id
+is a standard Org link to the read-only Action session viewer, so Org-aware
+commands such as ~embark-dwim~ can follow it.
+
+The buffer retains ~#+startup: content~.  Tasks and Diagnosis remain the main
+top-level sections, while Runtime and Doctor model details live under
+Environment and Preflight remains available at the end.  Preflight opens while
+confirmation is pending, and Diagnosis opens automatically when the run ends.
 
 Use ~/doctor select~ or a prefix argument with the M-x command to review the
 applicable probe selection. Core runtime diagnostics are always included.
@@ -46,8 +57,9 @@ closed before any provider request is made.
 
 * Built-In Probes
 
-- ~core-runtime~: Magent source, mode, session, queue, approvals, provider name,
-  and model name.  It never serializes the provider backend object.
+- ~core-runtime~: Magent, gptel, agent-shell, ACP, and Emacs versions; Magent
+  source, mode, session, queue, approvals; and the safe Doctor model-route
+  metadata.  It never serializes the provider backend object.
 - ~current-buffer~: buffer metadata without contents.
 - ~project~: project indicators and a read-only Git status when available.
 - ~diagnostics~: existing Flymake, Flycheck, and Eglot state.
@@ -95,10 +107,14 @@ Use ~M-x magent-action-list-sessions~ to inspect results.  The viewer shows
 the final diagnosis first and folds probe activity by default; ~TAB~ toggles a
 section and ~S-TAB~ toggles all activity details.
 
-Use ~M-x magent-action-cancel~ to cancel an active Doctor request.
-Cancellation terminates an active probe process or aborts the direct gptel
-request, marks the Action session cancelled, and leaves the user's current
-session unchanged.
+Use ~M-x magent-action-cancel~ to cancel an active Doctor request.  In the
+interactive Doctor buffer, ~C-c C-t~ on a nonterminal task marks that heading
+~KILL~ and requests the same whole-Doctor cancellation; it does not skip only
+that probe.  Cancellation terminates an active probe process or aborts the
+direct gptel request, marks the Action session cancelled, and leaves the user's
+current session unchanged.  Built-in Elisp probes are short synchronous reads,
+so task cancellation is normally actionable during an external probe process
+or provider analysis.
 
 * Configuration
 

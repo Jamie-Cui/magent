@@ -14,6 +14,8 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'button)
+(require 'lisp-mnt)
 (require 'seq)
 (require 'subr-x)
 (require 'gptel-request)
@@ -38,6 +40,7 @@
 (declare-function flycheck-error-line "ext:flycheck" t t)
 (declare-function flycheck-error-message "ext:flycheck" t t)
 (declare-function magent-agent-info-name "magent-agent-info" t t)
+(declare-function magent-action-open-session "magent-action-session-view" t t)
 (declare-function magent-approval-pending-count "magent-approval")
 (declare-function magent-runtime-pending-count "magent-runtime-api")
 (declare-function magent-runtime-session-effective-model-route
@@ -50,11 +53,22 @@
                   "magent-runtime-queue" t t)
 (declare-function magent-runtime-submission-status
                   "magent-runtime-queue" t t)
+(declare-function org-back-to-heading "org" (&optional invisible-ok))
+(declare-function org-cycle-content "org-cycle" (&optional arg))
+(declare-function org-fold-show-entry "org-fold" (&optional hide-drawers))
+(declare-function org-fold-show-subtree "org-fold")
+(declare-function org-link-make-string "ol" (link &optional description))
+(declare-function org-link-set-parameters "ol" (type &rest parameters))
+(declare-function org-mode "org")
 
+(defvar acp-package-version)
+(defvar agent-shell--version)
 (defvar flycheck-current-errors)
 (defvar gptel-backend)
 (defvar gptel-model)
 (defvar gptel-temperature)
+(defvar gptel-version)
+(defvar org-todo-keywords)
 
 (define-error 'magent-doctor-probe-timeout "Doctor probe timed out")
 (define-error 'magent-doctor-security-error "Doctor data failed validation")
@@ -76,6 +90,7 @@
                (:copier nil))
   context
   project-root
+  route
   deadline
   current-process
   request-handle
@@ -91,11 +106,24 @@
     "** Recommended Actions" "** Limitations")
   "Required headings in a structured doctor response.")
 
+(defconst magent-doctor--interactive-todo-keywords
+  '((sequence "TODO" "|" "DONE" "FAIL" "KILL"))
+  "Buffer-local task states used by the interactive Doctor view.")
+
 (defvar-local magent-doctor--interactive-status "Starting"
   "Status shown in the current interactive Doctor buffer.")
 
-(defvar-local magent-doctor--interactive-progress nil
-  "Progress messages shown in the current interactive Doctor buffer.")
+(defvar-local magent-doctor--interactive-preflight ""
+  "Preflight disclosure retained in the current Doctor buffer.")
+
+(defvar-local magent-doctor--interactive-tasks nil
+  "Structured tasks shown in the current interactive Doctor buffer.")
+
+(defvar-local magent-doctor--interactive-runtime-info nil
+  "Runtime version information shown in the current Doctor buffer.")
+
+(defvar-local magent-doctor--interactive-model-info nil
+  "Safe model route information shown in the current Doctor buffer.")
 
 (defvar-local magent-doctor--interactive-result ""
   "Result text shown in the current interactive Doctor buffer.")
@@ -103,43 +131,292 @@
 (defvar-local magent-doctor--interactive-session-id nil
   "Isolated Action session id shown in the current Doctor buffer.")
 
-(defun magent-doctor--interactive-render (buffer)
-  "Render the current interactive Doctor state in BUFFER."
+(defvar-local magent-doctor--interactive-invocation nil
+  "Active Action invocation controlled by the current Doctor buffer.")
+
+(defun magent-doctor--interactive-format-value (value)
+  "Return a concise display string for Doctor metadata VALUE."
+  (cond
+   ((null value) "unavailable")
+   ((eq value :json-false) "no")
+   ((eq value t) "yes")
+   ((vectorp value)
+    (mapconcat #'magent-doctor--interactive-format-value
+               (append value nil) ", "))
+   ((and (listp value) (not (stringp value)))
+    (mapconcat #'magent-doctor--interactive-format-value value ", "))
+   (t (format "%s" value))))
+
+(defun magent-doctor--interactive-task-keyword (status)
+  "Return the Org keyword representing Doctor task STATUS."
+  (pcase status
+    ((or 'completed 'done) "DONE")
+    ((or 'failed 'fail) "FAIL")
+    ((or 'cancelled 'killed 'kill) "KILL")
+    (_ "TODO")))
+
+(defun magent-doctor--interactive-task-terminal-p (status)
+  "Return non-nil when Doctor task STATUS is terminal."
+  (memq status '(completed done failed fail cancelled killed kill)))
+
+(defun magent-doctor--interactive-status-text ()
+  "Return the Doctor status with task completion counts when available."
+  (let ((total (length magent-doctor--interactive-tasks)))
+    (if (zerop total)
+        magent-doctor--interactive-status
+      (format "%s (%d/%d)"
+              magent-doctor--interactive-status
+              (cl-count-if
+               (lambda (task)
+                 (magent-doctor--interactive-task-terminal-p
+                  (plist-get task :status)))
+               magent-doctor--interactive-tasks)
+              total))))
+
+(defun magent-doctor--interactive-insert-info (heading values)
+  "Insert Doctor info HEADING followed by alist VALUES."
+  (insert (format "** %s\n" heading))
+  (dolist (entry values)
+    (insert (format "- %s: %s\n"
+                    (car entry)
+                    (magent-doctor--interactive-format-value (cdr entry))))))
+
+(defun magent-doctor--interactive-insert-task (task)
+  "Insert one structured Doctor TASK in the current buffer."
+  (let* ((id (plist-get task :id))
+         (status (plist-get task :status))
+         (keyword (magent-doctor--interactive-task-keyword status))
+         (heading-start (point)))
+    (insert (format "** %s %s\n" keyword (plist-get task :title)))
+    (add-text-properties
+     heading-start (1- (point))
+     (list 'magent-doctor-task-id id
+           'rear-nonsticky '(magent-doctor-task-id)))
+    (when-let* ((description (plist-get task :description)))
+      (insert description "\n"))
+    (when (eq (plist-get task :llm-state) 'omitted)
+      (insert "- Analysis: omitted because the total size limit was reached.\n"))
+    (when-let* ((buffers (plist-get task :related-buffers)))
+      (insert "- Related buffers: ")
+      (let ((first t))
+        (dolist (name buffers)
+          (when (get-buffer name)
+            (unless first
+              (insert ", "))
+            (setq first nil)
+            (insert-text-button
+             name
+             'follow-link t
+             'help-echo (format "Open buffer %s" name)
+             'magent-doctor-buffer-name name
+             'action #'magent-doctor--interactive-open-related-buffer)))
+        (when first
+          (insert "none currently live")))
+      (insert "\n"))
+    (when-let* ((note (plist-get task :note)))
+      (insert "- " note "\n"))))
+
+(defun magent-doctor--interactive-open-related-buffer (button)
+  "Open the live Doctor-related buffer named by BUTTON."
+  (let* ((name (button-get button 'magent-doctor-buffer-name))
+         (buffer (and (stringp name) (get-buffer name))))
+    (unless (buffer-live-p buffer)
+      (user-error "Doctor-related buffer is no longer live: %s" name))
+    (pop-to-buffer buffer)))
+
+(defun magent-doctor--interactive-session-file (&optional session-id)
+  "Return the persisted file for Doctor SESSION-ID, or nil.
+SESSION-ID defaults to the session shown in the current Doctor buffer."
+  (let ((id (or session-id magent-doctor--interactive-session-id)))
+    (when (stringp id)
+      (magent-session-validate-id id)
+      (let ((file
+             (expand-file-name
+              (concat id ".json")
+              (magent-session-action-directory "doctor"))))
+        (and (file-exists-p file) file)))))
+
+(defun magent-doctor--interactive-open-session-link (session-id arg)
+  "Open the persisted Doctor Action session named by SESSION-ID.
+ARG is accepted for the Org custom-link follow protocol."
+  (ignore arg)
+  (let ((file (magent-doctor--interactive-session-file session-id)))
+    (unless file
+      (user-error "Persisted Doctor session is no longer available"))
+    (require 'magent-action-session-view)
+    (magent-action-open-session file)))
+
+(defun magent-doctor--interactive-register-session-link ()
+  "Register the Org link used for persisted Doctor sessions."
+  (org-link-set-parameters
+   "magent-session"
+   :follow #'magent-doctor--interactive-open-session-link))
+
+(defun magent-doctor--interactive-update-task (update)
+  "Apply one structured Doctor task UPDATE to the current buffer state."
+  (let ((id (plist-get update :id)))
+    (setq magent-doctor--interactive-tasks
+          (mapcar
+           (lambda (task)
+             (if (not (equal (plist-get task :id) id))
+                 task
+               (let ((updated (copy-tree task)))
+                 (dolist (key '(:status :llm-state :note))
+                   (when (plist-member update key)
+                     (setq updated
+                           (plist-put updated key (plist-get update key)))))
+                 updated)))
+           magent-doctor--interactive-tasks))))
+
+(defun magent-doctor--interactive-finish-pending-tasks (action-status)
+  "Finish nonterminal Doctor tasks according to ACTION-STATUS.
+On failure, mark the running task failed and tasks not yet started cancelled."
+  (setq magent-doctor--interactive-tasks
+        (mapcar
+         (lambda (task)
+           (let ((status (plist-get task :status)))
+             (if (magent-doctor--interactive-task-terminal-p status)
+                 task
+               (plist-put
+                (copy-tree task) :status
+                (pcase action-status
+                  ('completed 'completed)
+                  ('cancelled 'cancelled)
+                  (_ (if (eq status 'running) 'failed 'cancelled)))))))
+         magent-doctor--interactive-tasks)))
+
+(defun magent-doctor--interactive-render (buffer &optional focus)
+  "Render the current interactive Doctor state in BUFFER.
+FOCUS may name a top-level section to reveal and move point to."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (let ((inhibit-read-only t))
+      (let ((inhibit-read-only t)
+            (previous-point (point)))
         (erase-buffer)
-        (insert "Magent Doctor\n\n")
-        (insert (format "Status: %s\n" magent-doctor--interactive-status))
+        (insert "#+title: Magent Doctor\n#+startup: content\n\n")
+        (insert (format "Status: %s\n"
+                        (magent-doctor--interactive-status-text)))
         (when magent-doctor--interactive-session-id
-          (insert (format "Session: %s\n"
-                          magent-doctor--interactive-session-id)))
-        (insert "\nThis diagnostic runs in an isolated Action session.\n")
-        (if magent-doctor--interactive-progress
-            (progn
-              (insert "\nProgress\n")
-              (dolist (message (reverse magent-doctor--interactive-progress))
-                (insert "- " message "\n")))
-          (insert "\nStarting local diagnostic collection...\n"))
-        (unless (string-empty-p magent-doctor--interactive-result)
-          (insert "\nResult\n\n" magent-doctor--interactive-result)
+          (insert "Session: ")
+          (if (magent-doctor--interactive-session-file)
+              (insert
+               (org-link-make-string
+                (concat "magent-session:"
+                        magent-doctor--interactive-session-id)
+                magent-doctor--interactive-session-id))
+            (insert magent-doctor--interactive-session-id))
+          (insert "\n"))
+        (insert "Mode: isolated Action; provider tools disabled.\n")
+        (when (member magent-doctor--interactive-status
+                      '("Running" "Finishing"))
+          (insert (concat "Cancel: C-c C-t on a TODO task (marks KILL), "
+                          "or M-x magent-action-cancel.\n")))
+        (insert "\n* Tasks\n")
+        (insert (concat "Probe results are bounded and redacted before "
+                        "analysis unless marked omitted.\n"))
+        (if magent-doctor--interactive-tasks
+            (dolist (task magent-doctor--interactive-tasks)
+              (magent-doctor--interactive-insert-task task))
+          (insert "** TODO Preparing Doctor task plan\n"))
+        (insert "\n")
+        (if (string-empty-p magent-doctor--interactive-result)
+            (insert "* Diagnosis\n")
+          (unless (string-match-p
+                   "\\`\\* Diagnosis[ \t]*\\(?:\n\\|\\'\\)"
+                   magent-doctor--interactive-result)
+            (insert "* Diagnosis\n"))
+          (insert magent-doctor--interactive-result)
           (unless (string-suffix-p "\n" magent-doctor--interactive-result)
             (insert "\n")))
-        (insert "\nUse M-x magent-action-cancel to cancel an active run.\n")
-        (goto-char (point-min))))))
+        (insert "\n* Environment\n")
+        (magent-doctor--interactive-insert-info
+         "Runtime" magent-doctor--interactive-runtime-info)
+        (insert "\n")
+        (magent-doctor--interactive-insert-info
+         "Doctor model" magent-doctor--interactive-model-info)
+        (unless (string-empty-p magent-doctor--interactive-preflight)
+          (insert "\n* Preflight\n#+begin_example\n"
+                  magent-doctor--interactive-preflight)
+          (unless (string-suffix-p
+                   "\n" magent-doctor--interactive-preflight)
+            (insert "\n"))
+          (insert "#+end_example\n"))
+        (org-cycle-content)
+        (if (and focus
+                 (progn
+                   (goto-char (point-min))
+                   (re-search-forward
+                    (format "^\\* %s[ \t]*$" (regexp-quote focus)) nil t)))
+            (progn
+              (beginning-of-line)
+              (pcase focus
+                ("Tasks" (org-fold-show-entry))
+                ((or "Diagnosis" "Preflight")
+                 (org-fold-show-subtree))))
+          (goto-char (min previous-point (point-max))))))))
 
 (defun magent-doctor--interactive-buffer ()
   "Create, initialize, and display a buffer for an interactive Doctor run."
   (let ((buffer (generate-new-buffer "*Magent Doctor*")))
     (with-current-buffer buffer
-      (special-mode)
+      (require 'org)
+      (magent-doctor--interactive-register-session-link)
+      (let ((org-todo-keywords magent-doctor--interactive-todo-keywords))
+        (org-mode))
+      (local-set-key (kbd "C-c C-t") #'magent-doctor-task-kill)
+      (setq buffer-read-only t)
       (setq-local magent-doctor--interactive-status "Starting"
-                  magent-doctor--interactive-progress nil
+                  magent-doctor--interactive-preflight ""
+                  magent-doctor--interactive-tasks nil
+                  magent-doctor--interactive-runtime-info
+                  (magent-doctor--runtime-info)
+                  magent-doctor--interactive-model-info
+                  '(("Status" . "Resolving route"))
                   magent-doctor--interactive-result ""
-                  magent-doctor--interactive-session-id nil)
+                  magent-doctor--interactive-session-id nil
+                  magent-doctor--interactive-invocation nil)
       (magent-doctor--interactive-render buffer))
     (display-buffer buffer)
     buffer))
+
+(defun magent-doctor--interactive-show-preflight (buffer text)
+  "Show Doctor preflight TEXT in BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq magent-doctor--interactive-status "Awaiting confirmation"
+            magent-doctor--interactive-preflight text)
+      (magent-doctor--interactive-render buffer "Preflight"))))
+
+(defun magent-doctor-task-kill ()
+  "Mark the Doctor task at point KILL and cancel its Action invocation."
+  (interactive)
+  (unless (magent-action-invocation-p magent-doctor--interactive-invocation)
+    (user-error "No active Doctor invocation is attached to this buffer"))
+  (unless (eq (magent-action-invocation-status
+               magent-doctor--interactive-invocation)
+              'active)
+    (user-error "The Doctor invocation is no longer active"))
+  (let ((id
+         (save-excursion
+           (org-back-to-heading t)
+           (get-text-property (line-beginning-position)
+                              'magent-doctor-task-id))))
+    (unless id
+      (user-error "Point is not on a Doctor task"))
+    (let ((task (cl-find id magent-doctor--interactive-tasks
+                         :key (lambda (item) (plist-get item :id))
+                         :test #'equal)))
+      (unless (and task
+                   (memq (plist-get task :status)
+                         '(pending running todo)))
+        (user-error "Doctor task %s is already terminal" id)))
+    (magent-doctor--interactive-update-task
+     (list :id id :status 'cancelled
+           :note "Cancelled by the user; the Doctor run is stopping."))
+    (magent-doctor--interactive-render (current-buffer))
+    (magent-action-cancel
+     magent-doctor--interactive-invocation
+     (format "Doctor task %s killed by user" id))))
 
 (defun magent-doctor--interactive-status-label (status)
   "Return a display label for terminal Doctor STATUS."
@@ -153,27 +430,37 @@
   "Project Doctor EVENT into the interactive Doctor BUFFER."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (pcase (plist-get event :type)
-        ('action-progress
-         (setq magent-doctor--interactive-status "Running")
-         (when-let* ((text (plist-get event :text)))
-           (unless (member text magent-doctor--interactive-progress)
-             (push text magent-doctor--interactive-progress))))
-        ('assistant-delta
-         (setq magent-doctor--interactive-status "Finishing")
-         (when-let* ((text (plist-get event :text)))
-           (setq magent-doctor--interactive-result
-                 (concat magent-doctor--interactive-result text))))
-        ('action-completed
-         (setq magent-doctor--interactive-status
-               (magent-doctor--interactive-status-label
-                (plist-get event :status)))
-         (when (string-empty-p magent-doctor--interactive-result)
-           (when-let* ((result (plist-get event :result)))
+      (let (focus)
+        (pcase (plist-get event :type)
+          ('action-progress
+           (setq magent-doctor--interactive-status "Running")
+           (when-let* ((update (plist-get event :doctor-update)))
+             (pcase (plist-get update :kind)
+               ('plan
+                (setq magent-doctor--interactive-tasks
+                      (copy-tree (plist-get update :tasks))
+                      magent-doctor--interactive-model-info
+                      (copy-tree (plist-get update :model-info))
+                      focus "Tasks"))
+               ('task
+                (magent-doctor--interactive-update-task update)))))
+          ('assistant-delta
+           (setq magent-doctor--interactive-status "Finishing")
+           (when-let* ((text (plist-get event :text)))
              (setq magent-doctor--interactive-result
-                   (or (magent-execution-result-content-string result) "")))))
-        (_ nil))
-      (magent-doctor--interactive-render buffer))))
+                   (concat magent-doctor--interactive-result text))))
+          ('action-completed
+           (let ((status (plist-get event :status)))
+             (setq magent-doctor--interactive-status
+                   (magent-doctor--interactive-status-label status))
+             (magent-doctor--interactive-finish-pending-tasks status))
+           (when (string-empty-p magent-doctor--interactive-result)
+             (when-let* ((result (plist-get event :result)))
+               (setq magent-doctor--interactive-result
+                     (or (magent-execution-result-content-string result) ""))))
+           (setq focus "Diagnosis"))
+          (_ nil))
+        (magent-doctor--interactive-render buffer focus)))))
 
 (defun magent-doctor--normalize-id (id)
   "Return ID as a stable probe registry key."
@@ -236,29 +523,102 @@ values.  Custom probes execute as trusted Emacs Lisp and are not sandboxed."
   "Return VALUE as a JSON boolean sentinel."
   (if value t :json-false))
 
-(defun magent-doctor--safe-provider-name ()
-  "Return the current provider name without printing its backend object."
-  (or (and (boundp 'gptel-backend)
-           gptel-backend
+(defun magent-doctor--safe-provider-name (&optional backend)
+  "Return BACKEND's provider name without printing its live object.
+When BACKEND is nil, use the current global gptel backend."
+  (let ((selected (or backend
+                      (and (boundp 'gptel-backend) gptel-backend))))
+    (or (and selected
            (fboundp 'gptel-backend-p)
-           (gptel-backend-p gptel-backend)
+           (gptel-backend-p selected)
            (fboundp 'gptel-backend-name)
-           (gptel-backend-name gptel-backend))
-      "gptel"))
+           (gptel-backend-name selected))
+        "gptel")))
 
 (defun magent-doctor--feature-source (feature)
   "Return the library path for FEATURE, or nil."
   (and (symbolp feature)
        (locate-library (symbol-name feature))))
 
-(defun magent-doctor--core-collector (context _state)
+(defun magent-doctor--library-version (library)
+  "Return the package header version for LIBRARY, or nil."
+  (when-let* ((located (locate-library library))
+              (source (if (string-suffix-p ".elc" located)
+                          (string-remove-suffix "c" located)
+                        located))
+              ((file-readable-p source)))
+    (condition-case nil
+        (lm-with-file source
+          (or (lm-header "package-version")
+              (lm-header "version")))
+      (file-error nil))))
+
+(defun magent-doctor--bound-version (symbol library)
+  "Return version variable SYMBOL or LIBRARY's package header version."
+  (or (and (boundp symbol)
+           (let ((value (symbol-value symbol)))
+             (and value (format "%s" value))))
+      (magent-doctor--library-version library)
+      "unavailable"))
+
+(defun magent-doctor--runtime-info ()
+  "Return safe runtime version information for Doctor display and probes."
+  `(("Magent version" . ,(or (magent-doctor--library-version "magent")
+                              "unavailable"))
+    ("gptel version" . ,(magent-doctor--bound-version
+                          'gptel-version "gptel"))
+    ("agent-shell version" . ,(magent-doctor--bound-version
+                                'agent-shell--version "agent-shell"))
+    ("ACP version" . ,(magent-doctor--bound-version
+                        'acp-package-version "acp"))
+    ("Emacs version" . ,emacs-version)
+    ("System" . ,system-type)))
+
+(defun magent-doctor--model-info (route)
+  "Return safe detailed Doctor model metadata for ROUTE."
+  (if (not (magent-model-route-p route))
+      '(("Status" . "No model route"))
+    (let* ((backend (magent-model-route-backend route))
+           (model (magent-model-route-model route))
+           (description (and (symbolp model) (get model :description)))
+           (capabilities (and (symbolp model) (get model :capabilities)))
+           (capability-list
+            (cond
+             ((vectorp capabilities) (append capabilities nil))
+             ((listp capabilities) capabilities)
+             (capabilities (list capabilities))))
+           (context-window (and (symbolp model) (get model :context-window))))
+      `(("Backend" . ,(magent-doctor--safe-provider-name backend))
+        ("Backend type" . ,(format "%s" (type-of backend)))
+        ("Model" . ,(format "%s" model))
+        ("Description" . ,(and description
+                                (magent-doctor--truncate
+                                 (format "%s" description) 500)))
+        ("Capabilities" . ,(and capability-list
+                                 (vconcat
+                                  (mapcar (lambda (item) (format "%s" item))
+                                          capability-list))))
+        ("Context window" . ,context-window)
+        ("Route source" . ,(magent-model-route-source route))
+        ("Route phase" . ,(magent-model-route-phase route))
+        ("Temperature" . ,(and (boundp 'gptel-temperature)
+                                gptel-temperature))
+        ("Streaming" . t)
+        ("Provider tools" . "disabled")
+        ("Reasoning" . "disabled")
+        ("Request timeout seconds" . ,magent-request-timeout)))))
+
+(defun magent-doctor--core-collector (context state)
   "Collect bounded Magent runtime facts for CONTEXT."
   (let* ((parent (magent-action-invocation-parent-session context))
          (thread (and parent (magent-session-thread-ledger parent)))
          (agent (and parent (magent-session-agent parent)))
          (active (and (fboundp 'magent-runtime-queue-active-submission)
                       (magent-runtime-queue-active-submission))))
-    `((emacs-version . ,emacs-version)
+    `((runtime-versions . ,(magent-doctor--runtime-info))
+      (doctor-model . ,(magent-doctor--model-info
+                        (magent-doctor-state-route state)))
+      (emacs-version . ,emacs-version)
       (system-type . ,system-type)
       (origin-scope . ,(magent-action-invocation-origin-scope context))
       (parent-session-id
@@ -628,9 +988,10 @@ Return nil when either path is unavailable or cannot be inspected."
                 (line-number-at-pos)
                 magent-doctor-source-context-max-chars)))))
 
-(defun magent-doctor--preflight-text (context probes)
-  "Return a local-only preflight disclosure for CONTEXT and PROBES."
+(defun magent-doctor--preflight-text (context probes route)
+  "Return a local-only preflight disclosure for CONTEXT, PROBES, and ROUTE."
   (let* ((root (magent-doctor--project-root context))
+         (model-info (magent-doctor--model-info route))
          (source-selected
           (cl-find "source-context" probes
                    :key #'magent-doctor-probe-id :test #'equal))
@@ -640,11 +1001,8 @@ Return nil when either path is unavailable or cannot be inspected."
                   (mapcar #'magent-doctor-probe-data-categories probes)))))
     (string-join
      (append
-      (list "Magent Doctor Preflight"
-            ""
-            (format "Provider: %s" (magent-doctor--safe-provider-name))
-            (format "Model: %s"
-                    (if (boundp 'gptel-model) gptel-model "default"))
+      (list (format "Provider: %s" (cdr (assoc "Backend" model-info)))
+            (format "Model: %s" (cdr (assoc "Model" model-info)))
             (format "Project root: %s" (or root "none"))
             ""
             "Probes:")
@@ -669,13 +1027,85 @@ Return nil when either path is unavailable or cannot be inspected."
             "No provider tools are enabled."))
      "\n")))
 
-(defun magent-doctor--confirm (context probes)
-  "Confirm the doctor collection plan for CONTEXT and PROBES."
+(defun magent-doctor--confirm (context probes route)
+  "Confirm the doctor collection plan for CONTEXT, PROBES, and ROUTE."
   (if magent-bypass-permission
       t
-    (magent--with-display-buffer "*Magent Doctor Preflight*"
-      (insert (magent-doctor--preflight-text context probes)))
+    (let ((buffer
+           (or (let ((candidate
+                      (plist-get (magent-action-invocation-options context)
+                                 :interactive-buffer)))
+                 (and (buffer-live-p candidate) candidate))
+               (magent-doctor--interactive-buffer))))
+      (magent-doctor--interactive-show-preflight
+       buffer (magent-doctor--preflight-text context probes route)))
     (yes-or-no-p "Run Magent Doctor with these probes? ")))
+
+(defun magent-doctor--task-related-buffers (context probe)
+  "Return existing local buffer names relevant to CONTEXT and PROBE."
+  (let ((id (magent-doctor-probe-id probe)))
+    (pcase id
+      ((or "current-buffer" "diagnostics" "source-context")
+       (when-let* ((buffer (magent-doctor--origin-buffer context)))
+         (list (buffer-name buffer))))
+      ("magent-logs"
+       (seq-filter #'get-buffer
+                   '("*magent-log*" "*Warnings*" "*Messages*")))
+      ("compilation"
+       (when-let* ((root (magent-doctor--project-root context)))
+         (seq-take
+          (delq nil
+                (mapcar
+                 (lambda (buffer)
+                   (with-current-buffer buffer
+                     (and (derived-mode-p 'compilation-mode)
+                          (magent-doctor--directory-in-project-p
+                           default-directory root)
+                          (buffer-name buffer))))
+                 (buffer-list)))
+          3))))))
+
+(defun magent-doctor--task-plan (context probes)
+  "Return interactive Doctor tasks for CONTEXT, PROBES, and final analysis."
+  (append
+   (mapcar
+    (lambda (probe)
+      (list :id (magent-doctor-probe-id probe)
+            :kind 'probe
+            :title (format "probe %s" (magent-doctor-probe-id probe))
+            :description (magent-doctor-probe-description probe)
+            :related-buffers
+            (magent-doctor--task-related-buffers context probe)
+            :status 'pending
+            :llm-state 'pending
+            :note nil))
+    probes)
+   (list
+    (list :id "analysis"
+          :kind 'analysis
+          :title "Analyze collected results"
+          :description
+          "Ask the selected Doctor model to analyze bounded, redacted probe results."
+          :status 'pending
+          :llm-state nil
+          :note nil))))
+
+(defun magent-doctor--report-plan (context probes route)
+  "Report the structured Doctor task plan for CONTEXT, PROBES, and ROUTE."
+  (magent-action-progress
+   context "Prepared Doctor task plan."
+   :doctor-update
+   (list :kind 'plan
+         :tasks (magent-doctor--task-plan context probes)
+         :model-info (magent-doctor--model-info route))))
+
+(defun magent-doctor--report-task (context id status &rest properties)
+  "Report Doctor task ID with STATUS and optional PROPERTIES for CONTEXT."
+  (magent-action-progress
+   context
+   (format "Doctor task %s %s." id status)
+   :doctor-update
+   (append (list :kind 'task :id id :status status) properties)))
 
 (defun magent-doctor--truncate (string limit)
   "Return STRING capped to LIMIT characters."
@@ -731,7 +1161,7 @@ Return nil when either path is unavailable or cannot be inspected."
                    (remaining remaining)
                    (t nil)))
          (id (magent-doctor-probe-id probe)))
-    (magent-action-progress context (format "Running doctor probe %s..." id))
+    (magent-doctor--report-task context id 'running)
     (condition-case err
         (let* ((raw
                 (if timeout
@@ -764,7 +1194,13 @@ Return nil when either path is unavailable or cannot be inspected."
     (dolist (probe probes (nreverse results))
       (when (magent-doctor-state-cancelled-p state)
         (signal 'quit nil))
-      (push (magent-doctor--run-probe probe context state) results))))
+      (let* ((result (magent-doctor--run-probe probe context state))
+             (status (if (equal (cdr (assq 'status result)) "completed")
+                         'completed
+                       'failed)))
+        (magent-doctor--report-task
+         context (magent-doctor-probe-id probe) status)
+        (push result results)))))
 
 (defun magent-doctor--bounded-bundle (results)
   "Return RESULTS capped to `magent-doctor-max-diagnostic-chars'."
@@ -781,6 +1217,22 @@ Return nil when either path is unavailable or cannot be inspected."
     `((probes . ,(vconcat (nreverse included)))
       (omitted-probes . ,(vconcat (nreverse omitted)))
       (truncated . ,(magent-doctor--json-bool omitted)))))
+
+(defun magent-doctor--report-bundle-membership (context results bundle)
+  "Report which sanitized RESULTS enter Doctor BUNDLE for CONTEXT."
+  (let ((omitted (append (cdr (assq 'omitted-probes bundle)) nil)))
+    (dolist (result results)
+      (let* ((id (cdr (assq 'id result)))
+             (status (if (equal (cdr (assq 'status result)) "completed")
+                         'completed
+                       'failed)))
+        (if (member id omitted)
+            (magent-doctor--report-task
+             context id status
+             :llm-state 'omitted)
+          (magent-doctor--report-task
+           context id status
+           :llm-state 'included))))))
 
 (defun magent-doctor--structured-output-p (text)
   "Return non-nil when TEXT contains the required headings in order."
@@ -905,10 +1357,11 @@ invocations without a control session use the current gptel defaults."
 (defun magent-doctor--start-analysis (context state results)
   "Start one tool-free provider analysis for CONTEXT over RESULTS."
   (let* ((bundle (magent-doctor--bounded-bundle results))
-         (route (magent-doctor--analysis-route context))
+         (bundle-json (magent-json-encode bundle))
+         (route (magent-doctor-state-route state))
          (prompt (concat (magent-prompt-read "internal/doctor-user.org")
                          "\n\n"
-                         (magent-json-encode bundle)))
+                         bundle-json))
          (request
           (magent-sampling-request-create
            :prompt prompt
@@ -926,7 +1379,12 @@ invocations without a control session use the current gptel defaults."
            :callback
            (lambda (event)
              (magent-doctor--request-callback context state event)))))
-    (magent-action-progress context "Analyzing sanitized diagnostics...")
+    (magent-doctor--report-bundle-membership context results bundle)
+    (magent-doctor--report-task
+     context "analysis" 'running
+     :note (format (concat "Sending %d characters of bounded, redacted probe "
+                           "results; provider tools are disabled.")
+                   (length bundle-json)))
     (let ((handle (magent-sampling-gptel-sample request)))
       (if (or (magent-doctor-state-cancelled-p state)
               (not (eq (magent-action-invocation-status context) 'active)))
@@ -952,17 +1410,20 @@ invocations without a control session use the current gptel defaults."
                   '("" "select"))
     (user-error "Usage: /doctor [select]"))
   (let* ((probes (magent-doctor--select-probes context))
+         (route (magent-doctor--analysis-route context))
          (state
           (magent-doctor-state-create
            :context context
            :done done
+           :route route
            :project-root (magent-doctor--project-root context))))
     (magent-session-set-metadata-value
      (magent-action-invocation-session context)
      'selected-probes
      (vconcat (mapcar #'magent-doctor-probe-id probes)))
-    (if (not (magent-doctor--confirm context probes))
+    (if (not (magent-doctor--confirm context probes route))
         (magent-doctor--done state 'cancelled "Doctor cancelled")
+      (magent-doctor--report-plan context probes route)
       (setf (magent-doctor-state-deadline state)
             (and (> magent-doctor-total-timeout 0)
                  (+ (float-time) magent-doctor-total-timeout)))
@@ -1046,10 +1507,14 @@ With prefix argument SELECT-PROBES, review probe selection in the minibuffer."
         (let ((invocation
                (magent-action-run
                 "doctor"
-                :options (list :select-probes (and select-probes t))
+                :options (list :select-probes (and select-probes t)
+                               :interactive-buffer buffer)
                 :observer
                 (lambda (event)
                   (magent-doctor--interactive-observe buffer event)))))
+          (when (magent-action-invocation-p invocation)
+            (with-current-buffer buffer
+              (setq magent-doctor--interactive-invocation invocation)))
           (when-let* (((magent-action-invocation-p invocation))
                       (session (magent-action-invocation-session invocation)))
             (with-current-buffer buffer

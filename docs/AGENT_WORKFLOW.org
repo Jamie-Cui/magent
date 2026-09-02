@@ -176,8 +176,9 @@ is a bounded recovery tail. The two are not interchangeable.
     default.  When enabled, reaching the limit fails the turn directly.
 
 Prompt reconstruction is ledger-driven.  When a current turn id is known,
-Magent includes completed history plus that turn only, preventing later
-queued user submissions from leaking into the active model request.
+Magent includes completed history, the user side of interrupted turns, and the
+current turn, so a follow-up can recover cancelled request context without
+letting later queued user submissions leak into the active model request.
 
 * UI Projection
 
