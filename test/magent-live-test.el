@@ -713,7 +713,7 @@ return that path."
                     (and (fboundp 'magent-runtime-queue-active-submission)
                          (magent-runtime-queue-active-submission)))
                    (runtime-session
-                    (magent-runtime-submission-session submission)))
+                    (magent-runtime-submission-runtime-session submission)))
          (ignore-errors (magent-runtime-cancel runtime-session)))
        (magent-live-test--kill-magent-test-buffers)
        (when (file-directory-p magent-session-directory)

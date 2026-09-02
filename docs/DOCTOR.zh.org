@@ -37,7 +37,8 @@ Provider request 不包含工具，也不进入普通 Magent agent loop 或 runt
 queue。它可以和普通对话并发，但不会把 Action session 安装成用户当前
 session。~/doctor~ 使用发起请求的 runtime session 的有效 model route；M-x
 入口回退到当前 gptel defaults。Sampling 使用 gptel streaming 路径，但 Doctor
-只公开完成后的诊断结果。
+只公开完成后的诊断结果。如果 gptel 在联系 provider 前同步失败，Doctor 会在
+这个边界分类失败并给出可操作的 backend 配置提示，而不会采集或显示凭据值。
 
 Doctor 不会主动采集 gptel backend 对象、API key、~auth-source~、环境变量、
 HTTP headers 或原始 ~*gptel-log*~。绝对路径会被规范化为 ~$PROJECT~、

@@ -147,8 +147,9 @@ is a bounded recovery tail. The two are not interchangeable.
 * Loop Flow
 
 1. UI submission enters ~magent-runtime-api.el~.
-2. ~magent-runtime-api.el~ creates a queued ledger turn and records the completed
-   user message item immediately.
+2. ~magent-runtime-api.el~ creates a queued ledger turn, records the completed
+   user message item, and freezes prompt, agent, tools, skills, route, effort,
+   observer, approval, and turn identity in one ~magent-request-context~.
 3. When the submission actually starts, ~magent-runtime-api.el~ transitions the
    turn to ~in-progress~.
 4. ~magent-agent-run-turn~ reuses that turn/user item idempotently instead
@@ -192,10 +193,11 @@ runtime API.  The runtime emits Magent-native observer events;
 ~magent-acp.el~ converts those events to ACP ~session/update~ messages.
 
 ~magent-runtime-queue.el~ owns queued/active turn state.  The first
-implementation uses one global active turn at a time, but submissions are
-tagged by runtime session id so cancellation is session-scoped: cancelling one
-ACP session removes that session's queued work and aborts its active turn
-without dropping other sessions' queued turns.
+implementation uses one global active turn at a time.  Each submission captures
+the exact runtime session wrapper plus its canonical request context, so
+cancellation is identity-scoped: cancelling one ACP session removes that
+session's queued work and aborts its active turn without dropping other
+sessions' queued turns.
 
 This agent-shell + ACP path is the complete conversational UI projection and
 slash-command surface.  Explicit ~M-x~ wrappers enter the same

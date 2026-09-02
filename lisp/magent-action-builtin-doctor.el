@@ -49,8 +49,9 @@
                   "magent-runtime-queue")
 (declare-function magent-runtime-submission-id
                   "magent-runtime-queue" t t)
-(declare-function magent-runtime-submission-session-id
+(declare-function magent-runtime-submission-runtime-session
                   "magent-runtime-queue" t t)
+(declare-function magent-runtime-session-id "magent-runtime-api" t t)
 (declare-function magent-runtime-submission-status
                   "magent-runtime-queue" t t)
 (declare-function org-back-to-heading "org" (&optional invisible-ok))
@@ -638,7 +639,10 @@ When BACKEND is nil, use the current global gptel backend."
                    `((submission-id
                       . ,(magent-runtime-submission-id active))
                      (session-id
-                      . ,(magent-runtime-submission-session-id active))
+                      . ,(when-let* ((runtime-session
+                                      (magent-runtime-submission-runtime-session
+                                       active)))
+                           (magent-runtime-session-id runtime-session)))
                      (status
                       . ,(magent-runtime-submission-status active)))))))
       (active-commands
@@ -1342,6 +1346,21 @@ Return nil when either path is unavailable or cannot be inspected."
            state 'failed
            "Doctor analysis failed with a redacted error"))))))))
 
+(defun magent-doctor--analysis-start-error (condition state)
+  "Return an actionable provider-start message for CONDITION using STATE."
+  (if (and (eq (car-safe condition) 'wrong-type-argument)
+           (eq (nth 1 condition) 'stringp)
+           (null (nth 2 condition)))
+      (concat
+       "Doctor analysis could not start before contacting the provider: "
+       "the selected gptel backend supplied nil where text was required. "
+       "Verify its API key/auth-source callback and proxy configuration.")
+    (condition-case nil
+        (format "Doctor analysis could not start: %s"
+                (magent-doctor--safe-error condition state))
+      (magent-doctor-security-error
+       "Doctor analysis could not start because provider configuration failed"))))
+
 (defun magent-doctor--analysis-route (context)
   "Return the effective model route for Doctor CONTEXT.
 Slash invocations retain their originating runtime session as the Action's
@@ -1385,24 +1404,30 @@ invocations without a control session use the current gptel defaults."
      :note (format (concat "Sending %d characters of bounded, redacted probe "
                            "results; provider tools are disabled.")
                    (length bundle-json)))
-    (let ((handle (magent-sampling-gptel-sample request)))
-      (if (or (magent-doctor-state-cancelled-p state)
-              (not (eq (magent-action-invocation-status context) 'active)))
-          (when (and (bufferp handle) (buffer-live-p handle))
-            (kill-buffer handle))
-        (setf (magent-doctor-state-request-handle state) handle)
-        (when (> magent-request-timeout 0)
-          (setf (magent-doctor-state-request-timer state)
-                (run-at-time
-                 magent-request-timeout nil
-                 (lambda ()
-                   (unless (or (magent-doctor-state-cancelled-p state)
-                               (not (eq (magent-action-invocation-status
-                                         context)
-                                        'active)))
-                     (magent-doctor--abort-request state)
-                     (magent-doctor--done
-                      state 'failed "Doctor analysis timed out"))))))))))
+    (condition-case condition
+        (let ((handle (magent-sampling-gptel-sample request)))
+          (if (or (magent-doctor-state-cancelled-p state)
+                  (not (eq (magent-action-invocation-status context) 'active)))
+              (when (and (bufferp handle) (buffer-live-p handle))
+                (kill-buffer handle))
+            (setf (magent-doctor-state-request-handle state) handle)
+            (when (> magent-request-timeout 0)
+              (setf (magent-doctor-state-request-timer state)
+                    (run-at-time
+                     magent-request-timeout nil
+                     (lambda ()
+                       (unless (or (magent-doctor-state-cancelled-p state)
+                                   (not (eq (magent-action-invocation-status
+                                             context)
+                                            'active)))
+                         (magent-doctor--abort-request state)
+                         (magent-doctor--done
+                          state 'failed
+                          "Doctor analysis timed out"))))))))
+      (error
+       (magent-doctor--done
+        state 'failed
+        (magent-doctor--analysis-start-error condition state))))))
 
 (defun magent-doctor--start (context done)
   "Start the safe Doctor pipeline for CONTEXT, completing through DONE."

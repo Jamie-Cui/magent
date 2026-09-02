@@ -1051,14 +1051,13 @@ available, then saved atomically through the explicit session/scope API."
           (error-message-string err)))))
     session))
 
-(defun magent-session-refresh-agent (session)
-  "Refresh SESSION's agent pointer from the current registry.
-When the session references a custom agent that is no longer active for the
-current scope, clear it so Magent falls back to the default agent."
+(defun magent-session-refresh-agent (session &optional scope)
+  "Refresh SESSION's selected agent from the registry for SCOPE."
   (when-let* ((agent (magent-session-agent session)))
     (when (fboundp 'magent-agent-registry-get)
       (setf (magent-session-agent session)
-            (magent-agent-registry-get (magent-agent-info-name agent)))))
+            (magent-agent-registry-get
+             (magent-agent-info-name agent) scope))))
   session)
 
 (defun magent-session-list-files ()

@@ -42,6 +42,9 @@ but it does not install its Action session as the user's current session.
 ~/doctor~ follows the originating runtime session's effective model route;
 the M-x entry point falls back to the current gptel defaults.  Sampling uses
 gptel's streaming path while Doctor exposes only the completed diagnosis.
+If gptel fails synchronously before contacting the provider, Doctor classifies
+the failure at this boundary and reports actionable backend configuration
+guidance without collecting or displaying credential values.
 
 Doctor never intentionally collects a gptel backend object, API keys,
 ~auth-source~, environment variables, HTTP headers, or raw ~*gptel-log*~

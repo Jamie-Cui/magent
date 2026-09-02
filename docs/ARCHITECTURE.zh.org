@@ -162,9 +162,9 @@ session 私有、带 TTL/quota 的 spill，只能凭 opaque id 通过 ~read_tool
 1. 用户 prompt 通过 agent-shell 进入 ACP ~session/prompt~ request。
 2. ACP 按 runtime session 的精确 scope 解析已注册 slash command projection；未知 slash input 仍作为普通 prompt。
 3. 对应 Action 进入 ~magent-action.el~，执行参数处理、feature preflight 和 session-policy 设置，然后启动 generator-backed Workflow。Process 和 callback Step 不进入 agent queue；agent 与 terminal Answer Step 进入 ~magent-runtime-api.el~，普通 prompt 则直接进入同一 API。
-4. ~magent-runtime-api.el~ 先解析 request-local agent 和精确 tool set，再记录 queued turn 和 completed user item。
+4. ~magent-runtime-api.el~ 先解析 request-local agent 和精确 tool set，把全部执行输入冻结到唯一的 ~magent-request-context~，再记录 queued turn 和 completed user item；submission 本身只保留 queue lifecycle、精确 runtime session 与该 context。
 5. ~magent-runtime-queue.el~ 在全局执行槽空闲时启动 turn。
-6. ~magent-agent.el~ 选择 session agent、active skills、capability instructions 和允许的工具。
+6. ~magent-agent.el~ 只消费 canonical request context，解析 active capability instructions，并启动允许的工具，不再重建一份并行 request specification。
 7. ~magent-sampling-gptel.el~ 调用 ~gptel-request~ 发起一次 sampling。
 8. ~magent-agent-loop.el~ 接收 normalized text、reasoning、tool-call 和 completion events。
 9. tool call 累积到 ~tool-call-batch-end~ 后，通过 orchestrator 串行执行。
@@ -213,11 +213,12 @@ Finalization error 是 terminal failure，不会伪装成成功结果。
 ~magent-skills.el~ 还拥有 frontend-neutral、scope-aware 的 skill descriptors。ACP
 会把每个 instruction descriptor 投影成 ~$name~，agent-shell 将其显示为
 ~/$name~，分派时则作为带显式 skill selection 的普通 runtime turn。该路径不要求
-Action Invocation lifecycle，也不会进入 Action registry。Project Action definitions
-与 skill catalog snapshot 都以 canonical project scope 为键保留；ACP 的发现和
-分派按每个 runtime session 的精确 scope 解析，因此多个 project session 可以安全
-共存。未来 frontend 可以消费同一 descriptor API，同时把 command projections 和
-skills 展示为两个独立入口。
+Action Invocation lifecycle，也不会进入 Action registry。Project agent、skill、
+capability 与 Action definitions 都携带 canonical project scope 并保留在各自
+registry 中，不再维护平行的 skill catalog snapshot。ACP 的发现、分派和 request
+execution 都按 runtime session 的精确 scope 解析，因此多个 project session 可以
+安全共存。未来 frontend 可以消费同一 descriptor API，同时把 command projections
+和 skills 展示为两个独立入口。
 
 ~magent-action-session.el~ 为 ~:session-policy 'isolated~ 的 Action 提供持久化、
 ledger 记录和取消；~magent-action-session-view.el~ 单独负责交互式列表与查看。
@@ -247,7 +248,7 @@ Keyword 使用词边界匹配；如果 linked skill 声明的工具对 selected 
 ~magent-skill-manager.el~ 是独立且按需加载的用户维护层：它搜索 skills.sh，
 解析本地或公开 GitHub source，预检后把 instruction skill 复制到 canonical 用户
 目录，记录 provenance，并永久删除精确选中的用户级安装。它不是 model tool，
-不会管理 project overlay，也绝不读写 ~~/.agents/skills/~。
+不会管理 project-local definitions，也绝不读写 ~~/.agents/skills/~。
 
 这些概念的区别是：
 

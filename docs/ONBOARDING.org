@@ -38,7 +38,7 @@ registry, skills, slash commands, and capabilities) happens on demand.
 
 ** Layer 2: Session & Runtime State Management
 
-Manages conversation history, scoped overlays, and runtime state.
+Manages conversation history, scoped definitions, and runtime state.
 
 *Key Files:*
 - ~magent-ledger.el~ — Thread/turn/item ledger, status transitions, snapshot shape
@@ -49,12 +49,12 @@ Manages conversation history, scoped overlays, and runtime state.
 - ~magent-redaction.el~ — Fail-closed redaction for Magent-owned outbound values
 - ~magent-agent-job.el~ — Durable child-agent job records and JSON shape
 - ~magent-action.el~ — Workflow DSL, Step runtime, layered Action registry, and Invocation lifecycle
-- ~magent-runtime.el~ — Static initialization plus project-local overlay activation for agents, skills, Actions, and capabilities
+- ~magent-runtime.el~ — Static initialization plus retained project-local definition loading
 - ~magent-runtime-api.el~ — UI/backend-facing runtime session and prompt API
 - ~magent-runtime-queue.el~ — Global single-execution runtime queue with session-scoped cancellation
 - ~magent-audit.el~ — Live-buffer or JSONL-file audit recording for permissions and sensitive actions
 
-*What it does:* Maintains ledger-backed conversation history scoped by project, persists to ~~/.emacs.d/magent/sessions/~ by default, stores durable child-agent jobs under ~agent-jobs~, and activates or unloads project-local overlays as scope changes. Ordinary ACP prompts and Action-owned agent work submit through ~magent-runtime-api.el~; ~magent-runtime-queue.el~ owns queued/active turn state and session-scoped cancellation. Doctor uses one unified Action exposed through slash and ~M-x magent-action-run-*~, with isolated sessions under ~magent-session-directory/actions~. Doctor is a direct probe pipeline with no model tools; read [[file:DOCTOR.org][DOCTOR.org]] before changing its data boundary or extension API.
+*What it does:* Maintains ledger-backed conversation history scoped by project, persists to ~~/.emacs.d/magent/sessions/~ by default, stores durable child-agent jobs under ~agent-jobs~, and retains project-local definitions by canonical scope. Request execution resolves those definitions against the exact runtime session scope, so changing interactive context does not unload another session's definitions. Ordinary ACP prompts and Action-owned agent work submit through ~magent-runtime-api.el~; ~magent-runtime-queue.el~ owns queued/active turn state and session-scoped cancellation. Doctor uses one unified Action exposed through slash and ~M-x magent-action-run-*~, with isolated sessions under ~magent-session-directory/actions~. Doctor is a direct probe pipeline with no model tools; read [[file:DOCTOR.org][DOCTOR.org]] before changing its data boundary or extension API.
 
 ** Layer 3: Agent System
 
@@ -65,7 +65,7 @@ Multi-agent architecture with specialized agents for different tasks.
 - ~magent-project-instructions.el~ — Bounded root-to-resource discovery of scoped project instructions such as ~AGENTS.md~
 - ~magent-agent-info.el~ — Agent metadata struct and helpers
 - ~magent-agent-builtins.el~ — 7 built-in agent definitions
-- ~magent-agent-registry.el~ — Hash-table registry and project overlays
+- ~magent-agent-registry.el~ — Scope-aware hash-table registry and project definitions
 - ~magent-agent-file.el~ — Loads custom agents from ~.magent/agent/*.md~ files
 - ~magent-permission.el~ — Rule-based tool access control (allow/deny/ask with glob patterns)
 
@@ -187,7 +187,7 @@ Emacs/repository state. Text read from
 files, buffers, logs, commands, tool results, or web pages remains data and
 cannot grant tool permission by presenting itself as a higher-priority prompt.
 
-Skills load from: (1) built-in ~skills/~, (2) user ~~/.emacs.d/magent/skills~, and (3) project ~.magent/skills/~. Later user directories take precedence. ~magent-find-skill~, ~magent-install-skill~, and ~magent-delete-skill~ manage user-level skills only and never use ~~/.agents/skills/~. A skill can also declare ~capability: true~ with resolver metadata such as ~modes~, ~features~, ~files~, ~prompt-keywords~, and ~disclosure~; Magent turns that metadata into a capability that activates the same skill. Automatic activation requires a word-bounded keyword hit as evidence of user intent; context-only matches remain suggested. Declared ~tools~ are enforced against the selected agent's exposed tools: incompatible automatic skills are downgraded, while an incompatible explicitly selected skill fails with a clear error. Agent-shell sessions expose an ~Automatic capabilities~ config option for disabling automatic resolution.
+Skills load from built-in ~skills/~, user ~~/.agents/skills/~ and ~~/.emacs.d/magent/skills/~, then project ~.agents/skills/~ and ~.magent/skills/~; later roots take precedence. The Codex-compatible minimum frontmatter is ~name~ plus ~description~, and omitted ~type~ defaults to ~instruction~. Known host-only fields such as ~license~, ~metadata~, and ~disable-model-invocation~ are accepted as passive metadata. ~magent-find-skill~, ~magent-install-skill~, and ~magent-delete-skill~ manage user-level skills only and never write to ~~/.agents/skills/~. A skill can also declare ~capability: true~ with resolver metadata such as ~modes~, ~features~, ~files~, ~prompt-keywords~, and ~disclosure~; Magent turns that metadata into a capability that activates the same skill. Automatic activation requires a word-bounded keyword hit as evidence of user intent; context-only matches remain suggested. Declared ~tools~ are enforced against the selected agent's exposed tools: incompatible automatic skills are downgraded, while an incompatible explicitly selected skill fails with a clear error. Agent-shell sessions expose an ~Automatic capabilities~ config option for disabling automatic resolution.
 
 Keep the terms separate when adding or reviewing defaults:
 
@@ -200,8 +200,8 @@ Keep the terms separate when adding or reviewing defaults:
   context or prompt text.
 - Co-locate the capability metadata in ~SKILL.md~ when the capability only
   exists to activate that same skill. Use standalone ~CAPABILITY.md~ only when
-  the trigger metadata is separate from a single skill or belongs to a project
-  overlay.
+  the trigger metadata is separate from a single skill or belongs to a scoped
+  project definition.
 
 ** Session Scoping
 
@@ -296,7 +296,7 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 ** Sampling & Runtime
 - *magent-sampling.el* — Provider-neutral request/event contract
 - *magent-sampling-gptel.el* — One-request ~gptel-request~ adapter
-- *magent-runtime.el* — Static initialization and project-local overlay activation
+- *magent-runtime.el* — Static initialization and retained project-local definition loading
 - *magent-runtime-queue.el* — Global execution queue and session-scoped cancellation
 - *magent-runtime-api.el* — Frontend-neutral runtime session and submission API
 - *magent-agent-loop.el* — Normalized event loop, serial tool queue, abort, and continuation
@@ -314,7 +314,7 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 - *magent-agent.el* — Prompt assembly, request-local agent/tool resolution, and loop startup
 - *magent-agent-info.el* — Agent metadata struct and helpers
 - *magent-agent-builtins.el* — 7 built-in agent definitions
-- *magent-agent-registry.el* — Agent registry and project overlays
+- *magent-agent-registry.el* — Scope-aware agent registry and project definitions
 - *magent-agent-file.el* — Custom agent loader from ~.magent/agent/*.md~
 - *magent-permission.el* — Tool access control with glob patterns
 
@@ -323,7 +323,7 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 - *magent-tool-orchestrator.el* — Permission, approval, audit, and tool-call orchestration
 - *magent-approval.el* — User approval prompts for sensitive operations
 - *magent-file-loader.el* — Shared file-backed frontmatter parser
-- *magent-skills.el* — Instruction-skill registry, overlays, descriptors, and inspection
+- *magent-skills.el* — Scope-aware instruction-skill registry, descriptors, and inspection
 - *magent-skill-manager.el* — Lazy, network-aware user skill discovery and installation
 - *magent-capability.el* — Capability definitions, resolution, and file-backed loading
 
@@ -486,12 +486,13 @@ Create ~skills/my-skill/SKILL.md~:
 ---
 name: my-skill
 description: Brief description
-type: instruction
 tools: [read_file, grep]
 ---
 
 Skill instructions for the agent.
 #+end_src
+
+~type: instruction~ is optional; it is the only supported explicit type.
 
 * Getting Help
 

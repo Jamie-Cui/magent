@@ -28,6 +28,15 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Changed
 
+- Runtime submissions now contain only queue lifecycle state and one canonical
+  request context.  Prompt, request-local agent, tools, skills, model route,
+  effort, approvals, observer, and turn identity are frozen once in that
+  context, which is the sole input to ~magent-agent-run-turn~.
+- Project-local agent, skill, capability, and Action definitions now remain
+  keyed by canonical project scope. Request execution resolves the exact
+  runtime session scope, eliminating active-overlay registry swaps and the
+  parallel skill descriptor cache while allowing concurrent project sessions
+  to coexist safely.
 - Replaced the Emacs-profile-specific prompt dependency with the generic
   ~magent-context-provider-functions~ extension point. Trusted local providers
   contribute ordered request context without making optional failures fatal to
@@ -56,6 +65,18 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Fixed
 
+- Classify synchronous Doctor provider-start failures at the direct sampling
+  boundary. Invalid nil text from gptel configuration now points to the
+  selected backend's API key/auth-source callback or proxy configuration
+  instead of surfacing only ~Wrong type argument: stringp, nil~.
+- Accept Codex-compatible ~SKILL.md~ frontmatter with only ~name~ and
+  ~description~, default omitted ~type~ to ~instruction~, tolerate known
+  host-only metadata without granting it Magent semantics, and discover both
+  user and project-local ~.agents/skills~ roots alongside Magent's native
+  skill directories.
+- Attribute tool and approval audit records to the request-local agent instead
+  of the session's selected agent when Actions, compaction, or child execution
+  choose a different agent for one turn.
 - Render interactive Doctor preflight, runtime and model-route metadata,
   structured ~TODO~ / ~DONE~ / ~FAIL~ / ~KILL~ tasks, persisted-session and
   related-buffer links, and results in one read-only Org buffer.  Persisted

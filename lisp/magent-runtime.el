@@ -8,8 +8,7 @@
 
 ;; Central runtime orchestration for Magent.  This module owns:
 ;; - request-scoped execution context
-;; - project-local overlay activation for agents, skills, commands, and
-;;   capabilities
+;; - project-local definition loading for agents, skills, and capabilities
 
 ;;; Code:
 
@@ -29,10 +28,6 @@
 (declare-function magent-capability-load-project-scope "magent-capability")
 (declare-function magent-capability-remove-project-scope "magent-capability")
 (declare-function magent-action-initialize-static "magent-action")
-(declare-function magent-action-load-project-scope "magent-action")
-(declare-function magent-action-remove-project-scope "magent-action")
-(declare-function magent-runtime-queue-active-scope "magent-runtime-queue")
-(declare-function magent-runtime-queue-execution-active-p "magent-runtime-queue")
 (declare-function magent-skills-initialize-static "magent-skills")
 (declare-function magent-skills-load-project-scope "magent-skills")
 (declare-function magent-skills-remove-project-scope "magent-skills")
@@ -49,42 +44,33 @@ Each function is called without arguments.  The first non-nil return value
 wins; when all functions return nil, scope is derived from
 `default-directory'.")
 
-(defconst magent-runtime--overlay-specs
+(defconst magent-runtime--definition-specs
   '((:name agents
-           :state-variable magent-agent-registry--agents
            :static-feature magent-agent-registry
            :static magent-agent-initialize-static
            :load-project-feature magent-agent-file
            :load-project magent-agent-file-load-project-scope
-           :unload-project-feature magent-agent-registry
-           :unload-project magent-agent-registry-remove-project-scope
+           :remove-project-feature magent-agent-registry
+           :remove-project magent-agent-registry-remove-project-scope
            :project-enabled magent-load-custom-agents)
     (:name skills
-           :state-variables (magent-skills--registry
-                             magent-skills--scope-catalog)
            :static-feature magent-skills
            :static magent-skills-initialize-static
            :load-project-feature magent-skills
            :load-project magent-skills-load-project-scope
-           :unload-project-feature magent-skills
-           :unload-project magent-skills-remove-project-scope)
+           :remove-project-feature magent-skills
+           :remove-project magent-skills-remove-project-scope)
     (:name actions
-           :state-variable magent-action--registry
            :static-feature magent-action
-           :static magent-action-initialize-static
-           :load-project-feature magent-action
-           :load-project magent-action-load-project-scope
-           :unload-project-feature magent-action
-           :unload-project magent-action-remove-project-scope)
+           :static magent-action-initialize-static)
     (:name capabilities
-           :state-variable magent-capability--registry
            :static-feature magent-capability
            :static magent-capability-initialize-static
            :load-project-feature magent-capability
            :load-project magent-capability-load-project-scope
-           :unload-project-feature magent-capability
-           :unload-project magent-capability-remove-project-scope))
-  "Ordered overlay pipeline for Magent runtime definitions.")
+           :remove-project-feature magent-capability
+           :remove-project magent-capability-remove-project-scope))
+  "Ordered initialization and project-loading pipeline for definitions.")
 
 (cl-defstruct (magent-request-context
                (:constructor magent-request-context-create)
@@ -93,6 +79,8 @@ wins; when all functions return nil, scope is derived from
   id
   scope
   session
+  prompt
+  agent
   turn-id
   approval-session
   origin-buffer-name
@@ -160,8 +148,9 @@ objects, and other live runtime state so lifecycle sinks and completed
                      (condition-case nil
                          (magent-session-canonical-scope project-root)
                        (error (expand-file-name project-root)))))
-               (agent (and valid-session
-                           (magent-session-agent valid-session)))
+               (agent (or (magent-request-context-agent context)
+                          (and valid-session
+                               (magent-session-agent valid-session))))
                (candidate-event-context
                 (magent-request-context-event-context context))
                (event-context
@@ -223,15 +212,16 @@ isolated so UI/backend rendering cannot break the active agent turn."
     t))
 
 (defvar magent-runtime--active-project-scope nil
-  "Current project scope whose overlay definitions are active.
-Nil means only static definitions are loaded.")
+  "Most recently prepared interactive project scope.
+Project definitions for other scopes remain registered.  Nil means the
+interactive context is global, not that project definitions were unloaded.")
 
 (defun magent-runtime-active-project-scope ()
-  "Return the currently active project overlay scope, or nil."
+  "Return the most recently prepared interactive project scope, or nil."
   magent-runtime--active-project-scope)
 
-(defun magent-runtime--project-overlay-enabled-p (spec)
-  "Return non-nil when project overlay SPEC should load."
+(defun magent-runtime--project-definitions-enabled-p (spec)
+  "Return non-nil when project definitions for SPEC should load."
   (let ((enabled (plist-get spec :project-enabled)))
     (cond
      ((null enabled) t)
@@ -241,56 +231,28 @@ Nil means only static definitions are loaded.")
 
 (defun magent-runtime--run-static-initializers ()
   "Run all static definition initializers in dependency order."
-  (dolist (spec magent-runtime--overlay-specs)
+  (dolist (spec magent-runtime--definition-specs)
     (when-let* ((feature (plist-get spec :static-feature)))
       (require feature))
     (when-let* ((fn (plist-get spec :static)))
       (funcall fn))))
 
 (defun magent-runtime--phase-feature-key (phase)
-  "Return the feature key associated with overlay PHASE."
+  "Return the feature key associated with definition PHASE."
   (pcase phase
     (:load-project :load-project-feature)
-    (:unload-project :unload-project-feature)))
+    (:remove-project :remove-project-feature)))
 
-(defun magent-runtime--run-project-overlay-phase (phase scope)
-  "Run project overlay PHASE for SCOPE across all registered specs."
-  (dolist (spec magent-runtime--overlay-specs)
-    (when (or (eq phase :unload-project)
-              (magent-runtime--project-overlay-enabled-p spec))
+(defun magent-runtime--run-project-definition-phase (phase scope)
+  "Run project definition PHASE for SCOPE across all registered specs."
+  (dolist (spec magent-runtime--definition-specs)
+    (when (or (eq phase :remove-project)
+              (magent-runtime--project-definitions-enabled-p spec))
       (when-let* ((feature-key (magent-runtime--phase-feature-key phase))
                   (feature (plist-get spec feature-key)))
         (require feature))
       (when-let* ((fn (plist-get spec phase)))
         (funcall fn scope)))))
-
-(defun magent-runtime--copy-overlay-state (value)
-  "Return a transaction snapshot of overlay registry VALUE."
-  (cond
-   ((hash-table-p value) (copy-hash-table value))
-   ((consp value) (copy-tree value))
-   ((sequencep value) (copy-sequence value))
-   (t value)))
-
-(defun magent-runtime--snapshot-overlay-state ()
-  "Capture the registry state owned by every project overlay spec."
-  (cl-loop
-   for spec in magent-runtime--overlay-specs
-   append
-   (cl-loop
-    for variable in
-    (or (plist-get spec :state-variables)
-        (when-let* ((single (plist-get spec :state-variable)))
-          (list single)))
-    when (and variable (boundp variable))
-    collect (cons variable
-                  (magent-runtime--copy-overlay-state
-                   (symbol-value variable))))))
-
-(defun magent-runtime--restore-overlay-state (snapshot)
-  "Restore project overlay registries from SNAPSHOT."
-  (dolist (entry snapshot)
-    (set (car entry) (cdr entry))))
 
 (defun magent-runtime-initialize-static ()
   "Load Magent definitions that are independent of project scope."
@@ -317,63 +279,55 @@ Nil means only static definitions are loaded.")
 When SCOPE is nil, derive it from the current buffer context."
   (magent-runtime-ensure-initialized)
   (let ((target (or scope (magent-runtime-context-scope))))
-    (when (and (fboundp 'magent-runtime-queue-execution-active-p)
-               (magent-runtime-queue-execution-active-p)
-               (not (equal target
-                           (magent-runtime-queue-active-scope))))
-      (user-error
-       "Magent: cannot switch project definitions while a turn is active"))
     (magent-runtime-activate-scope target)))
 
-(defun magent-runtime--unload-project-overlay (scope)
-  "Unload project-local overlay definitions for SCOPE."
+(defun magent-runtime--remove-project-definitions (scope)
+  "Remove retained project definitions for SCOPE."
   (when scope
-    (magent-runtime--run-project-overlay-phase :unload-project scope)
-    (magent-log "INFO unloaded project overlay for %s" scope)))
+    (magent-runtime--run-project-definition-phase :remove-project scope)))
 
-(defun magent-runtime--load-project-overlay (scope)
-  "Load project-local overlay definitions for SCOPE."
+(defun magent-runtime--load-project-definitions (scope)
+  "Load or refresh project definitions for SCOPE."
   (when scope
-    (magent-runtime--run-project-overlay-phase :load-project scope)
-    (magent-log "INFO loaded project overlay for %s" scope)))
+    (magent-runtime--run-project-definition-phase :load-project scope)
+    (magent-log "INFO loaded project definitions for %s" scope)))
 
 (defun magent-runtime-activate-scope (scope &optional force)
-  "Activate project-local overlay definitions for SCOPE.
+  "Prepare SCOPE and load or refresh its project-local definitions.
 SCOPE must be either the symbol `global' or a normalized project root.
-When FORCE is non-nil, reload the overlay even if SCOPE is unchanged."
+Definitions from other project scopes remain registered and are filtered at
+resolution time.  When FORCE is non-nil, reload SCOPE even if it is unchanged."
   (let ((target-project-scope (unless (eq scope 'global) scope)))
     (when (or force
               (not (equal target-project-scope magent-runtime--active-project-scope)))
-      (let ((previous-scope magent-runtime--active-project-scope)
-            (snapshot (magent-runtime--snapshot-overlay-state)))
+      (let ((previous-scope magent-runtime--active-project-scope))
         (condition-case err
             (progn
-              (magent-runtime--unload-project-overlay previous-scope)
-              (setq magent-runtime--active-project-scope nil)
               (when target-project-scope
-                (magent-runtime--load-project-overlay target-project-scope))
+                (magent-runtime--load-project-definitions target-project-scope))
               (setq magent-runtime--active-project-scope target-project-scope))
           (error
-           ;; A loader may fail after registering only part of an overlay.
-           ;; Give every owner a chance to release non-registry state, then
-           ;; restore the exact definitions that were active before the
-           ;; switch.  The original activation error remains authoritative.
+           ;; Project definitions remain retained across ordinary scope
+           ;; switches.  A failed target load is removed fail-closed without
+           ;; disturbing definitions owned by another scope.
            (when target-project-scope
              (condition-case cleanup-error
-                 (magent-runtime--unload-project-overlay target-project-scope)
+                 (magent-runtime--remove-project-definitions
+                  target-project-scope)
                (error
                 (magent-log
-                 "WARN failed to unload partial project overlay during rollback: %s"
+                 "WARN failed to remove partial project definitions: %s"
                  (error-message-string cleanup-error)))))
-           (magent-runtime--restore-overlay-state snapshot)
-           (setq magent-runtime--active-project-scope previous-scope)
+           (setq magent-runtime--active-project-scope
+                 (unless (equal previous-scope target-project-scope)
+                   previous-scope))
            (signal (car err) (cdr err)))))))
   (when-let* ((session (and (not (eq scope 'global))
                             (magent-session-get-if-present scope))))
-    (magent-session-refresh-agent session))
+    (magent-session-refresh-agent session scope))
   (when (eq scope 'global)
     (when-let* ((session (magent-session-get-if-present 'global)))
-      (magent-session-refresh-agent session)))
+      (magent-session-refresh-agent session 'global)))
   scope)
 
 (provide 'magent-runtime)

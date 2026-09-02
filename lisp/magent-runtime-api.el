@@ -8,6 +8,8 @@
 
 ;; Stable UI/backend-facing runtime API.  UI backends submit prompts to a
 ;; runtime session and receive request-local Magent-native observer events.
+;; Submission freezes one request context before queueing; the queue does not
+;; reconstruct execution policy when the turn starts.
 
 ;;; Code:
 
@@ -231,16 +233,21 @@ submission so the source frontend stays current."
 (defun magent-runtime-api--resolve-agent (runtime-session &optional agent-or-name)
   "Resolve AGENT-OR-NAME for RUNTIME-SESSION without changing session state."
   (let* ((session (magent-runtime-session-magent-session runtime-session))
+         (scope (magent-runtime-session-scope runtime-session))
          (agent
           (cond
            ((null agent-or-name)
-            (or (magent-session-agent session)
-                (magent-agent-registry-get-default)))
+            (or (and (magent-session-agent session)
+                     (magent-agent-registry-get
+                      (magent-agent-info-name (magent-session-agent session))
+                      scope))
+                (magent-agent-registry-get-default scope)))
            ((magent-agent-info-p agent-or-name) agent-or-name)
            ((stringp agent-or-name)
-            (magent-agent-registry-get agent-or-name))
+            (magent-agent-registry-get agent-or-name scope))
            ((symbolp agent-or-name)
-            (magent-agent-registry-get (symbol-name agent-or-name))))))
+            (magent-agent-registry-get
+             (symbol-name agent-or-name) scope)))))
     (unless agent
       (error "Unknown Magent agent: %S" agent-or-name))
     agent))
@@ -256,9 +263,7 @@ submission so the source frontend stays current."
 
 (defun magent-runtime-session-agent-name (runtime-session)
   "Return RUNTIME-SESSION's active agent name."
-  (let* ((session (magent-runtime-session-magent-session runtime-session))
-         (agent (or (magent-session-agent session)
-                    (magent-agent-registry-get-default))))
+  (let ((agent (magent-runtime-api--resolve-agent runtime-session)))
     (and agent (magent-agent-info-name agent))))
 
 (defun magent-runtime-session-model-route-option (runtime-session)
@@ -410,22 +415,9 @@ Any active or queued work for the session is cancelled first."
 
 (defun magent-runtime-api--notify-submission (submission type &rest props)
   "Notify SUBMISSION's observer of TYPE with PROPS."
-  (when-let* ((observer (magent-runtime-submission-observer submission)))
-    (let ((event (append
-                  (list :type type
-                        :time (float-time)
-                        :session-id
-                        (magent-runtime-submission-session-id submission)
-                        :submission-id
-                        (magent-runtime-submission-id submission)
-                        :turn-id
-                        (magent-runtime-submission-turn-id submission))
-                  props)))
-      (condition-case err
-          (funcall observer event)
-        (error
-         (magent-log "ERROR runtime observer failed: %s"
-                     (error-message-string err)))))))
+  (when-let* ((request-context
+               (magent-runtime-submission-request-context submission)))
+    (apply #'magent-request-context-notify request-context type props)))
 
 (defun magent-runtime-api--prepare-turn
     (runtime-session prompt &optional metadata)
@@ -483,34 +475,39 @@ Any active or queued work for the session is cancelled first."
       (magent-runtime-api--call-completion submission status result))))
 
 (defun magent-runtime-api--submission-execution-scope (submission)
-  "Return the project/global overlay scope for SUBMISSION."
-  (let* ((runtime-session (magent-runtime-submission-session submission))
-         (scope (or (magent-runtime-submission-scope submission)
-                    (and runtime-session
+  "Return the project/global definition scope for SUBMISSION."
+  (let* ((runtime-session
+          (magent-runtime-submission-runtime-session submission))
+         (scope (or (and runtime-session
                          (magent-runtime-session-scope runtime-session))
                     'global)))
     (magent-session-scope-origin scope)))
 
 (defun magent-runtime-api--activate-submission-session (submission)
-  "Activate SUBMISSION's project overlay and install its session."
-  (let ((runtime-session (magent-runtime-submission-session submission)))
+  "Prepare SUBMISSION's definition scope and install its session."
+  (let ((runtime-session
+         (magent-runtime-submission-runtime-session submission)))
     (magent-runtime-activate-scope
      (magent-runtime-api--submission-execution-scope submission))
     (magent-session-install
      (magent-runtime-session-scope runtime-session)
      (magent-runtime-session-magent-session runtime-session))
-    ;; Overlay activation refreshes the session currently registered for its
-    ;; ordinary scope.  Internal sessions and captured sessions installed only
-    ;; after that activation still need an explicit refresh.
+    ;; Scope preparation refreshes the session already registered for its
+    ;; ordinary scope.  Internal and captured sessions installed only after
+    ;; preparation still need an explicit refresh.
     (magent-session-refresh-agent
-     (magent-runtime-session-magent-session runtime-session))))
+     (magent-runtime-session-magent-session runtime-session)
+     (magent-runtime-session-scope runtime-session))))
 
 (defun magent-runtime-api--mark-submission-turn-started (submission)
   "Mark SUBMISSION's ledger turn in progress, when it has one."
-  (when-let* ((runtime-session (magent-runtime-submission-session submission))
+  (when-let* ((runtime-session
+               (magent-runtime-submission-runtime-session submission))
               (session (magent-runtime-session-magent-session runtime-session))
               (thread (magent-session-thread-ledger session))
-              (turn-id (magent-runtime-submission-turn-id submission))
+              (request-context
+               (magent-runtime-submission-request-context submission))
+              (turn-id (magent-request-context-turn-id request-context))
               (turn (magent-thread-find-turn thread turn-id)))
     (unless (magent-thread-terminal-turn-p turn)
       (magent-thread-start-turn thread turn-id)
@@ -519,10 +516,13 @@ Any active or queued work for the session is cancelled first."
 
 (defun magent-runtime-api--mark-submission-turn-dropped (submission detail)
   "Mark queued SUBMISSION's ledger turn dropped with DETAIL."
-  (when-let* ((runtime-session (magent-runtime-submission-session submission))
+  (when-let* ((runtime-session
+               (magent-runtime-submission-runtime-session submission))
               (session (magent-runtime-session-magent-session runtime-session))
               (thread (magent-session-thread-ledger session))
-              (turn-id (magent-runtime-submission-turn-id submission))
+              (request-context
+               (magent-runtime-submission-request-context submission))
+              (turn-id (magent-request-context-turn-id request-context))
               (turn (magent-thread-find-turn thread turn-id)))
     (unless (magent-thread-terminal-turn-p turn)
       (magent-thread-drop-turn thread turn-id detail)
@@ -531,10 +531,13 @@ Any active or queued work for the session is cancelled first."
 
 (defun magent-runtime-api--mark-submission-turn-interrupted (submission detail)
   "Mark active SUBMISSION's ledger turn interrupted with DETAIL."
-  (when-let* ((runtime-session (magent-runtime-submission-session submission))
+  (when-let* ((runtime-session
+               (magent-runtime-submission-runtime-session submission))
               (session (magent-runtime-session-magent-session runtime-session))
               (thread (magent-session-thread-ledger session))
-              (turn-id (magent-runtime-submission-turn-id submission))
+              (request-context
+               (magent-runtime-submission-request-context submission))
+              (turn-id (magent-request-context-turn-id request-context))
               (turn (magent-thread-find-turn thread turn-id)))
     (unless (magent-thread-terminal-turn-p turn)
       (magent-thread-interrupt-turn thread turn-id detail)
@@ -543,10 +546,13 @@ Any active or queued work for the session is cancelled first."
 
 (defun magent-runtime-api--mark-submission-turn-failed (submission detail)
   "Mark SUBMISSION's ledger turn failed with DETAIL."
-  (when-let* ((runtime-session (magent-runtime-submission-session submission))
+  (when-let* ((runtime-session
+               (magent-runtime-submission-runtime-session submission))
               (session (magent-runtime-session-magent-session runtime-session))
               (thread (magent-session-thread-ledger session))
-              (turn-id (magent-runtime-submission-turn-id submission))
+              (request-context
+               (magent-runtime-submission-request-context submission))
+              (turn-id (magent-request-context-turn-id request-context))
               (turn (magent-thread-find-turn thread turn-id)))
     (unless (magent-thread-terminal-turn-p turn)
       (magent-thread-fail-turn thread turn-id detail)
@@ -559,42 +565,19 @@ Any active or queued work for the session is cancelled first."
       (progn
         (magent-runtime-api--activate-submission-session submission)
         (magent-runtime-api--mark-submission-turn-started submission)
-        (let* ((runtime-session (magent-runtime-submission-session submission))
-               (session (magent-runtime-session-magent-session runtime-session))
-               (request-context
-                (magent-request-context-create
-                 :id (magent-runtime-submission-id submission)
-                 :scope (magent-runtime-session-scope runtime-session)
-                 :session session
-                 :turn-id (magent-runtime-submission-turn-id submission)
-                 :approval-session session
-                 :ui-visibility 'none
-                 :origin-context (magent-runtime-submission-context submission)
-                 :tool-names (magent-runtime-submission-tool-names submission)
-                 :model-route (magent-runtime-submission-model-route submission)
-                 :effort (magent-runtime-submission-effort submission)
-                 :skill-names (magent-runtime-submission-skills submission)
-                 :approval-provider
-                 (magent-runtime-submission-approval-provider submission)
-                 :observer (magent-runtime-submission-observer submission)
-                 :submission-id (magent-runtime-submission-id submission)
-                 :live-p (lambda ()
-                           (magent-runtime-api--submission-live-p submission)))))
+        (let* ((request-context
+                (magent-runtime-submission-request-context submission))
+               (prompt (magent-request-context-prompt request-context)))
           (when (magent-runtime-api--submission-live-p submission)
             (magent-runtime-api--notify-submission submission 'turn-start))
           (when (magent-runtime-api--submission-live-p submission)
             (magent-runtime-api--notify-submission
              submission 'user-message
-             :text (magent-runtime-submission-prompt submission)))
+             :text prompt))
           (when (magent-runtime-api--submission-live-p submission)
             (let ((handle
                    (magent-agent-run-turn
-                    :session session
-                    :prompt (magent-runtime-submission-prompt submission)
-                    :agent (magent-runtime-submission-agent submission)
-                    :skills (magent-runtime-submission-skills submission)
-                    :context (magent-runtime-submission-context submission)
-                    :request-context request-context
+                    request-context
                     :on-complete
                     (lambda (result)
                       (let ((status
@@ -629,7 +612,9 @@ Any active or queued work for the session is cancelled first."
       (dolist (name skill-names)
         (let* ((skill-name (if (symbolp name) (symbol-name name) name))
                (skill (and (stringp skill-name)
-                           (magent-skills-get skill-name))))
+                           (magent-skills-get
+                            skill-name
+                            (magent-runtime-session-scope runtime-session)))))
           (when (and skill
                      (magent-skill-requires-project skill)
                      (not (stringp origin)))
@@ -690,19 +675,22 @@ request-local Magent-native events."
            runtime-session effective-agent)))
     (magent-runtime-api--validate-skill-scope
      runtime-session effective-skills)
-    (let* ((turn-id (magent-runtime-api--prepare-turn
+    (let* ((submission-id (magent-protocol-generate-id "submission"))
+           (session (magent-runtime-session-magent-session runtime-session))
+           (turn-id (magent-runtime-api--prepare-turn
                      runtime-session prompt turn-metadata))
-           (submission
-            (magent-runtime-submission-create
-             :id (magent-protocol-generate-id "submission")
-             :session runtime-session
-             :session-id (magent-runtime-session-id runtime-session)
+           (request-context
+            (magent-request-context-create
+             :id submission-id
              :scope (magent-runtime-session-scope runtime-session)
+             :session session
              :prompt prompt
-             :context context
-             :tool-names effective-tools
-             :skills effective-skills
              :agent effective-agent
+             :turn-id turn-id
+             :approval-session session
+             :ui-visibility 'none
+             :origin-context context
+             :tool-names effective-tools
              :model-route
              (and model-routing-configured-p
                   (magent-runtime-session-effective-model-route
@@ -710,10 +698,19 @@ request-local Magent-native events."
              :effort (or (magent-effort-normalize-option effort)
                          (magent-effort-normalize-option
                           (magent-runtime-session-effort runtime-session)))
-             :observer observer
+             :skill-names effective-skills
              :approval-provider approval-provider
-             :on-complete on-complete
-             :turn-id turn-id)))
+             :observer observer
+             :submission-id submission-id))
+           (submission
+            (magent-runtime-submission-create
+             :id submission-id
+             :runtime-session runtime-session
+             :request-context request-context
+             :on-complete on-complete)))
+      (setf (magent-request-context-live-p request-context)
+            (lambda ()
+              (magent-runtime-api--submission-live-p submission)))
       (magent-runtime-session-clear-pending-skills runtime-session)
       (magent-runtime-queue-submit
        submission #'magent-runtime-api--start-submission))))
@@ -730,7 +727,9 @@ session's selected user-facing agent."
   (unless (magent-runtime-session-p runtime-session)
     (error "Expected runtime session, got: %S" runtime-session))
   (magent-runtime-api--assert-session-available runtime-session)
-  (let* ((compaction-agent (magent-agent-registry-get "compaction"))
+  (let* ((compaction-agent
+          (magent-agent-registry-get
+           "compaction" (magent-runtime-session-scope runtime-session)))
          (pending-skills
           (magent-runtime-session-pending-skills runtime-session))
          (extra (string-trim (or instruction "")))
@@ -783,7 +782,8 @@ Return non-nil when an active or queued submission was cancelled."
        (magent-execution-result-cancelled reason (list :reason 'cancelled)))
       t)
      ((and active
-           (eq (magent-runtime-submission-session active) runtime-session)
+           (eq (magent-runtime-submission-runtime-session active)
+               runtime-session)
            (equal (magent-runtime-submission-id active) submission-id))
       (setf (magent-runtime-submission-status active) 'cancelled)
       (when-let* ((handle (magent-runtime-submission-handle active)))
@@ -808,7 +808,7 @@ Return non-nil when an active or queued submission was cancelled."
        (magent-execution-result-cancelled
         "Queued turn cancelled" (list :reason 'cancelled))))
     (when (and active
-               (eq (magent-runtime-submission-session active)
+               (eq (magent-runtime-submission-runtime-session active)
                    runtime-session))
       (setf (magent-runtime-submission-status active) 'cancelled)
       (when-let* ((handle (magent-runtime-submission-handle active)))
@@ -822,7 +822,7 @@ Return non-nil when an active or queued submission was cancelled."
         "Active turn cancelled" (list :reason 'cancelled))))
     (+ (length removed)
        (if (and active
-                (eq (magent-runtime-submission-session active)
+                (eq (magent-runtime-submission-runtime-session active)
                     runtime-session))
            1
          0))))

@@ -262,7 +262,8 @@ Returns number of agents loaded."
    (t (error "Agent model is not file-serializable: %S" model))))
 
 (defun magent-agent-file-load-project-scope (scope)
-  "Load project-local agents for SCOPE."
+  "Reload project-local agents for SCOPE."
+  (magent-agent-registry-remove-project-scope scope)
   (magent-agent-file-load-all scope))
 
 (defun magent-agent-file-save (agent-info &optional directory)

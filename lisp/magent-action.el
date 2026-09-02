@@ -762,7 +762,7 @@ an optional zero-argument cancellation function."
 
 (defun magent-action--resolution-scope (&optional scope)
   "Return canonical Action resolution scope for optional SCOPE.
-When SCOPE is nil, use the currently active project overlay."
+When SCOPE is nil, use the current interactive project context."
   (magent-session-canonical-scope
    (or scope
        (and (fboundp 'magent-runtime-active-project-scope)
@@ -902,7 +902,7 @@ Nil SOURCE-SCOPE acts as a wildcard.  Return the removal count."
 (defun magent-action-get (name &optional scope exposure)
   "Return effective Action NAME for SCOPE and EXPOSURE, or nil.
 EXPOSURE defaults to `slash'.  When SCOPE is nil, resolve against the
-currently active project overlay."
+current interactive project context."
   (let ((key (magent-action--normalize-name name))
         (resolution-scope (magent-action--resolution-scope scope))
         (kind (or exposure 'slash))
@@ -920,7 +920,7 @@ currently active project overlay."
 (defun magent-action-list (&optional scope exposure)
   "Return effective Action specs for SCOPE and EXPOSURE sorted by name.
 EXPOSURE defaults to `slash'.  When SCOPE is nil, resolve against the
-currently active project overlay."
+current interactive project context."
   (let ((resolution-scope (magent-action--resolution-scope scope))
         (kind (or exposure 'slash))
         names)
@@ -933,16 +933,6 @@ currently active project overlay."
     (mapcar (lambda (name)
               (magent-action-get name (or resolution-scope 'global) kind))
             (sort names #'string<))))
-
-(defun magent-action-load-project-scope (scope)
-  "Load Action definitions for project SCOPE.
-Project Action files are not currently supported."
-  (ignore scope))
-
-(defun magent-action-remove-project-scope (scope)
-  "Remove Action definitions for project SCOPE.
-Project Action files are not currently supported."
-  (ignore scope))
 
 (defun magent-action-initialize-static ()
   "Register bundled actions."

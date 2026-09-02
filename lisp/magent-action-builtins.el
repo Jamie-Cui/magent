@@ -112,7 +112,8 @@
   "Describe the exact effective authority for INVOCATION."
   (let* ((runtime (magent-action-invocation-runtime-session invocation))
          (agent-name (magent-runtime-session-agent-name runtime))
-         (agent (magent-agent-registry-get agent-name))
+         (agent (magent-agent-registry-get
+                 agent-name (magent-runtime-session-scope runtime)))
          (permission (and agent (magent-agent-info-permission agent)))
          (session (magent-runtime-session-magent-session runtime))
          (header

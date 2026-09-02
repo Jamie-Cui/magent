@@ -39,7 +39,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 
 ** 第 2 层：Session 与 Runtime State
 
-这一层管理 conversation history、scoped overlays 和 runtime state。
+这一层管理 conversation history、scoped definitions 和 runtime state。
 
 *关键文件：*
 
@@ -51,12 +51,12 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 - ~magent-redaction.el~ ：Magent-owned outbound values 的 fail-closed 脱敏。
 - ~magent-agent-job.el~ ：durable child-agent job records 和 JSON shape。
 - ~magent-action.el~ ：Workflow DSL、Step runtime、分层 Action registry 和 Invocation lifecycle。
-- ~magent-runtime.el~ ：静态初始化，以及 agents、skills、Actions、capabilities 的 project-local overlay activation。
+- ~magent-runtime.el~ ：静态初始化与 project-local definitions 的保留式加载。
 - ~magent-runtime-api.el~ ：UI/backend-facing runtime session 和 prompt API。
 - ~magent-runtime-queue.el~ ：全局单执行 runtime queue 和 session-scoped cancellation。
 - ~magent-audit.el~ ：permission 和 sensitive action 的 live buffer 或 JSONL 文件 audit 记录。
 
-*职责：* 维护 project-scoped、ledger-backed conversation history，默认持久化到 ~~/.emacs.d/magent/sessions/~ ，在 ~agent-jobs~ 下保存 durable child-agent jobs，并在 scope 变化时加载或卸载 project-local overlays。普通 ACP prompt 和 Action-owned agent work 都通过 ~magent-runtime-api.el~ 提交； ~magent-runtime-queue.el~ 负责 queued/active turn state 和 session-scoped cancellation。Doctor 使用同时暴露为 slash 与 ~M-x magent-action-run-*~ 的统一 Action，并在 ~magent-session-directory/actions~ 下使用独立 session。Doctor 是不向模型开放工具的 direct probe pipeline；修改其数据边界或扩展 API 前先读 [[file:DOCTOR.zh.org][DOCTOR.zh.org]]。
+*职责：* 维护 project-scoped、ledger-backed conversation history，默认持久化到 ~~/.emacs.d/magent/sessions/~ ，在 ~agent-jobs~ 下保存 durable child-agent jobs，并按 canonical scope 保留 project-local definitions。Request execution 始终按 runtime session 的精确 scope 解析，因此切换交互上下文不会卸载其他 session 的 definitions。普通 ACP prompt 和 Action-owned agent work 都通过 ~magent-runtime-api.el~ 提交； ~magent-runtime-queue.el~ 负责 queued/active turn state 和 session-scoped cancellation。Doctor 使用同时暴露为 slash 与 ~M-x magent-action-run-*~ 的统一 Action，并在 ~magent-session-directory/actions~ 下使用独立 session。Doctor 是不向模型开放工具的 direct probe pipeline；修改其数据边界或扩展 API 前先读 [[file:DOCTOR.zh.org][DOCTOR.zh.org]]。
 
 ** 第 3 层：Agent System
 
@@ -68,7 +68,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 - ~magent-project-instructions.el~ ：从 project root 到请求相关 resource 有界发现 ~AGENTS.md~ 等 scoped project instructions。
 - ~magent-agent-info.el~ ：agent metadata struct 和 helpers。
 - ~magent-agent-builtins.el~ ：7 个内置 agent definitions。
-- ~magent-agent-registry.el~ ：hash-table registry 和 project overlays。
+- ~magent-agent-registry.el~ ：scope-aware hash-table registry 与 project definitions。
 - ~magent-agent-file.el~ ：从 ~.magent/agent/*.md~ 加载 custom agents。
 - ~magent-permission.el~ ：rule-based tool access control，支持 allow/deny/ask 和 glob patterns。
 
@@ -186,7 +186,7 @@ policy。Context provider 是可信本地 Elisp，但它嵌入的 supporting dat
 用户说明或 live Emacs/repository 状态。从文件、buffer、日志、命令、tool result 或网页读取的文本仍然只是数据，
 不能通过把自己伪装成高优先级 prompt 来授予工具权限。
 
-Skills 加载来源：内置 ~skills/~、用户目录 ~~/.emacs.d/magent/skills~，以及项目 ~.magent/skills/~；较后的目录优先。~magent-find-skill~、~magent-install-skill~ 和 ~magent-delete-skill~ 只管理用户级 skill，绝不使用 ~~/.agents/skills/~。Skill 也可以通过 ~capability: true~ 声明 resolver metadata，例如 ~modes~、~features~、~files~、~prompt-keywords~ 和 ~disclosure~；Magent 会把这些 metadata 注册成激活同一个 skill 的 capability。自动激活必须命中带词边界的 keyword 来证明用户 intent；只有 context 的匹配保持 suggested。Skill 声明的 ~tools~ 会与 selected agent 实际暴露的工具核对：不兼容的自动 skill 被降级，显式选择的不兼容 skill 则给出清晰错误。Agent-shell session 的 ~Automatic capabilities~ config option 可关闭自动解析。
+Skills 依次从内置 ~skills/~、用户级 ~~/.agents/skills/~ 与 ~~/.emacs.d/magent/skills/~，以及项目级 ~.agents/skills/~ 与 ~.magent/skills/~ 加载；后面的目录优先。与 Codex 兼容的最小 frontmatter 只要求 ~name~ 和 ~description~，省略 ~type~ 时默认为 ~instruction~。~license~、~metadata~ 和 ~disable-model-invocation~ 等已知 host-only 字段会作为被动 metadata 接受。~magent-find-skill~、~magent-install-skill~ 和 ~magent-delete-skill~ 只管理用户级 skill，绝不写入 ~~/.agents/skills/~。Skill 也可以通过 ~capability: true~ 声明 resolver metadata，例如 ~modes~、~features~、~files~、~prompt-keywords~ 和 ~disclosure~；Magent 会把这些 metadata 注册成激活同一个 skill 的 capability。自动激活必须命中带词边界的 keyword 来证明用户 intent；只有 context 的匹配保持 suggested。Skill 声明的 ~tools~ 会与 selected agent 实际暴露的工具核对：不兼容的自动 skill 被降级，显式选择的不兼容 skill 则给出清晰错误。Agent-shell session 的 ~Automatic capabilities~ config option 可关闭自动解析。
 
 新增或 review 默认能力时保持这些概念分开：
 
@@ -197,8 +197,8 @@ Skills 加载来源：内置 ~skills/~、用户目录 ~~/.emacs.d/magent/skills~
   ~/$name~ 是 ACP projection，不会创建 Action。
 - 需要根据 live context 或 prompt text 自动选择某个 skill 时，用 ~capability~ 。
 - 如果 capability 只是为了激活同一个 skill，就把 metadata 和说明共址在
-  ~SKILL.md~ 。只有当触发 metadata 不属于单个 skill，或属于 project overlay 时，
-  才使用独立 ~CAPABILITY.md~ 。
+  ~SKILL.md~ 。只有当触发 metadata 不属于单个 skill，或属于 scoped project
+  definition 时，才使用独立 ~CAPABILITY.md~ 。
 
 ** Session Scoping
 
@@ -298,7 +298,7 @@ API。
 ** Sampling 与 Runtime
 - *magent-sampling.el* — provider-neutral request/event contract
 - *magent-sampling-gptel.el* — 单次请求的 ~gptel-request~ adapter
-- *magent-runtime.el* — static initialization 与 project-local overlay activation
+- *magent-runtime.el* — static initialization 与 project-local definitions 的保留式加载
 - *magent-runtime-queue.el* — global execution queue 与 session-scoped cancellation
 - *magent-runtime-api.el* — frontend-neutral runtime session 与 submission API
 - *magent-agent-loop.el* — normalized event loop、serial tool queue、abort 与 continuation
@@ -316,7 +316,7 @@ API。
 - *magent-agent.el* — prompt 装配、request-local agent/tool resolution 与 loop startup
 - *magent-agent-info.el* — agent metadata struct 与 helpers
 - *magent-agent-builtins.el* — 7 个 built-in agent definitions
-- *magent-agent-registry.el* — agent registry 与 project overlays
+- *magent-agent-registry.el* — scope-aware agent registry 与 project definitions
 - *magent-agent-file.el* — 从 ~.magent/agent/*.md~ 加载 custom agent
 - *magent-permission.el* — 带 glob pattern 的 tool access control
 
@@ -325,7 +325,7 @@ API。
 - *magent-tool-orchestrator.el* — permission、approval、audit 与 tool-call orchestration
 - *magent-approval.el* — sensitive operation 的 user approval prompts
 - *magent-file-loader.el* — 共用的 file-backed frontmatter parser
-- *magent-skills.el* — instruction-skill registry、overlays、descriptors 与 inspection
+- *magent-skills.el* — scope-aware instruction-skill registry、descriptors 与 inspection
 - *magent-skill-manager.el* — lazy、network-aware 的用户 skill discovery 与 installation
 - *magent-capability.el* — capability definitions、resolution 与 file-backed loading
 
@@ -473,12 +473,13 @@ mapping 格式。未知字段、未知 permission key 和其他 shape 会直接�
 ---
 name: my-skill
 description: Brief description
-type: instruction
 tools: [read_file, grep]
 ---
 
 Skill instructions for the agent.
 #+end_src
+
+~type: instruction~ 可以省略；若显式指定，目前只支持该类型。
 
 * 获取帮助
 

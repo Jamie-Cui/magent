@@ -110,7 +110,7 @@ Replay 语义：
 * Loop Flow
 
 1. UI submission 进入 ~magent-runtime-api.el~ 。
-2. ~magent-runtime-api.el~ 创建 queued ledger turn，并立即记录 completed user message item。
+2. ~magent-runtime-api.el~ 创建 queued ledger turn、立即记录 completed user message item，并把 prompt、agent、tools、skills、route、effort、observer、approval 与 turn identity 一次冻结到唯一的 ~magent-request-context~ 中。
 3. submission 真正开始时， ~magent-runtime-api.el~ 把 turn 转成 ~in-progress~ 。
 4. ~magent-agent-run-turn~ 幂等复用该 turn/user item，不重复写用户消息。
 5. ~magent-agent-loop~ 消费 normalized LLM events。
@@ -129,7 +129,7 @@ Prompt reconstruction 是 ledger-driven。知道 current turn id 时，Magent �
 
 受支持的 frontend 是 agent-shell。 ~magent-agent-shell.el~ 创建由 ~magent-acp.el~ 实现的 in-process ACP client。ACP session/prompt request 把 registered slash command 分派给 ~magent-action.el~ ，普通 prompt 则直接提交 ~magent-runtime-api.el~ ；request 会保持 pending，直到对应 command invocation 或普通 runtime turn completed、failed 或 cancelled。Command-owned turn 和 workflow step 使用同一个 runtime API。Runtime 发出 Magent-native observer events； ~magent-acp.el~ 转换为 ACP ~session/update~ 消息。
 
-~magent-runtime-queue.el~ 负责 queued/active turn state。当前实现一次只有一个全局 active turn，但 submission 都带 runtime session id，所以 cancellation 是 session-scoped：取消一个 ACP session 会移除该 session 的 queued work 并 abort 该 session 的 active turn，不会丢掉其他 session 的 queued turns。
+~magent-runtime-queue.el~ 负责 queued/active turn state。当前实现一次只有一个全局 active turn。每个 submission 捕获精确 runtime session wrapper 和唯一 request context，因此 cancellation 按对象 identity 隔离：取消一个 ACP session 会移除该 session 的 queued work 并 abort 该 session 的 active turn，不会丢掉其他 session 的 queued turns。
 
 agent-shell + ACP 路径是完整的会话式 UI projection 和 slash-command surface。显式
 ~M-x~ wrapper 进入同一个 ~magent-action~ invocation lifecycle，不会形成另一套会话

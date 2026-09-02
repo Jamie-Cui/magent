@@ -93,7 +93,10 @@ all protocol traffic.  Keep that implementation detail off the TRAMP host."
                            magent-default-agent))
     (availableModes . ,(vconcat
                         (mapcar #'magent-acp--mode-entry
-                                (magent-agent-registry-primary-agents))))))
+                                (magent-agent-registry-primary-agents
+                                 (and runtime-session
+                                      (magent-runtime-session-scope
+                                       runtime-session))))))))
 
 (defun magent-acp--model-descriptor-entry (descriptor)
   "Return an ACP legacy model entry for DESCRIPTOR."
@@ -955,7 +958,7 @@ but omit the reason prefix from the ordinary tool-call UI."
 (defun magent-acp--load-candidate (session-id scope)
   "Return a read-only load candidate for SESSION-ID in exact SCOPE.
 The result contains either `:runtime-session' or `:session'.  Validating it
-does not activate overlays or install a session into the runtime registry."
+does not prepare definitions or install a session into the runtime registry."
   (magent-session-validate-id session-id)
   (if-let* ((runtime-session
              (magent-runtime-session-from-id session-id scope)))
@@ -1147,7 +1150,7 @@ does not activate overlays or install a session into the runtime registry."
                   (candidate (magent-acp--load-candidate session-id scope)))
              (unless candidate
                (error "Unknown session in requested cwd: %s" session-id))
-             ;; Preflight exact-session replacement before changing overlays.
+             ;; Preflight exact-session replacement before preparing scope.
              (let ((candidate-session
                     (or (plist-get candidate :session)
                         (when-let* ((runtime-session

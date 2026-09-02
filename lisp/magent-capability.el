@@ -38,6 +38,7 @@
 (require 'magent-skills)
 
 (declare-function magent-runtime-session-current "magent-runtime-api")
+(declare-function magent-runtime-session-scope "magent-runtime-api" t t)
 (declare-function magent-runtime-session-available-tool-names
                   "magent-runtime-api")
 
@@ -97,7 +98,7 @@ The output shape is intentionally inspectable:
 (defvar magent-capability--registry nil
   "Layered alist of (capability-name . `magent-capability').
 The first definition for a name is effective; shadowed definitions are kept
-so project overlays can be removed without rebuilding static registries.")
+so each request scope can resolve without rebuilding static registries.")
 
 (defun magent-capability--same-owner-p (left right)
   "Return non-nil when capabilities LEFT and RIGHT have the same owner."
@@ -106,11 +107,27 @@ so project overlays can be removed without rebuilding static registries.")
        (equal (magent-capability-source-scope left)
               (magent-capability-source-scope right))))
 
-(defun magent-capability--effective-entries ()
-  "Return effective capability entries without shadowed duplicates."
-  (let (seen effective)
+(defun magent-capability--resolution-scope (&optional scope)
+  "Return canonical capability resolution scope for optional SCOPE."
+  (magent-session-canonical-scope
+   (or scope (magent-runtime-active-project-scope) 'global)))
+
+(defun magent-capability--visible-in-scope-p (capability scope)
+  "Return non-nil when CAPABILITY is visible in canonical SCOPE."
+  (let ((source-scope
+         (magent-session-canonical-scope
+          (magent-capability-source-scope capability))))
+    (or (null source-scope)
+        (equal source-scope scope))))
+
+(defun magent-capability--effective-entries (&optional scope)
+  "Return effective capability entries visible in SCOPE."
+  (let ((resolution-scope (magent-capability--resolution-scope scope))
+        seen effective)
     (dolist (entry magent-capability--registry)
-      (unless (member (car entry) seen)
+      (when (and (not (member (car entry) seen))
+                 (magent-capability--visible-in-scope-p
+                  (cdr entry) resolution-scope))
         (push (car entry) seen)
         (push entry effective)))
     (nreverse effective)))
@@ -194,13 +211,13 @@ When EMBEDDED is non-nil, accept the complete SKILL.md schema."
          #'magent-capability-source-scope
          scope)))
 
-(defun magent-capability-get (name)
-  "Return capability NAME from the registry."
-  (cdr (assoc name magent-capability--registry)))
+(defun magent-capability-get (name &optional scope)
+  "Return effective capability NAME visible in SCOPE."
+  (cdr (assoc name (magent-capability--effective-entries scope))))
 
-(defun magent-capability-list ()
-  "Return a sorted list of registered capability names."
-  (sort (mapcar #'car (magent-capability--effective-entries)) #'string<))
+(defun magent-capability-list (&optional scope)
+  "Return sorted capability names visible in SCOPE."
+  (sort (mapcar #'car (magent-capability--effective-entries scope)) #'string<))
 
 (defun magent-capability--source-owner (filepath)
   "Classify FILEPATH for capability governance purposes."
@@ -447,7 +464,8 @@ capabilities."
   (magent-capability-load-all magent-capability-directories))
 
 (defun magent-capability-load-project-scope (scope)
-  "Load project-local capability definitions for SCOPE."
+  "Reload project-local capability definitions for SCOPE."
+  (magent-capability-remove-project-scope scope)
   (let ((skill-directories
          (magent-file-loader-project-subdir-for-scope
           ".magent/skills" scope))
@@ -461,17 +479,27 @@ capabilities."
            (magent-capability-load-all capability-directories)
          0))))
 
+(defun magent-capability--project-scopes ()
+  "Return project scopes to refresh from the registry and current context."
+  (delete-dups
+   (delq nil
+         (cons
+          (magent-runtime-active-project-scope)
+          (mapcar
+           (lambda (entry)
+             (and (eq (magent-capability-source-layer (cdr entry)) 'project)
+                  (magent-capability-source-scope (cdr entry))))
+           magent-capability--registry)))))
+
 (defun magent-capability-reload ()
-  "Reload all file-backed capabilities.
-When a project overlay is currently active, restore that project's
-local capabilities after static definitions are reloaded."
-  (let ((project-scope (magent-runtime-active-project-scope)))
+  "Reload all file-backed capabilities for every known project scope."
+  (let ((project-scopes (magent-capability--project-scopes)))
     (magent-file-loader-reload-file-backed-registry
      'magent-capability--registry
      #'magent-capability-file-path
      #'magent-capability-initialize-static)
-    (when project-scope
-      (magent-capability-load-project-scope project-scope))))
+    (dolist (scope project-scopes)
+      (magent-capability-load-project-scope scope))))
 
 ;;;###autoload
 (defun magent-reload-capabilities ()
@@ -716,11 +744,14 @@ source for contextual capability resolution."
                       :contributions contributions)
        :status status)))
 
-(defun magent-capability--skill-usable-p (skill-name available-tools)
+(defun magent-capability--skill-usable-p
+    (skill-name available-tools &optional scope)
   "Return non-nil when SKILL-NAME's tool requirements are AVAILABLE-TOOLS."
-  (magent-skills-tool-requirements-satisfied-p skill-name available-tools))
+  (magent-skills-tool-requirements-satisfied-p
+   skill-name available-tools scope))
 
-(defun magent-capability--apply-tool-availability (match available-tools)
+(defun magent-capability--apply-tool-availability
+    (match available-tools &optional scope)
   "Downgrade MATCH when no linked skill can use AVAILABLE-TOOLS."
   (when (eq (magent-capability-match-status match) 'active)
     (let* ((capability (magent-capability-match-capability match))
@@ -728,7 +759,7 @@ source for contextual capability resolution."
            (usable (cl-remove-if-not
                     (lambda (skill-name)
                       (magent-capability--skill-usable-p
-                       skill-name available-tools))
+                       skill-name available-tools scope))
                     skills)))
       (when (and skills (null usable))
         (setf (magent-capability-match-status match) 'suggested
@@ -801,7 +832,7 @@ source for contextual capability resolution."
                   (magent-capability-resolution-matches resolution)))))
 
 (defun magent-capability-resolve
-    (prompt request-context explicit-skills available-tools)
+    (prompt request-context explicit-skills available-tools &optional scope)
   "Resolve capabilities for PROMPT and REQUEST-CONTEXT.
 EXPLICIT-SKILLS are user-selected instruction skills that should
 remain active regardless of capability selection.  Linked skills whose
@@ -809,14 +840,20 @@ declared tools are absent from AVAILABLE-TOOLS do not auto-activate."
   (unless (proper-list-p available-tools)
     (error "Capability resolution requires an exact tool-name list: %S"
            available-tools))
-  (let* ((context (magent-capability--merge-context request-context prompt))
+  (let* ((resolution-scope
+          (or scope
+              (and (magent-request-context-p request-context)
+                   (magent-request-context-scope request-context))
+              'global))
+         (context (magent-capability--merge-context request-context prompt))
          (matches (magent-capability--sort-matches
                    (mapcar (lambda (entry)
                              (magent-capability--apply-tool-availability
                               (magent-capability--score
                                (cdr entry) prompt context)
-                              available-tools))
-                           (magent-capability--effective-entries))))
+                              available-tools resolution-scope))
+                           (magent-capability--effective-entries
+                            resolution-scope))))
          (active-all (cl-remove-if-not
                       (lambda (match)
                         (eq (magent-capability-match-status match) 'active))
@@ -835,7 +872,8 @@ declared tools are absent from AVAILABLE-TOOLS do not auto-activate."
                                             (cl-remove-if-not
                                              (lambda (skill-name)
                                                (magent-capability--skill-usable-p
-                                                skill-name available-tools))
+                                                skill-name available-tools
+                                                resolution-scope))
                                              (copy-sequence
                                               (magent-capability-skills
                                                (magent-capability-match-capability
@@ -1051,7 +1089,8 @@ When INCLUDE-HIDDEN is non-nil, include hidden matches too."
          (resolution (magent-capability-resolve
                       (or prompt "")
                       (magent-capability-capture-context)
-                      nil available-tools))
+                      nil available-tools
+                      (magent-runtime-session-scope runtime-session)))
          (buffer-name "*Magent Capability Resolution*"))
     (setq magent-capability--last-resolution resolution)
     (magent--with-display-buffer buffer-name

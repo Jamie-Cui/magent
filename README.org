@@ -307,6 +307,11 @@ workflow associates sessions with the current project:
 - Outside any project, Magent falls back to the global session behavior and saves directly under ~magent-session-directory~.
 - Permission decisions and sensitive tools are audited only in the live ~*magent-audit*~ buffer by default. Set ~magent-audit~ to nil to disable recording or to a file path to append JSONL records.
 
+Project-local agent, skill, capability, and Action definitions remain keyed by
+canonical project scope. Each request resolves definitions against its exact
+runtime session scope, so preparing another project does not rewrite the
+meaning of an already queued or active request.
+
 ** Slash Commands And Skills
 
 Instruction skills can be selected as one-shot context for the next request.
@@ -347,6 +352,14 @@ All skills are instruction-only and data-only. For executable extensions, use
 a trusted Elisp command or add a first-class tool to Magent's canonical tool
 catalog; companion Elisp next to ~SKILL.md~ is never loaded.
 
+Magent accepts the Codex skill contract: ~name~ and ~description~ are required,
+while an omitted ~type~ defaults to ~instruction~. Known host-only fields such
+as ~license~, ~metadata~, and ~disable-model-invocation~ are accepted as passive
+compatibility metadata and do not change Magent behavior. User skills are read
+from ~~/.agents/skills/~ before ~~/.emacs.d/magent/skills/~; project skills are
+read from ~.agents/skills/~ before ~.magent/skills/~. Later roots take
+precedence when names collide.
+
 ** User Skill Management
 
 Use ~M-x magent-find-skill~ to search skills.sh.  The finder shows the ten
@@ -362,11 +375,11 @@ execute copied scripts, and records provenance in ~.magent-install.json~.
 one ~y/n~ confirmation.  These commands never manage project-local
 ~.magent/skills/~ or ~~/.agents/skills/~.
 
-~magent-skill-directories~ is ordered: later directories take precedence when
-skill names collide, and its final entry is the installation target used by the
-skill manager.  Append a custom directory to retain the default roots while
-making the custom directory the highest-priority source and installation
-target:
+~magent-skill-directories~ contains user-level roots and is ordered: later
+directories take precedence when skill names collide, and its final entry is
+the installation target used by the skill manager.  Append a custom directory
+to retain the default roots while making the custom directory the
+highest-priority source and installation target:
 
 #+begin_src elisp
 (add-to-list 'magent-skill-directories "/path/to/skills" t)

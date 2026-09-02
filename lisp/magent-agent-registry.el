@@ -27,13 +27,35 @@
 (defvar magent-agent-registry--agents (make-hash-table :test 'equal)
   "Hash table mapping agent names to precedence-ordered agent stacks.
 The first item is the effective definition.  Lower-layer definitions remain
-available so removing a project overlay restores the previous definition.")
+available so each request scope can resolve its own effective definition.")
 
 (defvar magent-agent-registry--default-agent nil
   "The default agent name.")
 
 (defvar magent-agent-registry--initialized nil
   "Whether the registry has been initialized.")
+
+(defun magent-agent-registry--resolution-scope (&optional scope)
+  "Return the canonical agent resolution scope for optional SCOPE."
+  (magent-session-canonical-scope
+   (or scope (magent-runtime-active-project-scope) 'global)))
+
+(defun magent-agent-registry--visible-in-scope-p (agent scope)
+  "Return non-nil when AGENT is visible in canonical SCOPE."
+  (let ((source-scope
+         (magent-session-canonical-scope
+          (magent-agent-info-source-scope agent))))
+    (or (null source-scope)
+        (equal source-scope scope))))
+
+(defun magent-agent-registry--effective-agent (value scope)
+  "Return the effective agent from registry VALUE for canonical SCOPE."
+  (let ((stack (if (magent-agent-info-p value) (list value) value)))
+    (cl-find-if
+     (lambda (agent)
+       (and (magent-agent-info-p agent)
+            (magent-agent-registry--visible-in-scope-p agent scope)))
+     stack)))
 
 ;;; Registry initialization
 
@@ -56,7 +78,7 @@ available so removing a project overlay restores the previous definition.")
 (defun magent-agent-registry-register (agent-info)
   "Register an AGENT-INFO in the registry.
 An existing definition from the same source layer and scope is replaced.
-Definitions from lower layers are retained for reversible project overlays.
+Definitions from other layers and scopes remain available for exact lookup.
 Returns the registered agent info."
   (when (magent-agent-info-valid-p agent-info)
     (let* ((name (magent-agent-info-name agent-info))
@@ -101,18 +123,19 @@ Returns the registered agent info."
 
 ;;; Agent retrieval
 
-(defun magent-agent-registry-get (name)
-  "Get agent info by NAME.
+(defun magent-agent-registry-get (name &optional scope)
+  "Get agent info by NAME for SCOPE.
 Returns the agent info structure, or nil if not found."
   (magent-agent-registry-ensure-initialized)
-  (let ((value (gethash name magent-agent-registry--agents)))
-    (if (magent-agent-info-p value) value (car value))))
+  (magent-agent-registry--effective-agent
+   (gethash name magent-agent-registry--agents)
+   (magent-agent-registry--resolution-scope scope)))
 
-(defun magent-agent-registry-get-default ()
-  "Get the default agent info.
+(defun magent-agent-registry-get-default (&optional scope)
+  "Get the default agent info for SCOPE.
 Returns the default agent info structure, or nil if not found."
   (magent-agent-registry-ensure-initialized)
-  (magent-agent-registry-get magent-agent-registry--default-agent))
+  (magent-agent-registry-get magent-agent-registry--default-agent scope))
 
 (defun magent-agent-registry-set-default (name)
   "Set the default agent to NAME.
@@ -124,19 +147,22 @@ Returns the new default agent info, or nil if not found."
 
 ;;; Agent listing
 
-(defun magent-agent-registry-list (&optional include-hidden mode native-only)
-  "List all registered agents.
+(defun magent-agent-registry-list
+    (&optional include-hidden mode native-only scope)
+  "List all registered agents visible in SCOPE.
 Returns list of agent info structures sorted by native status and name.
 
 If INCLUDE-HIDDEN is non-nil, include hidden agents.
 If MODE is non-nil (primary, subagent, or all), filter by mode.
-If NATIVE-ONLY is non-nil, only include native (built-in) agents."
+If NATIVE-ONLY is non-nil, only include native (built-in) agents.
+When SCOPE is nil, use the current interactive project context."
   (magent-agent-registry-ensure-initialized)
-  (let ((agents nil))
+  (let ((agents nil)
+        (resolution-scope
+         (magent-agent-registry--resolution-scope scope)))
     (maphash (lambda (_name value)
-               (let ((info (if (magent-agent-info-p value)
-                               value
-                             (car value))))
+               (let ((info (magent-agent-registry--effective-agent
+                            value resolution-scope)))
                  (when (and info
                             (or include-hidden
                                 (not (magent-agent-info-hidden info)))
@@ -159,15 +185,15 @@ If NATIVE-ONLY is non-nil, only include native (built-in) agents."
                ;; Then sort by name
                (t (string< a-name b-name))))))))
 
-(defun magent-agent-registry-list-names (&optional include-hidden mode)
-  "List all registered agent names.
+(defun magent-agent-registry-list-names (&optional include-hidden mode scope)
+  "List registered agent names visible in SCOPE.
 Returns list of agent name strings."
   (mapcar #'magent-agent-info-name
-          (magent-agent-registry-list include-hidden mode)))
+          (magent-agent-registry-list include-hidden mode nil scope)))
 
-(defun magent-agent-registry-primary-agents ()
-  "List all primary agents (non-hidden, mode is primary or all)."
-  (magent-agent-registry-list nil 'primary))
+(defun magent-agent-registry-primary-agents (&optional scope)
+  "List primary agents visible in SCOPE."
+  (magent-agent-registry-list nil 'primary nil scope))
 
 ;;; Agent utilities
 
