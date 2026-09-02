@@ -548,7 +548,9 @@ When BACKEND is nil, use the current global gptel backend."
                         located))
               ((file-readable-p source)))
     (condition-case nil
-        (lm-package-version source)
+        (lm-with-file source
+          (or (lm-header "package-version")
+              (lm-header "version")))
       (file-error nil))))
 
 (defun magent-doctor--bound-version (symbol library)

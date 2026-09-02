@@ -11608,6 +11608,23 @@
       (when (buffer-live-p displayed)
         (kill-buffer displayed)))))
 
+(ert-deftest magent-test-doctor-library-version-uses-emacs-29-api ()
+  "Doctor reads Package-Version without newer `lisp-mnt' helpers."
+  (require 'magent-action-builtin-doctor)
+  (let ((source (make-temp-file "magent-doctor-version-" nil ".el")))
+    (unwind-protect
+        (progn
+          (with-temp-file source
+            (insert ";;; example.el --- Example\n"
+                    ";; Package-Version: 1.2.3\n"
+                    ";;; example.el ends here\n"))
+          (cl-letf (((symbol-function 'locate-library)
+                     (lambda (_library) source))
+                    ((symbol-function 'lm-package-version) nil))
+            (should (equal (magent-doctor--library-version "example")
+                           "1.2.3"))))
+      (delete-file source))))
+
 (ert-deftest magent-test-doctor-task-kill-cancels-whole-invocation ()
   "KILL on a pending Doctor task cancels the attached Doctor invocation."
   (require 'magent-action-builtin-doctor)
