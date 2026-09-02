@@ -123,7 +123,7 @@ Replay 语义：
 12. Abort、failure 和 dropped queued submissions 分别把 turn 转成 ~interrupted~ 、 ~failed~ 或 ~dropped~ ；aborted turn 下的 in-progress items 标记为 ~cancelled~ 。
 13. ~magent-max-sampling-requests~ 是可选 safety guard，默认关闭；启用后，到达上限会直接使本轮失败。
 
-Prompt reconstruction 是 ledger-driven。知道 current turn id 时，Magent 只包含 completed history 和该 turn，避免后续 queued user submissions 泄漏进 active model request。
+Prompt reconstruction 是 ledger-driven。知道 current turn id 时，Magent 会包含 completed history、interrupted turn 的 user 侧以及该 turn，使后续请求能恢复已取消请求的上下文，同时避免后续 queued user submissions 泄漏进 active model request。
 
 * UI 投影
 

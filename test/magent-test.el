@@ -1715,6 +1715,31 @@
                      (response . "A text editor.")
                      (prompt . "Tell me more."))))))
 
+(ert-deftest magent-test-session-provider-context-keeps-interrupted-user-turns ()
+  "Test a follow-up can recover an interrupted turn's user context."
+  (require 'magent-session)
+  (let* ((session (magent-session-create))
+         (thread (magent-session-thread-ledger session))
+         (interrupted (magent-thread-create-turn thread "Original request"))
+         (interrupted-id (magent-thread-turn-id interrupted))
+         (partial-assistant
+          (magent-thread-ensure-message-item
+           thread interrupted-id 'assistant)))
+    (magent-thread-record-user-message-if-needed
+     thread interrupted-id "Original request")
+    (magent-thread-append-item-content
+     thread partial-assistant "Incomplete response")
+    (magent-thread-cancel-item thread partial-assistant "Cancelled")
+    (magent-thread-interrupt-turn thread interrupted-id "Cancelled")
+    (let* ((current (magent-thread-create-turn thread "Continue"))
+           (current-id (magent-thread-turn-id current)))
+      (magent-thread-record-user-message-if-needed
+       thread current-id "Continue")
+      (should
+       (equal (magent-test--provider-context session current-id)
+              '((prompt . "Original request")
+                (prompt . "Continue")))))))
+
 (ert-deftest magent-test-session-get-id ()
   "Test session ID generation."
   (require 'magent-session)
@@ -2426,7 +2451,7 @@
          (magent-session--scoped-sessions (make-hash-table :test #'equal))
          (parent (magent-session-create :id "session-parent"))
          (new-current (magent-session-create :id "session-new"))
-         captured finish)
+         captured finish messages)
     (unwind-protect
         (progn
           (magent-session-install 'global parent)
@@ -2450,13 +2475,17 @@
                     ((symbol-function 'magent-runtime-prepare-context)
                      #'ignore)
                     ((symbol-function 'magent-session-save-deferred-for-session)
-                     #'ignore))
+                     #'ignore)
+                    ((symbol-function 'message)
+                     (lambda (format-string &rest args)
+                       (push (apply #'format format-string args) messages))))
             (magent-action-run "async-test")
             (magent-session-install "/tmp/magent-other-project" new-current)
             (funcall finish 'completed "Async test complete"))
           (should (eq magent--current-session new-current))
           (should (equal magent-session--current-scope
                          "/tmp/magent-other-project"))
+          (should (equal messages '("Magent async-test completed")))
           (should-not (magent-action-session-active-invocations)))
       (delete-directory magent-session-directory t))))
 
@@ -2572,6 +2601,28 @@
           (should (eq (magent-sampling-request-model request)
                       'doctor-model))
           (should (equal route-args (list runtime nil 'doctor)))
+          (let* ((plan-event
+                  (cl-find-if
+                   (lambda (event)
+                     (eq (plist-get (plist-get event :doctor-update) :kind)
+                         'plan))
+                   events))
+                 (membership-event
+                  (cl-find-if
+                   (lambda (event)
+                     (let ((update (plist-get event :doctor-update)))
+                       (and (equal (plist-get update :id) "safe")
+                            (eq (plist-get update :llm-state) 'included))))
+                   events))
+                 (prompt (magent-sampling-request-prompt request)))
+            (should plan-event)
+            (should membership-event)
+            (should-not
+             (plist-member (plist-get membership-event :doctor-update)
+                           :llm-input))
+            (should (string-match-p
+                     (regexp-quote "\\\"ok\\\":true")
+                     prompt)))
           (should (eq (car completion) 'completed))
           (should (cl-find 'assistant-delta events
                            :key (lambda (event) (plist-get event :type))))
@@ -2579,6 +2630,76 @@
                  (meta (magent-session--read-file-metadata-cached file)))
             (should (equal (plist-get meta :status) "completed"))))
       (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-doctor-confirm-reuses-interactive-buffer ()
+  "Doctor preflight shares the interactive Org buffer with progress."
+  (require 'magent-action-builtin-doctor)
+  (let ((magent-bypass-permission nil)
+        (magent-doctor--registry (make-hash-table :test #'equal))
+        buffer)
+    (unwind-protect
+        (progn
+          (magent-doctor--register-builtins)
+          (cl-letf (((symbol-function 'display-buffer)
+                     (lambda (value &rest _) value)))
+            (setq buffer (magent-doctor--interactive-buffer)))
+          (let ((context
+                 (magent-action-invocation-create
+                  :options (list :interactive-buffer buffer)
+                  :origin-buffer (current-buffer)
+                  :origin-directory default-directory))
+                (route (magent-model-route-create
+                        :backend 'test-backend
+                        :model 'test-model
+                        :source 'test
+                        :phase 'doctor)))
+            (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+              (should
+               (magent-doctor--confirm
+                context (list (gethash "core-runtime"
+                                       magent-doctor--registry))
+                route)))
+            (with-current-buffer buffer
+              (goto-char (point-min))
+              (should-not (search-forward "Magent Doctor Preflight" nil t))
+              (should (search-forward "* Preflight" nil t))
+              (should (search-forward "Provider: " nil t))
+              (should-not (invisible-p (1- (point)))))
+            (magent-doctor--interactive-observe
+             buffer
+             '(:type action-progress
+               :text "Prepared Doctor task plan."
+               :doctor-update
+               (:kind plan
+                :tasks ((:id "core-runtime"
+                         :kind probe
+                         :title "probe core-runtime"
+                         :description "Core runtime facts."
+                         :status pending
+                         :llm-state pending))
+                :model-info (("Model" . "test-model"))))))
+          (should-not (get-buffer "*Magent Doctor Preflight*"))
+          (with-current-buffer buffer
+            (should (derived-mode-p 'org-mode))
+            (should buffer-read-only)
+            (goto-char (point-min))
+            (should
+             (looking-at-p
+              (regexp-quote
+               "#+title: Magent Doctor\n#+startup: content\n")))
+            (should-not (search-forward "* Magent Doctor" nil t))
+            (goto-char (point-min))
+            (let ((tasks (search-forward "* Tasks" nil t))
+                  (diagnosis (search-forward "* Diagnosis" nil t))
+                  (environment (search-forward "* Environment" nil t))
+                  (preflight (search-forward "* Preflight" nil t)))
+              (should (< tasks diagnosis environment preflight)))
+            (goto-char (point-min))
+            (should (search-forward "* Environment\n** Runtime" nil t))
+            (goto-char (point-min))
+            (should (search-forward "** TODO probe core-runtime" nil t))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest magent-test-doctor-action-unsafe-probe-fails-before-sampling ()
   "Doctor rejects unsafe probe values before provider sampling."
@@ -4380,7 +4501,7 @@
      :workflow
      (iter-lambda (value)
        (setq invocation value)
-       (magent-action-progress value "phase one")
+       (magent-action-progress value "phase one" :phase-id "one")
        (magent-workflow-callback
            "Wait" (lambda (callback) (setq done callback) #'ignore))))
     (magent-test--without-action-step-ledger
@@ -4390,8 +4511,11 @@
        :on-complete
        (lambda (status result) (setq completion (list status result))))
       (should (eq (magent-action-invocation-status invocation) 'active))
-      (should (cl-find 'action-progress events
-                       :key (lambda (e) (plist-get e :type))))
+      (let ((progress
+             (cl-find 'action-progress events
+                      :key (lambda (e) (plist-get e :type)))))
+        (should progress)
+        (should (equal (plist-get progress :phase-id) "one")))
       (funcall done 'completed "finished"))
     (should (eq (car completion) 'completed))
     (should (equal (magent-execution-result-content-string (cadr completion))
@@ -11413,7 +11537,30 @@
                      (let ((observer (plist-get args :observer)))
                        (funcall observer
                                 '(:type action-progress
-                                  :text "Running doctor probe test..."))
+                                  :text "Prepared Doctor task plan."
+                                  :doctor-update
+                                  (:kind plan
+                                   :tasks
+                                   ((:id "test"
+                                     :kind probe
+                                     :title "probe test"
+                                     :description
+                                     "A bounded test probe."
+                                     :related-buffers ("*Messages*")
+                                     :status pending
+                                     :llm-state pending))
+                                   :model-info
+                                   (("Backend" . "Test Provider")
+                                    ("Model" . "test-model")
+                                    ("Provider tools" . "disabled")))))
+                       (funcall observer
+                                '(:type action-progress
+                                  :text "Doctor task test completed."
+                                  :doctor-update
+                                  (:kind task
+                                   :id "test"
+                                   :status completed
+                                   :llm-state included)))
                        (funcall observer
                                 (list :type 'assistant-delta
                                       :text "* Diagnosis\nHealthy"))
@@ -11428,15 +11575,158 @@
           (should (equal (car captured) "doctor"))
           (should (functionp (plist-get (cdr captured) :observer)))
           (should (buffer-live-p displayed))
+          (should
+           (eq (plist-get (plist-get (cdr captured) :options)
+                          :interactive-buffer)
+               displayed))
           (with-current-buffer displayed
-            (should (derived-mode-p 'special-mode))
+            (should (derived-mode-p 'org-mode))
             (should buffer-read-only)
+            (should (looking-at-p "\\* Diagnosis"))
             (goto-char (point-min))
             (should (search-forward "Status: Completed" nil t))
-            (should (search-forward "Running doctor probe test..." nil t))
-            (should (search-forward "* Diagnosis\nHealthy" nil t))))
+            (should (search-forward "* Environment\n** Runtime" nil t))
+            (should (search-forward "Magent version" nil t))
+            (should (search-forward "** Doctor model" nil t))
+            (should (search-forward "Test Provider" nil t))
+            (goto-char (point-min))
+            (should (search-forward
+                     "Probe results are bounded and redacted" nil t))
+            (should (search-forward "** DONE probe test" nil t))
+            (should-not (search-forward "Used in diagnosis:" nil t))
+            (goto-char (point-min))
+            (should (search-forward "Related buffers: *Messages*" nil t))
+            (let ((button (button-at (1- (point)))))
+              (should (markerp button))
+              (should (equal (button-get button 'magent-doctor-buffer-name)
+                             "*Messages*")))
+            (goto-char (point-min))
+            (should-not (search-forward "Cancel: " nil t))
+            (goto-char (point-min))
+            (should (search-forward "* Diagnosis\nHealthy" nil t))
+            (should-not (invisible-p (1- (point))))))
       (when (buffer-live-p displayed)
         (kill-buffer displayed)))))
+
+(ert-deftest magent-test-doctor-task-kill-cancels-whole-invocation ()
+  "KILL on a pending Doctor task cancels the attached Doctor invocation."
+  (require 'magent-action-builtin-doctor)
+  (let* ((spec (magent-action-spec-create :name "doctor"))
+         (invocation (magent-action-invocation-create
+                      :id "doctor-kill-test"
+                      :spec spec))
+         buffer cancelled)
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'display-buffer)
+                     (lambda (value &rest _) value)))
+            (setq buffer (magent-doctor--interactive-buffer)))
+          (with-current-buffer buffer
+            (setq magent-doctor--interactive-invocation invocation)
+            (magent-doctor--interactive-observe
+             buffer
+             '(:type action-progress
+               :text "Prepared Doctor task plan."
+               :doctor-update
+               (:kind plan
+                :tasks ((:id "probe-one"
+                         :kind probe
+                         :title "probe probe-one"
+                         :description "Read-only test probe."
+                         :status pending
+                         :llm-state pending))
+                :model-info (("Model" . "test-model")))))
+            (goto-char (point-min))
+            (should (search-forward
+                     "Mode: isolated Action; provider tools disabled.\n"
+                     nil t))
+            (should (search-forward
+                     "Cancel: C-c C-t on a TODO task (marks KILL), " nil t))
+            (should (search-forward "* Tasks" nil t))
+            (goto-char (point-min))
+            (should (search-forward "** TODO probe probe-one" nil t))
+            (cl-letf (((symbol-function 'magent-action-cancel)
+                       (lambda (value reason)
+                         (setq cancelled (list value reason)))))
+              (magent-doctor-task-kill))
+            (goto-char (point-min))
+            (should (search-forward "** KILL probe probe-one" nil t)))
+          (should (eq (car cancelled) invocation))
+          (should (string-match-p "probe-one" (cadr cancelled))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-doctor-failure-keeps-task-outcomes-truthful ()
+  "A failed Doctor run distinguishes failed work from unstarted work."
+  (require 'magent-action-builtin-doctor)
+  (let (buffer)
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'display-buffer)
+                     (lambda (value &rest _) value)))
+            (setq buffer (magent-doctor--interactive-buffer)))
+          (with-current-buffer buffer
+            (setq magent-doctor--interactive-tasks
+                  '((:id "done" :kind probe :title "probe done"
+                     :status completed :llm-state included)
+                    (:id "running" :kind probe :title "probe running"
+                     :status running :llm-state pending)
+                    (:id "pending" :kind probe :title "probe pending"
+                     :status pending :llm-state pending)))
+            (magent-doctor--interactive-observe
+             buffer
+             (list :type 'action-completed
+                   :status 'failed
+                   :result (magent-execution-result-failed
+                            "Analysis failed")))
+            (should (looking-at-p "\\* Diagnosis"))
+            (goto-char (point-min))
+            (should (search-forward "Status: Failed (3/3)" nil t))
+            (should (search-forward "** DONE probe done" nil t))
+            (should (search-forward "** FAIL probe running" nil t))
+            (should (search-forward "** KILL probe pending" nil t))
+            (goto-char (point-min))
+            (should (search-forward "* Diagnosis\nAnalysis failed" nil t))
+            (should-not (invisible-p (1- (point))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest magent-test-doctor-session-id-is-followable-org-link ()
+  "The Doctor session id is an Org link to its persisted Action session."
+  (require 'magent-action-builtin-doctor)
+  (require 'magent-action-session-view)
+  (let* ((magent-session-directory (make-temp-file "magent-doctor-link-" t))
+         (magent-action-session-directory nil)
+         (id "session-doctor-link")
+         (directory (magent-session-action-directory "doctor"))
+         (file (expand-file-name (concat id ".json") directory))
+         buffer opened)
+    (unwind-protect
+        (progn
+          (make-directory directory t)
+          (with-temp-file file
+            (insert "{}"))
+          (cl-letf (((symbol-function 'display-buffer)
+                     (lambda (value &rest _) value)))
+            (setq buffer (magent-doctor--interactive-buffer)))
+          (with-current-buffer buffer
+            (setq magent-doctor--interactive-session-id id)
+            (magent-doctor--interactive-render buffer)
+            (goto-char (point-min))
+            (let* ((link (format "[[magent-session:%s][%s]]" id id))
+                   (start (search-forward link nil t)))
+              (should start)
+              (goto-char (- start (length id) 2))
+              (should (equal
+                       (org-link-get-parameter "magent-session" :follow)
+                       #'magent-doctor--interactive-open-session-link))
+              (cl-letf (((symbol-function 'magent-action-open-session)
+                         (lambda (value) (setq opened value))))
+                (org-open-at-point))))
+          (should (equal opened file)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory magent-session-directory t))))
 
 (ert-deftest magent-test-acp-request-sender-initialize ()
   "Test in-process ACP request sender handles initialize."

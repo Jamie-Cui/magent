@@ -749,22 +749,33 @@ return that path."
               (setq buffer (get-buffer "*Magent Doctor*"))
               (should (buffer-live-p buffer))
               (with-current-buffer buffer
-                (should (derived-mode-p 'special-mode))
+                (should (derived-mode-p 'org-mode))
                 (should buffer-read-only)
                 (goto-char (point-min))
                 (should (search-forward "Status: Running" nil t))
-                (should (search-forward "Running doctor probe" nil t)))
+                (should (search-forward "* Environment\n** Runtime" nil t))
+                (should (search-forward "Magent version" nil t))
+                (should (search-forward "** Doctor model" nil t))
+                (goto-char (point-min))
+                (should (search-forward "* Tasks" nil t))
+                (should (search-forward
+                         "Probe results are bounded and redacted" nil t))
+                (should (search-forward "** DONE probe" nil t))
+                (should-not (search-forward "Used in diagnosis:" nil t)))
               (magent-live-test--wait-until
                (lambda ()
                  (with-current-buffer buffer
-                   (goto-char (point-min))
-                   (search-forward "Status: Completed" nil t)))
+                   (save-excursion
+                     (goto-char (point-min))
+                     (search-forward "Status: Completed" nil t))))
                5
                "M-x Doctor did not complete in its progress buffer")
               (with-current-buffer buffer
+                (should (looking-at-p "\\* Diagnosis"))
                 (goto-char (point-min))
                 (should (search-forward "* Diagnosis" nil t))
-                (should (search-forward "Healthy" nil t)))))
+                (should (search-forward "Healthy" nil t))
+                (should-not (invisible-p (1- (point)))))))
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 

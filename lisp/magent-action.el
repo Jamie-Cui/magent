@@ -973,11 +973,16 @@ Project Action files are not currently supported."
        (magent-log "ERROR Action observer failed: %s"
                    (error-message-string err))))))
 
-(defun magent-action-progress (invocation message)
-  "Report progress MESSAGE for active Action INVOCATION."
+(defun magent-action-progress (invocation message &rest properties)
+  "Report progress MESSAGE with PROPERTIES for active Action INVOCATION.
+PROPERTIES is an optional keyword plist appended to the observer event."
   (unless (eq (magent-action-invocation-status invocation) 'active)
     (error "Magent Action invocation is no longer active"))
-  (magent-action--notify invocation 'action-progress :text message)
+  (unless (magent-action--plist-p properties)
+    (error "Expected Magent Action progress properties plist, got: %S"
+           properties))
+  (apply #'magent-action--notify invocation 'action-progress
+         :text message properties)
   invocation)
 
 (defun magent-action--record-message

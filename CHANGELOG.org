@@ -56,13 +56,21 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Fixed
 
+- Render interactive Doctor preflight, runtime and model-route metadata,
+  structured ~TODO~ / ~DONE~ / ~FAIL~ / ~KILL~ tasks, persisted-session and
+  related-buffer links, and results in one read-only Org buffer.  Persisted
+  sessions use standard Org links so Org-aware actions can follow them.  Retain
+  content-level startup visibility while focusing Preflight during confirmation
+  and Diagnosis at completion; group debug metadata under Environment, keep
+  unstarted failure-path tasks distinct from failed work, and keep successful
+  isolated-Action completion messages to one concise line.
+- Preserve the user side of interrupted turns in provider context so follow-up
+  prompts such as "continue" can recover a request after cancellation without
+  replaying an incomplete assistant response.
 - Persist provider-reported usage on completed ledger turns, preserve failed
   tool status in ACP fallback notifications, and keep resource-identity race
   failures as one structured tool result instead of nesting their printed
   representation in model-visible output.
-- Show a live ~*Magent Doctor*~ progress buffer for
-  ~M-x magent-action-run-doctor~, retaining the terminal diagnosis or failure
-  instead of leaving interactive Doctor runs silent until completion.
 - Make ~/doctor~ analyze through the originating session's effective model
   route and the same streaming gptel path as ordinary Magent turns, avoiding
   empty diagnoses caused by an unrelated global route or non-stream response.
