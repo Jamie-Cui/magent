@@ -44,6 +44,7 @@ Manages conversation history, scoped definitions, and runtime state.
 - ~magent-ledger.el~ — Thread/turn/item ledger, status transitions, snapshot shape
 - ~magent-session.el~ — Conversation projections, JSON persistence, per-project sessions
 - ~magent-action-session.el~ — Isolated Action persistence, ledger, and cancellation
+- ~magent-action-mode-line.el~ — Optional active Action count and current-Step tooltip
 - ~magent-action-session-view.el~ — Isolated Action session listing and inspection
 - ~magent-action-builtin-doctor.el~ — Trusted read-only probes and one sanitized tool-free analysis request
 - ~magent-redaction.el~ — Fail-closed redaction for Magent-owned outbound values
@@ -307,6 +308,7 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 - *magent-action-skills.el* — Scope-aware ~/skills~ Action projection
 - *magent-action-builtins.el* — Prompt Action definitions and built-in registration
 - *magent-action-session.el* — Isolated Action persistence, ledger, and cancellation
+- *magent-action-mode-line.el* — Optional active Action count and current-Step tooltip
 - *magent-action-session-view.el* — Isolated Action session listing and inspection
 - *magent-action-builtin-doctor.el* — Trusted probes and one sanitized, tool-free analysis
 

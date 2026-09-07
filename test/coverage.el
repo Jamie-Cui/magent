@@ -30,7 +30,8 @@
   "Source files instrumented by the batch coverage run.")
 
 (defconst magent-coverage--test-files
-  '("test/magent-test.el")
+  '("test/magent-test.el"
+    "test/magent-action-mode-line-test.el")
   "ERT files loaded by the batch coverage run.")
 
 (defvar magent-coverage--instrumented nil

@@ -46,6 +46,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 - ~magent-ledger.el~ ：thread/turn/item ledger、状态转移和 snapshot shape。
 - ~magent-session.el~ ：conversation projections、JSON persistence、per-project sessions。
 - ~magent-action-session.el~ ：isolated Action 的持久化、ledger 与取消。
+- ~magent-action-mode-line.el~ ：可选的 active Action 计数和当前 Step tooltip。
 - ~magent-action-session-view.el~ ：isolated Action session 的列表与查看。
 - ~magent-action-builtin-doctor.el~ ：受信任只读 probes 和一次脱敏后的无工具分析请求。
 - ~magent-redaction.el~ ：Magent-owned outbound values 的 fail-closed 脱敏。
@@ -309,6 +310,7 @@ API。
 - *magent-action-skills.el* — scope-aware ~/skills~ Action projection
 - *magent-action-builtins.el* — prompt Action definitions 与 built-in registration
 - *magent-action-session.el* — isolated Action persistence、ledger 与 cancellation
+- *magent-action-mode-line.el* — 可选的 active Action 计数与当前 Step tooltip
 - *magent-action-session-view.el* — isolated Action session 列表与查看
 - *magent-action-builtin-doctor.el* — trusted probes 与一次脱敏、无工具分析
 

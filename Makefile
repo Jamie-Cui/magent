@@ -124,6 +124,7 @@ test-unit:
 		-l ert \
 		-l test/check-elpa-deps-test.el \
 		-l test/magent-test.el \
+		-l test/magent-action-mode-line-test.el \
 		-f ert-run-tests-batch-and-exit
 
 test-benchmark:
