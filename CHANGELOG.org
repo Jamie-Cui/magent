@@ -14,6 +14,8 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Added
 
+- An optional ~magent-action-mode-line-mode~ Customize setting that shows the
+  active Action count and exposes each current Step and origin as a tooltip.
 - Cross-provider model selection through agent-shell's native ACP model option.
   Magent catalogs every gptel-registered backend/model, keeps selections
   session-local, freezes routes per submission, and supports ~Auto~ fallback to

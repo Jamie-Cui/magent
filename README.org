@@ -123,6 +123,8 @@ specification:
   ;; Uncomment to bypass ordinary checks; eval tools still require approval.
   ;; (magent-bypass-permission t)
   (magent-default-effort 'xhigh)
+  ;; Optional: show the number of active Actions in the mode line.
+  (magent-action-mode-line-mode t)
   :config
   ;; Optional: append an additional personal skill directory.  Later entries
   ;; have higher precedence and become the skill manager's install target.
@@ -232,6 +234,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-default-effort~                        | ~nil~                                 | Default reasoning effort; nil/auto uses provider default                                       |
 | ~magent-agent-shell-session-strategy~          | ~prompt~                              | Prompt to start new or load a saved session; also supports ~new~ and ~latest~                     |
 | ~magent-action-enabled-builtins~               | ~(doctor)~                           | Optional isolated Action groups; changes refresh discovery for future invocations               |
+| ~magent-action-mode-line-mode~                 | ~nil~                                 | Show the active Action count and current-Step details in the global mode line                    |
 | ~magent-skill-directories~                     | ~user-emacs-directory/magent/skills/~ | Ordered user skill roots; later entries override earlier entries                               |
 | ~magent-load-custom-agents~                    | ~t~                                   | Load custom agents from ~.magent/agent/*.md~                                                     |
 | ~magent-audit~                                 | ~buffer~                              | Audit destination: live buffer, nil to disable, or a JSONL file path                            |
