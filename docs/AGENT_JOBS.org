@@ -68,7 +68,7 @@ Child jobs inherit the parent request context where practical:
 
 - project root and session scope
 - backend/model names
-- temperature, top-p, and reasoning effort
+- temperature, top-p, reasoning effort, and thinking mode
 - active skill names and capability context
 - effective permission profile bounded by the parent and child agent
 - request depth for recursive spawn guards

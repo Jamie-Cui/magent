@@ -123,6 +123,8 @@ specification:
   ;; Uncomment to bypass ordinary checks; eval tools still require approval.
   ;; (magent-bypass-permission t)
   (magent-default-effort 'xhigh)
+  ;; Optional provider thinking policy: nil, enabled, or disabled.
+  ;; (magent-default-thinking 'disabled)
   ;; Optional: show the number of active Actions in the mode line.
   (magent-action-mode-line-mode t)
   :config
@@ -232,6 +234,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-max-sampling-requests~                 | ~0~                                   | Continuation budget; reaching it fails the turn directly, and 0 disables the guard             |
 | ~magent-default-agent~                         | ~"build"~                           | Default agent for new sessions                                                                 |
 | ~magent-default-effort~                        | ~nil~                                 | Default reasoning effort; nil/auto uses provider default                                       |
+| ~magent-default-thinking~                      | ~nil~                                 | Default thinking mode; nil/auto uses provider default, or explicitly enable/disable it          |
 | ~magent-agent-shell-session-strategy~          | ~prompt~                              | Prompt to start new or load a saved session; also supports ~new~ and ~latest~                     |
 | ~magent-action-enabled-builtins~               | ~(doctor)~                           | Optional isolated Action groups; changes refresh discovery for future invocations               |
 | ~magent-action-mode-line-mode~                 | ~nil~                                 | Show the active Action count and current-Step details in the global mode line                    |
@@ -288,7 +291,11 @@ back through agent-shell.
 Use agent-shell session options for per-session request settings.  Reasoning
 effort is exposed as agent-shell's thought level session option; use
 ~agent-shell-set-session-thought-level~ to choose ~auto~, ~minimal~, ~low~,
-~medium~, ~high~, or ~xhigh~ for future turns in the current session. The
+~medium~, ~high~, or ~xhigh~ for future turns in the current session. Use
+~agent-shell-set-session-config-option~ to select the independent ~Thinking
+mode~ option (~auto~, ~enabled~, or ~disabled~). Explicit ~disabled~ suppresses
+any configured effort and is sent only when the selected provider adapter has
+a guaranteed mapping. The
 ~Automatic capabilities~ session option enables or disables contextual skill
 activation without affecting explicitly selected instruction skills.
 
@@ -453,6 +460,7 @@ mode: primary
 hidden: false
 temperature: 0.3
 effort: high
+thinking: enabled
 permissions:
   read: allow
   write: deny
@@ -477,6 +485,8 @@ The YAML frontmatter supports:
 - ~hidden~: Hide from agent selection UI
 - ~temperature~: Override default temperature
 - ~effort~: Override reasoning effort: ~auto~, ~minimal~, ~low~, ~medium~, ~high~, or ~xhigh~
+- ~thinking~: Override thinking mode: ~auto~, ~enabled~, or ~disabled~. Explicit
+  ~disabled~ suppresses reasoning effort for the request.
 - ~model~: Override the default model for this agent.  Child agents prefer this
   explicit route over the frozen route inherited from their parent.
 - ~permissions~: Mapping of permission groups to ~allow~, ~deny~, ~ask~, or nested file-pattern rules

@@ -149,7 +149,8 @@ is a bounded recovery tail. The two are not interchangeable.
 1. UI submission enters ~magent-runtime-api.el~.
 2. ~magent-runtime-api.el~ creates a queued ledger turn, records the completed
    user message item, and freezes prompt, agent, tools, skills, route, effort,
-   observer, approval, and turn identity in one ~magent-request-context~.
+   thinking mode, observer, approval, and turn identity in one
+   ~magent-request-context~.
 3. When the submission actually starts, ~magent-runtime-api.el~ transitions the
    turn to ~in-progress~.
 4. ~magent-agent-run-turn~ reuses that turn/user item idempotently instead

@@ -38,6 +38,7 @@
   magent-session
   model-route
   effort
+  thinking
   pending-skills
   metadata)
 
@@ -183,6 +184,8 @@ submission so the source frontend stays current."
                   (magent-runtime-api--wrap-session fork-session scope))
             (setf (magent-runtime-session-effort runtime-session)
                   (magent-runtime-session-effort source-runtime-session)
+                  (magent-runtime-session-thinking runtime-session)
+                  (magent-runtime-session-thinking source-runtime-session)
                   (magent-runtime-session-model-route runtime-session)
                   (magent-runtime-session-model-route source-runtime-session)
                   (magent-runtime-session-pending-skills runtime-session) nil
@@ -349,6 +352,19 @@ current selection.  This is a read-only public preflight API for extensions."
   (magent-runtime-api--assert-session-available runtime-session)
   (let ((option (magent-effort-option-or-auto effort)))
     (setf (magent-runtime-session-effort runtime-session) option)
+    option))
+
+(defun magent-runtime-session-thinking-option (runtime-session)
+  "Return RUNTIME-SESSION's current thinking mode option."
+  (magent-thinking-option-or-auto
+   (or (magent-runtime-session-thinking runtime-session)
+       magent-default-thinking)))
+
+(defun magent-runtime-session-set-thinking (runtime-session thinking)
+  "Set RUNTIME-SESSION thinking mode option to THINKING and return it."
+  (magent-runtime-api--assert-session-available runtime-session)
+  (let ((option (magent-thinking-option-or-auto thinking)))
+    (setf (magent-runtime-session-thinking runtime-session) option)
     option))
 
 (defun magent-runtime-session-capabilities-enabled-p (runtime-session)
@@ -652,10 +668,11 @@ turn is created when any name is unknown or unavailable."
 
 (cl-defun magent-runtime-submit
     (runtime-session prompt &key context (tools :all) skills agent observer
-                     approval-provider effort turn-metadata on-complete)
+                     approval-provider effort thinking turn-metadata on-complete)
   "Submit PROMPT to RUNTIME-SESSION.
 TOOLS is `:all' or an exact list of tool names.  OBSERVER receives
-request-local Magent-native events."
+request-local Magent-native events.  EFFORT and THINKING are request-local
+sampling overrides; `auto' selects the provider or model default."
   (unless (magent-runtime-session-p runtime-session)
     (error "Expected runtime session, got: %S" runtime-session))
   (magent-runtime-api--assert-session-available runtime-session)
@@ -698,6 +715,9 @@ request-local Magent-native events."
              :effort (or (magent-effort-normalize-option effort)
                          (magent-effort-normalize-option
                           (magent-runtime-session-effort runtime-session)))
+             :thinking (or (magent-thinking-normalize-option thinking)
+                           (magent-thinking-normalize-option
+                            (magent-runtime-session-thinking runtime-session)))
              :skill-names effective-skills
              :approval-provider approval-provider
              :observer observer

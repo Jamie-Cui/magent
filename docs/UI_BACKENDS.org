@@ -83,8 +83,8 @@ history.  The source and fork retain separate ids and diverge after creation.
 
 Forking is exact-scope and fail-closed: the requested cwd must resolve to the
 source session's scope, and the source must have no active or queued work.
-Stable frontend options such as the selected agent, model route, effort, and
-automatic capability setting are inherited.  Session approval overrides,
+Stable frontend options such as the selected agent, model route, effort,
+thinking mode, and automatic capability setting are inherited.  Session approval overrides,
 child-agent jobs, and one-shot skills are deliberately reset.  Referenced
 spilled tool outputs are copied into the fork's private session storage.
 

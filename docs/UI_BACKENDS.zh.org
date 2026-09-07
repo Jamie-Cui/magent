@@ -72,8 +72,8 @@ Magent 实现 ACP ~session/new~、~session/list~、~session/load~、~session/res
 独立演进。
 
 Fork 按精确 scope fail closed：请求 cwd 必须解析到 source session 的 scope，source
-也不能拥有 active 或 queued work。selected agent、model route、effort 和 automatic
-capability 设置等稳定 frontend option 会被继承；session approval override、
+也不能拥有 active 或 queued work。selected agent、model route、effort、thinking
+mode 和 automatic capability 设置等稳定 frontend option 会被继承；session approval override、
 child-agent job 和 one-shot skill 会被显式重置。历史中引用的 spilled tool output
 会复制到 fork 自己的私有 session storage。
 
