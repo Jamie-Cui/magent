@@ -213,6 +213,60 @@ wire-protocol configuration."
   "Return EFFORT option as an ACP/frontmatter string."
   (symbol-name (magent-effort-option-or-auto effort)))
 
+(defconst magent-thinking-values '(enabled disabled)
+  "Canonical explicit Magent thinking modes sent to providers.")
+
+(defconst magent-thinking-option-values
+  (cons 'auto magent-thinking-values)
+  "Thinking modes exposed to user-facing selectors.
+`auto' means provider or model default and is not sent as a request
+parameter.")
+
+(defcustom magent-default-thinking nil
+  "Default thinking mode for Magent requests.
+Nil means provider or model default.  Per-session settings, request context,
+Action Steps, and agent definitions can override this value.  Explicit
+`disabled' suppresses any configured reasoning effort for that request."
+  :type '(choice (const :tag "Provider default" nil)
+                 (const :tag "Enabled" enabled)
+                 (const :tag "Disabled" disabled))
+  :group 'magent)
+
+(defun magent-thinking-normalize-option (thinking)
+  "Return THINKING as a canonical option symbol, or nil when absent.
+Recognized option symbols are `auto', `enabled', and `disabled'.  String
+values are accepted for file-backed and wire-protocol configuration."
+  (let* ((raw (cond
+               ((null thinking) nil)
+               ((symbolp thinking) (symbol-name thinking))
+               ((stringp thinking) thinking)
+               (t (format "%s" thinking))))
+         (key (and raw
+                   (downcase
+                    (replace-regexp-in-string
+                     "[_[:space:]]+" "-"
+                     (string-trim raw))))))
+    (pcase key
+      ((or 'nil "") nil)
+      ((or "auto" "default" "provider-default") 'auto)
+      ((or "enabled" "enable" "on") 'enabled)
+      ((or "disabled" "disable" "off") 'disabled)
+      (_ (error "Invalid Magent thinking mode: %S" thinking)))))
+
+(defun magent-thinking-option-or-auto (thinking)
+  "Return normalized THINKING option, defaulting nil to `auto'."
+  (or (magent-thinking-normalize-option thinking) 'auto))
+
+(defun magent-thinking-effective (thinking)
+  "Return provider-facing THINKING symbol, or nil for `auto'/absent."
+  (let ((option (magent-thinking-normalize-option thinking)))
+    (unless (eq option 'auto)
+      option)))
+
+(defun magent-thinking-option-string (thinking)
+  "Return THINKING option as an ACP/frontmatter string."
+  (symbol-name (magent-thinking-option-or-auto thinking)))
+
 (defcustom magent-bypass-permission nil
   "DANGEROUS: Bypass ordinary Magent tool permission checks.
 When non-nil, exposed tools ignore agent permission rules and user-defined

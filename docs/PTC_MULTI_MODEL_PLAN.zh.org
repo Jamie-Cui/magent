@@ -20,7 +20,7 @@ Magent 将把一次用户 turn 拆成一个或多个显式的 *sampling epoch*�
 
 - 当前 phase；
 - 本 epoch 使用的 agent profile；
-- backend、model、temperature、top-p 和 reasoning effort；
+- backend、model、temperature、top-p、reasoning effort 和 thinking mode；
 - 有效能力集；
 - 工具 presentation（~native~、~code~ 或 ~both~）；
 - 完整 system prompt 和 provider wire tools。
@@ -285,7 +285,8 @@ Runtime ~magent-model-route~：
  :model <symbol>
  :temperature <number-or-nil>
  :top-p <number-or-nil>
- :effort <normalized effort-or-nil>)
+ :effort <normalized effort-or-nil>
+ :thinking <auto-or-explicit-mode>)
 #+end_src
 
 Durable route 不序列化 backend object，只记录：
@@ -295,7 +296,8 @@ Durable route 不序列化 backend object，只记录：
  :model "..."
  :temperature ...
  :top-p ...
- :effort "...")
+ :effort "..."
+ :thinking "...")
 #+end_src
 
 Route 解析优先级：
@@ -305,8 +307,8 @@ Route 解析优先级：
 3. root agent 的 model/sampling fields；
 4. gptel default values。
 
-Session effort option 是用户对整个 turn 的显式 override，应用到所有 phase；它不
-改变各 phase 的 backend/model。
+Session effort 和 thinking option 是用户对整个 turn 的显式 override，应用到所有
+phase；它们不改变各 phase 的 backend/model。显式 disabled thinking 抑制 effort。
 
 ** Sampling context 与 request header
 
@@ -457,7 +459,7 @@ turn start
 - phase；
 - rendered system prompt；
 - ordered canonical wire schemas；
-- temperature、top-p、effort 及影响 provider request 的 metadata。
+- temperature、top-p、effort、thinking mode 及影响 provider request 的 metadata。
 
 Phase 变化一律视为不兼容，即使两个 phase 恰好配置成同一 model。这样不会让旧
 provider FSM 忽略新的 phase prompt 或 approved-plan context。
@@ -606,7 +608,7 @@ Observer 新增：
 直接停止加载并报告 session id/field，不迁移、不猜测，也不双写 shadow state。
 
 Request context 是 runtime object，不需要落盘。其 frozen scalar
-backend/model/temperature/top-p 将替换为 per-phase route override 和当前 epoch
+backend/model/temperature/top-p/effort/thinking 将替换为 per-phase route override 和当前 epoch
 reference；audit snapshot 仍冻结 root agent/session attribution，并额外记录 phase
 profile，避免 UI 中途切 agent 后重标历史。
 

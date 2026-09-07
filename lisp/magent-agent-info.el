@@ -32,6 +32,7 @@ Fields:
 - TEMPERATURE: Optional temperature override for this agent
 - TOP-P: Optional top-p override for this agent
 - EFFORT: Optional reasoning effort override for this agent
+- THINKING: Optional thinking mode override for this agent
 - COLOR: Optional display color for UI
 - MODEL: Optional model specification (providerID . modelID)
 - PROMPT: Optional custom system prompt
@@ -47,6 +48,7 @@ Fields:
   temperature
   top-p
   effort
+  thinking
   color
   model
   prompt

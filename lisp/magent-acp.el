@@ -192,6 +192,22 @@ all protocol traffic.  Keep that implementation detail off the TRAMP host."
                           "Use the provider or model default reasoning effort."
                         (format "Use %s reasoning effort." name))))))
 
+(defun magent-acp--thinking-option-entry (thinking)
+  "Return ACP config option value entry for THINKING."
+  (let* ((option (magent-thinking-option-or-auto thinking))
+         (value (symbol-name option))
+         (name (pcase option
+                 ('auto "Auto")
+                 ('enabled "Enabled")
+                 ('disabled "Disabled"))))
+    `((value . ,value)
+      (name . ,name)
+      (description
+       . ,(pcase option
+            ('auto "Use the provider or model default thinking mode.")
+            ('enabled "Require provider thinking when supported.")
+            ('disabled "Disable provider thinking when supported."))))))
+
 (defun magent-acp--config-options (runtime-session)
   "Return ACP config options for RUNTIME-SESSION."
   (vector
@@ -205,6 +221,16 @@ all protocol traffic.  Keep that implementation detail off the TRAMP host."
           (magent-runtime-session-effort-option runtime-session)))
      (options . ,(vconcat (mapcar #'magent-acp--effort-option-entry
                                   magent-effort-option-values))))
+   `((id . "thinking")
+     (name . "Thinking mode")
+     (description . "Thinking mode for future Magent turns in this session.")
+     (category . "thought_level")
+     (type . "select")
+     (currentValue
+      . ,(magent-thinking-option-string
+          (magent-runtime-session-thinking-option runtime-session)))
+     (options . ,(vconcat (mapcar #'magent-acp--thinking-option-entry
+                                  magent-thinking-option-values))))
    `((id . "capabilities")
      (name . "Automatic capabilities")
      (description . "Resolve contextual instruction skills for future turns in this session.")
@@ -1090,6 +1116,8 @@ does not prepare definitions or install a session into the runtime registry."
     (pcase config-id
       ("effort"
        (magent-runtime-session-set-effort runtime-session value))
+      ("thinking"
+       (magent-runtime-session-set-thinking runtime-session value))
       ("capabilities"
        (unless (member value '("enabled" "disabled"))
          (error "Invalid capabilities option: %s" value))

@@ -58,6 +58,11 @@ Emacs 不只是宿主进程。Magent 依赖活的编辑器状态：buffer、majo
 
 ~magent-sampling.el~ 定义 provider-neutral request/event。 ~magent-sampling-gptel.el~ 负责一次 sampling request：调用 ~gptel-request~ ，再把 gptel callback 转成 Magent normalized events。这个 adapter 可以隐藏 gptel callback/FSM 细节，但主 loop 只消费 normalized events。Reasoning event 与 assistant text 分开保存；reasoning-only completion 可以产生空 assistant content，不会把 chain text 泄漏成最终回答。
 
+Thinking policy 在 adapter boundary 之前保持 provider-neutral。Core runtime 只使用
+~auto~、~enabled~ 和 ~disabled~；只有存在可靠 wire mapping 的 backend 才翻译显式
+mode。DeepSeek 使用原生 ~thinking.type~ request object。显式 disable 会抑制 reasoning
+effort；未知映射会在 provider dispatch 前失败，而不是静默采用 provider default。
+
 每次 provider continuation 都会开始一个新的 sample 边界。公开的 terminal result
 只包含最后一个 sample 的 assistant text，ledger 则保留完整 turn transcript 和 tool
 history。这个分离是确定性的，不会触发隐藏的 finalization 或 recovery request。
@@ -200,7 +205,8 @@ lifecycle。Action 声明 slash/interactive exposure、current/isolated session 
 由 Magent 管理的 agent、terminal Answer、argv process 和 callback Step 提供异步
 等待与 activity 记录。Agent Step 分离 prompt 文本、模型可见的 popwin 风格 buffer
 快照、精确 tool requirements 和 request-local agent/skill 选择，并从 Invocation
-继承 frontend request context。Content blocks 和 canonical Action metadata 由内部
+继承 frontend request context；它也可以冻结 request-local reasoning effort 和 thinking
+mode。Content blocks 和 canonical Action metadata 由内部
 持久化。高级受信任 package 可以拥有更长的异步 Invocation，但不会接触 ACP 或 queue
 internals。内置 ~/explain~、~/fix~、~/init~、~/review~ 和 ~/test~
 prompt Actions 是 ~magent-action-builtins.el~ 中的数据项；系统从对应 Org prompt

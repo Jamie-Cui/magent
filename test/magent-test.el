@@ -268,6 +268,17 @@
                (length (delete-dups (copy-sequence manifest)))))
     (should (equal sorted-manifest (sort actual #'string<)))))
 
+(ert-deftest magent-test-thinking-options-normalize-user-facing-values ()
+  "Thinking options normalize aliases and reject ambiguous values."
+  (require 'magent-config)
+  (should-not (magent-thinking-normalize-option nil))
+  (should (eq (magent-thinking-normalize-option 'auto) 'auto))
+  (should (eq (magent-thinking-normalize-option "provider_default") 'auto))
+  (should (eq (magent-thinking-normalize-option "on") 'enabled))
+  (should (eq (magent-thinking-normalize-option 'disable) 'disabled))
+  (should (equal (magent-thinking-option-string nil) "auto"))
+  (should-error (magent-thinking-normalize-option 'maybe) :type 'error))
+
 (ert-deftest magent-test-production-source-manifest-is-documented ()
   "Test architecture maps cover exactly the production source manifest."
   (let ((expected
@@ -2061,6 +2072,7 @@
                  :mode 'primary
                  :top-p 0.88
                  :effort 'xhigh
+                 :thinking 'disabled
                  :permission (magent-permission-from-config
                               '((agent . ask)
                                 (bash . deny)
@@ -2117,13 +2129,15 @@
       (should (= (magent-request-context-temperature request-state) 0.42))
       (should (= (magent-request-context-top-p request-state) 0.88))
       (should (eq (magent-request-context-effort request-state) 'xhigh))
+      (should (eq (magent-request-context-thinking request-state) 'disabled))
       (should (equal (magent-request-context-project-root request-state)
                      "/tmp/project"))
       (should (equal (magent-request-context-skill-names request-state)
                      '("cap-skill")))
       (should (equal (plist-get metadata :temperature) 0.42))
       (should (equal (plist-get metadata :top-p) 0.88))
-      (should (equal (plist-get metadata :effort) 'xhigh))
+      (should-not (plist-member metadata :effort))
+      (should (eq (plist-get metadata :thinking) 'disabled))
       (should (equal (magent-permission-resolve
                       (magent-request-context-permission-profile request-state)
                       'agent)
@@ -3079,6 +3093,106 @@
         :callback #'ignore)))
     (should (equal captured-params '(:reasoning (:effort "xhigh"))))))
 
+(ert-deftest magent-test-llm-gptel-disables-deepseek-thinking ()
+  "DeepSeek thinking disable maps exactly and suppresses reasoning effort."
+  (require 'magent-sampling-gptel)
+  (require 'gptel-openai-extras)
+  (let ((backend (gptel-make-deepseek "deepseek-test" :key "key"))
+        (gptel--request-params '(:seed 7))
+        captured-params)
+    (cl-letf (((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (setq captured-params gptel--request-params)
+                 (funcall (plist-get kwargs :callback)
+                          t
+                          (list :content "ok")))))
+      (magent-sampling-gptel-sample
+       (magent-sampling-request-create
+        :prompt '("hello")
+        :system "sys"
+        :backend backend
+        :model 'deepseek-v4-flash
+        :stream t
+        :metadata '(:thinking disabled :effort xhigh)
+        :callback #'ignore)))
+    (should (equal (plist-get captured-params :thinking)
+                   '(:type "disabled")))
+    (should (= (plist-get captured-params :seed) 7))
+    (should-not (plist-member captured-params :reasoning_effort))))
+
+(ert-deftest magent-test-llm-gptel-enables-deepseek-thinking-with-effort ()
+  "DeepSeek thinking enable composes with its chat reasoning effort."
+  (require 'magent-sampling-gptel)
+  (require 'gptel-openai-extras)
+  (let ((backend (gptel-make-deepseek "deepseek-effort-test" :key "key"))
+        captured-params)
+    (cl-letf (((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (setq captured-params gptel--request-params)
+                 (funcall (plist-get kwargs :callback)
+                          t
+                          (list :content "ok")))))
+      (magent-sampling-gptel-sample
+       (magent-sampling-request-create
+        :prompt '("hello")
+        :system "sys"
+        :backend backend
+        :model 'deepseek-v4-flash
+        :stream t
+        :metadata '(:thinking enabled :effort low)
+        :callback #'ignore)))
+    (should (equal (plist-get captured-params :thinking)
+                   '(:type "enabled")))
+    (should (equal (plist-get captured-params :reasoning_effort) "low"))))
+
+(ert-deftest magent-test-llm-gptel-thinking-mode-fails-on-unknown-mapping ()
+  "Explicit thinking fails before dispatch when no mapping is guaranteed."
+  (require 'magent-sampling-gptel)
+  (let* ((backend
+          (gptel-make-openai
+           "thinking-unsupported" :key "key"
+           :models '((magent-thinking-model :capabilities (reasoning)))))
+         dispatched)
+    (cl-letf (((symbol-function 'gptel-request)
+               (lambda (&rest _args) (setq dispatched t))))
+      (should-error
+       (magent-sampling-gptel-sample
+        (magent-sampling-request-create
+         :prompt '("hello")
+         :system "sys"
+         :backend backend
+         :model 'magent-thinking-model
+         :stream t
+         :metadata '(:thinking disabled)
+         :callback #'ignore))
+       :type 'error))
+    (should-not dispatched)))
+
+(ert-deftest magent-test-llm-gptel-disabling-nonreasoning-model-is-noop ()
+  "Disabling thinking on an explicitly nonreasoning model needs no mapping."
+  (require 'magent-sampling-gptel)
+  (let* ((backend
+          (gptel-make-openai
+           "thinking-noop" :key "key"
+           :models '((magent-text-model :capabilities (tool)))))
+         captured-params)
+    (cl-letf (((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (setq captured-params gptel--request-params)
+                 (funcall (plist-get kwargs :callback)
+                          t
+                          (list :content "ok")))))
+      (magent-sampling-gptel-sample
+       (magent-sampling-request-create
+        :prompt '("hello")
+        :system "sys"
+        :backend backend
+        :model 'magent-text-model
+        :stream t
+        :metadata '(:thinking disabled)
+        :callback #'ignore)))
+    (should-not captured-params)))
+
 (ert-deftest magent-test-llm-gptel-downgrades-xhigh-for-openai-chat ()
   "Test OpenAI-compatible chat effort maps xhigh according to policy."
   (require 'magent-sampling-gptel)
@@ -3406,6 +3520,7 @@
                        :mode 'subagent
                        :temperature 0.5
                        :effort 'xhigh
+                       :thinking 'disabled
                        :prompt "System prompt here."))
                (filepath (magent-agent-file-save agent tmpdir)))
           (should (file-exists-p filepath))
@@ -3416,6 +3531,7 @@
             (should (eq (magent-agent-info-mode loaded) 'subagent))
             (should (= (magent-agent-info-temperature loaded) 0.5))
             (should (eq (magent-agent-info-effort loaded) 'xhigh))
+            (should (eq (magent-agent-info-thinking loaded) 'disabled))
             (should (string-match-p "System prompt here"
                                     (magent-agent-info-prompt loaded)))))
       (delete-directory tmpdir t))))
@@ -4623,7 +4739,7 @@
     (should (gethash runtime-session magent-action--active-invocations))))
 
 (ert-deftest magent-test-action-agent-step-merges-explicit-request-context ()
-  "Test agent Steps merge request-only runtime hints."
+  "Agent Steps merge context and forward request-local sampling controls."
   (require 'magent-action)
   (let* ((runtime-session (magent-runtime-session-create :id "session-1"))
          (invocation
@@ -4633,24 +4749,36 @@
            :runtime-session runtime-session
            :request-context '(:file-path "/tmp/frontend.el"
                               :features (frontend))))
-         submitted-context)
+         submitted-args)
     (cl-letf (((symbol-function 'magent-runtime-submit)
                (lambda (_session _prompt &rest args)
-                 (setq submitted-context (plist-get args :context))
+                 (setq submitted-args args)
                  "submission-1")))
       (magent-action--start-agent-step
        invocation
        (magent-action--make-agent-step
         "Step" "step"
+        :effort 'low
+        :thinking 'disabled
         :request-context '(:features (workflow) :workflow-step review))
        #'ignore))
-    (should (equal (plist-get submitted-context :features) '(workflow)))
-    (should (eq (plist-get submitted-context :workflow-step) 'review))
-    (should (equal (plist-get submitted-context :file-path)
+    (let ((submitted-context (plist-get submitted-args :context))
+          (metadata (plist-get submitted-args :turn-metadata)))
+      (should (equal (plist-get submitted-context :features) '(workflow)))
+      (should (eq (plist-get submitted-context :workflow-step) 'review))
+      (should (equal (plist-get submitted-context :file-path)
                    "/tmp/frontend.el"))
+      (should (eq (plist-get submitted-args :effort) 'low))
+      (should (eq (plist-get submitted-args :thinking) 'disabled))
+      (should (eq (plist-get metadata :effort) 'low))
+      (should (eq (plist-get metadata :thinking) 'disabled)))
     (should-error
      (magent-action--make-agent-step
-      "Step" "step" :context '(:features (ambiguous))))))
+      "Step" "step" :context '(:features (ambiguous))))
+    (should-error
+     (magent-action--make-agent-step "Step" "step" :thinking 'maybe))
+    (should-error
+     (magent-action--make-agent-step "Step" "step" :effort 'impossible))))
 
 (ert-deftest magent-test-action-workflow-fails-closed-after-callback-error ()
   "Test Workflow code that fails after a callback cannot strand invocation."
@@ -6352,6 +6480,7 @@
                           :temperature 0.2
                           :top-p 0.9
                           :effort 'xhigh
+                          :thinking 'disabled
                           :skill-names '("parent-skill")
                           :capability-context
                           '(:skill-names ("parent-skill")
@@ -6472,6 +6601,7 @@
       (should (= (magent-request-context-temperature child-state) 0.2))
       (should (= (magent-request-context-top-p child-state) 0.9))
       (should (eq (magent-request-context-effort child-state) 'xhigh))
+      (should (eq (magent-request-context-thinking child-state) 'disabled))
       (should (equal (magent-request-context-skill-names child-state)
                      '("parent-skill")))
       (should (equal (magent-request-context-capability-context child-state)
@@ -6500,6 +6630,7 @@
       (should (= (cdr (assq 'temperature metadata)) 0.2))
       (should (= (cdr (assq 'top-p metadata)) 0.9))
       (should (equal (cdr (assq 'effort metadata)) "xhigh"))
+      (should (equal (cdr (assq 'thinking metadata)) "disabled"))
       (should (equal (append (cdr (assq 'skill-names metadata)) nil)
                      '("parent-skill")))
       (should (equal (cdr (assq 'agent permission-profile)) "deny"))
@@ -12423,13 +12554,14 @@
     (should-error (magent-sampling-gptel-validate-route tool-use-supported)
                   :type 'error)))
 
-(ert-deftest magent-test-acp-session-response-advertises-effort-config ()
-  "Test ACP session responses advertise thought level options."
+(ert-deftest magent-test-acp-session-response-advertises-sampling-config ()
+  "ACP session responses advertise effort and thinking options."
   (require 'magent-acp)
   (let* ((runtime-session (magent-runtime-session-create
                            :id "session-1"
                            :magent-session (magent-session-create)
-                           :effort 'xhigh))
+                           :effort 'xhigh
+                           :thinking 'disabled))
          response option values)
     (cl-letf (((symbol-function 'magent-runtime-session-agent-name)
                (lambda (_session) "build"))
@@ -12447,7 +12579,11 @@
     (should (member "xhigh"
                     (mapcar (lambda (entry) (map-elt entry 'value))
                             values)))
-    (let ((capabilities (aref (map-elt response 'configOptions) 1)))
+    (let ((thinking (aref (map-elt response 'configOptions) 1)))
+      (should (equal (map-elt thinking 'id) "thinking"))
+      (should (equal (map-elt thinking 'category) "thought_level"))
+      (should (equal (map-elt thinking 'currentValue) "disabled")))
+    (let ((capabilities (aref (map-elt response 'configOptions) 2)))
       (should (equal (map-elt capabilities 'id) "capabilities"))
       (should (equal (map-elt capabilities 'currentValue) "enabled")))))
 
@@ -13515,6 +13651,27 @@
                               'currentValue)
                      "xhigh")))))
 
+(ert-deftest magent-test-acp-set-config-option-updates-thinking ()
+  "Test ACP session/set_config_option updates Magent thinking mode."
+  (require 'magent-acp)
+  (let ((runtime-session (magent-runtime-session-create :id "session-1")))
+    (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
+               (lambda (_session-id _scope) runtime-session))
+              ((symbol-function 'magent-runtime-session-agent-name)
+               (lambda (_session) "build"))
+              ((symbol-function 'magent-agent-registry-primary-agents)
+               (lambda (&optional _scope) nil)))
+      (let ((response
+             (magent-acp--handle-set-config-option
+              '((sessionId . "session-1")
+                (configId . "thinking")
+                (value . "disabled")))))
+        (should (eq (magent-runtime-session-thinking runtime-session)
+                    'disabled))
+        (should (equal (map-elt (aref (map-elt response 'configOptions) 1)
+                                'currentValue)
+                       "disabled"))))))
+
 (ert-deftest magent-test-acp-set-config-option-updates-capabilities ()
   "Test ACP exposes a per-session automatic capability switch."
   (require 'magent-acp)
@@ -13532,7 +13689,7 @@
                 (value . "disabled")))))
         (should-not
          (magent-runtime-session-capabilities-enabled-p runtime-session))
-        (should (equal (map-elt (aref (map-elt response 'configOptions) 1)
+        (should (equal (map-elt (aref (map-elt response 'configOptions) 2)
                                 'currentValue)
                        "disabled"))))))
 
@@ -14079,8 +14236,8 @@
     (should-not
      (magent-runtime-cancel-submission runtime-session "missing"))))
 
-(ert-deftest magent-test-runtime-submit-carries-session-effort ()
-  "Test runtime submissions copy session effort into request context."
+(ert-deftest magent-test-runtime-submit-carries-session-sampling-options ()
+  "Runtime submissions copy session sampling options into request context."
   (require 'magent-runtime-api)
   (let* ((magent-runtime-queue--active nil)
          (magent-runtime-queue--pending nil)
@@ -14091,7 +14248,8 @@
            :id "session-1"
            :scope "/tmp/project"
            :magent-session session
-           :effort 'xhigh))
+           :effort 'xhigh
+           :thinking 'disabled))
          captured-context)
     (cl-letf (((symbol-function 'magent-agent-run-turn)
                (lambda (&rest args)
@@ -14104,6 +14262,7 @@
       (magent-runtime-submit runtime-session "hello"))
     (should (magent-request-context-p captured-context))
     (should (eq (magent-request-context-effort captured-context) 'xhigh))
+    (should (eq (magent-request-context-thinking captured-context) 'disabled))
     (should (eq (magent-request-context-tool-names captured-context) :all))
     (should (eq (magent-thread-turn-status
                  (car (magent-thread-turns
@@ -14141,10 +14300,12 @@
       (magent-runtime-session-set-model-route
        runtime-session
        (magent-model-route-create :backend backend-a :model 'model-a))
+      (magent-runtime-session-set-thinking runtime-session 'disabled)
       (magent-runtime-submit runtime-session "first")
       (magent-runtime-session-set-model-route
        runtime-session
        (magent-model-route-create :backend backend-b :model 'model-b))
+      (magent-runtime-session-set-thinking runtime-session 'enabled)
       (magent-runtime-submit runtime-session "second"))
     (let* ((queued magent-runtime-queue--pending)
            (first-route
@@ -14152,12 +14313,20 @@
              (magent-runtime-submission-request-context (nth 0 queued))))
            (second-route
             (magent-request-context-model-route
+             (magent-runtime-submission-request-context (nth 1 queued))))
+           (first-thinking
+            (magent-request-context-thinking
+             (magent-runtime-submission-request-context (nth 0 queued))))
+           (second-thinking
+            (magent-request-context-thinking
              (magent-runtime-submission-request-context (nth 1 queued)))))
       (should (= (length queued) 2))
       (should (eq (magent-model-route-backend first-route) backend-a))
       (should (eq (magent-model-route-model first-route) 'model-a))
+      (should (eq first-thinking 'disabled))
       (should (eq (magent-model-route-backend second-route) backend-b))
-      (should (eq (magent-model-route-model second-route) 'model-b)))))
+      (should (eq (magent-model-route-model second-route) 'model-b))
+      (should (eq second-thinking 'enabled)))))
 
 (ert-deftest magent-test-runtime-submit-carries-exact-tool-names ()
   "Explicit runtime tool names reach the request context unchanged."
@@ -16984,7 +17153,7 @@
           (magent-runtime-session-create
            :id "fork-source" :scope 'global :magent-session source
            :model-route model-route
-           :effort 'xhigh :pending-skills '(one-shot)
+           :effort 'xhigh :thinking 'disabled :pending-skills '(one-shot)
            :metadata '(:capabilities-enabled nil))))
     (unwind-protect
         (progn
@@ -17009,6 +17178,8 @@
                    (magent-session--scope-storage-directory 'global))))
             (should (eq (magent-session-get-if-present 'global) source))
             (should (eq (magent-runtime-session-effort fork-runtime) 'xhigh))
+            (should (eq (magent-runtime-session-thinking fork-runtime)
+                        'disabled))
             (should (eq (magent-runtime-session-model-route fork-runtime)
                         model-route))
             (should-not
@@ -17164,7 +17335,7 @@
   "Runtime structs expose the current request and submission contract."
   (require 'magent-agent-loop)
   (should (= (length (magent-lifecycle-events-context-create)) 6))
-  (should (= (length (magent-request-context-create)) 33))
+  (should (= (length (magent-request-context-create)) 34))
   (should (= (length (magent-agent-loop-create)) 23))
   (should (= (length (magent-runtime-submission-create)) 13)))
 

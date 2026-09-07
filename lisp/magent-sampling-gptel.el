@@ -1070,6 +1070,35 @@ tool calls, executes them itself, and explicitly resumes the same context."
        (fboundp 'gptel-openai-p)
        (gptel-openai-p backend)))
 
+(defun magent-sampling-gptel--model-reasoning-capability (model)
+  "Return `supported', `unsupported', or `unknown' for MODEL reasoning."
+  (if (and (symbolp model)
+           (plist-member (symbol-plist model) :capabilities))
+      (if (cl-some (lambda (capability)
+                     (member (format "%s" capability)
+                             '("reasoning" "thinking")))
+                   (get model :capabilities))
+          'supported
+        'unsupported)
+    'unknown))
+
+(defun magent-sampling-gptel--thinking-request-params
+    (backend model thinking)
+  "Return provider request params for BACKEND MODEL and THINKING.
+An explicit mode is a behavioral guarantee.  Unsupported mappings fail
+instead of silently falling back to provider defaults."
+  (when-let* ((mode (magent-thinking-effective thinking)))
+    (cond
+     ((eq (type-of backend) 'gptel-deepseek)
+      `(:thinking (:type ,(symbol-name mode))))
+     ((and (eq mode 'disabled)
+           (eq (magent-sampling-gptel--model-reasoning-capability model)
+               'unsupported))
+      nil)
+     (t
+      (error "Magent thinking mode %s is unsupported by gptel backend %s"
+             mode (gptel-backend-name backend))))))
+
 (defun magent-sampling-gptel--unsupported-effort
     (effort reason &optional fallback)
   "Handle unsupported EFFORT for REASON, optionally returning FALLBACK."
@@ -1172,16 +1201,25 @@ Return the request buffer as the abort handle.  REQUEST must be a
       (when (and (plist-member metadata :temperature)
                  (boundp 'gptel-temperature))
         (setq-local gptel-temperature (plist-get metadata :temperature)))
-      (let ((sampling-params
-             (magent-sampling-gptel--top-p-request-params
-              gptel-backend (plist-get metadata :top-p))))
-        (when-let* ((effort-params
-                    (magent-sampling-gptel--effort-request-params
-                     gptel-backend
-                     (plist-get metadata :effort))))
+      (let* ((thinking
+              (magent-thinking-effective (plist-get metadata :thinking)))
+             (sampling-params
+              (magent-sampling-gptel--top-p-request-params
+               gptel-backend (plist-get metadata :top-p))))
+        (when-let* ((thinking-params
+                    (magent-sampling-gptel--thinking-request-params
+                     gptel-backend gptel-model thinking)))
           (setq sampling-params
                 (magent-sampling-gptel--merge-request-params
-                 sampling-params effort-params)))
+                 sampling-params thinking-params)))
+        (unless (eq thinking 'disabled)
+          (when-let* ((effort-params
+                      (magent-sampling-gptel--effort-request-params
+                       gptel-backend
+                       (plist-get metadata :effort))))
+            (setq sampling-params
+                  (magent-sampling-gptel--merge-request-params
+                   sampling-params effort-params))))
         (when sampling-params
           (setq-local gptel--request-params
                       (magent-sampling-gptel--merge-request-params

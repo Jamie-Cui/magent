@@ -347,6 +347,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                        (magent-request-context-top-p request-state))
                       (inherited-effort
                        (magent-request-context-effort request-state))
+                      (inherited-thinking
+                       (magent-request-context-thinking request-state))
                       (backend (magent-model-route-backend route))
                       (model (magent-model-route-model route))
                       (temperature (or inherited-temperature
@@ -359,7 +361,14 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                          (magent-agent-info-effort agent)
                                          (magent-effort-option-or-auto
                                           magent-default-effort)))
-                      (effort (magent-effort-effective effort-option)))
+                      (thinking-option
+                       (or inherited-thinking
+                           (magent-agent-info-thinking agent)
+                           (magent-thinking-option-or-auto
+                            magent-default-thinking)))
+                      (thinking (magent-thinking-effective thinking-option))
+                      (effort (unless (eq thinking 'disabled)
+                                (magent-effort-effective effort-option))))
                  (setf (magent-request-context-project-root request-state)
                        (or (magent-request-context-project-root request-state)
                            request-project-root)
@@ -378,6 +387,9 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                        (magent-request-context-effort request-state)
                        (or (magent-request-context-effort request-state)
                            effort-option)
+                       (magent-request-context-thinking request-state)
+                       (or (magent-request-context-thinking request-state)
+                           thinking-option)
                        (magent-request-context-skill-names request-state)
                        (copy-sequence resolved-skill-names)
                        (magent-request-context-capability-context request-state)
@@ -389,11 +401,15 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                            dispatch-context)
                        (magent-request-context-permission-profile request-state)
                        effective-permission)
-                 (magent-log "INFO agent=%s backend=%s model=%s route-source=%s tools=[%s]"
+                 (magent-log "INFO agent=%s backend=%s model=%s route-source=%s effort=%s thinking=%s tools=[%s]"
                              (magent-agent-info-name agent)
                              (gptel-backend-name backend)
                              model
                              (magent-model-route-source route)
+                             (if (eq thinking 'disabled)
+                                 'suppressed
+                               (or effort 'auto))
+                             (or thinking 'auto)
                              (mapconcat #'gptel-tool-name tools ", "))
                  (when resolved-skill-names
                    (magent-log "INFO active skills=[%s]"
@@ -753,7 +769,9 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                         (list :temperature temperature
                                               :top-p top-p)
                                         (when effort
-                                          (list :effort effort)))
+                                          (list :effort effort))
+                                        (when thinking
+                                          (list :thinking thinking)))
                              :callback #'handle-event)
                             :request-context request-state
                             :event-context context

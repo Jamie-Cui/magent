@@ -96,6 +96,7 @@ wins; when all functions return nil, scope is derived from
   temperature
   top-p
   effort
+  thinking
   (tool-names :all)
   skill-names
   capability-context

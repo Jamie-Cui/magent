@@ -192,8 +192,16 @@
 
 (cl-defun magent-action--make-agent-step
     (name prompt &key agent skills buffers append-argument-p tools
-          (result 'value) request-context resource-blocks terminal-p)
-  "Create an agent or terminal Answer Step named NAME for PROMPT."
+          effort thinking (result 'value) request-context resource-blocks
+          terminal-p)
+  "Create an agent or terminal Answer Step named NAME for PROMPT.
+AGENT selects a request-local agent.  SKILLS selects instruction skills.
+BUFFERS contributes model-visible snapshots, and APPEND-ARGUMENT-P controls
+whether the Action argument is appended.  TOOLS is the exact tool allowlist.
+EFFORT and THINKING are normalized request-local sampling overrides.  RESULT
+selects the returned value.  REQUEST-CONTEXT carries runtime-only metadata,
+while RESOURCE-BLOCKS carries model-visible resources.  TERMINAL-P creates an
+Answer Step instead of an intermediate agent Step."
   (magent-action--normalize-step-name name)
   (unless (stringp prompt)
     (error "Magent Action agent Step requires a string prompt: %S" prompt))
@@ -210,20 +218,24 @@
   (unless (proper-list-p tools)
     (error "Expected exact tool list, got: %S" tools))
   (magent-action--validate-result-mode result)
-  (magent-action-step-create
-   :type (if terminal-p 'answer 'agent)
-   :name name
-   :terminal-p terminal-p
-   :options
-   (list :prompt prompt
-         :agent agent
-         :skills skills
-         :buffers buffers
-         :append-argument-p (and append-argument-p t)
-         :tools tools
-         :result (if terminal-p 'full result)
-         :request-context request-context
-         :resource-blocks resource-blocks)))
+  (let ((effort-option (magent-effort-normalize-option effort))
+        (thinking-option (magent-thinking-normalize-option thinking)))
+    (magent-action-step-create
+     :type (if terminal-p 'answer 'agent)
+     :name name
+     :terminal-p terminal-p
+     :options
+     (list :prompt prompt
+           :agent agent
+           :skills skills
+           :buffers buffers
+           :append-argument-p (and append-argument-p t)
+           :tools tools
+           :effort effort-option
+           :thinking thinking-option
+           :result (if terminal-p 'full result)
+           :request-context request-context
+           :resource-blocks resource-blocks))))
 
 (defmacro magent-workflow-agent-turn (name prompt &rest options)
   "Run PROMPT as intermediate agent Step NAME and return its result."
@@ -298,8 +310,13 @@ an optional zero-argument cancellation function."
         (list :environment-keys (mapcar #'car environment)))))
     ('callback (magent-action--step-option step :activity-input))
     ((or 'agent 'answer)
-     (list :agent (magent-action--step-option step :agent)
-           :terminal (eq (magent-action-step-type step) 'answer)))
+     (append
+      (list :agent (magent-action--step-option step :agent)
+            :terminal (eq (magent-action-step-type step) 'answer))
+      (when-let* ((effort (magent-action--step-option step :effort)))
+        (list :effort effort))
+      (when-let* ((thinking (magent-action--step-option step :thinking)))
+        (list :thinking thinking))))
     (_ nil)))
 
 (defun magent-action--workflow-bounded-output (text)
@@ -1188,22 +1205,29 @@ REASON may be a string or a `magent-execution-result' for direct invocations."
 
 (defun magent-action-turn-metadata (invocation &optional step)
   "Return canonical ledger metadata for Action INVOCATION and STEP."
-  (list :source 'magent-action
-        :action
-        (magent-action-spec-name
-         (magent-action-invocation-spec invocation))
-        :action-invocation-id
-        (magent-action-invocation-id invocation)
-        :action-argument
-        (magent-action-invocation-argument invocation)
-        :action-input
-        (magent-action-invocation-raw-input invocation)
-        :workflow-step-id
-        (and step (magent-action-invocation-current-step-id invocation))
-        :workflow-step-name
-        (and step (magent-action-step-name step))
-        :workflow-step-type
-        (and step (magent-action-step-type step))))
+  (append
+   (list :source 'magent-action
+         :action
+         (magent-action-spec-name
+          (magent-action-invocation-spec invocation))
+         :action-invocation-id
+         (magent-action-invocation-id invocation)
+         :action-argument
+         (magent-action-invocation-argument invocation)
+         :action-input
+         (magent-action-invocation-raw-input invocation)
+         :workflow-step-id
+         (and step (magent-action-invocation-current-step-id invocation))
+         :workflow-step-name
+         (and step (magent-action-step-name step))
+         :workflow-step-type
+         (and step (magent-action-step-type step)))
+   (when-let* ((effort (and step
+                            (magent-action--step-option step :effort))))
+     (list :effort effort))
+   (when-let* ((thinking (and step
+                              (magent-action--step-option step :thinking))))
+     (list :thinking thinking))))
 
 (defun magent-action--forward-answer-event (invocation event)
   "Forward terminal Answer EVENT and track visible response state."
@@ -1258,6 +1282,8 @@ REASON may be a string or a `magent-execution-result' for direct invocations."
            :skills skills
            :tools (magent-action--step-option step :tools)
            :agent agent
+           :effort (magent-action--step-option step :effort)
+           :thinking (magent-action--step-option step :thinking)
            :context
            (append request-context
                    (magent-action-invocation-request-context invocation))

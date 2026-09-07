@@ -23,8 +23,8 @@
 (require 'magent-permission)
 
 (defconst magent-agent-file--frontmatter-keys
-  '(:description :mode :hidden :temperature :top-p :effort :color :model
-    :permissions)
+  '(:description :mode :hidden :temperature :top-p :effort :thinking :color
+    :model :permissions)
   "Supported custom-agent frontmatter keys.")
 
 (defun magent-agent-file--agent-dir (&optional directory)
@@ -157,6 +157,10 @@ Returns \\='primary, \\='subagent, or \\='all (default)."
   "Return normalized effort option from agent FRONTMATTER."
   (magent-effort-normalize-option (plist-get frontmatter :effort)))
 
+(defun magent-agent-file--frontmatter-thinking (frontmatter)
+  "Return normalized thinking mode from agent FRONTMATTER."
+  (magent-thinking-normalize-option (plist-get frontmatter :thinking)))
+
 (defun magent-agent-file-load (filepath)
   "Load an agent from FILEPATH.
 Returns the agent info if successful, nil otherwise."
@@ -183,6 +187,9 @@ Returns the agent info if successful, nil otherwise."
                               :top-p (plist-get frontmatter :top-p)
                               :effort (magent-agent-file--frontmatter-effort
                                        frontmatter)
+                              :thinking
+                              (magent-agent-file--frontmatter-thinking
+                               frontmatter)
                               :color (plist-get frontmatter :color)
                               :model (magent-agent-file--parse-model
                                       (plist-get frontmatter :model))
@@ -295,6 +302,10 @@ Returns the filepath if successful."
         (insert (format "effort: %s\n"
                         (magent-effort-option-string
                          (magent-agent-info-effort agent-info)))))
+      (when (magent-agent-info-thinking agent-info)
+        (insert (format "thinking: %s\n"
+                        (magent-thinking-option-string
+                         (magent-agent-info-thinking agent-info)))))
       (when (magent-agent-info-color agent-info)
         (insert "color: "
                 (magent-agent-file--yaml-scalar

@@ -1643,6 +1643,9 @@ parent and child instead of flattening them to one decision per tool."
       (effort . ,(and child-context
                      (magent-effort-option-string
                       (magent-request-context-effort child-context))))
+      (thinking . ,(and child-context
+                        (magent-thinking-option-string
+                         (magent-request-context-thinking child-context))))
       (skill-names . ,(vconcat
                        (or (and child-context
                                 (magent-request-context-skill-names
@@ -1781,6 +1784,8 @@ Return the child loop handle when startup succeeds."
                        (magent-request-context-top-p parent-context))
            :effort (and parent-context
                         (magent-request-context-effort parent-context))
+           :thinking (and parent-context
+                          (magent-request-context-thinking parent-context))
            :skill-names (and parent-context
                              (copy-sequence
                               (magent-request-context-skill-names
