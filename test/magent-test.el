@@ -17454,55 +17454,62 @@ CURL-EXIT simulates that exit code through gptel's real process sentinel."
                         (if (memq delay '(1 2)) 0.01 delay) repeat function args)))
               ((symbol-function 'gptel-curl-get-response)
                (lambda (fsm)
-                 (cl-incf request-count)
-                 (gptel--fsm-transition fsm 'TYPE)
-                 (let* ((info (gptel-fsm-info fsm))
-                        (callback (plist-get info :callback)))
-                   (push (copy-tree (plist-get info :data) t) inputs)
-                   (plist-put info :http-status "200")
-                   (cond
-                    ((= request-count 1)
-                       (progn
-                         (funcall callback
-                                  (magent-test--chat-stream-chunk
-                                   gptel-backend info '(:content "Inspecting saved output.") nil) info)
-                         (funcall callback
-                                  (magent-test--chat-stream-chunk
-                                   gptel-backend info
-                                   '(:tool_calls [(:index 0 :id "call_1" :type "function"
-                                                   :function (:name "read_tool_output" :arguments "{}"))])
-                                   "tool_calls" t) info)))
-                    ((and finish (> request-count 2))
-                     (funcall callback
-                              (magent-test--chat-stream-chunk
-                               gptel-backend info '(:content "Done.") "stop" t) info))
-                    (t
-                     ;; Matches the observed response: only an empty initial chunk.
-                     (funcall callback
-                              (magent-test--chat-stream-chunk
-                               gptel-backend info
-                               '(:role "assistant" :content :null :reasoning_content "Inspecting a possible fix.") nil) info)
-                     (when curl-exit
-                       (funcall callback
-                                (magent-test--chat-stream-chunk
-                                 gptel-backend info
-                                 '(:tool_calls [(:index 0 :id "unfinished_call" :type "function"
-                                                 :function (:name "read_tool_output" :arguments "{\"id\":"))])
-                                 nil) info))))
-                   (if (and curl-exit (> request-count 1)
-                            (not (and finish (> request-count 2))))
-                       (let ((process-buffer (generate-new-buffer " *magent-curl-exit*"))
-                             (gptel--request-alist (list (cons 'fixture-process (list fsm)))))
-                         (cl-letf (((symbol-function 'process-buffer) (lambda (_) process-buffer))
-                                   ((symbol-function 'process-exit-status) (lambda (_) curl-exit)))
-                           (gptel-curl--stream-cleanup 'fixture-process "exited")))
-                     (funcall callback t info)
-                     (gptel--fsm-transition fsm)))))
+                 ;; Deliver after WAIT runs its hooks in the request buffer,
+                 ;; as real curl does; synchronous completion can kill it early.
+                 (run-at-time
+                  0 nil
+                  (lambda ()
+                    (cl-incf request-count)
+                    (gptel--fsm-transition fsm 'TYPE)
+                    (let* ((info (gptel-fsm-info fsm))
+                           (callback (plist-get info :callback)))
+                      (push (copy-tree (plist-get info :data) t) inputs)
+                      (plist-put info :http-status "200")
+                      (cond
+                       ((= request-count 1)
+                          (progn
+                            (funcall callback
+                                     (magent-test--chat-stream-chunk
+                                      gptel-backend info '(:content "Inspecting saved output.") nil) info)
+                            (funcall callback
+                                     (magent-test--chat-stream-chunk
+                                      gptel-backend info
+                                      '(:tool_calls [(:index 0 :id "call_1" :type "function"
+                                                      :function (:name "read_tool_output" :arguments "{}"))])
+                                      "tool_calls" t) info)))
+                       ((and finish (> request-count 2))
+                        (funcall callback
+                                 (magent-test--chat-stream-chunk
+                                  gptel-backend info '(:content "Done.") "stop" t) info))
+                       (t
+                        ;; Matches the observed response: only an empty initial chunk.
+                        (funcall callback
+                                 (magent-test--chat-stream-chunk
+                                  gptel-backend info
+                                  '(:role "assistant" :content :null :reasoning_content "Inspecting a possible fix.") nil) info)
+                        (when curl-exit
+                          (funcall callback
+                                   (magent-test--chat-stream-chunk
+                                    gptel-backend info
+                                    '(:tool_calls [(:index 0 :id "unfinished_call" :type "function"
+                                                    :function (:name "read_tool_output" :arguments "{\"id\":"))])
+                                    nil) info))))
+                      (if (and curl-exit (> request-count 1)
+                               (not (and finish (> request-count 2))))
+                          (let ((process-buffer (generate-new-buffer " *magent-curl-exit*"))
+                                (gptel--request-alist (list (cons 'fixture-process (list fsm)))))
+                            (cl-letf (((symbol-function 'process-buffer) (lambda (_) process-buffer))
+                                      ((symbol-function 'process-exit-status) (lambda (_) curl-exit)))
+                              (gptel-curl--stream-cleanup 'fixture-process "exited")))
+                        (funcall callback t info)
+                        (gptel--fsm-transition fsm)))))))
               ((symbol-function 'gptel-request)
                (lambda (_prompt &rest kwargs)
                  (let ((fsm (plist-get kwargs :fsm)))
                    (setf (gptel-fsm-info fsm)
-                         (list :backend gptel-backend :stream t :tools gptel-tools
+                         (list :backend gptel-backend :model gptel-model
+                               :buffer (plist-get kwargs :buffer)
+                               :stream t :tools gptel-tools
                                :context (plist-get kwargs :context)
                                :data (list :messages [])
                                :callback (plist-get kwargs :callback)))
