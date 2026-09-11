@@ -34,7 +34,7 @@ The canonical tool catalog declares one locality for every tool:
 
 | Locality | Tools | Contract |
 |----------+-------+----------|
-| ~local~ | ~emacs_read~, ~emacs_eval~, ~emacs_eval_live~, ~read_tool_output~, child-agent tools, ~web_search~ | Runs on the Emacs host. ~emacs_eval~ passes the TRAMP project root to the local child as data. |
+| ~local~ | ~emacs_read~, ~emacs_eval~, ~emacs_eval_live~, ~read_tool_output~, child-agent tools, ~update_plan~, ~web_search~ | Runs on the Emacs host. ~emacs_eval~ passes the TRAMP project root to the local child as data. |
 | ~tramp-file~ | ~read_file~, ~write_file~, ~edit_file~, ~glob~ | Local Elisp uses Emacs file APIs; a remote resource is accessed through TRAMP, without starting a project-host process. |
 | ~project-process~ | ~bash~, ~grep~ | The only tools allowed to start on the project host. Remote execution uses the TRAMP process handler explicitly; search selects ~rg~ or same-host ~git grep~. |
 
@@ -58,7 +58,7 @@ Emacs is not just a host process. Magent depends on live editor state through bu
 
 ** Provider Plumbing
 
-~magent-sampling.el~ defines provider-neutral request and event shapes. ~magent-sampling-gptel.el~ performs one sampling request by calling ~gptel-request~ and translating gptel callbacks into normalized Magent events. Magent may hide gptel callback/FSM details inside this adapter, but the rest of the loop consumes only normalized events. Reasoning events are kept separate from assistant text; reasoning-only completions are allowed to complete with empty assistant content instead of leaking chain text into the answer.
+~magent-sampling.el~ defines provider-neutral request and event shapes. ~magent-sampling-gptel.el~ performs one sampling request by calling ~gptel-request~ and translating gptel callbacks into normalized Magent events. Magent may hide gptel callback/FSM details inside this adapter, but the rest of the loop consumes only normalized events. Reasoning events are kept separate from assistant text; ordinary turns with no final assistant text fail explicitly; direct samplers retain their own allowed-empty contracts. Reasoning is never substituted for an answer.
 
 Thinking policy stays provider-neutral until that adapter boundary. Core runtime
 values are ~auto~, ~enabled~, and ~disabled~; explicit modes are translated only
@@ -68,7 +68,7 @@ and an unknown mapping fails before provider dispatch instead of silently using
 the provider default.
 
 Each provider continuation starts a new sample boundary. The public terminal
-result contains only the final sample's assistant text, while the ledger keeps
+result contains the final assistant message (or the final sample text on providers without message phases), while the ledger keeps
 the complete turn transcript and tool history. This separation is deterministic
 and does not trigger a hidden finalization or recovery request.
 
@@ -120,13 +120,13 @@ state containers.
 
 ** Tools, Permissions, And Audit
 
-~magent-tools.el~ owns one canonical catalog of 16 ~gptel-tool~ structs:
+~magent-tools.el~ owns one canonical catalog of 17 ~gptel-tool~ structs:
 
 - ~read_file~, ~write_file~, ~edit_file~
 - ~grep~, ~glob~, ~bash~
 - ~emacs_read~, ~emacs_eval~, ~emacs_eval_live~, ~read_tool_output~
 - ~spawn_agent~, ~send_agent_message~, ~wait_agent~, ~list_agents~, ~close_agent~
-- ~web_search~
+- ~update_plan~, ~web_search~
 
 ~read_file~ requires an explicit ~source=disk~ or ~source=live-buffer~. The
 live-buffer source reads an existing file-visiting buffer, including unsaved
@@ -199,7 +199,7 @@ This catalog intentionally has no compatibility aliases:
 9. Tool calls are accumulated until ~tool-call-batch-end~, then dispatched serially through the orchestrator.
 10. Tool results update the same ledger item that started with the tool call.
 11. If tool output should be shown to the model, ~magent-agent.el~ rebuilds the prompt from the ledger and starts the next sampling request.
-12. If a provider completes with empty assistant text, ~magent-agent.el~ completes the turn with ~empty-completion~ metadata and does not issue another request.
+12. If a provider completes with empty assistant text, ~magent-agent.el~ fails the turn with ~empty-completion~ metadata and does not issue another request.
 13. Completion, failure, abort, or queue drop transitions the turn to its terminal state and notifies the ACP observer.
 14. A plain prompt resolves the pending ACP request from the turn result. For Action-owned work, the runtime callback first returns to the Action Invocation, whose terminal lifecycle then resolves the ACP request or reports the result to its interactive caller.
 

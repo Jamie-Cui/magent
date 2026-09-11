@@ -124,3 +124,14 @@ entry surfaces; it must not infer skills from the Action registry.
 - Model routes are session-local in memory.  Cross-Emacs persistence of an
   explicit route is not yet implemented; a loaded session returns to ~Auto~.
 - Forking an active turn and forking across project scopes are not supported.
+
+* Progress and plan projection
+
+Ordered assistant message items preserve progress/tool/final boundaries on
+resume. Reasoning visibility remains independent of assistant communication.
+The runtime's ~plan-update~ event carries ACP-shaped ~entries~; ~magent-acp.el~
+projects it to a native ~plan~ update. Persisted ~plan~ items replay through the
+same path, so agent-shell owns the plan display. Cancelled or failed tools are
+shown as failed on replay rather than receiving a successful completion icon.
+Empty final answers from ordinary agent turns fail the pending prompt with an
+explicit diagnostic; no hidden answer-recovery request is sent.

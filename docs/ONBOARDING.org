@@ -79,7 +79,7 @@ Multi-agent architecture with specialized agents for different tasks.
 The action layer that executes operations requested by agents.
 
 *Key Files:*
-- ~magent-tools.el~ — canonical catalog of 16 ~gptel-tool~ structs: read_file, write_file, edit_file, grep, glob, bash, emacs_read, emacs_eval, emacs_eval_live, read_tool_output, spawn_agent, send_agent_message, wait_agent, list_agents, close_agent, web_search
+- ~magent-tools.el~ — canonical catalog of 17 ~gptel-tool~ structs: read_file, write_file, edit_file, grep, glob, bash, emacs_read, emacs_eval, emacs_eval_live, read_tool_output, spawn_agent, send_agent_message, wait_agent, list_agents, close_agent, update_plan, web_search
 - ~magent-skills.el~ — Skill registry, built-in skills, file loading, inspection commands
 - ~magent-skill-manager.el~ — User-level skills.sh finder, safe copy installer, and permanent deletion
 - ~magent-capability.el~ — Capability definitions, resolution, and file-backed loading
@@ -99,7 +99,7 @@ Orchestrates the tool-calling loop and LLM communication.
 - ~magent-sampling.el~ — Provider-neutral request/event protocol
 - ~magent-sampling-gptel.el~ — Thin ~gptel-request~ sampling adapter
 
-*What it does:* ~magent-agent-loop.el~ consumes normalized LLM events, records assistant/tool state into the session, dispatches tools through ~magent-tool-orchestrator~, and returns continuation outcomes after model-visible tool output is recorded. ~magent-agent-run-turn~ owns provider-native tool continuation, completes empty responses explicitly, and fails directly at an optional sampling limit. Reasoning is kept separate from assistant text. ~magent-sampling-gptel.el~ still calls ~gptel-request~; Magent does not rewrite provider transport.
+*What it does:* ~magent-agent-loop.el~ consumes normalized LLM events, records assistant/tool state into the session, dispatches tools through ~magent-tool-orchestrator~, and returns continuation outcomes after model-visible tool output is recorded. ~magent-agent-run-turn~ owns provider-native tool continuation, fails ordinary turns with empty final responses explicitly, and fails directly at an optional sampling limit. Reasoning is kept separate from assistant text. ~magent-sampling-gptel.el~ still calls ~gptel-request~; Magent does not rewrite provider transport.
 
 ** Layer 6: Supported Frontend
 
@@ -321,7 +321,7 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 - *magent-permission.el* — Tool access control with glob patterns
 
 ** Tools, Skills & Capabilities
-- *magent-tools.el* — Canonical catalog of 16 ~gptel-tool~ implementations
+- *magent-tools.el* — Canonical catalog of 17 ~gptel-tool~ implementations
 - *magent-tool-orchestrator.el* — Permission, approval, audit, and tool-call orchestration
 - *magent-approval.el* — User approval prompts for sensitive operations
 - *magent-file-loader.el* — Shared file-backed frontmatter parser
@@ -375,7 +375,7 @@ ACP conversion in ~magent-acp.el~, and agent-shell-specific behavior in
 *Approach carefully:* More specific patterns must come before less specific ones. Test with various glob patterns.
 
 ** 5. magent-tools.el (Medium Complexity)
-*Why it's complex:* 16 tool implementations have different side effects, process lifecycles, revision contracts, spill retention, child-agent state, and error handling. ~emacs_read~ uses the captured origin buffer; ~emacs_eval~ uses a disposable child process; ~emacs_eval_live~ deliberately crosses into the main process.
+*Why it's complex:* 17 tool implementations have different side effects, process lifecycles, revision contracts, spill retention, child-agent state, and error handling. ~emacs_read~ uses the captured origin buffer; ~emacs_eval~ uses a disposable child process; ~emacs_eval_live~ deliberately crosses into the main process.
 
 *Approach carefully:* Keep child-eval cleanup and host-owned timeout handling robust. Preserve once-only approval for both arbitrary eval tools, session isolation for spilled output, revision validation for writes, and parent/child request-context inheritance.
 

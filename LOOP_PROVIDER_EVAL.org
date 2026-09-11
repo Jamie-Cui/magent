@@ -1,0 +1,42 @@
+#+title: Real-model communication acceptance
+
+The user explicitly authorized this exact proposal on 2026-09-12. All three
+runs have now completed, using nine real HTTP requests. The earlier approval
+rejection was resolved by the reviewed payload and explicit authorization;
+it was not bypassed. The authorization's three-run allowance is exhausted.
+See [[file:LOOP_COMMUNICATION_RESULTS.org]] for the failed behavioral acceptance.
+
+* Exact reviewable payload
+
+[[file:LOOP_COMMUNICATION_EVAL.json]] contains the complete production system
+prompt (global + build role + runtime policy), exact fictional user request,
+provider/model, tool schemas, fixed observations, sampling controls and bounds.
+It does not load repository instructions, skills, context providers or history.
+
+- Destination: https://api.deepseek.com/v1/chat/completions
+- Model: deepseek-v4-pro, using the existing DeepSeek auth-source credential.
+- Three isolated runs, at most six requests per run, at most 4096 output tokens
+  per request, and a 120-second deadline per run. Retries count in that bound.
+- emacs_read is a fixture with no live Emacs access. update_plan only records
+  the test plan. No shell, file, network tool, child agent, edit or deployment.
+- All initial text and fixed observations are in the JSON. Follow-up messages
+  include only this test's generated outputs, plan acknowledgements and those
+  fixed observations. No real project files, original sessions, live buffers,
+  environment variables or provider logs are sent.
+
+* Acceptance
+
+The fictional gateway already has the service and /chat route. A subsequent
+check reports a redirect escaping that prefix. The report command itself
+exited zero, while its contents report one failed check.
+
+Inspect normal assistant messages with reasoning hidden. Require an opening
+update, an evidence-based update between the dependent observations, and a
+final judgment that recognizes the failed gate, proposes the relevant minimal
+fix and does not claim deployment. A new plan, tool reasons, reasoning tokens
+or runtime status notices do not satisfy assistant communication.
+
+Keep the three runs separate and report failures without averaging them away.
+Also report the interval between visible updates and whether tool or reasoning
+content was incorrectly substituted. Passing the fixture supports this narrow
+behavior; it does not prove equivalent behavior to Codex on all coding tasks.

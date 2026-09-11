@@ -224,7 +224,7 @@ was changed."
    :prompt (magent-agent-job--alist-get 'prompt alist)
    :created-at (magent-agent-job--alist-get 'created-at alist)
    :updated-at (magent-agent-job--alist-get 'updated-at alist)
-   :transcript (magent-agent-job--alist-get 'transcript alist)
+   :transcript (append (magent-agent-job--alist-get 'transcript alist) nil)
    :result (magent-agent-job--alist-get 'result alist)
    :error (magent-agent-job--alist-get 'error alist)
    :metadata (magent-agent-job--alist-get 'metadata alist)))

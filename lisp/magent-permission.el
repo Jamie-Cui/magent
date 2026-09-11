@@ -56,7 +56,7 @@ allow, ask, and deny rules."
 (defconst magent-permission-ask 'ask)
 
 (defconst magent-permission-keys
-  '(read write edit grep glob bash emacs_eval emacs_eval_live agent web_search)
+  '(read write edit grep glob bash emacs_eval emacs_eval_live agent plan web_search)
   "Canonical tool permission group keys used across Magent.")
 
 ;;;###autoload

@@ -597,7 +597,7 @@ Any active or queued work for the session is cancelled first."
                     :on-complete
                     (lambda (result)
                       (let ((status
-                             (if (magent-execution-result-success-p result)
+                             (if (magent-execution-result-completed-p result)
                                  'completed
                                'failed)))
                         (magent-runtime-api--finish-submission

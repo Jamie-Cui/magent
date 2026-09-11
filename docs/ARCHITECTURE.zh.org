@@ -34,7 +34,7 @@ Canonical tool catalog 为每个工具声明唯一 locality：
 
 | Locality | Tools | 契约 |
 |----------+-------+------|
-| ~local~ | ~emacs_read~、~emacs_eval~、~emacs_eval_live~、~read_tool_output~、child-agent tools、~web_search~ | 在 Emacs host 执行；~emacs_eval~ 只把 TRAMP project root 当作数据传给本地 child。 |
+| ~local~ | ~emacs_read~、~emacs_eval~、~emacs_eval_live~、~read_tool_output~、child-agent tools、~update_plan~、~web_search~ | 在 Emacs host 执行；~emacs_eval~ 只把 TRAMP project root 当作数据传给本地 child。 |
 | ~tramp-file~ | ~read_file~、~write_file~、~edit_file~、~glob~ | 本地 Elisp 调用 Emacs file API；remote resource 通过 TRAMP 访问，不启动 project-host process。 |
 | ~project-process~ | ~bash~、~grep~ | 唯一允许在 project host 启动的工具；remote execution 显式使用 TRAMP process handler；search 选择 ~rg~ 或同主机的 ~git grep~。 |
 
@@ -56,7 +56,7 @@ Emacs 不只是宿主进程。Magent 依赖活的编辑器状态：buffer、majo
 
 ** Provider Plumbing
 
-~magent-sampling.el~ 定义 provider-neutral request/event。 ~magent-sampling-gptel.el~ 负责一次 sampling request：调用 ~gptel-request~ ，再把 gptel callback 转成 Magent normalized events。这个 adapter 可以隐藏 gptel callback/FSM 细节，但主 loop 只消费 normalized events。Reasoning event 与 assistant text 分开保存；reasoning-only completion 可以产生空 assistant content，不会把 chain text 泄漏成最终回答。
+~magent-sampling.el~ 定义 provider-neutral request/event。 ~magent-sampling-gptel.el~ 负责一次 sampling request：调用 ~gptel-request~ ，再把 gptel callback 转成 Magent normalized events。这个 adapter 可以隐藏 gptel callback/FSM 细节，但主 loop 只消费 normalized events。Reasoning event 与 assistant text 分开保存；普通 agent turn 缺少最终 assistant text 时会明确失败；直接 sampler 保留各自允许空结果的契约，reasoning 不作为最终回答。
 
 Thinking policy 在 adapter boundary 之前保持 provider-neutral。Core runtime 只使用
 ~auto~、~enabled~ 和 ~disabled~；只有存在可靠 wire mapping 的 backend 才翻译显式
@@ -64,7 +64,7 @@ mode。DeepSeek 使用原生 ~thinking.type~ request object。显式 disable 会
 effort；未知映射会在 provider dispatch 前失败，而不是静默采用 provider default。
 
 每次 provider continuation 都会开始一个新的 sample 边界。公开的 terminal result
-只包含最后一个 sample 的 assistant text，ledger 则保留完整 turn transcript 和 tool
+只包含最终 assistant message；没有原生消息阶段的 provider 使用最后一个 sample 的 assistant text，ledger 则保留完整 turn transcript 和 tool
 history。这个分离是确定性的，不会触发隐藏的 finalization 或 recovery request。
 
 ** Prompt 装配与信任边界
@@ -108,13 +108,13 @@ view 不能互相冒充 canonical state。
 
 ** 工具、权限与审计
 
-~magent-tools.el~ 通过单一 canonical catalog 暴露 16 个 ~gptel-tool~ ：
+~magent-tools.el~ 通过单一 canonical catalog 暴露 17 个 ~gptel-tool~ ：
 
 - ~read_file~ 、 ~write_file~ 、 ~edit_file~
 - ~grep~ 、 ~glob~ 、 ~bash~
 - ~emacs_read~ 、 ~emacs_eval~ 、 ~emacs_eval_live~ 、 ~read_tool_output~
 - ~spawn_agent~ 、 ~send_agent_message~ 、 ~wait_agent~ 、 ~list_agents~ 、 ~close_agent~
-- ~web_search~
+- ~update_plan~, ~web_search~
 
 ~read_file~ 强制指定 ~source=disk~ 或 ~source=live-buffer~。live-buffer source
 只读取已经存在的 file-visiting buffer（包括未保存修改），不会打开文件或回退到
@@ -175,7 +175,7 @@ session 私有、带 TTL/quota 的 spill，只能凭 opaque id 通过 ~read_tool
 9. tool call 累积到 ~tool-call-batch-end~ 后，通过 orchestrator 串行执行。
 10. tool result 更新同一个 tool item，而不是创建一条独立的持久记录。
 11. 如果 tool output 需要返回给模型， ~magent-agent.el~ 从 ledger 重建 prompt 并开始下一次 sampling。
-12. 如果 provider 返回空 assistant text 并明确完成， ~magent-agent.el~ 用 ~empty-completion~ metadata 完成本轮，不再发起请求。
+12. 如果 provider 返回空 assistant text 并明确完成， ~magent-agent.el~ 用 ~empty-completion~ metadata 将本轮标记为 failed，不再发起请求。
 13. completion、failure、abort 或 queued drop 会把 turn 转到 terminal state，并通知 ACP observer。
 14. 普通 prompt 直接用 turn result 结束 pending ACP request。对于 Action-owned work，runtime callback 会先返回 Action Invocation，再由其 terminal lifecycle 结束 ACP request，或向 interactive caller 报告结果。
 

@@ -94,10 +94,10 @@ and the final runtime trust policy."
   :group 'magent)
 
 (defcustom magent-enable-tools
-  '(read write edit grep glob bash emacs_eval emacs_eval_live agent web_search)
+  '(read write edit grep glob bash emacs_eval emacs_eval_live agent plan web_search)
   "List of enabled tools.
 Available tools: read, write, edit, grep, glob, bash, emacs_eval,
-emacs_eval_live, agent, web_search."
+emacs_eval_live, agent, plan, web_search."
   :type '(set (const :tag "Read files" read)
               (const :tag "Write files" write)
               (const :tag "Edit files" edit)
@@ -107,6 +107,7 @@ emacs_eval_live, agent, web_search."
               (const :tag "Evaluate Elisp in a child Emacs" emacs_eval)
               (const :tag "Evaluate Elisp in the live Emacs" emacs_eval_live)
               (const :tag "Coordinate child agents" agent)
+              (const :tag "Update the task plan" plan)
               (const :tag "Search the web" web_search))
   :group 'magent)
 
@@ -121,7 +122,9 @@ path as a string.  If nil, try `projectile-project-root', then
   :group 'magent)
 
 (defcustom magent-max-history 100
-  "Maximum number of messages to keep in session history."
+  "Target maximum number of messages to keep in session history.
+Keep whole turns, including their goals and tools.  The newest turn is always
+retained, even when it alone exceeds this target."
   :type 'integer
   :group 'magent)
 
@@ -130,6 +133,16 @@ path as a string.  If nil, try `projectile-project-root', then
 If no callback activity occurs within this period, the request
 transitions to an error state.  Set to 0 to disable."
   :type 'integer
+  :group 'magent)
+
+(defcustom magent-stream-retry-limit 2
+  "Maximum retries for a truncated stream before assistant text is emitted.
+Retries preserve the same provider input and completed tool results.  They
+are announced in the conversation and count toward the sampling limit.
+Set to zero to disable retries.  Only incomplete Chat Completions streams
+without a finish reason are eligible, including curl partial-transfer
+errors (exit 18).  Explicit provider errors and token limits are not retried."
+  :type 'natnum
   :group 'magent)
 
 (defcustom magent-max-sampling-requests 0
@@ -525,14 +538,13 @@ to disable the depth guard."
 If t, display reasoning blocks in the Magent UI and retain them.
 If `ignore', hide reasoning from the Magent UI but still retain the
 received reasoning text internally.
-If nil, discard reasoning content entirely instead of showing or
-retaining it.
-
-In other words, `ignore' means \"hidden but kept\", while nil means
-\"dropped\"."
+If nil, omit displayable reasoning items from the UI and transcript.
+Provider-native continuation items are separate protocol data and remain
+available for correct continuation and same-route replay, including encrypted
+reasoning and any provider-supplied summaries."
   :type '(choice (const :tag "Display reasoning and keep it" t)
                  (const :tag "Hide reasoning but keep it internally" ignore)
-                 (const :tag "Discard reasoning entirely" nil))
+                 (const :tag "Omit displayable reasoning items" nil))
   :group 'magent)
 
 (defcustom magent-enable-capabilities t

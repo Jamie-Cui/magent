@@ -59,6 +59,7 @@ FALLBACK is used when NAME is nil."
          (while (and ok tail)
            (if (and (consp tail)
                     (consp (car tail))
+                    (or (symbolp (caar tail)) (stringp (caar tail)))
                     (not (keywordp (caar tail))))
                (setq tail (cdr tail))
              (setq ok nil)))

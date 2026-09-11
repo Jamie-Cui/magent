@@ -57,19 +57,10 @@ If CONTENT is a list of content blocks, concatenate their text fields."
     (mapconcat (lambda (b) (or (cdr (assq 'text b)) "")) content ""))
    (t "")))
 
-(defun magent-session--assistant-response-error-p (content)
-  "Return non-nil when assistant CONTENT is synthetic failure text."
-  (string-prefix-p "Error:"
-                   (string-trim
-                    (magent-session--content-to-string content))))
-
 (defun magent-session--assistant-response-reusable-p (content)
-  "Return non-nil when assistant CONTENT should be reused in prompts.
-Empty assistant replies and synthetic failure text are preserved in the saved
-transcript, but should not be fed back into later requests."
-  (let ((text (string-trim (magent-session--content-to-string content))))
-    (and (not (string-empty-p text))
-         (not (magent-session--assistant-response-error-p content)))))
+  "Return non-nil when assistant CONTENT contains visible text.
+Failure attribution belongs to ledger status and metadata, not a text prefix."
+  (not (string-blank-p (magent-session--content-to-string content))))
 
 (defconst magent-session-summary-title-max-width 48
   "Maximum display width for saved session summary titles.")
@@ -695,7 +686,7 @@ selected agent, and history limit so runtime UI handles remain valid."
     (insert-file-contents filepath)
     (let* ((data (json-parse-buffer
                   :object-type 'alist
-                  :array-type 'list
+                  :array-type 'array
                   :null-object nil
                   :false-object :json-false))
            (_fields (magent-session--validate-json-fields data))
@@ -1112,41 +1103,23 @@ available, then saved atomically through the explicit session/scope API."
       (setf (magent-thread-turns thread)
             (magent-session--trim-thread-turns
              (magent-thread-turns thread) max))
-      (magent-log "INFO trimmed %d old ledger messages" to-remove))))
+      (let ((removed (- count (cl-count 'message (magent-thread-all-items thread)
+                                       :key #'magent-thread-item-type))))
+        (when (> removed 0)
+          (magent-log "INFO trimmed %d old ledger messages" removed))))))
 
 (defun magent-session--trim-thread-turns (turns max-messages)
-  "Trim TURNS so the last MAX-MESSAGES message items remain.
-Non-message items are retained only when they occur after the retained
-message boundary."
-  (let* ((flat (cl-loop for turn in turns append
-                        (mapcar (lambda (item) (cons turn item))
-                                (magent-thread-turn-items turn))))
-         (flat-length (length flat))
-         (message-count 0)
-         boundary)
-    (cl-loop for pair in (reverse flat)
-             for reverse-index from 0
-             for index = (- flat-length reverse-index 1)
-             for item = (cdr pair)
-             when (eq (magent-thread-item-type item) 'message)
-             do (progn
-                  (cl-incf message-count)
-                  (when (<= message-count max-messages)
-                    (setq boundary index))))
-    (if (or (null boundary)
-            (zerop boundary))
-        turns
-      (let ((index -1)
-            trimmed)
-        (dolist (turn turns (nreverse trimmed))
-          (let (kept)
-            (dolist (item (magent-thread-turn-items turn))
-              (cl-incf index)
-              (when (>= index boundary)
-                (push item kept)))
-            (when kept
-              (setf (magent-thread-turn-items turn) (nreverse kept))
-              (push turn trimmed))))))))
+  "Keep the newest whole TURNS covering MAX-MESSAGES messages.
+Never sever a user goal from its commentary or tool results.  Retain at least
+one turn, including an oversized or currently active turn."
+  (let ((count 0) kept)
+    (dolist (turn (reverse turns))
+      (when (or (null kept) (< count max-messages)
+                (memq (magent-thread-turn-status turn) '(queued in-progress)))
+        (cl-incf count (cl-count 'message (magent-thread-turn-items turn)
+                                :key #'magent-thread-item-type))
+        (push turn kept)))
+    kept))
 
 ;;; gptel prompt list conversion
 
@@ -1247,14 +1220,6 @@ message boundary."
                       output
                     (format "%s" output)))))
 
-(defun magent-session--turn-tool-prompt-entries (turn)
-  "Return prompt-visible tool entries for TURN."
-  (let (tools)
-    (dolist (item (magent-thread-turn-items turn) (nreverse tools))
-      (when (and (eq (magent-thread-item-type item) 'tool)
-                 (magent-thread-terminal-item-p item))
-        (push (magent-session--tool-prompt-entry item) tools)))))
-
 (defun magent-session--turn-include-p (turn current-turn-id)
   "Return non-nil when TURN should be included in prompt generation."
   (let* ((status (magent-thread-turn-status turn))
@@ -1267,8 +1232,10 @@ message boundary."
           (and current-turn-id
                (equal (magent-thread-turn-id turn) current-turn-id))))
     (and (not workflow-control)
+         (or (not (magent-session--metadata-value metadata :compaction))
+             (eq status 'completed))
          (or (not workflow-activity) current-p)
-         (or (memq status '(completed interrupted))
+         (or (memq status '(completed interrupted failed))
              (and current-p (memq status '(queued in-progress)))))))
 
 (defun magent-session--compaction-turn-p (turn)
@@ -1293,75 +1260,58 @@ message boundary."
     result))
 
 (defun magent-session--provider-context-view (session &optional current-turn-id)
-  "Build the explicit provider replay context view for SESSION.
-Returns a list in gptel's advanced format:
-  ((prompt . \"user msg\") (response . \"assistant msg\") ...)
-Structured tool result messages are emitted as `(tool . PLIST)' entries so
-gptel can serialize historical tool calls/results for the active backend.
-
-Completed turns are reused in full.  Interrupted turns retain their user
-prompt and completed tool results, but discard any partial assistant reply so
-a follow-up such as \"continue\" can recover the cancelled request context.
-When a completed assistant reply is empty or a synthetic error string, Magent
-drops both that reply and its paired user prompt from future prompt reuse.  The
-final pending user prompt is still included so the current turn is preserved.
-
-When CURRENT-TURN-ID is non-nil, prompt generation stops after that turn.
-This prevents later queued user submissions from leaking into the active
-sampling request."
+  "Build ordered provider replay for SESSION through CURRENT-TURN-ID.
+Retain user goals and terminal tool results even when a turn failed,
+was interrupted, or ended without an assistant answer.  Replay completed
+assistant messages at their original item positions; runtime diagnostics
+and unfinished assistant fragments are not model-authored answers.
+Later queued submissions are excluded from the active request."
   (let* ((thread (magent-session-thread-ledger session))
          (turns (magent-session--turns-from-last-compaction
                  (and thread (magent-thread-turns thread))))
-         (effective-current-turn-id
-          (or current-turn-id
-              (and (cl-find-if
-                    (lambda (turn)
-                      (memq (magent-thread-turn-status turn)
-                            '(queued in-progress)))
-                    (reverse turns))
-                   (magent-thread-turn-id
-                    (cl-find-if
-                     (lambda (turn)
-                       (memq (magent-thread-turn-status turn)
-                             '(queued in-progress)))
-                     (reverse turns))))))
-         prompt-list
-         stop)
+         (current (or current-turn-id
+                      (when-let* ((turn (cl-find-if
+                                        (lambda (turn)
+                                          (memq (magent-thread-turn-status turn)
+                                                '(queued in-progress)))
+                                        turns)))
+                        (magent-thread-turn-id turn))))
+         entries stop)
     (dolist (turn turns)
       (unless stop
-        (when (magent-session--turn-include-p
-               turn effective-current-turn-id)
-          (let* ((user-content (magent-session--turn-user-content turn))
-                 (user-text (magent-session--content-to-string user-content))
-                 (assistant-content
-                  (magent-session--turn-message-content turn 'assistant))
-                 (completed (eq (magent-thread-turn-status turn)
-                                'completed)))
-            (when (and user-text (not (string-empty-p user-text)))
-              (cond
-               ((and completed
-                     (magent-session--assistant-response-reusable-p
-                      assistant-content))
-                (push (cons 'prompt user-text) prompt-list)
-                (dolist (tool (magent-session--turn-tool-prompt-entries turn))
-                  (push (cons 'tool tool) prompt-list))
-                (push (cons 'response
-                            (magent-session--content-to-string
-                             assistant-content))
-                      prompt-list))
-               ((and completed assistant-content)
-                (magent-log
-                 "INFO dropping non-reusable session turn from prompt reuse"))
-               ((or effective-current-turn-id
-                    (not completed))
-                (push (cons 'prompt user-text) prompt-list)
-                (dolist (tool (magent-session--turn-tool-prompt-entries turn))
-                  (push (cons 'tool tool) prompt-list)))))))
-        (when (and effective-current-turn-id
-                   (equal (magent-thread-turn-id turn)
-                          effective-current-turn-id))
+        (when (magent-session--turn-include-p turn current)
+          (let ((user-text (magent-session--content-to-string
+                            (magent-session--turn-user-content turn))))
+            (unless (string-empty-p user-text)
+              (push (cons 'prompt user-text) entries))
+            (dolist (item (magent-thread-turn-items turn))
+              (pcase (magent-thread-item-type item)
+                ('message
+                 (when (and (eq (magent-thread-item-role item) 'assistant)
+                            (eq (magent-thread-item-status item) 'completed)
+                            (not (eq (magent-session--metadata-value
+                                      (magent-thread-item-metadata item) :source)
+                                     'runtime-error))
+                            (magent-session--assistant-response-reusable-p
+                             (magent-thread-item-content item)))
+                   (push (cons 'response
+                               (if-let* ((native-id (magent-session--metadata-value
+                                                    (magent-thread-item-metadata item)
+                                                    :native-id)))
+                                   (list (magent-thread-item-content item) :native-id native-id)
+                                 (magent-thread-item-content item))) entries)))
+                ('provider
+                 (when (eq (magent-thread-item-status item) 'completed)
+                   (push (cons 'provider
+                               (magent-thread--alist-to-keyword-plist
+                                (magent-thread-item-metadata item))) entries)))
+                ('tool
+                 (when (magent-thread-terminal-item-p item)
+                   (push (cons 'tool (magent-session--tool-prompt-entry item))
+                         entries)))))))
+        (when (equal (magent-thread-turn-id turn) current)
           (setq stop t))))
-    (nreverse prompt-list)))
+    (nreverse entries)))
 
 (defconst magent-session-context-view-kinds
   '(ledger transcript provider compaction audit)
@@ -1380,8 +1330,13 @@ snapshot plus the bounded journal tail."
     (pcase kind
       ('ledger (and thread (magent-thread-snapshot-to-alist thread)))
       ('transcript (and thread (magent-thread-transcript thread)))
-      ((or 'provider 'compaction)
+      ('provider
        (magent-session--provider-context-view session current-turn-id))
+      ('compaction
+       (cl-loop for entry in (magent-session--provider-context-view session current-turn-id)
+                unless (eq (car entry) 'provider)
+                collect (if (and (eq (car entry) 'response) (consp (cdr entry)))
+                            (cons 'response (cadr entry)) entry)))
       ('audit
        (and thread
             `((snapshot . ,(magent-thread-snapshot-to-alist thread))

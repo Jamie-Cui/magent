@@ -160,6 +160,7 @@ SAMPLER is a function called with REQUEST by `magent-agent-loop-start'."
 Turn-wide text remains available through \`magent-agent-loop-text', while the
 terminal result is reset to the text produced by the new sample."
   (setf (magent-agent-loop-sample-text-chunks loop) nil
+        (magent-agent-loop-error loop) nil
         (magent-agent-loop-result loop) nil)
   loop)
 
@@ -224,10 +225,12 @@ being normalized into structured tool calls."
     ('completed
      (setf (magent-agent-loop-status loop) 'completed
            (magent-agent-loop-result loop)
-           (let ((result (magent-agent-loop--combined-result
+           (if (plist-get (magent-sampling-event-metadata event) :native-messages)
+               (magent-sampling-event-text event)
+             (let ((result (magent-agent-loop--combined-result
                           (magent-agent-loop-sample-text loop)
                           (magent-sampling-event-text event))))
-             result)
+               result))
            (magent-agent-loop-usage loop)
            (magent-sampling-event-usage event)
            (magent-agent-loop-stop-reason loop)
@@ -235,7 +238,9 @@ being normalized into structured tool calls."
     ('error
      (setf (magent-agent-loop-status loop) 'failed
            (magent-agent-loop-error loop)
-           (magent-sampling-event-message event)))
+           (magent-sampling-event-message event))
+     (magent-agent-loop-set-tool-continuation
+      loop (magent-sampling-event-continuation event)))
     ('usage
      (setf (magent-agent-loop-usage loop)
            (magent-sampling-event-usage event))))
@@ -1236,8 +1241,8 @@ the sampler return value."
             :metadata (magent-sampling-request-metadata request)
             :callback (lambda (event)
                         (unless (magent-agent-loop--aborted-p loop)
-                          (when-let* (((eq (magent-sampling-event-type event)
-                                           'tool-call-batch-end))
+                          (when-let* (((memq (magent-sampling-event-type event)
+                                             '(tool-call-batch-end error)))
                                       (continuation
                                        (magent-sampling-event-continuation event)))
                             (magent-sampling-event-set-continuation

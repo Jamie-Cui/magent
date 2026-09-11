@@ -1,0 +1,50 @@
+{
+  "packet_sha256": "74564885623915431857d0953e7df71d695ae9f2d4980edeb3239d300574a216",
+  "runs": [
+    {
+      "run": 1,
+      "requests": 3,
+      "elapsed_seconds": 19.47,
+      "tool_calls": 2,
+      "opening": true,
+      "intermediate_messages": 0,
+      "plans": 0,
+      "time_to_first_assistant_seconds": 2.15,
+      "max_gap_between_assistant_chunks_seconds": 7.59,
+      "reasoning_characters": 808,
+      "review_final_gate_correct": true,
+      "review_no_deployment_claim": true
+    },
+    {
+      "run": 2,
+      "requests": 3,
+      "elapsed_seconds": 25.94,
+      "tool_calls": 2,
+      "opening": true,
+      "intermediate_messages": 0,
+      "plans": 0,
+      "time_to_first_assistant_seconds": 2.32,
+      "max_gap_between_assistant_chunks_seconds": 13.17,
+      "reasoning_characters": 2433,
+      "review_final_gate_correct": true,
+      "review_no_deployment_claim": true
+    },
+    {
+      "run": 3,
+      "requests": 3,
+      "elapsed_seconds": 31.63,
+      "tool_calls": 2,
+      "opening": true,
+      "intermediate_messages": 1,
+      "plans": 0,
+      "time_to_first_assistant_seconds": 1.5,
+      "max_gap_between_assistant_chunks_seconds": 14.98,
+      "reasoning_characters": 3319,
+      "review_final_gate_correct": true,
+      "review_no_deployment_claim": true
+    }
+  ],
+  "real_http_requests": 9,
+  "acceptance": "not_met",
+  "note": "Only run 3 emitted an intermediate update, and it mainly recited configuration. No controlled A/B or long-task robustness claim."
+}

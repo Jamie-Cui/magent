@@ -1818,9 +1818,9 @@ Return the child loop handle when startup succeeds."
                  :on-complete
                  (lambda (response)
                    (magent-lifecycle-events-stop-subagent subagent-context)
-                   (let* ((success (magent-execution-result-success-p response))
+                   (let* ((completed (magent-execution-result-completed-p response))
                           (text (magent-execution-result-content-string response))
-                          (failed (not success)))
+                          (failed (not completed)))
                      (magent-tools--agent-job-update-from-child
                       job child-session
                       (if failed 'failed 'completed)
@@ -2336,7 +2336,7 @@ See `magent-agent-loop-filter-display-args'.")
 (defvar magent-tools--bash-tool
   (gptel-make-tool
    :name "bash"
-   :description "Execute one synchronous command with Bash pipefail enabled and ordinary non-errexit command sequencing. Commands separated by ; continue after a nonzero status; use && or explicit set -e for fail-fast behavior. A failed pipeline stage makes the tool fail unless handled explicitly. Background jobs started with & do not survive the tool call. Do not hide long-running command progress behind tail."
+   :description "Execute one synchronous command with Bash pipefail enabled and ordinary non-errexit command sequencing. Commands separated by ; continue after a nonzero status; use && or explicit set -e for fail-fast behavior. A failed pipeline stage makes the tool fail unless handled explicitly. Background jobs started with & do not survive the tool call. A trailing successful echo can mask a failed test; preserve the test exit status explicitly. Do not hide long-running command progress behind tail."
    :args (list '(:name "command"
                        :type string
                        :description "Shell command to execute")
@@ -2532,6 +2532,41 @@ See `magent-agent-loop-filter-display-args'.")
 
 ;;; Canonical tool catalog
 
+(defun magent-tools--update-plan (plan &optional explanation)
+  "Record PLAN and optional EXPLANATION in the current request's ledger."
+  (unless (magent-request-context-p magent-tools--request-context)
+    (error "Plan updates require an active request context"))
+  (let* ((context magent-tools--request-context)
+         (session (magent-request-context-session context))
+         (item (magent-thread-record-plan
+                (magent-session-thread-ledger session)
+                (magent-request-context-turn-id context) plan explanation)))
+    (magent-session-save-deferred-for-session
+     session (magent-request-context-scope context))
+    (magent-request-context-notify
+     context 'plan-update :entries (magent-thread-item-output item)
+     :explanation explanation)
+    (magent-tools--completed "Plan updated.")))
+
+(defvar magent-tools--update-plan-tool
+  (gptel-make-tool
+   :name "update_plan"
+   :description "Replace the task plan with concise steps and their current status. Use for substantial multi-step work; skip simple tasks. Keep at most one step in_progress. Revise the plan when evidence changes the approach and mark steps completed only when their stated work is done. This records progress; it does not execute steps or end the turn."
+   :args (list '(:name "plan" :type array
+                       :items (:type object
+                               :properties (:step (:type string)
+                                            :status (:type string
+                                                     :enum ["pending" "in_progress" "completed"]))
+                               :required ["step" "status"]
+                               :additionalProperties :json-false)
+                       :description "The complete updated list of steps")
+               '(:name "explanation" :type string :optional t
+                       :description "Brief reason for a material plan change")
+               magent-tools--reason-arg)
+   :function #'magent-tools--update-plan
+   :category "magent")
+  "Tool definition for `update_plan'.")
+
 (defconst magent-tools-catalog
   `((:name "read_file" :tool ,magent-tools--read-file-tool
      :permission read :locality tramp-file)
@@ -2563,6 +2598,8 @@ See `magent-agent-loop-filter-display-args'.")
      :permission agent :locality local)
     (:name "close_agent" :tool ,magent-tools--close-agent-tool
      :permission agent :locality local)
+    (:name "update_plan" :tool ,magent-tools--update-plan-tool
+     :permission plan :locality local)
     (:name "web_search" :tool ,magent-tools--web-search-tool
      :permission web_search :locality local))
   "Canonical data catalog for Magent tools.")

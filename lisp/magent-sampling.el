@@ -19,7 +19,10 @@
 (require 'cl-lib)
 
 (defconst magent-sampling-event-types
-  '(text-delta
+  '(message-start
+    message-end
+    provider-item
+    text-delta
     reasoning-delta
     reasoning-end
     tool-call
@@ -102,7 +105,7 @@ must never contain credentials or backend connection settings."
 
 (defvar magent-sampling--event-continuations
   (make-hash-table :test #'eq :weakness 'key)
-  "Runtime provider continuations keyed by batch-end event identity.")
+  "Runtime provider continuations keyed by batch-end or retryable error events.")
 
 (defun magent-sampling-event-result-callback (event)
   "Return EVENT's runtime tool-result callback, if any."

@@ -738,6 +738,13 @@ but omit the reason prefix from the ordinary tool-call UI."
                text))))
       (lambda (event)
         (pcase (plist-get event :type)
+          ('assistant-message-start
+           (when (and (eq stream-kind 'assistant) (not stream-start-p))
+             (magent-acp--session-update
+              client session-id
+              `((sessionUpdate . "agent_message_chunk")
+                (content . ,(magent-acp--content-block "\n\n")))))
+           (reset-stream))
           ('assistant-delta
            (when-let* ((text (stream-text 'assistant (plist-get event :text))))
              (magent-acp--session-update
@@ -752,10 +759,20 @@ but omit the reason prefix from the ordinary tool-call UI."
                 client session-id
                 `((sessionUpdate . "agent_thought_chunk")
                   (content . ,(magent-acp--content-block text)))))))
+          ('sampling-retry
+           (reset-stream)
+           (magent-acp--notify-agent-message
+            client session-id (format "\n\n[Magent: %s]\n\n" (plist-get event :text))))
           ('action-progress
            (reset-stream)
            (magent-acp--notify-agent-message
             client session-id (or (plist-get event :text) "")))
+          ('plan-update
+           (reset-stream)
+           (magent-acp--session-update
+            client session-id
+            `((sessionUpdate . "plan")
+              (entries . ,(plist-get event :entries)))))
           ('tool-call-start
            (reset-stream)
            (magent-acp--session-update
@@ -1019,6 +1036,14 @@ does not prepare definitions or install a session into the runtime registry."
 (defun magent-acp--emit-item-replay (client session-id item)
   "Replay ledger ITEM to CLIENT for SESSION-ID."
   (pcase (magent-thread-item-type item)
+    ('notice
+     (magent-acp--notify-agent-message
+      client session-id (format "\n\n[Magent: %s]\n\n" (magent-thread-item-content item))))
+    ('plan
+     (magent-acp--session-update
+      client session-id
+      `((sessionUpdate . "plan")
+        (entries . ,(magent-thread-item-output item)))))
     ('message
      (pcase (magent-thread-item-role item)
        ('user
@@ -1049,7 +1074,8 @@ does not prepare definitions or install a session into the runtime registry."
           (toolCallId . ,tool-id)
           (title . ,(or (magent-thread-item-name item) "tool"))
           (kind . "other")
-          (status . "completed")
+          (status . ,(if (eq (magent-thread-item-status item) 'completed)
+                         "completed" "failed"))
           (rawInput . ,(magent-acp--raw-input-object
                          (magent-thread-item-input item)))))
        (magent-acp--session-update
@@ -1057,9 +1083,8 @@ does not prepare definitions or install a session into the runtime registry."
         `((sessionUpdate . "tool_call_update")
           (toolCallId . ,tool-id)
           (title . ,(or (magent-thread-item-name item) "tool"))
-          (status . ,(if (eq (magent-thread-item-status item) 'failed)
-                         "failed"
-                       "completed"))
+          (status . ,(if (eq (magent-thread-item-status item) 'completed)
+                         "completed" "failed"))
           (content . ,(vector
                        (magent-acp--tool-content
                         (format "%s" (or (magent-thread-item-output item)
@@ -1070,9 +1095,16 @@ does not prepare definitions or install a session into the runtime registry."
   "Replay RUNTIME-SESSION ledger to CLIENT."
   (let* ((session-id (magent-runtime-session-id runtime-session))
          (thread (magent-session-thread-ledger
-                  (magent-runtime-session-magent-session runtime-session))))
+                  (magent-runtime-session-magent-session runtime-session)))
+         previous-assistant)
     (dolist (turn (magent-thread-turns thread))
       (dolist (item (magent-thread-turn-items turn))
+        (let ((assistant (and (eq (magent-thread-item-type item) 'message)
+                              (eq (magent-thread-item-role item) 'assistant))))
+          (when (and assistant previous-assistant)
+            (magent-acp--notify-agent-message client session-id "\n\n"))
+          (unless (eq (magent-thread-item-type item) 'provider)
+            (setq previous-assistant assistant)))
         (magent-acp--emit-item-replay client session-id item)))))
 
 (defun magent-acp--handle-set-mode (params &optional expected-scope)

@@ -1092,6 +1092,42 @@ number of lifecycle objects changed."
       (cl-incf changed))
     changed))
 
+(defun magent-thread-normalize-plan (plan)
+  "Validate PLAN and return canonical ACP plan entries.
+PLAN is a sequence of objects with exactly `step' and `status'.  Status is
+pending, in_progress, or completed; at most one step may be in progress."
+  (unless (and (or (vectorp plan) (proper-list-p plan))
+               (> (length plan) 0))
+    (error "Plan must contain at least one step"))
+  (let ((active 0) entries)
+    (seq-doseq (entry plan)
+      (let* ((value (magent-thread--alist-to-keyword-plist entry))
+             (step (plist-get value :step))
+             (status (plist-get value :status)))
+        (unless (and (magent-json--plist-p value)
+                     (= (length value) 4)
+                     (stringp step) (not (string-blank-p step))
+                     (member status '("pending" "in_progress" "completed")))
+          (error "Each plan step requires nonempty step text and a valid status"))
+        (when (equal status "in_progress") (cl-incf active))
+        (push `((content . ,step) (priority . "medium") (status . ,status))
+              entries)))
+    (when (> active 1)
+      (error "Plan may have at most one in_progress step"))
+    (vconcat (nreverse entries))))
+
+(defun magent-thread-record-plan (thread turn-id plan &optional explanation)
+  "Record a validated PLAN revision in THREAD for TURN-ID.
+EXPLANATION describes why the plan changed.  This records intent and progress;
+it does not execute steps or prove that the task succeeded."
+  (unless (or (null explanation) (stringp explanation))
+    (error "Plan explanation must be text"))
+  (let* ((entries (magent-thread-normalize-plan plan))
+         (item (magent-thread-start-item
+                thread turn-id 'plan :content explanation :output entries)))
+    (magent-thread-complete-item thread item)
+    item))
+
 (defun magent-thread-all-items (thread)
   "Return all items in THREAD in chronological turn order."
   (apply #'append

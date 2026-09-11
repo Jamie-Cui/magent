@@ -20,7 +20,7 @@ Codex 在 SDK/app-server 边界暴露 thread event stream：
 Magent 保留同类工作流边界，但适配 Emacs：
 
 - Provider transport 仍然走 ~gptel-request~ 。
-- Magent loop 自己负责 tool dispatch、continuation outcome、abort 和 Emacs UI rendering；turn layer 遵循 Codex-style continuation：tool output 触发下一次 sampling，assistant completion 结束 turn，即使 assistant text 为空。
+- Magent loop 自己负责 tool dispatch、continuation outcome、abort 和 Emacs UI rendering；tool output 触发下一次 sampling，正常最终答复结束 turn；缺少最终正文时普通 turn 失败，符合条件的断流先进行有限重试。
 - 不引入 Codex sandbox、seatbelt、bubblewrap 或 shell isolation parity。
 
 Codex 中最接近的参考点是 SDK event names、core sampling loop、app-server event conversion 和 thread status shape。Magent 借鉴的是事件边界和 turn/item 生命周期，不复制 Codex 的隔离和 app-server runtime。
@@ -118,12 +118,12 @@ Replay 语义：
 7. Tool-call events 累积到 provider-neutral ~tool-call-batch-end~ 。
 8. Tool dispatch 启动 ~tool~ items，记录 approval metadata，并把同一 item 更新为 ~completed~ 或 ~failed~ 。
 9. Tool output 返回 ~tool-output~ 等 continuation outcome； ~magent-agent-run-turn~ 决定是否从 session ledger 重建 prompt 并继续 sampling。
-10. Provider 明确完成但 assistant text 为空时，Magent 记录 ~empty-completion~ metadata 并结束本轮，不再请求模型。
+10. Provider 明确完成但 assistant text 为空时，Magent 记录 ~empty-completion~ metadata 并将本轮标记为 failed，不再请求模型。
 11. Assistant completion 记录 assistant message item，并完成 turn。
 12. Abort、failure 和 dropped queued submissions 分别把 turn 转成 ~interrupted~ 、 ~failed~ 或 ~dropped~ ；aborted turn 下的 in-progress items 标记为 ~cancelled~ 。
 13. ~magent-max-sampling-requests~ 是可选 safety guard，默认关闭；启用后，到达上限会直接使本轮失败。
 
-Prompt reconstruction 是 ledger-driven。知道 current turn id 时，Magent 会包含 completed history、interrupted turn 的 user 侧以及该 turn，使后续请求能恢复已取消请求的上下文，同时避免后续 queued user submissions 泄漏进 active model request。
+Prompt reconstruction 是 ledger-driven。知道 current turn id 时，Magent 会包含 completed、interrupted、failed turn 的用户目标、按顺序完成的消息与工具结果，以及当前 turn，使后续请求能恢复已取消请求的上下文，同时避免后续 queued user submissions 泄漏进 active model request。
 
 * UI 投影
 
@@ -164,3 +164,37 @@ Agent-workflow/UI refactor backlog 已无开放 TODO。未来 hardening 候选�
 - 不复制 Codex 的 intra-turn input queue/mailbox semantics。
 - 不直接使用 Codex rollout files。
 - 不把 tool call 和 tool output 分成两条 source-of-truth records。
+
+* 有序消息、原生续接与计划
+
+工具执行前的 assistant 进度消息和最终答复分别保存为独立 item。Provider 提供
+phase 时原样保留；没有 phase 时，工具前文字标为 commentary，最后一次 sample
+的正文作为答复。系统提示要求简洁地说明目标、证据、决策变化和验证结果，
+隐藏的 reasoning 仍独立处理，不额外调用“反思”或“评判”模型。
+
+Responses 原始 output item 以不透明 JSON 存入 provider item，并记录 backend
+、endpoint identity 和 model。适配层观察 gptel 已解码的事件，HTTP/SSE 仍由 gptel 处理。原始消息
+阶段、加密 reasoning 与 function call 用于当前续接和同一路由的历史恢复，
+避免重复消息或调用。切换 provider/model 时使用可见消息与工具结果；compaction
+排除不透明续接数据。中断后没有结果的调用会在 replay 中得到明确的未知结果说明，
+不会伪称已执行。
+
+Schema v6 已支持这些 item、phase、metadata 和 output，不需要迁移文件。
+旧的合并消息原样保留，缺失的边界不作推测。普通 turn 缺少最终答复会失败；
+明确允许空结果的直接 Action sampler 保持其契约。completed 只表示执行正常结束，
+不代表工程目标、测试或所有工具都成功。
+
+Chat Completions 流缺少停止原因、且本次尚未输出正文时，错误事件可以提供
+重试 continuation，覆盖提前正常关闭和 HTTP 200 下的 curl 18 部分传输错误。
+适配层在 gptel 清理阶段推进状态机之前标记传输失败，阻止未完成的工具调用执行。
+turn 层由 magent-stream-retry-limit 控制，默认最多 2 次，
+并计入 magent-max-sampling-requests。适配层延迟恢复同一份 provider 输入，
+清除未完成的响应状态；已执行的工具不会重跑。取消 turn 会销毁请求 buffer
+并取消重试 timer。notice item 与 sampling-retry 事件显示重试进度，但不进入
+模型历史。provider 错误、token 上限、已输出正文的断流不重试；直接 Action
+sampler 保持其原有错误处理行为。
+
+update_plan 使用本地 plan 权限组，将完整计划保存为现有 ledger 的 plan item，
+通过 ACP 原生 plan 视图实时显示并恢复。每一步包含 step 和 status，状态为
+pending、in_progress 或 completed，最多一步 in_progress。它仅记录进度，不运行
+步骤、不自动重规划，也不因步骤全部完成而结束 turn。

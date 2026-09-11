@@ -1,0 +1,76 @@
+#+title: Communication acceptance — DeepSeek, 2026-09-12
+
+* Result
+
+The original goal remains open: sustained, visible, evidence-based decisions
+during tool work. The candidate prompt produced opening updates in all three
+fictional runs, but an intermediate update in only one. That update largely
+repeated configuration and announced the next query. All final answers
+correctly rejected readiness because one check failed.
+
+| Run | HTTP requests | Tools | Opening update | Intermediate update | Final gate judgment | Time |
+|-----+---------------+-------+----------------+---------------------+---------------------+------|
+|   1 |             3 |     2 | Yes            | None                | Correct             | 19.5s |
+|   2 |             3 |     2 | Yes            | None                | Correct             | 25.9s |
+|   3 |             3 |     2 | Yes            | One, mostly recap   | Correct             | 31.6s |
+
+No run called update_plan. Tool reasons, reasoning items and the final answer
+were excluded from counts of intermediate assistant communication. A plan
+would not have compensated for missing user-facing decisions.
+
+* Representative evidence
+
+Run 1 opened with: “我先读取网关的路由配置，确认 /chat 的上线条件及其要查询的 check_id。”
+It then performed both dependent reads without another assistant update.
+
+Run 3's intermediate text was: “配置显示服务存在，路由为 `/chat/*`，上游是
+`existing-chat-service:4000`，检查项是 `prefix_routes`。现在查询该检查项的结果。”
+This is visible progress, but offers little explanation of readiness or the
+uncertainty the next check resolves.
+
+All three finals recognized the failed check and said deployment had not
+happened. Runs 2 and 3 explicitly distinguished a successful report command
+from failed checks inside its report. However, some proposed fixes exceeded
+the evidence: run 1 ruled out changing the gateway, and run 3 described a
+relative redirect as universally safe across prefixes without implementation
+evidence. These are unverified recommendations, not tested fixes.
+
+* Method and scope
+
+- Exact frozen inputs: [[file:LOOP_COMMUNICATION_EVAL.json]]. It contains the
+  production global/build/runtime prompt plus a fictional read-only task.
+- Backend: DeepSeek deepseek-v4-pro through real Magent agent-run-turn,
+  normalized sampling and gptel/curl. xhigh maps to wire reasoning_effort=high,
+  matching the existing adapter behavior. Reasoning display stayed ignore.
+- Only emacs_read fixture observations and update_plan were available. Tool
+  schemas were frozen to the reviewed JSON before transport. Initial system
+  and user text, destination, model, token bounds, request count and subsequent
+  message roles were validated before every request.
+- Three runs, nine HTTP requests total, 4096 maximum output tokens per request.
+  Each completed within its six-request and 120-second bound; no stream retry
+  or follow-up evaluation beyond the three authorized runs was performed.
+- The first credential preflight failed locally before HTTP dispatch because
+  isolated Emacs could not decrypt auth-source. The configured credential was
+  then transferred from main Emacs over the local server socket, without files
+  or command-line exposure. The temporary isolated credential was cleared
+  afterwards, and zero active provider requests remained.
+- Runner: [[file:test/magent-communication-eval.el]]. It passed initial request
+  dry-run validation and byte compilation with warnings treated as errors.
+- Reports preserve normal assistant messages, tool inputs and reasoning
+  character counts. Raw reasoning and credentials are omitted.
+
+* Artifacts and limits
+
+[[file:test/results/communication-20260912/run-1.json][Run 1]],
+[[file:test/results/communication-20260912/run-2.json][Run 2]],
+[[file:test/results/communication-20260912/run-3.json][Run 3]], and
+[[file:test/results/communication-20260912/summary.json][timing/count summary]].
+
+These short fixtures are not a controlled A/B comparison with the previous
+prompt and do not establish robustness on long coding tasks. They show that
+opening messages can be generated and preserved with reasoning hidden, while
+mid-task communication remains inconsistent under the candidate instructions.
+Do not mark the broader Codex-style collaboration goal completed, reclassify
+reasoning as assistant commentary, or add synthetic narration to make metrics
+appear to pass. Further model/prompt experiments require a new concrete scope;
+the approved three-run evaluation is finished.
