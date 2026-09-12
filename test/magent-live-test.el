@@ -200,6 +200,116 @@
         :acp (magent-live-test--feature-source 'magent-acp)
         :agent-shell (magent-live-test--feature-source 'magent-agent-shell)))
 
+(defun magent-live-test--sampling-diagnostic-summary ()
+  "Return bounded transport metadata without prompts, outputs, or secrets."
+  (list
+   :log
+   (when-let* ((buffer (get-buffer "*gptel-log*")))
+     (with-current-buffer buffer
+       (save-excursion
+         (goto-char (point-max))
+         (let ((end (point)) sections)
+           (dotimes (_ 12)
+             (when (re-search-backward "\"gptel\": \"\\([^\"]+\\)\"" nil t)
+               (let ((type (match-string-no-properties 1))
+                     (start (point)))
+                 (push (list :type type :characters (- end start)
+                             :timestamp
+                             (save-excursion
+                               (when (re-search-forward
+                                      "\"timestamp\": \"\\([^\"]+\\)\"" end t)
+                                 (match-string-no-properties 1))))
+                       sections)
+                 (setq end start))))
+           sections))))
+   :requests
+   (when (boundp 'gptel--request-alist)
+     (cl-loop for (handle . entry) in gptel--request-alist
+              for fsm = (car entry)
+              when (gptel-fsm-p fsm)
+              collect
+              (let* ((info (gptel-fsm-info fsm))
+                     (context (plist-get info :context))
+                     (pair (plist-get context :magent-native-context))
+                     (state (cdr-safe pair)))
+                (list :state (gptel-fsm-state fsm)
+                      :process-status (and (processp handle)
+                                           (process-status handle))
+                      :http-status (plist-get info :http-status)
+                      :stop-reason (plist-get info :stop-reason)
+                      :usage (plist-get info :tokens)
+                      :tool-pending (plist-get info :tool-pending)
+                      :tool-count (length (plist-get info :tool-use))
+                      :terminal-emitted (and (hash-table-p state)
+                                             (gethash :terminal-emitted state))))))))
+
+(defun magent-live-test--last-chat-stream-summary (&optional previous)
+  "Summarize a logged chat stream without exposing generated text.
+PREVIOUS selects that many responses before the last one."
+  (when-let* ((buffer (get-buffer "*gptel-log*")))
+    (with-current-buffer buffer
+      (save-excursion
+        (goto-char (point-max))
+        (when (re-search-backward "\"gptel\": \"response body\"" nil t (1+ (or previous 0)))
+          (let ((end (save-excursion
+                       (forward-line 1)
+                       (if (re-search-forward "\"gptel\":" nil t)
+                           (line-beginning-position) (point-max))))
+                (chunks 0) (done 0) (malformed 0) (text 0) (reasoning 0)
+                (tool-chunks 0) finishes errors last-chunks)
+            (while (re-search-forward "^data: *\\(.*\\)$" end t)
+              (let ((raw (match-string-no-properties 1)))
+                (if (equal (string-trim raw) "[DONE]")
+                    (cl-incf done)
+                  (condition-case nil
+                      (let* ((event (json-parse-string raw :object-type 'plist
+                                                       :array-type 'array :null-object :null))
+                             (choice (and (vectorp (plist-get event :choices))
+                                          (> (length (plist-get event :choices)) 0)
+                                          (aref (plist-get event :choices) 0)))
+                             (delta (plist-get choice :delta))
+                             (finish (plist-get choice :finish_reason)))
+                        (cl-incf chunks)
+                        (when (stringp (plist-get delta :content))
+                          (cl-incf text (length (plist-get delta :content))))
+                        (when (stringp (plist-get delta :reasoning_content))
+                          (cl-incf reasoning (length (plist-get delta :reasoning_content))))
+                        (when (plist-get delta :tool_calls) (cl-incf tool-chunks))
+                        (when (stringp finish) (push finish finishes))
+                        (when (plist-get event :error)
+                          (push (magent-live-test--redact-sensitive-text
+                                 (format "%S" (plist-get event :error))) errors))
+                        (push (list :keys (cl-loop for (key _value) on event by #'cddr collect key)
+                                    :index (plist-get choice :index) :finish finish
+                                    :delta-keys (cl-loop for (key _value) on delta by #'cddr collect key))
+                              last-chunks)
+                        (setq last-chunks (seq-take last-chunks 3)))
+                    ((json-error json-parse-error) (cl-incf malformed))))))
+            (list :chunks chunks :done done :malformed malformed
+                  :text-characters text :reasoning-characters reasoning
+                  :tool-chunks tool-chunks :finish-reasons finishes
+                  :errors errors :last-chunks (reverse last-chunks))))))))
+
+(defun magent-live-test--sampling-connection-summary ()
+  "Return selected connection facts without credentials or proxy addresses."
+  (list :request-timeout magent-request-timeout
+        :backend-type (type-of gptel-backend)
+        :host (gptel-backend-host gptel-backend)
+        :endpoint (gptel-backend-endpoint gptel-backend)
+        :proxy-configured (and (stringp gptel-proxy) (not (string-empty-p gptel-proxy)))
+        :environment-proxy-configured
+        (cl-some (lambda (name) (and (getenv name) t))
+                 '("HTTPS_PROXY" "https_proxy" "ALL_PROXY" "all_proxy"))
+        :curl-timeouts
+        (cl-loop for (flag value) on (append gptel-curl-extra-args
+                                             (let ((args (gptel-backend-curl-args gptel-backend)))
+                                               (when (listp args) args)))
+                 when (member flag '("--max-time" "-m" "--connect-timeout"
+                                     "--speed-time" "--speed-limit"))
+                 collect (list flag (if (and (stringp value)
+                                             (string-match-p "\\`[0-9.]+\\'" value))
+                                        value "configured")))))
+
 (defun magent-live-test--debug-state ()
   "Return compact live Magent state for assertion failures."
   (format (concat "processing=%S current-scope=%S"
@@ -853,7 +963,7 @@ return that path."
          20
          (format "Magent live loop tool turn did not finish: %s"
                  (magent-live-test--debug-state)))
-        (should (equal final-response "Checking buffers. Done."))
+        (should (equal final-response "Done."))
         (should (= call-count 2))
         (let* ((messages (magent-session-context-view
                           (magent-session-get) 'transcript))
@@ -861,6 +971,8 @@ return that path."
                           (lambda (msg) (eq (magent-live-test--transcript-role msg) 'tool))
                           messages))
                (tool-content (magent-live-test--transcript-content tool-msg)))
+          (should (equal (mapcar #'magent-live-test--transcript-role messages)
+                         '(user assistant tool assistant)))
           (should tool-msg)
           (should (equal (plist-get tool-content :id) "call_live_1"))
           (should (equal (plist-get tool-content :name) "emacs_eval"))
@@ -1043,6 +1155,60 @@ return that path."
                 (set-process-query-on-exit-flag process nil))
               (let ((kill-buffer-query-functions nil))
                 (kill-buffer buffer)))))))))
+
+
+(ert-deftest magent-live-test-plan-renders-through-native-acp ()
+  "A plan tool update reaches the actual agent-shell plan view."
+  :tags '(:magent-live-smoke)
+  (require 'agent-shell)
+  (magent-live-test--with-isolated-runtime
+    (let ((agent-shell-prefer-viewport-interaction nil)
+          (agent-shell-show-welcome-message nil)
+          (magent-agent-shell-session-strategy 'new)
+          (agent-shell-session-strategy 'new)
+          buffer)
+      (unwind-protect
+          (progn
+            (setq buffer (agent-shell-start :config (magent-agent-shell-make-config)))
+            (magent-live-test--wait-until
+             (lambda () (magent-live-test--agent-shell-bootstrap-complete-p buffer))
+             10 "Plan test shell failed to initialize")
+            (let* ((runtime-session (magent-live-test--agent-shell-runtime-session buffer))
+                   (session (magent-runtime-session-magent-session runtime-session))
+                   (thread (magent-session-thread-ledger session))
+                   (turn (magent-thread-create-turn thread "Plan view test"))
+                   (client (with-current-buffer buffer (map-elt agent-shell--state :client)))
+                   (context (magent-request-context-create
+                             :session session :scope (magent-runtime-session-scope runtime-session)
+                             :turn-id (magent-thread-turn-id turn)
+                             :observer (magent-acp--observer client (magent-runtime-session-id runtime-session))))
+                   (magent-tools--request-context context))
+              (magent-tools--update-plan
+               [(:step "Inspect plan rendering" :status "in_progress")
+                (:step "Verify plan persistence" :status "pending")])
+              (magent-live-test--wait-until
+               (lambda ()
+                 (with-current-buffer buffer
+                   (save-excursion
+                     (goto-char (point-min))
+                     (search-forward "Verify plan persistence" nil t))))
+               5 "Native ACP plan was not rendered")
+              (magent-tools--update-plan
+               [(:step "Plan display verified" :status "completed")])
+              (magent-live-test--wait-until
+               (lambda ()
+                 (with-current-buffer buffer
+                   (save-excursion
+                     (goto-char (point-min))
+                     (search-forward "Plan display verified" nil t))))
+               5 "Native ACP plan revision was not rendered")
+              (should (= (cl-count 'plan (magent-thread-turn-items turn)
+                                    :key #'magent-thread-item-type) 2))
+              (magent-thread-complete-turn thread (magent-thread-turn-id turn))))
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer
+            (setq-local shell-maker-prompt-before-killing-buffer nil))
+          (let ((kill-buffer-query-functions nil)) (kill-buffer buffer)))))))
 
 (ert-deftest magent-live-test-real-simple-prompt ()
   "Send a real non-tool request through the configured gptel provider."

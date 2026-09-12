@@ -343,19 +343,245 @@ requests, so Magent normalizes this boundary before curl serializes it."
         (append curl-args '("--suppress-connect-headers"))
       curl-args)))
 
+(defvar magent-sampling-gptel--decoded-events nil
+  "Dynamically bound box collecting events decoded by gptel.")
+
+(defvar magent-sampling-gptel--replay-request nil
+  "Dynamically bound request while gptel builds provider history.")
+
+(defun magent-sampling-gptel--capture-decoded-event-a (value)
+  "Observe decoded VALUE without parsing or changing gptel's transport."
+  (when (and magent-sampling-gptel--decoded-events (listp value)
+             (or (stringp (plist-get value :type))
+                 (vectorp (plist-get value :choices))
+                 (plist-get value :error)))
+    (push value (cdr magent-sampling-gptel--decoded-events)))
+  value)
+
+(defun magent-sampling-gptel--native-context (info)
+  "Return the adapter request/state pair for Responses INFO, or nil."
+  (when (magent-sampling-gptel--backend-openai-responses-p
+         (plist-get info :backend))
+    (plist-get (plist-get info :context) :magent-native-context)))
+
+(defun magent-sampling-gptel--native-route-key (backend model)
+  "Return a non-secret identity for BACKEND's endpoint and MODEL."
+  (secure-hash 'sha256
+               (prin1-to-string
+                (list (type-of backend) (gptel-backend-name backend)
+                      (gptel-backend-protocol backend) (gptel-backend-host backend)
+                      (gptel-backend-endpoint backend)
+                      (magent-sampling-gptel--model-name model)))))
+
+(defun magent-sampling-gptel--native-metadata (request item)
+  "Return durable route attribution and opaque JSON for provider ITEM."
+  (list :format "openai-responses"
+        :backend (gptel-backend-name (magent-sampling-request-backend request))
+        :model (magent-sampling-gptel--model-name
+                (magent-sampling-request-model request))
+        :route (magent-sampling-gptel--native-route-key
+                (magent-sampling-request-backend request)
+                (magent-sampling-request-model request))
+        :json (magent-json-encode item)))
+
+(defun magent-sampling-gptel--native-item-text (item)
+  "Return display text from one Responses message ITEM."
+  (mapconcat (lambda (part)
+               (or (plist-get part :text)
+                   (plist-get part :refusal) ""))
+             (plist-get item :content) ""))
+
+(defun magent-sampling-gptel--native-event (request state event)
+  "Project one already decoded Responses EVENT into REQUEST's STATE."
+  (let* ((type (plist-get event :type))
+         (item (plist-get event :item))
+         (id (or (plist-get item :id) (plist-get event :item_id)))
+         (item-type (plist-get item :type)))
+    (puthash :native-stream t state)
+    (pcase type
+      ("response.output_item.added"
+       (when (equal item-type "message")
+         (magent-sampling-gptel--emit
+          request (magent-sampling-event-create
+                   'message-start :id id
+                   :metadata (list :phase (plist-get item :phase))))))
+      ((or "response.output_text.delta" "response.refusal.delta")
+       (let ((text (or (plist-get event :delta) "")))
+         (puthash :native-text-ids
+                  (cons id (gethash :native-text-ids state)) state)
+         (push text (gethash :text-chunks state))
+         (magent-sampling-gptel--emit
+          request (magent-sampling-event-create
+                   'text-delta :id id :text text))))
+      ((or "response.reasoning_summary_text.delta" "response.reasoning.delta")
+       (puthash :native-reasoning-ids
+                (cons id (gethash :native-reasoning-ids state)) state)
+       (puthash :reasoning-emitted t state)
+       (magent-sampling-gptel--emit
+        request (magent-sampling-reasoning-delta-event
+                 (or (plist-get event :delta) ""))))
+      ((or "response.reasoning_summary_text.done" "response.reasoning.done")
+       (magent-sampling-gptel--emit
+        request (magent-sampling-reasoning-end-event)))
+      ("response.output_item.done"
+       (unless (member id (gethash :native-done-ids state))
+         (puthash :native-done-ids (cons id (gethash :native-done-ids state)) state)
+         (when (and (equal item-type "reasoning")
+                    (not (member id (gethash :native-reasoning-ids state))))
+           (let ((text (mapconcat (lambda (part) (or (plist-get part :text) ""))
+                                  (or (plist-get item :summary)
+                                      (plist-get item :content)) "")))
+             (unless (string-empty-p text)
+               (puthash :reasoning-emitted t state)
+               (magent-sampling-gptel--emit
+                request (magent-sampling-reasoning-delta-event text))
+               (magent-sampling-gptel--emit
+                request (magent-sampling-reasoning-end-event)))))
+         (when (equal item-type "message")
+           (let ((text (magent-sampling-gptel--native-item-text item)))
+             (unless (member id (gethash :native-text-ids state))
+               (magent-sampling-gptel--emit
+                request (magent-sampling-event-create
+                         'message-start :id id
+                         :metadata (list :phase (plist-get item :phase))))
+               (push text (gethash :text-chunks state))
+               (magent-sampling-gptel--emit
+                request (magent-sampling-event-create 'text-delta :id id :text text)))
+             (puthash :native-final-text
+                      (unless (equal (plist-get item :phase) "commentary") text)
+                      state)
+             (magent-sampling-gptel--emit
+              request (magent-sampling-event-create
+                       'message-end :id id
+                       :metadata (list :phase (plist-get item :phase))))))
+         (magent-sampling-gptel--emit
+          request (magent-sampling-event-create
+                   'provider-item :id id
+                   :metadata (magent-sampling-gptel--native-metadata request item))))))))
+
+(defun magent-sampling-gptel--native-completed (request state info response)
+  "Preserve RESPONSE output exactly for native continuation and later replay."
+  (unless (vectorp (plist-get response :output))
+    (error "Responses completion has no output array"))
+  (puthash :native-stream t state)
+  (seq-doseq (item (plist-get response :output))
+    (magent-sampling-gptel--native-event
+     request state (list :type "response.output_item.done" :item item)))
+  (let ((data (plist-get info :data)))
+    (plist-put data :input
+               (vconcat (gethash :native-input state)
+                        (plist-get response :output))))
+  (puthash :native-response-status (plist-get response :status) state)
+  (unless (equal (plist-get response :status) "completed")
+    (plist-put info :error
+               (format "Provider response ended with status %s"
+                       (plist-get response :status)))
+    (magent-sampling-gptel--emit-completed-or-textual-tool-calls
+     request state info "")))
+
+(defun magent-sampling-gptel--native-input (state info)
+  "Capture STATE's original request input before gptel mutates INFO."
+  (unless (gethash :native-input-captured state)
+    (puthash :native-input (copy-sequence (plist-get (plist-get info :data) :input))
+             state)
+    (puthash :native-input-captured t state)))
+
+(defun magent-sampling-gptel--parse-list-a (original backend prompt)
+  "Project Magent PROMPT extensions at the single gptel BACKEND boundary."
+  (if (not magent-sampling-gptel--replay-request)
+      (funcall original backend prompt)
+    (let ((request magent-sampling-gptel--replay-request)
+          (native (make-hash-table :test #'eq))
+          ids calls)
+      (when (magent-sampling-gptel--backend-openai-responses-p backend)
+        (dolist (entry prompt)
+          (when (eq (car-safe entry) 'provider)
+            (let ((metadata (cdr entry)))
+              (when (and (equal (plist-get metadata :format) "openai-responses")
+                         (equal (plist-get metadata :route)
+                                (magent-sampling-gptel--native-route-key
+                                 backend (magent-sampling-request-model request)))
+                         (equal (plist-get metadata :backend) (gptel-backend-name backend))
+                         (equal (plist-get metadata :model)
+                                (magent-sampling-gptel--model-name
+                                 (magent-sampling-request-model request))))
+                (let ((item (gptel--json-read-string (plist-get metadata :json))))
+                  (puthash entry item native)
+                  (push (plist-get item :id) ids)
+                  (when (equal (plist-get item :type) "function_call")
+                    (push (plist-get item :call_id) calls))))))))
+      (if (zerop (hash-table-count native))
+          (funcall original backend
+                   (cl-remove-if (lambda (entry) (eq (car-safe entry) 'provider)) prompt))
+        (cl-loop for entry in prompt
+                 for type = (car-safe entry)
+                 append
+                 (cond
+                  ((eq type 'provider)
+                   (when-let* ((item (gethash entry native)))
+                     (if (and (equal (plist-get item :type) "function_call")
+                              (not (cl-find (plist-get item :call_id) prompt
+                                            :key (lambda (candidate)
+                                                   (when (eq (car-safe candidate) 'tool)
+                                                     (plist-get (cdr candidate) :id)))
+                                            :test #'equal)))
+                         (list item
+                               (list :type "function_call_output"
+                                     :call_id (plist-get item :call_id)
+                                     :output "No result was recorded for this tool call. Execution may have been interrupted; inspect the current state before retrying."))
+                       (list item))))
+                  ((and (eq type 'response) (consp (cdr entry))
+                        (member (plist-get (cddr entry) :native-id) ids)) nil)
+                  ((and (eq type 'tool) (member (plist-get (cdr entry) :id) calls))
+                   (gptel--parse-tool-results backend (list (cdr entry))))
+                  (t (funcall original backend (list entry)))))))))
+
 (defun magent-sampling-gptel--sanitize-after-parse-response-a
     (orig-fn backend response info)
-  "Sanitize Magent-managed INFO after gptel parses a response."
-  (prog1 (funcall orig-fn backend response info)
-    (when (magent-sampling-gptel--managed-info-p info)
-      (magent-sampling-gptel--sanitize-info info))))
+  "Retain managed response items after gptel parses RESPONSE and INFO."
+  (let ((context (magent-sampling-gptel--native-context info)))
+    (when context (magent-sampling-gptel--native-input (cdr context) info))
+    (prog1 (funcall orig-fn backend response info)
+      (when context
+        (magent-sampling-gptel--native-completed
+         (car context) (cdr context) info response))
+      (when (magent-sampling-gptel--managed-info-p info)
+        (magent-sampling-gptel--sanitize-info info)))))
 
 (defun magent-sampling-gptel--sanitize-after-parse-stream-a
     (orig-fn backend info)
-  "Sanitize Magent-managed INFO after gptel parses a stream chunk."
-  (prog1 (funcall orig-fn backend info)
-    (when (magent-sampling-gptel--managed-info-p info)
-      (magent-sampling-gptel--sanitize-info info))))
+  "Observe ordered events already decoded by gptel from a stream chunk."
+  (let* ((context (magent-sampling-gptel--native-context info))
+         (chat-context
+          (when (magent-sampling-gptel--backend-openai-chat-p backend)
+            (plist-get (plist-get info :context) :magent-native-context)))
+         (magent-sampling-gptel--decoded-events
+          (and (or context chat-context) (list nil))))
+    (when context (magent-sampling-gptel--native-input (cdr context) info))
+    (when chat-context (puthash :chat-stream t (cdr chat-context)))
+    (prog1 (funcall orig-fn backend info)
+      (when chat-context
+        ;; HTTP success and a clean curl exit do not establish model
+        ;; completion.  gptel does not currently retain chat finish reasons.
+        (dolist (event (reverse (cdr magent-sampling-gptel--decoded-events)))
+          (when-let* ((error-data (gptel--parse-response-error event)))
+            (plist-put info :magent-provider-error error-data)
+            (plist-put info :error error-data))
+          (cl-loop for choice across (or (plist-get event :choices) [])
+                   for reason = (plist-get choice :finish_reason)
+                   when (and (equal (plist-get choice :index) 0)
+                             (stringp reason) (not (string-empty-p reason)))
+                   do (puthash :chat-finish-reason reason (cdr chat-context))
+                   and do (plist-put info :stop-reason reason))))
+      (when context
+        (dolist (event (nreverse (cdr magent-sampling-gptel--decoded-events)))
+          (if (member (plist-get event :type)
+                      '("response.completed" "response.incomplete" "response.failed"))
+              (magent-sampling-gptel--native-completed
+               (car context) (cdr context) info (plist-get event :response))
+            (magent-sampling-gptel--native-event (car context) (cdr context) event))))
+      (when (magent-sampling-gptel--managed-info-p info)
+        (magent-sampling-gptel--sanitize-info info)))))
 
 (defun magent-sampling-gptel--curl-provider-error (buffer info)
   "Return a structured provider error from curl response BUFFER.
@@ -397,21 +623,36 @@ blocks do not hide an otherwise valid JSON error response."
 
 (defun magent-sampling-gptel--capture-curl-error-before-cleanup-a
     (process _status)
-  "Capture a Magent provider error before gptel destroys PROCESS state."
+  "Capture PROCESS failure before gptel advances its state machine.
+gptel's nonzero-exit cleanup transitions before setting the error.  A
+partially parsed tool call must not reach TOOL during that transition."
   (when-let* ((requests
                (and (boundp 'gptel--request-alist)
                     (symbol-value 'gptel--request-alist)))
               (entry (alist-get process requests))
               (fsm (car entry))
               (info (gptel-fsm-info fsm))
-              ((magent-sampling-gptel--managed-info-p info))
-              (http-status (plist-get info :http-status))
-              ((not (member http-status '("100" "200")))))
-    (magent-sampling-gptel--capture-curl-provider-error
-     (process-buffer process) info)))
+              ((magent-sampling-gptel--managed-info-p info)))
+    (let ((exit-code (process-exit-status process)))
+      (plist-put info :magent-curl-exit-code exit-code)
+      (unless (zerop exit-code)
+        (plist-put info :error
+                   (or (plist-get info :error)
+                       (format "Curl failed with exit code %d" exit-code)))))
+    (unless (member (plist-get info :http-status) '("100" "200"))
+      (magent-sampling-gptel--capture-curl-provider-error
+       (process-buffer process) info))))
 
 (defun magent-sampling-gptel--install-boundary-advice ()
   "Install adapter-local gptel boundary sanitization advice."
+  ;; `gptel--json-read' is a macro.  Observe its decoder only while the
+  ;; managed Responses parser binds the collection box, including bytecode.
+  (dolist (decoder '(json-parse-buffer json-read))
+    (unless (advice-member-p #'magent-sampling-gptel--capture-decoded-event-a decoder)
+      (advice-add decoder :filter-return
+                  #'magent-sampling-gptel--capture-decoded-event-a)))
+  (unless (advice-member-p #'magent-sampling-gptel--parse-list-a 'gptel--parse-list)
+    (advice-add 'gptel--parse-list :around #'magent-sampling-gptel--parse-list-a))
   (unless (advice-member-p #'magent-sampling-gptel--reset-reasoning-block-a
                            'gptel--handle-wait)
     (advice-add 'gptel--handle-wait
@@ -508,6 +749,36 @@ that put the final answer only in a reasoning field."
      ((and (stringp content) (not (string-empty-p content))) content)
      ((not (string-empty-p streamed)) streamed)
      (t ""))))
+
+(defun magent-sampling-gptel--partial-chat-transfer-p (state info)
+  "Return non-nil for a curl partial-transfer error in chat STATE and INFO."
+  (and (gethash :chat-stream state)
+       (equal (plist-get info :http-status) "200")
+       (eq (plist-get info :magent-curl-exit-code) 18)
+       (not (plist-get info :magent-provider-error))))
+
+(defun magent-sampling-gptel--incomplete-stream-message (state info)
+  "Return an error if STATE and INFO lack a model completion boundary."
+  (cond
+   ((magent-sampling-gptel--partial-chat-transfer-p state info)
+    "Provider stream was interrupted (curl exit 18); recorded output is retained.")
+   ((and (gethash :chat-stream state)
+         (not (member (gethash :chat-finish-reason state)
+                      '("stop" "tool_calls" "function_call"))))
+    (if-let* ((reason (gethash :chat-finish-reason state)))
+        (format "Provider stream stopped with finish_reason=%s; recorded output is retained."
+                reason)
+      "Provider stream ended before a finish reason was received; recorded output is retained. Retry the turn to continue."))
+   ((and (gethash :chat-stream state)
+         (cl-some (lambda (call) (plist-member call :function))
+                  (plist-get info :tool-use)))
+    ;; gptel finalizes chat tool arguments only on the DONE marker.  A
+    ;; finish reason alone cannot make raw partial call records executable.
+    "Provider tool-call stream ended before tool arguments were finalized; recorded output is retained.")
+   ((and (gethash :native-stream state)
+         (not (equal (gethash :native-response-status state) "completed")))
+    (format "Provider response ended with status %s; recorded output is retained."
+            (or (gethash :native-response-status state) "incomplete")))))
 
 (defconst magent-sampling-gptel--dsml-tool-calls-open
   "<｜｜DSML｜｜tool_calls>"
@@ -759,10 +1030,23 @@ assistant prose."
   "Emit completion TEXT, or convert textual DSML tool calls into tool events.
 Return a symbol describing completion, including whether the native provider
 context remains paused for Magent recovery."
-  (let* ((metadata (magent-sampling-gptel--metadata info))
+  (when (gethash :native-stream state)
+    (setq text (or (gethash :native-final-text state) "")))
+  (let* ((metadata (append (magent-sampling-gptel--metadata info)
+                           (when (gethash :native-stream state)
+                             (list :native-messages t
+                                   :response-status (gethash :native-response-status state)))))
          (events (magent-sampling-gptel--parse-dsml-tool-calls text metadata)))
-    (if events
-        (let ((continuation
+    (cond
+     ((magent-sampling-gptel--incomplete-stream-message state info)
+      (magent-sampling-gptel--emit-terminal
+       request state
+       (magent-sampling-error-event
+        (magent-sampling-gptel--incomplete-stream-message state info)
+        (append metadata '(:reason incomplete-response))))
+      'failed)
+     (events
+      (let ((continuation
                (magent-sampling-gptel--prepare-textual-continuation
                 fsm state info events)))
           (magent-sampling-gptel--flush-reasoning request state info)
@@ -770,7 +1054,8 @@ context remains paused for Magent recovery."
            request state events
            (append metadata '(:source textual-dsml))
            continuation)
-          (if continuation 'tool-call-paused 'tool-call))
+          (if continuation 'tool-call-paused 'tool-call)))
+     (t
       (unless (string-empty-p (or text ""))
         (magent-sampling-gptel--flush-reasoning request state info))
       (magent-sampling-gptel--emit-terminal
@@ -781,7 +1066,7 @@ context remains paused for Magent recovery."
         (and (listp info) (plist-get info :tokens))
         (and (listp info) (plist-get info :stop-reason))
         metadata))
-      'completed)))
+      'completed))))
 
 (defun magent-sampling-gptel--metadata (info)
   "Return adapter metadata extracted from gptel INFO."
@@ -789,6 +1074,8 @@ context remains paused for Magent recovery."
     (dolist (key '(:status :http-status :error :tokens :stop-reason))
       (when-let* ((value (plist-get info key)))
         (setq metadata (append metadata (list key value)))))
+    (when-let* ((exit-code (plist-get info :magent-curl-exit-code)))
+      (setq metadata (append metadata (list :curl-exit-code exit-code))))
     (when-let* ((provider-error (plist-get info :magent-provider-error)))
       (setq metadata
             (append metadata
@@ -865,16 +1152,101 @@ METADATA is merged into the event metadata."
           (plist-get info :tool-result))
     (plist-put tool-call :result result)))
 
-(defun magent-sampling-gptel--reset-sample-state (state &optional info)
-  "Reset adapter STATE and optional gptel INFO before continuation."
+(defun magent-sampling-gptel--reset-sample-state (state &optional info retry-p)
+  "Reset adapter STATE and optional gptel INFO before continuation.
+RETRY-P preserves the current input checkpoint and retry count."
+  (unless retry-p
+    (remhash :retry-count state)
+    (remhash :sample-input state))
+  (dolist (key '(:native-stream :native-input :native-input-captured
+                 :native-text-ids :native-reasoning-ids :native-done-ids :native-final-text
+                 :native-response-status :chat-stream :chat-finish-reason))
+    (remhash key state))
   (puthash :text-chunks nil state)
   (puthash :reasoning-chunks nil state)
   (puthash :reasoning-emitted nil state)
   (puthash :reasoning-ended nil state)
   (puthash :terminal-emitted nil state)
   (when (listp info)
-    (plist-put info :content nil)
-    (plist-put info :stop-reason nil)))
+    (dolist (key '(:content :stop-reason :partial_json :reasoning-chunks
+                   :reasoning-block :tool-pending :magent-provider-error
+                   :magent-curl-exit-code))
+      (plist-put info key nil))))
+
+(defun magent-sampling-gptel--handle-wait (state fsm)
+  "Capture retry input in STATE before gptel sends FSM's request."
+  (let ((info (gptel-fsm-info fsm)))
+    (when (and state (plist-get info :stream)
+               (magent-sampling-gptel--backend-openai-chat-p (plist-get info :backend))
+               (not (gethash :sample-input state)))
+      (puthash :sample-input (copy-tree (plist-get info :data) t) state)))
+  (gptel--handle-wait fsm))
+
+(defun magent-sampling-gptel--cancel-retry (state)
+  "Cancel a pending retry owned by adapter STATE."
+  (when-let* ((timer (gethash :retry-timer state)))
+    (cancel-timer timer)
+    (remhash :retry-timer state)))
+
+(defun magent-sampling-gptel--report-incomplete-stream
+    (request state buffer info fsm)
+  "Report truncation, offering a single-use retry of FSM's original input.
+The caller decides whether to invoke the continuation.  No retry executes
+tools, changes the prompt, or reuses partial model output."
+  (let* ((eligible (and fsm (gethash :sample-input state)
+                        (gethash :chat-stream state)
+                        (null (gethash :chat-finish-reason state))
+                        (or (not (plist-get info :error))
+                            (magent-sampling-gptel--partial-chat-transfer-p state info))
+                        (not (plist-get info :magent-provider-error))
+                        (string-empty-p (magent-sampling-gptel--streamed-text state))))
+         (attempt (1+ (or (gethash :retry-count state) 0)))
+         (delay (min 5 (expt 2 (min 3 (1- attempt)))))
+         resumed
+         (event
+          (magent-sampling-event-create
+           'error
+           :message (magent-sampling-gptel--incomplete-stream-message state info)
+           :metadata (append (magent-sampling-gptel--metadata info)
+                             '(:reason incomplete-response)
+                             (when eligible (list :retry-attempt attempt :retry-delay delay))))))
+    (when eligible
+      (magent-sampling-event-set-continuation
+       event
+       (lambda ()
+         (unless resumed
+           (setq resumed t)
+           (with-current-buffer buffer
+             (add-hook 'kill-buffer-hook
+                       (apply-partially #'magent-sampling-gptel--cancel-retry state) nil t))
+           ;; Wait until the old transport callback/FSM cleanup has unwound.
+           ;; Keep terminal-emitted set so late callbacks cannot dispatch tools.
+           (puthash
+            :retry-timer
+            (run-at-time
+             delay nil
+             (lambda ()
+               (remhash :retry-timer state)
+               (when (buffer-live-p buffer)
+                 (with-current-buffer buffer
+                   (condition-case err
+                       (progn
+                         (plist-put info :data (copy-tree (gethash :sample-input state) t))
+                         (magent-sampling-gptel--reset-sample-state state info t)
+                         (puthash :retry-count attempt state)
+                         (gptel--fsm-transition fsm 'WAIT))
+                     (error
+                      (puthash :terminal-emitted nil state)
+                      (magent-sampling-gptel--emit-terminal
+                       request state
+                       (magent-sampling-error-event
+                        (format "Provider retry failed: %s" (error-message-string err))
+                        '(:reason retry-failed)))
+                      (when (buffer-live-p buffer) (kill-buffer buffer))))))))
+            state)))))
+    (magent-sampling-gptel--emit-terminal request state event)
+    (unless resumed
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (defun magent-sampling-gptel--continue-tool-use (fsm state)
   "Inject completed tool results into FSM and continue its provider request."
@@ -968,7 +1340,7 @@ tool calls, executes them itself, and explicitly resumes the same context."
                      (,#'gptel--tool-use-p . TOOL)
                      (t . DONE)))
             (TOOL . ((t . DONE))))
-   :handlers `((WAIT ,#'gptel--handle-wait)
+   :handlers `((WAIT ,(apply-partially #'magent-sampling-gptel--handle-wait state))
                (TOOL ,(apply-partially
                        #'magent-sampling-gptel--handle-tool-use state))
                (DONE ,(apply-partially #'magent-sampling-gptel--handle-done
@@ -981,6 +1353,25 @@ tool calls, executes them itself, and explicitly resumes the same context."
     (request state buffer response info &optional fsm)
   "Map gptel RESPONSE and INFO to normalized events for REQUEST."
   (cond
+   ((gethash :terminal-emitted state) nil)
+   ((and (null response)
+         (magent-sampling-gptel--partial-chat-transfer-p state info))
+    (magent-sampling-gptel--report-incomplete-stream request state buffer info fsm))
+   ((and (eq response t) (or (plist-get info :error) (plist-get info :magent-provider-error)))
+    (magent-sampling-gptel--emit-terminal
+     request state
+     (magent-sampling-error-event (magent-sampling-gptel--error-message info)
+                                 (magent-sampling-gptel--metadata info)))
+    (when (buffer-live-p buffer) (kill-buffer buffer)))
+   ((and (eq response t)
+         (magent-sampling-gptel--incomplete-stream-message state info))
+    ;; Reject truncated tool arguments before the transport enters TOOL.
+    (magent-sampling-gptel--report-incomplete-stream request state buffer info fsm))
+   ((and (gethash :native-stream state)
+         (or (stringp response)
+             (and (consp response) (eq (car response) 'reasoning))))
+    ;; Ordered native events have already delivered these aggregate callbacks.
+    nil)
    ((stringp response)
     (if (and (not (plist-get info :stream))
              (not (magent-sampling-gptel--pending-tool-use-p info)))
@@ -1235,13 +1626,24 @@ Return the request buffer as the abort handle.  REQUEST must be a
                     (if (plist-member metadata :include-reasoning)
                         (plist-get metadata :include-reasoning)
                       magent-include-reasoning)))
-      (let ((fsm (magent-sampling-gptel--make-sampling-fsm
-                  request state buffer)))
+      (when (and (magent-sampling-gptel--backend-openai-responses-p gptel-backend)
+                 (not (eq (magent-thinking-effective (plist-get metadata :thinking))
+                          'disabled)))
+        (setq-local gptel--request-params
+                    (magent-sampling-gptel--merge-request-params
+                     gptel--request-params
+                     (list :include
+                           (vconcat (delete-dups
+                                     (append (plist-get gptel--request-params :include)
+                                             '("reasoning.encrypted_content"))))))))
+      (let ((fsm (magent-sampling-gptel--make-sampling-fsm request state buffer))
+            (magent-sampling-gptel--replay-request request))
         (gptel-request
             (magent-sampling-request-prompt request)
           :buffer buffer
           :context (append
-                    (list :magent-sampling-gptel t)
+                    (list :magent-sampling-gptel t
+                          :magent-native-context (cons request state))
                     (when (plist-member metadata :top-p)
                       (list :top-p (plist-get metadata :top-p))))
           :system (magent-sampling-request-system request)

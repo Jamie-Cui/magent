@@ -636,7 +636,7 @@
       (magent-test--run-turn "Hello" (lambda (r) (setq response r))))
     (should (= call-count 1))
     (should (magent-execution-result-p response))
-    (should (magent-execution-result-success-p response))
+    (should (magent-execution-result-completed-p response))
     (should (equal (magent-execution-result-content-string response)
                    "Hello from AI"))))
 
@@ -771,12 +771,12 @@
        (lambda (result)
          (setq response result))))
     (should (magent-execution-result-p response))
-    (should-not (magent-execution-result-success-p response))
+    (should-not (magent-execution-result-completed-p response))
     (should (equal (magent-execution-result-content-string response)
                    "Request timed out after 5 seconds"))
     (should (equal (magent-test--provider-context
                     (magent-session-get))
-                   nil))))
+                   '((prompt . "Hello"))))))
 
 (ert-deftest magent-test-agent-info-rejects-retired-agent-fields ()
   "Agent records expose no inert options or steps fields."
@@ -865,10 +865,14 @@
              (magent-thread-turn-items turn))))
       (should assistant)
       (should (equal (magent-thread-item-content assistant)
-                     "Checking buffers. Done.")))
+                     "Checking buffers. "))
+      (should (equal (magent-thread-item-content
+                      (car (last (magent-thread-turn-items turn))))
+                     "Done.")))
     (let ((second-prompt (car sampled-prompts)))
       (should (equal second-prompt
                      '((prompt . "Run eval")
+                       (response . "Checking buffers. ")
                        (tool :id "call-1"
                              :name "emacs_eval"
                              :args (:sexp "(+ 1 2)")
@@ -909,6 +913,7 @@
                (lambda (_prompt &rest kwargs)
                  (cl-incf request-count)
                  (let ((callback (plist-get kwargs :callback)))
+                   (funcall callback "Inspecting. " '(:stream t))
                    (funcall
                     callback
                     (list 'tool-call
@@ -938,7 +943,20 @@
     (should continuation-called)
     (should (equal provider-result "eval:(+ 1 2)"))
     (should (equal (magent-execution-result-content-string response)
-                   "Done."))))
+                   "Done."))
+    (let* ((items (magent-thread-turn-items
+                   (car (magent-thread-turns (magent-session-thread-ledger session)))))
+           (messages (cl-remove-if-not
+                      (lambda (item) (eq (magent-thread-item-role item) 'assistant))
+                      items)))
+      (should (equal (mapcar #'magent-thread-item-type items)
+                     '(message message tool message)))
+      (should (equal (mapcar #'magent-thread-item-phase messages)
+                     '(commentary final_answer)))
+      (should (equal (mapcar #'magent-thread-item-content messages)
+                     '("Inspecting. " "Done.")))
+      (should (equal (mapcar #'car (magent-test--provider-context session))
+                     '(prompt response tool response))))))
 
 
 
@@ -950,7 +968,7 @@
 
 
 (ert-deftest magent-test-agent-run-turn-async-continuation-preserves-tools ()
-  "Async continuation preserves tools and accepts an empty completion."
+  "An empty final answer fails without resampling or losing tool results."
   (let* ((gptel-backend (gptel-make-openai "test" :key "test-key"))
          (gptel-model 'gpt-4o-mini)
          (magent-max-sampling-requests 0)
@@ -1011,8 +1029,9 @@
       (should (= call-count 2))
       (funcall (nth 1 callbacks) t '(:content ""))
       (should (= call-count 2)))
-    (should (magent-execution-result-success-p response))
-    (should (equal (magent-execution-result-content-string response) ""))
+    (should (eq (magent-execution-result-status response) 'failed))
+    (should (string-match-p "No final assistant response"
+                            (magent-execution-result-content-string response)))
     (should (eq (plist-get (magent-execution-result-metadata response) :reason)
                 'empty-completion))
     (should (equal (nreverse sampled-tool-use) '(t t)))
@@ -1090,7 +1109,7 @@
        agent nil nil nil nil nil nil request-state))
     (should (= call-count 1))
     (should (equal (nreverse sampled-tool-use) '(t)))
-    (should-not (magent-execution-result-success-p response))
+    (should-not (magent-execution-result-completed-p response))
     (should (eq (plist-get (magent-execution-result-metadata response) :reason)
                 'sampling-limit))))
 
@@ -1703,8 +1722,8 @@
            '(:optional nil :missing :null :name "value"))
           '(:optional :null :name "value"))))
 
-(ert-deftest magent-test-session-provider-context-drops-non-reusable-turns ()
-  "Test empty and failed assistant turns do not leak into prompt reuse."
+(ert-deftest magent-test-session-provider-context-keeps-goals-without-answers ()
+  "Empty or failed answers do not remove the user goals from replay."
   (require 'magent-session)
   (let ((session (magent-session-create)))
     (magent-test--record-session-entry session 'user "emacs 有几个 buffer")
@@ -1717,9 +1736,14 @@
     (magent-test--record-session-entry
      session 'assistant
      "Error: provider request failed.")
+    (setf (magent-thread-item-status
+           (car (last (magent-thread-all-items (magent-session-thread-ledger session)))))
+          'failed)
     (magent-test--record-session-entry session 'user "emacs 有几个 实例")
     (should (equal (magent-test--provider-context session)
-                   '((prompt . "emacs 有几个 实例"))))))
+                   '((prompt . "emacs 有几个 buffer")
+                     (prompt . "magent 有几个 skills")
+                     (prompt . "emacs 有几个 实例"))))))
 
 (ert-deftest magent-test-session-provider-context-keeps-completed-turns ()
   "Test completed turns remain even when a later turn failed."
@@ -1731,10 +1755,14 @@
     (magent-test--record-session-entry
      session 'assistant
      "Error: provider request failed.")
+    (setf (magent-thread-item-status
+           (car (last (magent-thread-all-items (magent-session-thread-ledger session)))))
+          'failed)
     (magent-test--record-session-entry session 'user "Tell me more.")
     (should (equal (magent-test--provider-context session)
                    '((prompt . "What is Emacs?")
                      (response . "A text editor.")
+                     (prompt . "magent 有几个 skills")
                      (prompt . "Tell me more."))))))
 
 (ert-deftest magent-test-session-provider-context-keeps-interrupted-user-turns ()
@@ -3091,7 +3119,8 @@
         :stream t
         :metadata '(:effort xhigh)
         :callback #'ignore)))
-    (should (equal captured-params '(:reasoning (:effort "xhigh"))))))
+    (should (equal captured-params '(:reasoning (:effort "xhigh")
+                                    :include ["reasoning.encrypted_content"])))))
 
 (ert-deftest magent-test-llm-gptel-disables-deepseek-thinking ()
   "DeepSeek thinking disable maps exactly and suppresses reasoning effort."
@@ -6164,6 +6193,7 @@
            ("wait_agent" . local)
            ("list_agents" . local)
            ("close_agent" . local)
+           ("update_plan" . local)
            ("web_search" . local))))
     (should (= (length expected) (length magent-tools-catalog)))
     (dolist (entry expected)
@@ -6893,7 +6923,7 @@
 (ert-deftest magent-test-tools-all-registered ()
   "Test that all core tools are registered."
   (require 'magent-tools)
-  (should (= (length magent-tools-catalog) 16))
+  (should (= (length magent-tools-catalog) 17))
   (should-not (magent-tools-catalog-entry "read_buffer"))
   (should (magent-tools-catalog-entry "emacs_read"))
   (should (magent-tools-catalog-entry "emacs_eval_live"))
@@ -15370,7 +15400,7 @@
             (should (equal (cdr (assq 'tool (magent-thread-item-input item)))
                            "emacs_eval"))
             (should (equal (cdr (assq 'values (magent-thread-item-input item)))
-                           '("emacs_eval" nil)))
+                           ["emacs_eval" nil]))
             (should (equal (magent-thread-item-name item) "emacs_eval"))
             (should (equal (magent-thread-item-output item) "ok"))
             (should (equal (cdr (assq 'provider (magent-thread-item-metadata item)))
@@ -15419,10 +15449,10 @@
           (let ((content (cdr (assq 'content entry))))
             (should (equal (cdr (assq 'tool content)) "emacs_eval"))
             (should (equal (cdr (assq 'values content))
-                           '("emacs_eval" nil)))))
+                           ["emacs_eval" nil]))))
         (let ((metadata (magent-agent-job-metadata job)))
           (should (equal (cdr (assq 'permission-profile metadata))
-                         '("agent" "bash" "emacs_eval")))
+                         ["agent" "bash" "emacs_eval"]))
           (should (equal (cdr (assq 'model metadata))
                          "gpt-4o-mini")))))
     (delete-directory magent-session-directory t)))
@@ -16667,7 +16697,7 @@
        (lambda (status result) (setq completion (list status result)))))
     (should-not launched)
     (should (eq (car completion) 'cancelled))
-    (should-not (magent-execution-result-success-p (cadr completion)))
+    (should-not (magent-execution-result-completed-p (cadr completion)))
     (should (equal (magent-execution-result-content-string (cadr completion))
                    "Active turn cancelled"))
     (should (memq 'turn-start events))
@@ -17338,6 +17368,585 @@
   (should (= (length (magent-request-context-create)) 34))
   (should (= (length (magent-agent-loop-create)) 23))
   (should (= (length (magent-runtime-submission-create)) 13)))
+
+
+(defun magent-test--chat-stream-chunk (backend info delta reason &optional done)
+  "Pass chat DELTA, REASON and optional DONE through the real gptel parser."
+  (with-temp-buffer
+    (insert "data: "
+            (magent-json-encode
+             (list :choices (vector (list :index 0 :delta delta
+                                           :finish_reason (or reason :null)))))
+            "\n\n")
+    (when done (insert "data: [DONE]\n\n"))
+    (goto-char (point-min))
+    (gptel-curl--parse-stream backend info)))
+
+(ert-deftest magent-test-chat-stream-requires-model-completion ()
+  "Clean transport EOF cannot complete truncated text or dispatch partial tools."
+  (require 'magent-sampling-gptel)
+  (magent-sampling-gptel--install-boundary-advice)
+  (dolist (case '(((:role "assistant" :content :null :reasoning_content "") nil nil error)
+                  ((:content "Partial answer") nil nil error)
+                  ((:tool_calls [(:index 0 :id "call_1" :type "function"
+                                  :function (:name "read_file" :arguments "{\"path\":"))]) nil nil error)
+                  ((:tool_calls [(:index 0 :id "call_1" :type "function"
+                                  :function (:name "read_file" :arguments "{\"path\":\"a\"}"))]) "tool_calls" nil error)
+                  ((:content "Truncated answer") "length" t error)
+                  ((:content "Done") "stop" t completed)))
+    (let* ((events nil)
+           (backend (gptel-make-openai "stream-fixture" :key "fixture" :host "fixture.invalid"))
+           (request (magent-sampling-request-create
+                     :stream t :callback (lambda (event) (push event events))))
+           (state (magent-sampling-gptel--make-state))
+           (buffer (generate-new-buffer " *magent-chat-stream-test*"))
+           (info (list :stream t :backend backend :http-status "200"
+                       :context (list :magent-native-context (cons request state))))
+           (fsm (gptel-make-fsm :info info)))
+      (unwind-protect
+          (progn
+            (puthash :sample-input '(:messages []) state)
+            (magent-sampling-gptel--callback
+             request state buffer
+             (magent-test--chat-stream-chunk backend info (nth 0 case) (nth 1 case) (nth 2 case))
+             info)
+            (magent-sampling-gptel--callback request state buffer t info fsm)
+            (when (or (nth 1 case) (stringp (plist-get (car case) :content)))
+              (should-not (magent-sampling-event-continuation (car events))))
+            ;; gptel can still attempt a tool callback during sentinel cleanup.
+            (magent-sampling-gptel--callback
+             request state buffer '(tool-call (nil nil nil (:name "read_file"))) info)
+            (should (eq (magent-sampling-event-type (car events)) (nth 3 case)))
+            (should-not (cl-find 'tool-call events :key #'magent-sampling-event-type))
+            (when (eq (nth 3 case) 'error)
+              (should (eq (plist-get (magent-sampling-event-metadata (car events)) :reason)
+                          'incomplete-response)))
+            (should-not (buffer-live-p buffer)))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(defun magent-test--chat-retry-scenario (retry-limit finish &optional sampling-limit curl-exit)
+  "Run a local tool followed by truncated streams and optional FINISH.
+RETRY-LIMIT bounds retries; SAMPLING-LIMIT bounds all requests.
+CURL-EXIT simulates that exit code through gptel's real process sentinel."
+  (let* ((gptel-backend (gptel-make-openai "chat-continuation" :key "fixture" :host "fixture.invalid"))
+         (gptel-model 'gpt-4o)
+         (gptel-use-curl t)
+         (gptel-log-level nil)
+         (magent-stream-retry-limit retry-limit)
+         (magent-max-sampling-requests (or sampling-limit 0))
+         (session (magent-session-create :id "chat-truncation"))
+         notices inputs (tool-count 0)
+         (context (magent-request-context-create
+                   :session session :scope 'global
+                   :observer (lambda (event)
+                               (when (eq (plist-get event :type) 'sampling-retry)
+                                 (push event notices)))))
+         (tool (gptel-make-tool :name "read_tool_output" :description "Read fixture"
+                                :function (lambda () (cl-incf tool-count)
+                                            (magent-test-tool-result "Saved output"))))
+         (original-run-at-time (symbol-function 'run-at-time))
+         (request-count 0) result)
+    (cl-letf (((symbol-function 'magent-tools-get-gptel-tools-for-permission)
+               (lambda (&rest _) (list tool)))
+              ((symbol-function 'run-at-time)
+               (lambda (delay repeat function &rest args)
+                 (apply original-run-at-time
+                        (if (memq delay '(1 2)) 0.01 delay) repeat function args)))
+              ((symbol-function 'gptel-curl-get-response)
+               (lambda (fsm)
+                 ;; Deliver after WAIT runs its hooks in the request buffer,
+                 ;; as real curl does; synchronous completion can kill it early.
+                 (run-at-time
+                  0 nil
+                  (lambda ()
+                    (cl-incf request-count)
+                    (gptel--fsm-transition fsm 'TYPE)
+                    (let* ((info (gptel-fsm-info fsm))
+                           (callback (plist-get info :callback)))
+                      (push (copy-tree (plist-get info :data) t) inputs)
+                      (plist-put info :http-status "200")
+                      (cond
+                       ((= request-count 1)
+                          (progn
+                            (funcall callback
+                                     (magent-test--chat-stream-chunk
+                                      gptel-backend info '(:content "Inspecting saved output.") nil) info)
+                            (funcall callback
+                                     (magent-test--chat-stream-chunk
+                                      gptel-backend info
+                                      '(:tool_calls [(:index 0 :id "call_1" :type "function"
+                                                      :function (:name "read_tool_output" :arguments "{}"))])
+                                      "tool_calls" t) info)))
+                       ((and finish (> request-count 2))
+                        (funcall callback
+                                 (magent-test--chat-stream-chunk
+                                  gptel-backend info '(:content "Done.") "stop" t) info))
+                       (t
+                        ;; Matches the observed response: only an empty initial chunk.
+                        (funcall callback
+                                 (magent-test--chat-stream-chunk
+                                  gptel-backend info
+                                  '(:role "assistant" :content :null :reasoning_content "Inspecting a possible fix.") nil) info)
+                        (when curl-exit
+                          (funcall callback
+                                   (magent-test--chat-stream-chunk
+                                    gptel-backend info
+                                    '(:tool_calls [(:index 0 :id "unfinished_call" :type "function"
+                                                    :function (:name "read_tool_output" :arguments "{\"id\":"))])
+                                    nil) info))))
+                      (if (and curl-exit (> request-count 1)
+                               (not (and finish (> request-count 2))))
+                          (let ((process-buffer (generate-new-buffer " *magent-curl-exit*"))
+                                (gptel--request-alist (list (cons 'fixture-process (list fsm)))))
+                            (cl-letf (((symbol-function 'process-buffer) (lambda (_) process-buffer))
+                                      ((symbol-function 'process-exit-status) (lambda (_) curl-exit)))
+                              (gptel-curl--stream-cleanup 'fixture-process "exited")))
+                        (funcall callback t info)
+                        (gptel--fsm-transition fsm)))))))
+              ((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (let ((fsm (plist-get kwargs :fsm)))
+                   (setf (gptel-fsm-info fsm)
+                         (list :backend gptel-backend :model gptel-model
+                               :buffer (plist-get kwargs :buffer)
+                               :stream t :tools gptel-tools
+                               :context (plist-get kwargs :context)
+                               :data (list :messages [])
+                               :callback (plist-get kwargs :callback)))
+                   (gptel--fsm-transition fsm 'WAIT)))))
+      (magent-test--run-turn
+       "Inspect saved output" (lambda (value) (setq result value))
+       (magent-agent-info-create :name "build" :permission '(("*" . allow)))
+       nil nil nil nil nil nil context)
+      (let ((deadline (+ (float-time) 3)))
+        (while (and (not result) (< (float-time) deadline))
+          (accept-process-output nil 0.02)))
+      (should result))
+    (list :requests request-count :tool-count tool-count :result result :session session
+          :notices (reverse notices) :inputs (reverse inputs))))
+
+(ert-deftest magent-test-chat-stream-truncation-after-synchronous-tool ()
+  "Disabling retries preserves the goal and tool without another request."
+  (let* ((run (magent-test--chat-retry-scenario 0 nil))
+         (result (plist-get run :result))
+         (session (plist-get run :session)))
+    (should (= (plist-get run :requests) 2))
+    (should (eq (magent-execution-result-status result) 'failed))
+    (should (eq (plist-get (magent-execution-result-metadata result) :reason) 'incomplete-response))
+    (let* ((turn (car (magent-thread-turns (magent-session-thread-ledger session))))
+           (items (magent-thread-turn-items turn)))
+      (should (eq (magent-thread-turn-status turn) 'failed))
+      (should (cl-find-if (lambda (item) (and (eq (magent-thread-item-type item) 'tool)
+                                             (eq (magent-thread-item-status item) 'completed))) items))
+      (should (equal (plist-get (magent-thread-item-metadata (car (last items))) :reason)
+                     "incomplete-response")))
+    (should (equal (mapcar #'car (magent-session-context-view session 'provider))
+                   '(prompt response tool)))))
+
+(ert-deftest magent-test-chat-retry-preserves-input-and-tools ()
+  "A retry repeats identical provider input, with one tool execution and notice."
+  (let* ((run (magent-test--chat-retry-scenario 2 t))
+         (session (plist-get run :session)))
+    (should (= (plist-get run :requests) 3))
+    (should (= (plist-get run :tool-count) 1))
+    (should (= (length (plist-get run :notices)) 1))
+    (should (equal (nth 1 (plist-get run :inputs)) (nth 2 (plist-get run :inputs))))
+    (should (magent-execution-result-completed-p (plist-get run :result)))
+    (should (equal (magent-execution-result-content-string (plist-get run :result)) "Done."))
+    (should (equal (mapcar #'car (magent-session-context-view session 'provider))
+                   '(prompt response tool response)))
+    (should (= (cl-count 'notice (magent-thread-all-items (magent-session-thread-ledger session))
+                         :key #'magent-thread-item-type) 1))))
+
+(ert-deftest magent-test-chat-retry-is-bounded-by-both-limits ()
+  "Repeated truncation obeys retry and total sampling limits without rerunning tools."
+  (dolist (case '((2 nil 4 2 incomplete-response) (2 2 2 0 sampling-limit)))
+    (dolist (curl-exit '(nil 18))
+      (let* ((run (magent-test--chat-retry-scenario (nth 0 case) nil (nth 1 case) curl-exit))
+             (result (plist-get run :result)))
+        (should (= (plist-get run :requests) (nth 2 case)))
+        (should (= (plist-get run :tool-count) 1))
+        (should (= (length (plist-get run :notices)) (nth 3 case)))
+        (should (eq (magent-execution-result-status result) 'failed))
+        (should (eq (plist-get (magent-execution-result-metadata result) :reason) (nth 4 case)))))))
+
+(ert-deftest magent-test-chat-curl18-blocks-partial-tool-before-retry ()
+  "Nonzero curl cleanup cannot dispatch partial tools or alter retry input."
+  (let* ((run (magent-test--chat-retry-scenario 2 t nil 18))
+         (items (magent-thread-all-items
+                 (magent-session-thread-ledger (plist-get run :session)))))
+    (should (magent-execution-result-completed-p (plist-get run :result)))
+    (should (= (plist-get run :requests) 3))
+    (should (= (plist-get run :tool-count) 1))
+    (should (= (cl-count 'tool items :key #'magent-thread-item-type) 1))
+    (should (= (length (plist-get run :notices)) 1))
+    (should (equal (nth 1 (plist-get run :inputs)) (nth 2 (plist-get run :inputs))))))
+
+(ert-deftest magent-test-chat-curl-errors-stay-terminal-without-partial-tools ()
+  "Disabling retries or another curl error must not execute partial tools."
+  (dolist (case '((0 18 incomplete-response) (2 22 nil) (2 60 nil)))
+    (let* ((run (magent-test--chat-retry-scenario (nth 0 case) t nil (nth 1 case)))
+           (result (plist-get run :result))
+           (items (magent-thread-all-items
+                   (magent-session-thread-ledger (plist-get run :session)))))
+      (should (eq (magent-execution-result-status result) 'failed))
+      (should (= (plist-get run :requests) 2))
+      (should-not (plist-get run :notices))
+      (should (= (cl-count 'tool items :key #'magent-thread-item-type) 1))
+      (should (= (plist-get (magent-execution-result-metadata result) :curl-exit-code)
+                 (nth 1 case)))
+      (should (eq (plist-get (magent-execution-result-metadata result) :reason)
+                  (nth 2 case))))))
+
+(ert-deftest magent-test-chat-curl18-retry-eligibility ()
+  "Partial transfer never overrides output, finish reasons or provider errors."
+  (dolist (case '(("Partial answer" nil nil "200")
+                  (nil "length" nil "200") (nil "tool_calls" nil "200")
+                  (nil "stop" nil "200")
+                  (nil nil (:message "Access denied") "200")
+                  (nil nil (:message "Invalid request") "400")))
+    (let* ((state (magent-sampling-gptel--make-state))
+           (buffer (generate-new-buffer " *magent-curl18-ineligible*"))
+           (info (list :stream t :http-status (nth 3 case) :magent-curl-exit-code 18
+                       :error "Curl failed with exit code 18"
+                       :magent-provider-error (nth 2 case)))
+           (fsm (gptel-make-fsm :info info))
+           events
+           (request (magent-sampling-request-create
+                     :callback (lambda (event) (push event events)))))
+      (unwind-protect
+          (progn
+            (puthash :sample-input '(:messages []) state)
+            (puthash :chat-stream t state)
+            (puthash :chat-finish-reason (nth 1 case) state)
+            (when (nth 0 case) (puthash :text-chunks (list (nth 0 case)) state))
+            (magent-sampling-gptel--callback request state buffer nil info fsm)
+            (should (= (length events) 1))
+            (should (eq (magent-sampling-event-type (car events)) 'error))
+            (should-not (magent-sampling-event-continuation (car events)))
+            (when (nth 2 case)
+              (should (equal (magent-sampling-event-message (car events))
+                             (plist-get (nth 2 case) :message)))))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(ert-deftest magent-test-chat-retry-cancel-cleans-up-timer ()
+  "Killing the provider request cancels its retry and suppresses late callbacks."
+  (let* ((state (magent-sampling-gptel--make-state))
+         (buffer (generate-new-buffer " *magent-retry-cancel*"))
+         (info (list :data '(:messages []) :stream t))
+         (fsm (gptel-make-fsm :info info))
+         events
+         (request (magent-sampling-request-create
+                   :callback (lambda (event)
+                               (push event events)
+                               (when-let* ((continuation (magent-sampling-event-continuation event)))
+                                 (funcall continuation)
+                                 (funcall continuation))))))
+    (unwind-protect
+        (progn
+          (puthash :chat-stream t state)
+          (puthash :sample-input '(:messages []) state)
+          (magent-sampling-gptel--report-incomplete-stream request state buffer info fsm)
+          (let ((timer (gethash :retry-timer state)))
+            (should (timerp timer))
+            (should (memq timer timer-list))
+            (magent-sampling-gptel--callback request state buffer t info fsm)
+            (should (= (length events) 1))
+            (magent-agent-loop--abort-request-handle buffer)
+            (should-not (buffer-live-p buffer))
+            (should-not (gethash :retry-timer state))
+            (should-not (memq timer timer-list))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest magent-test-chat-stream-provider-error-is-not-retried ()
+  "An HTTP-200 SSE error remains the provider error, with no retry offered."
+  (let* ((backend (gptel-make-openai "error-fixture" :host "fixture.invalid" :key "fixture"))
+         (state (magent-sampling-gptel--make-state))
+         (buffer (generate-new-buffer " *magent-sse-error*"))
+         events
+         (request (magent-sampling-request-create :callback (lambda (event) (push event events))))
+         (info (list :stream t :backend backend :http-status "200"
+                     :context (list :magent-native-context (cons request state))))
+         (fsm (gptel-make-fsm :info info)))
+    (unwind-protect
+        (progn
+          (magent-sampling-gptel--install-boundary-advice)
+          (puthash :sample-input '(:messages []) state)
+          (with-temp-buffer
+            (insert "data: {\"error\": {\"message\": \"Access denied\", \"type\": \"authentication_error\"}}\n\n")
+            (goto-char (point-min))
+            (gptel-curl--parse-stream backend info))
+          (magent-sampling-gptel--callback request state buffer t info fsm)
+          (should (= (length events) 1))
+          (should (eq (magent-sampling-event-type (car events)) 'error))
+          (should (equal (magent-sampling-event-message (car events)) "Access denied"))
+          (should-not (magent-sampling-event-continuation (car events)))
+          (should-not (buffer-live-p buffer)))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest magent-test-acp-retry-notice-live-and-replay ()
+  "Retry notices render identically live and after ledger restoration."
+  (let ((observer (magent-acp--observer nil "retry")) updates)
+    (cl-letf (((symbol-function 'magent-acp--notify-agent-message)
+               (lambda (_client _session text) (push text updates))))
+      (funcall observer '(:type sampling-retry :text "Retrying 1/2."))
+      (magent-acp--emit-item-replay
+       nil "retry" (magent-thread-item-create :type 'notice :content "Retrying 1/2.")))
+    (should (= (length updates) 2))
+    (should (equal (car updates) (cadr updates)))))
+
+(defun magent-test--responses-chunk (backend info events)
+  "Feed complete SSE EVENTS through the installed gptel BACKEND parser."
+  (with-temp-buffer
+    (dolist (event events)
+      (insert "event: " (plist-get event :type) "\ndata: "
+              (magent-json-encode event) "\n\n"))
+    (goto-char (point-min))
+    (gptel-curl--parse-stream backend info)))
+
+(ert-deftest magent-test-responses-ordered-turn-roundtrip-and-continuation ()
+  "Native phases, reasoning and tool calls survive live and saved replay."
+  (require 'gptel-openai-responses)
+  (let* ((gptel-backend (gptel-make-openai-responses "ordered" :key "test"))
+         (gptel-model 'gpt-5)
+         (magent-include-reasoning 'ignore)
+         (session (magent-session-create :id "ordered-native"))
+         (context (magent-request-context-create :session session :scope 'global))
+         (reasoning '(:type "reasoning" :id "rs_1" :summary [(:type "summary_text" :text "Check state.")]
+                            :encrypted_content "opaque-token"))
+         (commentary '(:type "message" :id "msg_1" :role "assistant" :phase "commentary"
+                             :status "completed" :content [(:type "output_text" :text "Inspecting.")]))
+         (call '(:type "function_call" :id "fc_1" :call_id "call_1"
+                       :name "emacs_read" :arguments "{\"operation\":\"buffers\"}" :status "completed"))
+         (final '(:type "message" :id "msg_2" :role "assistant" :phase "final_answer"
+                        :status "completed" :content [(:type "output_text" :text "Two buffers.")]))
+         (tool (gptel-make-tool :name "emacs_read" :description "Read state"
+                               :args '((:name "operation" :type string))
+                               :function (lambda (_operation) (magent-test-tool-result "2"))))
+         (request-count 0) continued-input result replay-request)
+    (cl-letf (((symbol-function 'magent-tools-get-gptel-tools-for-permission)
+               (lambda (&rest _) (list tool)))
+              ((symbol-function 'magent-tools-approval-policy) (lambda (_) nil))
+              ((symbol-function 'gptel--fsm-transition)
+               (lambda (fsm target)
+                 (should (eq target 'WAIT))
+                 (let* ((info (gptel-fsm-info fsm))
+                        (callback (plist-get info :callback)))
+                   (setq continued-input (copy-sequence (plist-get (plist-get info :data) :input)))
+                   (funcall callback
+                            (magent-test--responses-chunk
+                             gptel-backend info
+                             (list (list :type "response.output_item.added" :item final)
+                                   '(:type "response.output_text.delta" :item_id "msg_2" :delta "Two buffers.")
+                                   (list :type "response.output_item.done" :item final)
+                                   (list :type "response.completed"
+                                         :response (list :status "completed" :output (vector final))))) info)
+                   (funcall callback t info))))
+              ((symbol-function 'gptel-request)
+               (lambda (prompt &rest kwargs)
+                 (cl-incf request-count)
+                 (let* ((fsm (plist-get kwargs :fsm))
+                        (native (plist-get (plist-get kwargs :context) :magent-native-context))
+                        (info (list :backend gptel-backend :model gptel-model
+                                    :stream t :tools gptel-tools :context (plist-get kwargs :context)
+                                    :callback (plist-get kwargs :callback)
+                                    :data (list :input (vconcat (gptel--parse-list gptel-backend prompt))))))
+                   (setq replay-request (car native))
+                   (setf (gptel-fsm-info fsm) info)
+                   (funcall (plist-get kwargs :callback)
+                            (magent-test--responses-chunk
+                             gptel-backend info
+                             (list (list :type "response.output_item.done" :item reasoning)
+                                   (list :type "response.output_item.added" :item commentary)
+                                   '(:type "response.output_text.delta" :item_id "msg_1" :delta "Inspecting.")
+                                   (list :type "response.output_item.done" :item commentary)
+                                   (list :type "response.output_item.done" :item call)
+                                   (list :type "response.completed"
+                                         :response (list :status "completed" :output (vector reasoning commentary call))))) info)
+                   (magent-sampling-gptel--handle-tool-use (cdr native) fsm)))))
+      (magent-test--run-turn "Count buffers" (lambda (value) (setq result value))
+                             nil nil nil nil nil nil nil context))
+    (should (= request-count 1))
+    (should (magent-execution-result-completed-p result))
+    (should (equal (magent-execution-result-content-string result) "Two buffers."))
+    (should (equal (seq-subseq continued-input 1 4) (vector reasoning commentary call)))
+    (should (equal (plist-get (aref continued-input 4) :type) "function_call_output"))
+    (let* ((thread (magent-session-thread-ledger session))
+           (snapshot (json-parse-string (magent-json-encode (magent-thread-snapshot-to-alist thread))
+                                        :object-type 'alist :array-type 'list :null-object nil))
+           (restored (magent-session-create :id "ordered-native"
+                                           :thread (magent-thread-snapshot-from-alist snapshot)))
+           (messages (cl-remove-if-not (lambda (item) (eq (magent-thread-item-role item) 'assistant))
+                                      (magent-thread-all-items (magent-session-thread-ledger restored))))
+           (prompt (magent-session-context-view restored 'provider))
+           (magent-sampling-gptel--replay-request replay-request)
+           (wire (gptel--parse-list gptel-backend prompt)))
+      (should (equal (mapcar #'magent-thread-item-content messages) '("Inspecting." "Two buffers.")))
+      (should (equal (mapcar #'magent-thread-item-phase messages) '(commentary final_answer)))
+      (should (equal (vconcat (butlast wire)) continued-input))
+      (should (equal (car (last wire)) final))
+      (should (equal (mapcar #'car (magent-session-context-view restored 'compaction))
+                     '(prompt response tool response)))
+      ;; Changing route strips opaque provider items and uses visible history.
+      (let ((other (gptel-make-openai-responses "other" :key "test")))
+        (should (equal (mapcar (lambda (item) (or (plist-get item :type) (plist-get item :role)))
+                              (gptel--parse-list other prompt))
+                       '("user" "assistant" "function_call" "function_call_output" "assistant")))))))
+
+(ert-deftest magent-test-responses-nonstream-preserves-phase-and-empty-final ()
+  "Nonstream commentary never becomes a final answer, and items stay intact."
+  (require 'gptel-openai-responses)
+  (let* ((backend (gptel-make-openai-responses "nonstream" :key "test"))
+         (state (magent-sampling-gptel--make-state))
+         events
+         (request (magent-sampling-request-create :backend backend :model 'gpt-5
+                                                 :callback (lambda (event) (push event events))))
+         (info (list :backend backend :data (list :input [])
+                     :context (list :magent-sampling-gptel t :magent-native-context (cons request state))))
+         (item '(:type "message" :id "msg_1" :role "assistant" :phase "commentary"
+                       :content [(:type "output_text" :text "Working.")])))
+    (magent-sampling-gptel--install-boundary-advice)
+    (gptel--parse-response backend (list :status "completed" :output (vector item)) info)
+    (magent-sampling-gptel--emit-completed-or-textual-tool-calls request state info "Working.")
+    (should (equal (mapcar #'magent-sampling-event-type (reverse events))
+                   '(message-start text-delta message-end provider-item completed)))
+    (should (equal (magent-sampling-event-text (car events)) ""))
+    (should (equal (plist-get (plist-get info :data) :input) (vector item)))))
+
+(ert-deftest magent-test-plan-validation-persistence-and-acp ()
+  "Plans validate before mutation and replay identically through ACP."
+  (require 'magent-acp)
+  (let* ((session (magent-session-create :id "plan-roundtrip"))
+         (thread (magent-session-thread-ledger session))
+         (turn (magent-thread-create-turn thread "Fix failure"))
+         (context (magent-request-context-create :session session :scope 'global
+                                                 :turn-id (magent-thread-turn-id turn)))
+         (magent-tools--request-context context)
+         (updates nil)
+         (observer (magent-acp--observer nil "plan-roundtrip")))
+    (setf (magent-request-context-observer context) observer)
+    (cl-letf (((symbol-function 'magent-acp--session-update)
+               (lambda (_client _session update) (push update updates))))
+      (should (magent-tool-result-success-p
+               (magent-tools--update-plan
+                [(:step "Find cause" :status "in_progress") (:step "Verify fix" :status "pending")]
+                "Reproduce first")))
+      (should (= (length (magent-thread-turn-items turn)) 1))
+      (let* ((item (car (magent-thread-turn-items turn)))
+             (restored (magent-thread-item-from-alist
+                        (json-parse-string (magent-json-encode (magent-thread-item-to-alist item))
+                                           :object-type 'alist :array-type 'array :null-object nil))))
+        (magent-acp--emit-item-replay nil "plan-roundtrip" restored)
+        (should (equal (car updates) (cadr updates))))
+      (dolist (invalid '(nil "text" [(:step "" :status "pending")]
+                        [(:step "X" :status "blocked")]
+                        [(:step "X" :status "in_progress") (:step "Y" :status "in_progress")]))
+        (should-error (magent-tools--update-plan invalid))
+        (should (= (length (magent-thread-turn-items turn)) 1))))
+    (let ((magent-tools--request-context nil))
+      (should-error (magent-tools--update-plan [(:step "X" :status "pending")])))))
+
+(ert-deftest magent-test-history-trimming-retains-whole-turn-and-error-text ()
+  "Many progress messages cannot orphan tools or erase a legitimate answer."
+  (let* ((session (magent-session-create))
+         (thread (magent-session-thread-ledger session)))
+    (magent-test--record-session-entry session 'user "Old goal")
+    (magent-test--record-session-entry session 'assistant "Old answer")
+    (let* ((turn (magent-thread-create-turn thread "Current goal"))
+           (id (magent-thread-turn-id turn)))
+      (magent-thread-record-user-message-if-needed thread id "Current goal")
+      (dotimes (_ 5) (magent-thread-record-message thread id 'assistant "Progress" 'commentary))
+      (magent-thread-record-message thread id 'assistant "Error: is the prefix printed by this program." 'final_answer)
+      (magent-thread-complete-turn thread id)
+      (should (equal (magent-session--trim-thread-turns (magent-thread-turns thread) 2) (list turn)))
+      (should (= (length (magent-thread-turn-items turn)) 7))
+      (should (equal (cdr (car (last (magent-test--provider-context session))))
+                     "Error: is the prefix printed by this program.")))))
+
+
+(ert-deftest magent-test-responses-incomplete-response-fails-sampling ()
+  "A truncated response is not completion, even when it contains final text."
+  (require 'gptel-openai-responses)
+  (let* ((backend (gptel-make-openai-responses "incomplete" :key "test"))
+         (state (magent-sampling-gptel--make-state))
+         events
+         (request (magent-sampling-request-create :backend backend :model 'gpt-5
+                                                 :callback (lambda (event) (push event events))))
+         (info (list :backend backend :data (list :input [])
+                     :context (list :magent-sampling-gptel t :magent-native-context (cons request state))))
+         (item '(:type "message" :id "partial" :role "assistant" :phase "final_answer"
+                       :content [(:type "output_text" :text "Part of answer")])))
+    (magent-sampling-gptel--install-boundary-advice)
+    (magent-test--responses-chunk
+     backend info (list (list :type "response.incomplete"
+                              :response (list :status "incomplete" :output (vector item)))))
+    (magent-sampling-gptel--emit-completed-or-textual-tool-calls request state info "Part of answer")
+    (should (eq (magent-sampling-event-type (car events)) 'error))
+    (should (eq (plist-get (magent-sampling-event-metadata (car events)) :reason) 'incomplete-response))
+    (let ((count (length events)))
+      (magent-sampling-gptel--callback request state nil '(tool-call . nil) info)
+      (should (= (length events) count)))
+    (should-not (seq-find (lambda (event) (eq (magent-sampling-event-type event) 'completed)) events))))
+
+(ert-deftest magent-test-responses-interrupted-call-replay-and-endpoint-change ()
+  "Replay repairs unanswered calls and never forwards native state to a new endpoint."
+  (require 'gptel-openai-responses)
+  (let* ((backend (gptel-make-openai-responses "interrupted" :key "test"))
+         (request (magent-sampling-request-create :backend backend :model 'gpt-5))
+         (magent-sampling-gptel--replay-request request)
+         (item '(:type "function_call" :id "fc" :call_id "call" :name "emacs_read"
+                       :arguments "{}"))
+         (prompt (list '(prompt . "Inspect")
+                       (cons 'provider (magent-sampling-gptel--native-metadata request item)))))
+    (magent-sampling-gptel--install-boundary-advice)
+    (let ((wire (gptel--parse-list backend prompt)))
+      (should (= (length wire) 3))
+      (should (equal (nth 1 wire) item))
+      (should (equal (plist-get (nth 2 wire) :call_id) "call"))
+      (should (string-match-p "No result was recorded" (plist-get (nth 2 wire) :output))))
+    (setf (gptel-backend-host backend) "different.invalid")
+    (should (equal (gptel--parse-list backend prompt) '((:role "user" :content "Inspect"))))))
+
+
+(ert-deftest magent-test-session-repeated-save-preserves-json-arrays ()
+  "Nested singleton/empty arrays and journal snapshots survive repeated saves."
+  (let* ((magent-session-directory (make-temp-file "magent-json-roundtrip-" t))
+         (session (magent-session-create :id "array-roundtrip"))
+         (thread (magent-session-thread-ledger session))
+         (turn (magent-thread-create-turn thread "Hello"))
+         (id (magent-thread-turn-id turn)))
+    (unwind-protect
+        (progn
+          (magent-thread-record-user-message-if-needed
+           thread id "Hello" nil
+           '(:content-blocks [((type . "text") (text . "Hello"))] :empty []))
+          (magent-thread-record-plan thread id [(:step "One step" :status "completed")])
+          (magent-thread-record-message thread id 'assistant "Done" 'final_answer)
+          (magent-thread-complete-turn thread id)
+          (setf (magent-thread-snapshot-created-at thread) (float-time))
+          (let ((expected (magent-json-encode (magent-thread-snapshot-to-alist thread))))
+            (dotimes (_ 3)
+              (let* ((file (magent-session-save-for-session session 'global))
+                     (loaded (magent-session-read-file file)))
+                (should loaded)
+                (setq session (plist-get loaded :session))
+                (should (equal (magent-json-encode
+                                (magent-thread-snapshot-to-alist (magent-session-thread-ledger session)))
+                               expected))))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-update-plan-schema-is-valid-provider-json ()
+  "The plan tool sends an object-array schema with a boolean strictness flag."
+  (require 'gptel-openai-responses)
+  (let* ((backend (gptel-make-openai-responses "plan-schema" :key "test"))
+         (schema (gptel--parse-tools backend (list magent-tools--update-plan-tool)))
+         (decoded (json-parse-string (decode-coding-string (gptel--json-encode schema) 'utf-8)
+                                    :object-type 'plist :array-type 'array
+                                    :false-object :json-false))
+         (plan (plist-get (plist-get (plist-get (aref decoded 0) :parameters) :properties) :plan)))
+    (should (equal (plist-get plan :type) "array"))
+    (should (equal (plist-get (plist-get plan :items) :type) "object"))
+    (should (eq (plist-get (plist-get plan :items) :additionalProperties) :json-false))))
 
 (provide 'magent-test)
 ;;; magent-test.el ends here

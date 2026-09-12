@@ -14,6 +14,20 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Added
 
+- Bounded, visible retries for truncated Chat Completions streams before
+  assistant text is emitted. ~magent-stream-retry-limit~ defaults to 2; retries
+  use the same provider input, retain completed tools, count toward the total
+  sampling limit, and are cancelled with the turn. Retry notices survive
+  session replay without entering model history. Both clean premature EOF
+  and curl partial-transfer errors (exit 18) are covered; transport failures
+  are marked before cleanup can dispatch unfinished tool calls.
+
+- ~update_plan~ records validated step revisions in the existing ledger and
+  displays them through agent-shell's native ACP plan view, including resume.
+- Ordered assistant message phases and opaque OpenAI Responses output items.
+  The gptel adapter preserves original message phases, reasoning continuation
+  data, and tool calls for live continuation and same-route history replay.
+
 - Provider-neutral thinking control across global defaults, ACP sessions,
   custom-agent frontmatter, and Action agent/Answer Steps. DeepSeek requests map
   explicit modes to the native ~thinking.type~ field; disabling thinking also
@@ -34,6 +48,20 @@ intentional tagged release is planned as ~v0.2.0~.
   capabilities, Doctor, and trusted context-provider extensions.
 
 ** Changed
+
+- Ordinary agent turns with no final answer fail visibly with
+  ~empty-completion~ instead of reporting completion. No recovery request is
+  added. ~magent-execution-result-completed-p~ replaces the old success-named
+  predicate; completion does not establish engineering or test success.
+- Reasoning visibility controls displayable reasoning items; provider-native
+  replay items remain available independently for correct continuation.
+- History replay preserves user goals, completed commentary, and terminal tool
+  results from failed and interrupted turns. History limits retain whole turns.
+  Existing schema v6 records remain readable without rewriting or inventing
+  message boundaries; no persisted fields are removed.
+- System instructions request useful opening/progress/decision updates,
+  proportionate plans, and evidence-based stopping. Shell guidance explicitly
+  preserves test exit status and checks each shell script separately.
 
 - Runtime submissions now contain only queue lifecycle state and one canonical
   request context.  Prompt, request-local agent, tools, skills, model route,
@@ -71,6 +99,15 @@ intentional tagged release is planned as ~v0.2.0~.
   request handoff machinery.
 
 ** Fixed
+
+- Truncated OpenAI-compatible streams no longer look like empty or successful
+  answers merely because curl exited cleanly. The adapter retains the model's
+  finish reason, rejects incomplete text/tool streams before tool dispatch,
+  and preserves completed operations and failure metadata for resuming.
+
+- Session JSON arrays retain their shape across save/load cycles, including
+  singleton content-block arrays, plan entries, and nested journal snapshots.
+  This fixes a saved session becoming unreadable after loading and saving it.
 
 - Classify synchronous Doctor provider-start failures at the direct sampling
   boundary. Invalid nil text from gptel configuration now points to the

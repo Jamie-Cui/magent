@@ -83,7 +83,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 
 *关键文件：*
 
-- ~magent-tools.el~ ：单一 canonical catalog 中的 16 个 ~gptel-tool~ structs，包括显式 disk/live-buffer source 的 read、revision-checked write/edit、grep/glob、bash、emacs_read、隔离与 live eval、tool-result pagination、child-agent coordination 和 web_search。
+- ~magent-tools.el~ ：单一 canonical catalog 中的 17 个 ~gptel-tool~ structs，包括显式 disk/live-buffer source 的 read、revision-checked write/edit、grep/glob、bash、emacs_read、隔离与 live eval、tool-result pagination、child-agent coordination、update_plan 和 web_search。
 - ~magent-skills.el~ ：skill registry、built-in skills、file loading 和 inspection commands。
 - ~magent-skill-manager.el~ ：用户级 skills.sh finder、安全复制安装与永久删除。
 - ~magent-capability.el~ ：capability definitions、resolution 和 file-backed loading。
@@ -103,7 +103,7 @@ trusted Action 或 canonical catalog 中的一等 tool；capability resolver 根
 - ~magent-sampling.el~ ：provider-neutral request/event protocol。
 - ~magent-sampling-gptel.el~ ：薄的 ~gptel-request~ sampling adapter。
 
-*职责：* ~magent-agent-loop.el~ 消费 normalized LLM events，记录 assistant/tool state，经过 ~magent-tool-orchestrator~ 分发工具，并在 model-visible tool output 记录完成后返回 continuation outcome。 ~magent-agent-run-turn~ 负责 provider-native tool continuation，显式完成空响应，并在可选 sampling limit 处直接失败。Reasoning 与 assistant text 分开保存。 ~magent-sampling-gptel.el~ 仍然调用 ~gptel-request~ ；Magent 不重写 provider transport。
+*职责：* ~magent-agent-loop.el~ 消费 normalized LLM events，记录 assistant/tool state，经过 ~magent-tool-orchestrator~ 分发工具，并在 model-visible tool output 记录完成后返回 continuation outcome。 ~magent-agent-run-turn~ 负责 provider-native tool continuation，明确拒绝没有最终答复的普通 turn，并在可选 sampling limit 处直接失败。Reasoning 与 assistant text 分开保存。 ~magent-sampling-gptel.el~ 仍然调用 ~gptel-request~ ；Magent 不重写 provider transport。
 
 ** 第 6 层：受支持的 Frontend
 
@@ -323,7 +323,7 @@ API。
 - *magent-permission.el* — 带 glob pattern 的 tool access control
 
 ** Tools、Skills 与 Capabilities
-- *magent-tools.el* — 16 个 ~gptel-tool~ implementation 的 canonical catalog
+- *magent-tools.el* — 17 个 ~gptel-tool~ implementation 的 canonical catalog
 - *magent-tool-orchestrator.el* — permission、approval、audit 与 tool-call orchestration
 - *magent-approval.el* — sensitive operation 的 user approval prompts
 - *magent-file-loader.el* — 共用的 file-backed frontmatter parser
@@ -376,7 +376,7 @@ melpazoid/MELPA recipe 中；所有 bundled Org prompt 也必须在
 
 ** 5. ~magent-tools.el~
 
-*复杂原因：* 16 个 tool implementation 各自有 side effects、process lifecycle、revision contract、spill retention、child-agent runtime state 和 error handling。~emacs_read~ 使用捕获的 origin buffer，~emacs_eval~ 使用一次性 child process，~emacs_eval_live~ 刻意跨入主进程。
+*复杂原因：* 17 个 tool implementation 各自有 side effects、process lifecycle、revision contract、spill retention、child-agent runtime state 和 error handling。~emacs_read~ 使用捕获的 origin buffer，~emacs_eval~ 使用一次性 child process，~emacs_eval_live~ 刻意跨入主进程。
 
 *修改建议：* child-eval cleanup 和 host-owned timeout 必须可靠；两个任意 eval tool 的 once-only approval、spill 的 session isolation、写入的 revision validation、child-agent status persistence 和 parent/child request-context inheritance 都不能弱化。
 

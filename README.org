@@ -229,8 +229,9 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-context-provider-functions~             | ~nil~                                 | Trusted request-local system-context contributors; failures are isolated                       |
 | ~magent-enable-tools~                          | default tool set                    | Globally enabled tool permission groups                                                        |
 | ~magent-project-root-function~                 | ~nil~                                 | Custom project root finder                                                                     |
-| ~magent-max-history~                           | ~100~                                 | Max messages in history                                                                        |
+| ~magent-max-history~                           | ~100~                                 | Message target; retains whole turns                                                                        |
 | ~magent-request-timeout~                       | ~120~                                 | Timeout in seconds for LLM requests                                                            |
+| ~magent-stream-retry-limit~                    | ~2~                                   | Visible retries for truncated chat streams before assistant text; 0 disables retries            |
 | ~magent-max-sampling-requests~                 | ~0~                                   | Continuation budget; reaching it fails the turn directly, and 0 disables the guard             |
 | ~magent-default-agent~                         | ~"build"~                           | Default agent for new sessions                                                                 |
 | ~magent-default-effort~                        | ~nil~                                 | Default reasoning effort; nil/auto uses provider default                                       |
@@ -260,7 +261,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-project-instruction-file-names~        | ~("AGENTS.md")~                       | Scoped project instruction filenames discovered from root toward request resources             |
 | ~magent-project-instructions-max-bytes~        | ~65536~                               | Aggregate per-request byte limit for project instructions; nil disables discovery              |
 | ~magent-audit-preview-length~                  | ~120~                                 | Max width for normalized audit path markers                                                    |
-| ~magent-include-reasoning~                     | ~t~                                   | Display (~t~), hide but retain (~ignore~), or discard (~nil~) reasoning; never final-answer fallback |
+| ~magent-include-reasoning~                     | ~t~                                   | Display (~t~), hide but retain (~ignore~), or omit (~nil~) reasoning display items; native replay data remains separate |
 
 ** Prompt Files
 
@@ -514,6 +515,7 @@ The AI agent has access to these tools (can be customized per agent):
 | ~wait_agent~         | no          | Wait for child jobs and return status/results           |
 | ~list_agents~        | no          | List child-agent jobs for the current session           |
 | ~close_agent~        | yes         | Close or cancel a child-agent job                       |
+| ~update_plan~        | yes         | Record task progress in the native plan view             |
 | ~web_search~         | no          | Search the web via DuckDuckGo                           |
 
 The canonical catalog in ~magent-tools.el~ owns each tool's name, implementation,

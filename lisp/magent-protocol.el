@@ -83,8 +83,8 @@ NAME and CALL-ID fill missing request identity fields."
   error
   metadata)
 
-(defun magent-execution-result-success-p (result)
-  "Return non-nil when RESULT represents a successful execution."
+(defun magent-execution-result-completed-p (result)
+  "Return non-nil when RESULT represents a normally completed execution."
   (unless (magent-execution-result-p result)
     (signal 'wrong-type-argument (list 'magent-execution-result-p result)))
   (eq (magent-execution-result-status result) 'completed))

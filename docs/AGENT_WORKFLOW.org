@@ -25,7 +25,7 @@ Magent keeps the same workflow boundary, adapted to Emacs:
 - The Magent loop owns tool dispatch, continuation outcomes, abort, and
   Emacs UI rendering. The turn layer follows Codex-style continuation:
   tool output drives the next sampling request, while assistant completion
-  ends the turn even when the assistant text is empty.
+  ends the turn; missing final assistant text fails ordinary agent turns.
 - No Codex sandbox, seatbelt, bubblewrap, or shell isolation parity is
   introduced.
 
@@ -168,7 +168,7 @@ is a bounded recovery tail. The two are not interchangeable.
    session history and start the next sampling request.  This keeps tool
    execution separate from turn continuation policy.
 10. An empty provider completion records ~empty-completion~ metadata and
-    completes the turn without another model request.
+    fails the turn without another model request.
 11. Assistant completion records an assistant message item and completes
    the turn.
 12. Abort, failure, and dropped queued submissions transition the turn to
@@ -178,8 +178,8 @@ is a bounded recovery tail. The two are not interchangeable.
     default.  When enabled, reaching the limit fails the turn directly.
 
 Prompt reconstruction is ledger-driven.  When a current turn id is known,
-Magent includes completed history, the user side of interrupted turns, and the
-current turn, so a follow-up can recover cancelled request context without
+Magent includes ordered completed messages and terminal tool results from
+completed, interrupted, and failed turns, their user goals, and the current turn, so a follow-up can recover cancelled request context without
 letting later queued user submissions leak into the active model request.
 
 * UI Projection
@@ -267,3 +267,51 @@ The remaining differences are deliberate product/runtime boundaries:
   session JSON with ~snapshot + journal~.
 - Magent does not split tool call and tool output as separate source-of-
   truth records. A tool is one item whose status and output are updated.
+
+* Ordered messages, native replay, and plans
+
+An incomplete Chat Completions stream can offer a retry continuation on its
+normalized error event. The turn layer permits up to ~magent-stream-retry-limit~
+retries (default 2), counted toward ~magent-max-sampling-requests~. Eligibility
+requires no assistant text and no finish reason. Both clean premature EOF
+and curl partial-transfer errors (exit 18, HTTP 200) qualify; explicit provider
+errors and token limits are not retried. The adapter marks transport failures
+before gptel's cleanup transition so unfinished tool calls cannot execute.
+The adapter restores the exact request input and
+clears partial response state before restarting the same gptel FSM, after
+a bounded delay. Completed tools are not executed again. Cancellation kills
+the request buffer and its retry timer. A durable ~notice~ item and
+~sampling-retry~ observer event explain each retry; notices stay out of model
+history. Direct Action samplers retain their own terminal-error behavior.
+
+Assistant progress messages are completed before tool execution and the final
+answer occupies its own item. Providers that expose message phases keep those
+values unchanged. For providers without phases, pre-tool text is commentary
+and terminal sample text is the answer. This is a display/replay contract, not
+an extra reasoning or judge pass. The prompt asks for short evidence-based
+updates and a self-contained final answer; hidden reasoning is independent.
+
+Responses output items are stored as opaque JSON in ~provider~ items, with the
+backend name, endpoint identity, and model. The gptel adapter observes gptel's decoded stream events;
+it owns neither HTTP nor SSE parsing. It keeps the original output array for
+native continuation, including message phases and encrypted reasoning. History
+replay uses native items only for the same backend/endpoint/model, avoids duplicate
+assistant messages and function calls, and uses visible text/tool history for
+other routes. A call with no recorded result receives an explicit unknown-result
+notice in replay, preventing a dangling call without claiming it executed.
+Compaction input omits opaque provider items.
+
+Schema v6 already supports arbitrary item types, phases, metadata, and outputs.
+These changes need no format migration. Existing flattened messages remain
+intact with unknown phase; absent historical boundaries cannot be recovered.
+Ordinary empty answers now fail, while direct Action samplers that explicitly
+allow empty results keep that contract. A completed turn means that execution
+ended normally, not that all code or tests succeeded.
+
+~update_plan~ replaces the visible plan with a nonempty list of ~step~ and
+~status~ objects. Status is ~pending~, ~in_progress~, or ~completed~, with at
+most one step in progress. Each validated revision is a completed ~plan~ item;
+step completion is the model's progress report and does not complete the turn.
+The tool uses permission key ~plan~, is local, and emits a ~plan-update~ observer
+event. ACP maps it to ~sessionUpdate: plan~ and replays saved revisions through
+the same view. There is no independent plan runner or automatic replanning.

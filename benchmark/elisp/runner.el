@@ -128,7 +128,7 @@
 (defun magent-benchmark--result-alist (status result started finished)
   "Return a JSON-safe benchmark result for STATUS RESULT and timestamps."
   `((status . ,(symbol-name status))
-    (success . ,(if (magent-execution-result-success-p result) t :json-false))
+    (success . ,(if (magent-execution-result-completed-p result) t :json-false))
     (output . ,(magent-execution-result-content-string result))
     (error . ,(magent-execution-result-error result))
     (metadata . ,(magent-json-safe-value
@@ -211,7 +211,7 @@
             (magent-benchmark--write-json
              (expand-file-name "magent-result.json" logs) result-data)
             (unless (and (eq final-status 'completed)
-                         (magent-execution-result-success-p final-result))
+                         (magent-execution-result-completed-p final-result))
               (error "Magent trial failed: %s"
                      (magent-execution-result-content-string final-result)))
             (magent-execution-result-content-string final-result)))
