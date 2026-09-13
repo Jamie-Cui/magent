@@ -827,7 +827,7 @@ return that path."
        (dolist (submission (magent-runtime-queue-active-submissions))
          (when-let* ((runtime-session
                       (magent-runtime-submission-runtime-session submission)))
-           (magent-runtime-cancel runtime-session)))
+           (ignore-errors (magent-runtime-cancel runtime-session))))
        (magent-live-test--kill-magent-test-buffers)
        (when (file-directory-p magent-session-directory)
          (delete-directory magent-session-directory t)))))
