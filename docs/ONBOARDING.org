@@ -52,7 +52,7 @@ Manages conversation history, scoped definitions, and runtime state.
 - ~magent-action.el~ — Workflow DSL, Step runtime, layered Action registry, and Invocation lifecycle
 - ~magent-runtime.el~ — Static initialization plus retained project-local definition loading
 - ~magent-runtime-api.el~ — UI/backend-facing runtime session and prompt API
-- ~magent-runtime-queue.el~ — Global single-execution runtime queue with session-scoped cancellation
+- ~magent-runtime-queue.el~ — Per-session FIFO runtime queues, concurrent sessions, and session-scoped cancellation
 - ~magent-audit.el~ — Live-buffer or JSONL-file audit recording for permissions and sensitive actions
 
 *What it does:* Maintains ledger-backed conversation history scoped by project, persists to ~~/.emacs.d/magent/sessions/~ by default, stores durable child-agent jobs under ~agent-jobs~, and retains project-local definitions by canonical scope. Request execution resolves those definitions against the exact runtime session scope, so changing interactive context does not unload another session's definitions. Ordinary ACP prompts and Action-owned agent work submit through ~magent-runtime-api.el~; ~magent-runtime-queue.el~ owns queued/active turn state and session-scoped cancellation. Doctor uses one unified Action exposed through slash and ~M-x magent-action-run-*~, with isolated sessions under ~magent-session-directory/actions~. Doctor is a direct probe pipeline with no model tools; read [[file:DOCTOR.org][DOCTOR.org]] before changing its data boundary or extension API.
@@ -298,7 +298,7 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 - *magent-sampling.el* — Provider-neutral request/event contract
 - *magent-sampling-gptel.el* — One-request ~gptel-request~ adapter
 - *magent-runtime.el* — Static initialization and retained project-local definition loading
-- *magent-runtime-queue.el* — Global execution queue and session-scoped cancellation
+- *magent-runtime-queue.el* — Per-session FIFO queues, concurrent sessions, and session-scoped cancellation
 - *magent-runtime-api.el* — Frontend-neutral runtime session and submission API
 - *magent-agent-loop.el* — Normalized event loop, serial tool queue, abort, and continuation
 

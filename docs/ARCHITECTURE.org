@@ -190,7 +190,8 @@ This catalog intentionally has no compatibility aliases:
    freezes all execution inputs in one ~magent-request-context~, then records a
    queued turn and a completed user item.  The submission itself retains only
    queue lifecycle state, the exact runtime session, and that context.
-5. ~magent-runtime-queue.el~ starts the turn when the global execution slot is free.
+5. ~magent-runtime-queue.el~ starts the turn when that session's execution slot is free;
+   other sessions can run concurrently, including in the same project.
 6. ~magent-agent.el~ consumes the canonical request context, resolves active
    capability instructions, and starts the allowed tools without reconstructing
    a parallel request specification.

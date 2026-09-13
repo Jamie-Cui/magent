@@ -54,7 +54,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 - ~magent-action.el~ ：Workflow DSL、Step runtime、分层 Action registry 和 Invocation lifecycle。
 - ~magent-runtime.el~ ：静态初始化与 project-local definitions 的保留式加载。
 - ~magent-runtime-api.el~ ：UI/backend-facing runtime session 和 prompt API。
-- ~magent-runtime-queue.el~ ：全局单执行 runtime queue 和 session-scoped cancellation。
+- ~magent-runtime-queue.el~ ：会话内 FIFO、会话间并发的 runtime queue 和 session-scoped cancellation。
 - ~magent-audit.el~ ：permission 和 sensitive action 的 live buffer 或 JSONL 文件 audit 记录。
 
 *职责：* 维护 project-scoped、ledger-backed conversation history，默认持久化到 ~~/.emacs.d/magent/sessions/~ ，在 ~agent-jobs~ 下保存 durable child-agent jobs，并按 canonical scope 保留 project-local definitions。Request execution 始终按 runtime session 的精确 scope 解析，因此切换交互上下文不会卸载其他 session 的 definitions。普通 ACP prompt 和 Action-owned agent work 都通过 ~magent-runtime-api.el~ 提交； ~magent-runtime-queue.el~ 负责 queued/active turn state 和 session-scoped cancellation。Doctor 使用同时暴露为 slash 与 ~M-x magent-action-run-*~ 的统一 Action，并在 ~magent-session-directory/actions~ 下使用独立 session。Doctor 是不向模型开放工具的 direct probe pipeline；修改其数据边界或扩展 API 前先读 [[file:DOCTOR.zh.org][DOCTOR.zh.org]]。
@@ -300,7 +300,7 @@ API。
 - *magent-sampling.el* — provider-neutral request/event contract
 - *magent-sampling-gptel.el* — 单次请求的 ~gptel-request~ adapter
 - *magent-runtime.el* — static initialization 与 project-local definitions 的保留式加载
-- *magent-runtime-queue.el* — global execution queue 与 session-scoped cancellation
+- *magent-runtime-queue.el* — per-session execution queue 与 session-scoped cancellation
 - *magent-runtime-api.el* — frontend-neutral runtime session 与 submission API
 - *magent-agent-loop.el* — normalized event loop、serial tool queue、abort 与 continuation
 

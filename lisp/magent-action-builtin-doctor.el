@@ -45,7 +45,7 @@
 (declare-function magent-runtime-pending-count "magent-runtime-api")
 (declare-function magent-runtime-session-effective-model-route
                   "magent-runtime-api" t t)
-(declare-function magent-runtime-queue-active-submission
+(declare-function magent-runtime-queue-active-submissions
                   "magent-runtime-queue")
 (declare-function magent-runtime-submission-id
                   "magent-runtime-queue" t t)
@@ -614,8 +614,8 @@ When BACKEND is nil, use the current global gptel backend."
   (let* ((parent (magent-action-invocation-parent-session context))
          (thread (and parent (magent-session-thread-ledger parent)))
          (agent (and parent (magent-session-agent parent)))
-         (active (and (fboundp 'magent-runtime-queue-active-submission)
-                      (magent-runtime-queue-active-submission))))
+         (active (and (fboundp 'magent-runtime-queue-active-submissions)
+                      (magent-runtime-queue-active-submissions))))
     `((runtime-versions . ,(magent-doctor--runtime-info))
       (doctor-model . ,(magent-doctor--model-info
                         (magent-doctor-state-route state)))
@@ -634,17 +634,19 @@ When BACKEND is nil, use the current global gptel backend."
            . ,(if (fboundp 'magent-runtime-pending-count)
                   (magent-runtime-pending-count)
                 0))
+          (active-count . ,(length active))
           (active
-           . ,(and active
-                   `((submission-id
-                      . ,(magent-runtime-submission-id active))
-                     (session-id
-                      . ,(when-let* ((runtime-session
-                                      (magent-runtime-submission-runtime-session
-                                       active)))
-                           (magent-runtime-session-id runtime-session)))
-                     (status
-                      . ,(magent-runtime-submission-status active)))))))
+           . ,(vconcat
+               (mapcar
+                (lambda (submission)
+                  `((submission-id . ,(magent-runtime-submission-id submission))
+                    (session-id
+                     . ,(when-let* ((runtime-session
+                                     (magent-runtime-submission-runtime-session
+                                      submission)))
+                          (magent-runtime-session-id runtime-session)))
+                    (status . ,(magent-runtime-submission-status submission))))
+                active)))))
       (active-commands
        . ,(mapcar
            (lambda (command-context)

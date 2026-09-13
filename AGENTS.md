@@ -113,7 +113,7 @@ magent.el (package entry point and lazy runtime bootstrap)
   ├─ magent-ledger.el            (thread/turn/item state machine, journal, snapshot)
   ├─ magent-session.el           (thread ledger projections, JSON persistence)
   ├─ magent-agent-job.el         (durable child-agent job state and JSON shape)
-  ├─ magent-runtime-queue.el     (UI-neutral global turn queue and session-scoped cancellation)
+  ├─ magent-runtime-queue.el     (UI-neutral per-session turn queues and session-scoped cancellation)
   ├─ magent-runtime-api.el       (UI/backend-facing runtime session and prompt API)
   ├─ magent-project-instructions.el (bounded scoped AGENTS.md discovery and prompt injection)
   ├─ magent-action.el            (Workflow DSL, Step runtime, layered Action registry, Invocation lifecycle)
@@ -156,7 +156,7 @@ magent.el (package entry point and lazy runtime bootstrap)
 4. **Isolated Actions** (`magent-action-session.el`, `magent-action-mode-line.el`, `magent-action-session-view.el`, `magent-action-builtin-doctor.el`): `/doctor` is one unified Action spec exposed through both agent-shell and `M-x magent-action-run-doctor`. `magent-action-enabled-builtins` controls its registration and refreshes frontend discovery after Custom changes. It creates isolated sessions under `magent-session-directory/actions`, preserves the current conversation, and can be inspected with `magent-action-list-sessions` or cancelled with `magent-action-cancel`. The optional `magent-action-mode-line-mode` displays the active Action count and current Steps without reading private invocation registries. The old `commands/` format is not read or migrated. Doctor uses trusted read-only probes, Magent-owned redaction, and one tool-free direct request outside the runtime queue. Custom probes are trusted Elisp, not sandboxed code. See `docs/DOCTOR.org`.
 
 5. **Supported frontend boundary** (`magent-agent-shell.el`, `magent-acp.el`, `magent-runtime-api.el`): `magent-agent-shell.el` supplies the agent-shell config, the sole compatibility command `magent-start`, and one isolated private context-compatibility block; it does not own buffer selection, prompt submission, queues, skills, Actions, busy-state recovery, or interruption. The config uses an in-process ACP client implemented by `magent-acp.el`. ACP routes registered slash input through `magent-action.el`, submits model turns through `magent-runtime-api.el`, and converts runtime observer events to ACP `session/update` messages. ACP prompt requests remain pending until the corresponding command invocation or ordinary Magent turn completes, fails, or is cancelled.
-   - `magent-runtime-queue.el` owns the global single-execution queue and session-scoped cancellation
+   - `magent-runtime-queue.el` owns per-session FIFO execution, concurrent sessions, and session-scoped cancellation
    - `magent-runtime-api.el` freezes one `magent-request-context` per submission before queueing; the queue stores only lifecycle state and that context
    - Runtime emits Magent-native observer events; ACP conversion is isolated in `magent-acp.el`
    - ACP text/resource blocks are stored as structured turn metadata and reconstructed as user-role prompt context; local `file://` resources also provide scoped request paths

@@ -25,7 +25,7 @@ invocation 则属于 ~magent-action.el~ 。
   invocation lifecycle； ~magent-action-session.el~ 提供 isolated durable
   persistence，但不构成 frontend。
 - ~magent-runtime-api.el~ 是 frontend-neutral runtime/session API。
-- ~magent-runtime-queue.el~ 负责全局单执行队列和 session-scoped cancellation。
+- ~magent-runtime-queue.el~ 负责会话内 FIFO、会话间并发和 session-scoped cancellation。
 
 * 受支持的流程
 
@@ -97,7 +97,7 @@ registered Action command projections 与 skill descriptors 展示为两个独�
 - 受支持的 frontend 硬依赖 ~agent-shell~ 和 ~acp~ 。
 - Magent 目前仍需为通用 agent-shell picker 显式注册 config，并临时 advice 四个私有
   context function，以处理 remote-safe 与空行 context。
-- runtime execution 使用全局单执行队列。
+- runtime execution 在同一会话内按 FIFO 串行执行，不同会话（包括同一项目）可并发。完成和取消均指向精确 submission；忙碌或等待批准的会话不会阻塞其他会话。
 - cancellation 是 session-scoped：取消一个 ACP session 会取消该 session 的 active
   和 queued submissions，但不会移除其他 session 的 queued work。
 - 受支持的 frontend 已支持 per-request instruction skill overrides、scope-aware

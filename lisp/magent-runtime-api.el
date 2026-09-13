@@ -58,10 +58,18 @@
   (magent-session-get-id session))
 
 (defun magent-runtime-api--scope-lease-conflict-p (scope session)
-  "Return non-nil when installing SESSION at SCOPE would steal a lease."
-  (when-let* ((active-scope (magent-runtime-queue-active-scope)))
-    (and (equal (magent-session-scope-origin scope) active-scope)
-         (not (eq (magent-runtime-queue-active-session-object) session)))))
+  "Return non-nil when an active session other than SESSION uses SCOPE.
+This only protects the interactive current-session selection.  It does not
+prevent detached sessions from executing concurrently in the same scope."
+  (cl-some
+   (lambda (submission)
+     (let ((runtime (magent-runtime-submission-runtime-session submission)))
+       (and (magent-runtime-session-p runtime)
+            (equal (magent-session-scope-origin scope)
+                   (magent-session-scope-origin
+                    (magent-runtime-session-scope runtime)))
+            (not (eq (magent-runtime-session-magent-session runtime) session)))))
+   (magent-runtime-queue-active-submissions)))
 
 (defun magent-runtime-session-ensure-registerable
     (scope session &optional wrapper-only)
@@ -454,10 +462,10 @@ Any active or queued work for the session is cancelled first."
     (magent-thread-turn-id turn)))
 
 (defun magent-runtime-api--submission-live-p (submission)
-  "Return non-nil while SUBMISSION still owns the active runtime slot."
+  "Return non-nil while SUBMISSION still owns its session runtime slot."
   (and (not (magent-runtime-submission-finalized submission))
        (eq (magent-runtime-submission-status submission) 'running)
-       (eq submission (magent-runtime-queue-active-submission))))
+       (memq submission (magent-runtime-queue-active-submissions))))
 
 (defun magent-runtime-api--call-completion (submission status result)
   "Safely call SUBMISSION's completion callback with STATUS and RESULT."
@@ -483,9 +491,9 @@ Any active or queued work for the session is cancelled first."
        (_ 'turn-failed))
      :status status
      :result result)
-    (if (eq submission (magent-runtime-queue-active-submission))
-      (magent-runtime-queue-finish-active
-       status result
+    (if (memq submission (magent-runtime-queue-active-submissions))
+      (magent-runtime-queue-finish
+       submission status result
        (lambda ()
          (magent-runtime-api--call-completion submission status result)))
       (magent-runtime-api--call-completion submission status result))))
@@ -792,7 +800,7 @@ Return non-nil when an active or queued submission was cancelled."
   (let ((queued
          (magent-runtime-queue-remove-submission
           runtime-session submission-id))
-        (active (magent-runtime-queue-active-submission))
+        (active (magent-runtime-queue-active-submission runtime-session))
         (reason "Submission cancelled"))
     (cond
      (queued
@@ -819,7 +827,7 @@ Return non-nil when an active or queued submission was cancelled."
 (defun magent-runtime-cancel (runtime-session)
   "Cancel RUNTIME-SESSION active and queued submissions."
   (let* ((removed (magent-runtime-queue-remove-session runtime-session))
-         (active (magent-runtime-queue-active-submission)))
+         (active (magent-runtime-queue-active-submission runtime-session)))
     (dolist (submission removed)
       (magent-runtime-api--mark-submission-turn-dropped
        submission "Queued turn cancelled")
