@@ -6194,7 +6194,9 @@
            ("list_agents" . local)
            ("close_agent" . local)
            ("update_plan" . local)
-           ("web_search" . local))))
+           ("web_search" . local)
+           ("web_open" . local)
+           ("web_find" . local))))
     (should (= (length expected) (length magent-tools-catalog)))
     (dolist (entry expected)
       (should (eq (magent-tools-locality (car entry)) (cdr entry))))
@@ -6923,21 +6925,11 @@
 (ert-deftest magent-test-tools-all-registered ()
   "Test that all core tools are registered."
   (require 'magent-tools)
-  (should (= (length magent-tools-catalog) 17))
+  (should (= (length magent-tools-catalog) 19))
   (should-not (magent-tools-catalog-entry "read_buffer"))
   (should (magent-tools-catalog-entry "emacs_read"))
   (should (magent-tools-catalog-entry "emacs_eval_live"))
   (should (magent-tools-catalog-entry "read_tool_output")))
-
-(ert-deftest magent-test-tools-web-search-description-matches-result-shape ()
-  "Test web_search does not imply that result pages were fetched."
-  (require 'magent-tools)
-  (let ((description
-         (gptel-tool-description magent-tools--web-search-tool)))
-    (should (string-match-p "titles and URLs only" description))
-    (should (string-match-p "does not fetch result pages" description))
-    (should (string-match-p "do not claim to have read page content"
-                            description))))
 
 (ert-deftest magent-test-tools-filtering ()
   "Test tool filtering by permissions."
@@ -7681,43 +7673,6 @@
         (kill-buffer buffer))
       (delete-file tmpfile))))
 
-(ert-deftest magent-test-tools-web-search-callback-cleans-up-buffer ()
-  "Test web_search callback kills the temporary retrieval buffer."
-  (require 'magent-tools)
-  (let ((result nil)
-        (buf (generate-new-buffer " *magent-web-test*")))
-    (unwind-protect
-        (with-current-buffer buf
-          (insert "HTTP/1.1 200 OK\n\n<html></html>")
-          (cl-letf (((symbol-function 'libxml-parse-html-region) (lambda (&rest _args) 'dom))
-                    ((symbol-function 'magent-tools--parse-ddg-results)
-                     (lambda (_dom _max-results)
-                       (list (list :title "Example" :url "https://example.com")))))
-            (magent-tools--web-search-callback nil (lambda (r) (setq result (magent-test-tool-output r))) "test" 5))
-          (should (string-match-p "Example" result))
-          (should-not (buffer-live-p buf)))
-      (when (buffer-live-p buf)
-        (kill-buffer buf)))))
-
-(ert-deftest magent-test-tools-parse-ddg-results ()
-  "Test web_search result parsing from a DuckDuckGo-style DOM."
-  (require 'magent-tools)
-  (let* ((dom '(html nil
-                     (body nil
-                           (a ((class . "result__a")
-                               (href . "https://example.com/1"))
-                              " Result 1 ")
-                           (a ((class . "other")
-                               (href . "https://example.com/ignored"))
-                              "Ignored")
-                           (a ((class . "result__a")
-                               (href . "https://example.com/2"))
-                              "Result 2"))))
-         (results (magent-tools--parse-ddg-results dom 1)))
-    (should (equal results
-                   (list (list :title "Result 1"
-                               :url "https://example.com/1"))))))
-
 (ert-deftest magent-test-tools-catalog-is-canonical-and-unique ()
   "Test every catalog entry owns name, tool, permission, and locality."
   (require 'magent-tools)
@@ -7757,18 +7712,6 @@
       (let ((json-null :null)
             (json-false :json-false))
         (json-encode (vconcat args))))))
-
-(ert-deftest magent-test-tools-format-search-results ()
-  "Test web search result formatting."
-  (require 'magent-tools)
-  (let ((results (list (list :title "Result 1" :url "https://example.com/1")
-                       (list :title "Result 2" :url "https://example.com/2"))))
-    (let ((formatted (magent-tools--format-search-results "test query" results)))
-      (should (string-match-p "test query" formatted))
-      (should (string-match-p "Result 1" formatted))
-      (should (string-match-p "Result 2" formatted))
-      (should (string-match-p "1\\." formatted))
-      (should (string-match-p "2\\." formatted)))))
 
 (ert-deftest magent-test-permission-prompt-choice-once-allow ()
   "Test tool confirmation accepts a one-time allow choice."
@@ -18123,6 +18066,8 @@ CURL-EXIT simulates that exit code through gptel's real process sentinel."
           (format "%S" (magent-test--session-transcript
                          (magent-runtime-session-magent-session (car pair)))))))
       (should-not (magent-runtime-processing-p)))))
+
+(load (expand-file-name "test/magent-web-test.el" magent-test--root-directory) nil t)
 
 (provide 'magent-test)
 ;;; magent-test.el ends here

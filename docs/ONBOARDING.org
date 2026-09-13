@@ -79,7 +79,7 @@ Multi-agent architecture with specialized agents for different tasks.
 The action layer that executes operations requested by agents.
 
 *Key Files:*
-- ~magent-tools.el~ — canonical catalog of 17 ~gptel-tool~ structs: read_file, write_file, edit_file, grep, glob, bash, emacs_read, emacs_eval, emacs_eval_live, read_tool_output, spawn_agent, send_agent_message, wait_agent, list_agents, close_agent, update_plan, web_search
+- ~magent-tools.el~ — canonical catalog of 19 ~gptel-tool~ structs: read_file, write_file, edit_file, grep, glob, bash, emacs_read, emacs_eval, emacs_eval_live, read_tool_output, spawn_agent, send_agent_message, wait_agent, list_agents, close_agent, update_plan, web_search, web_open, web_find
 - ~magent-skills.el~ — Skill registry, built-in skills, file loading, inspection commands
 - ~magent-skill-manager.el~ — User-level skills.sh finder, safe copy installer, and permanent deletion
 - ~magent-capability.el~ — Capability definitions, resolution, and file-backed loading
@@ -267,7 +267,7 @@ Read ~magent-tools.el~ to understand the available tools. Pay attention to:
 - ~emacs_eval_live~ — Runs arbitrary Elisp in the live Emacs; dangerous, once-only, and unavailable to restricted built-ins
 - ~read_tool_output~ — Pages a spilled result by opaque id within the current session
 - ~spawn_agent~ / ~send_agent_message~ / ~wait_agent~ / ~list_agents~ / ~close_agent~ — Coordinate durable child-agent jobs
-- ~web_search~ — DuckDuckGo integration via ~url-retrieve~
+- ~web_search~, ~web_open~, ~web_find~ — configurable search (keyless Bing RSS by default), source snapshots and deterministic find; see README
 
 Then read ~docs/AGENT_JOBS.org~ for the lifecycle contract and persistence boundaries.
 
@@ -321,7 +321,9 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 - *magent-permission.el* — Tool access control with glob patterns
 
 ** Tools, Skills & Capabilities
-- *magent-tools.el* — Canonical catalog of 17 ~gptel-tool~ implementations
+- *magent-web.el* — Search provider registry, asynchronous HTTP and source snapshots
+- *magent-web-page.el* — HTML/text/PDF extraction, pagination and find
+- *magent-tools.el* — Canonical catalog of 19 ~gptel-tool~ implementations
 - *magent-tool-orchestrator.el* — Permission, approval, audit, and tool-call orchestration
 - *magent-approval.el* — User approval prompts for sensitive operations
 - *magent-file-loader.el* — Shared file-backed frontmatter parser
@@ -375,7 +377,7 @@ ACP conversion in ~magent-acp.el~, and agent-shell-specific behavior in
 *Approach carefully:* More specific patterns must come before less specific ones. Test with various glob patterns.
 
 ** 5. magent-tools.el (Medium Complexity)
-*Why it's complex:* 17 tool implementations have different side effects, process lifecycles, revision contracts, spill retention, child-agent state, and error handling. ~emacs_read~ uses the captured origin buffer; ~emacs_eval~ uses a disposable child process; ~emacs_eval_live~ deliberately crosses into the main process.
+*Why it's complex:* 19 tool implementations have different side effects, process lifecycles, revision contracts, spill retention, child-agent state, and error handling. ~emacs_read~ uses the captured origin buffer; ~emacs_eval~ uses a disposable child process; ~emacs_eval_live~ deliberately crosses into the main process.
 
 *Approach carefully:* Keep child-eval cleanup and host-owned timeout handling robust. Preserve once-only approval for both arbitrary eval tools, session isolation for spilled output, revision validation for writes, and parent/child request-context inheritance.
 

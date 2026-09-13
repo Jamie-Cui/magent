@@ -73,6 +73,33 @@ and the final runtime trust policy."
   :type 'string
   :group 'magent)
 
+(defcustom magent-web-search-provider 'bing
+  "Search source used by `web_search', independently of the gptel model.
+The default `bing' uses public RSS and needs no API key.  `duckduckgo'
+uses HTML search, while `tavily' uses its official API with a key.
+Additional sources can use `magent-web-register-search-provider'.
+Errors never cause an implicit switch to another provider."
+  :type 'symbol
+  :group 'magent)
+
+(defcustom magent-web-tavily-api-key nil
+  "Tavily API key or zero-argument function returning one.
+When nil, use TAVILY_API_KEY from the Emacs environment, then auth-source
+with host api.tavily.com and user apikey.  Never send a key in chat."
+  :type '(choice (const :tag "Environment or auth-source" nil)
+                 (function :tag "Key function") (string :tag "API key"))
+  :group 'magent)
+
+(defcustom magent-web-timeout 45
+  "Maximum seconds for one web operation, including redirects and parsing."
+  :type 'natnum
+  :group 'magent)
+
+(defcustom magent-web-max-response-bytes (* 10 1024 1024)
+  "Maximum bytes downloaded or extracted by one web operation."
+  :type 'natnum
+  :group 'magent)
+
 (defcustom magent-skill-search-limit 10
   "Maximum number of results displayed by `magent-find-skill'."
   :type 'natnum

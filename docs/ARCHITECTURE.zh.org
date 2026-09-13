@@ -87,8 +87,10 @@ Prompt 规则只负责引导模型行为，真实的 tool availability、approva
 enforcement 仍由 tool runtime 和 orchestrator 负责。
 
 Base prompt 只保留跨任务 coding 行为；tool schema 由 gptel 提供，Emacs-specific
-流程通过 instruction skills 渐进式披露。~web_search~ 只返回用于发现的结果标题和
-URL，不会抓取结果页或正文，因此 prompt 不会把这些链接当作已经读取的来源。
+流程通过 instruction skills 渐进式披露。~web_search~ 返回标题、URL、摘要与来源引用；
+~web_open~ 抓取正文到会话私有的不可变快照，~web_find~ 在快照中查找。三者共用
+~web_search~ 权限。默认搜索源为免密钥 Bing RSS，可选 Tavily 与 gptel 模型独立；
+搜索源注册、依赖和限制见 README。
 
 所有 bundled Org prompt resource 都列在 ~prompts/manifest.txt~。测试要求 manifest
 对每个 bundled ~.org~ prompt 恰好覆盖一次，因此新增 prompt layer 时必须同时更新
@@ -108,13 +110,13 @@ view 不能互相冒充 canonical state。
 
 ** 工具、权限与审计
 
-~magent-tools.el~ 通过单一 canonical catalog 暴露 17 个 ~gptel-tool~ ：
+~magent-tools.el~ 通过单一 canonical catalog 暴露 19 个 ~gptel-tool~ ：
 
 - ~read_file~ 、 ~write_file~ 、 ~edit_file~
 - ~grep~ 、 ~glob~ 、 ~bash~
 - ~emacs_read~ 、 ~emacs_eval~ 、 ~emacs_eval_live~ 、 ~read_tool_output~
 - ~spawn_agent~ 、 ~send_agent_message~ 、 ~wait_agent~ 、 ~list_agents~ 、 ~close_agent~
-- ~update_plan~, ~web_search~
+- ~update_plan~, ~web_search~, ~web_open~, ~web_find~
 
 ~read_file~ 强制指定 ~source=disk~ 或 ~source=live-buffer~。live-buffer source
 只读取已经存在的 file-visiting buffer（包括未保存修改），不会打开文件或回退到
