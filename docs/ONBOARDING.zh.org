@@ -83,7 +83,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 
 *关键文件：*
 
-- ~magent-tools.el~ ：单一 canonical catalog 中的 17 个 ~gptel-tool~ structs，包括显式 disk/live-buffer source 的 read、revision-checked write/edit、grep/glob、bash、emacs_read、隔离与 live eval、tool-result pagination、child-agent coordination、update_plan 和 web_search。
+- ~magent-tools.el~ ：单一 canonical catalog 中的 19 个 ~gptel-tool~ structs，包括显式 disk/live-buffer source 的 read、revision-checked write/edit、grep/glob、bash、emacs_read、隔离与 live eval、tool-result pagination、child-agent coordination、update_plan、web_search、web_open 和 web_find。
 - ~magent-skills.el~ ：skill registry、built-in skills、file loading 和 inspection commands。
 - ~magent-skill-manager.el~ ：用户级 skills.sh finder、安全复制安装与永久删除。
 - ~magent-capability.el~ ：capability definitions、resolution 和 file-backed loading。
@@ -269,7 +269,7 @@ API。
 - ~emacs_eval_live~ ：在 live Emacs 中执行任意 Elisp；危险、逐次确认，受限内置 agent 不暴露。
 - ~read_tool_output~ ：凭 opaque id 在当前 session 内分页读取 spill。
 - ~spawn_agent~ / ~send_agent_message~ / ~wait_agent~ / ~list_agents~ / ~close_agent~ ：durable child-agent jobs。
-- ~web_search~ ：通过 ~url-retrieve~ 和 DuckDuckGo 实现。
+- ~web_search~、~web_open~、~web_find~：可配置搜索源（默认免密钥 Bing RSS）、原文快照与确定性查找；配置见 README。
 
 然后读 ~docs/AGENT_JOBS.org~ ，掌握生命周期 contract 和 persistence boundaries。
 
@@ -323,7 +323,9 @@ API。
 - *magent-permission.el* — 带 glob pattern 的 tool access control
 
 ** Tools、Skills 与 Capabilities
-- *magent-tools.el* — 17 个 ~gptel-tool~ implementation 的 canonical catalog
+- *magent-web.el* — 搜索源注册、异步 HTTP 与来源快照
+- *magent-web-page.el* — HTML/text/PDF 提取、分页和查找
+- *magent-tools.el* — 19 个 ~gptel-tool~ implementation 的 canonical catalog
 - *magent-tool-orchestrator.el* — permission、approval、audit 与 tool-call orchestration
 - *magent-approval.el* — sensitive operation 的 user approval prompts
 - *magent-file-loader.el* — 共用的 file-backed frontmatter parser
@@ -376,7 +378,7 @@ melpazoid/MELPA recipe 中；所有 bundled Org prompt 也必须在
 
 ** 5. ~magent-tools.el~
 
-*复杂原因：* 17 个 tool implementation 各自有 side effects、process lifecycle、revision contract、spill retention、child-agent runtime state 和 error handling。~emacs_read~ 使用捕获的 origin buffer，~emacs_eval~ 使用一次性 child process，~emacs_eval_live~ 刻意跨入主进程。
+*复杂原因：* 19 个 tool implementation 各自有 side effects、process lifecycle、revision contract、spill retention、child-agent runtime state 和 error handling。~emacs_read~ 使用捕获的 origin buffer，~emacs_eval~ 使用一次性 child process，~emacs_eval_live~ 刻意跨入主进程。
 
 *修改建议：* child-eval cleanup 和 host-owned timeout 必须可靠；两个任意 eval tool 的 once-only approval、spill 的 session isolation、写入的 revision validation、child-agent status persistence 和 parent/child request-context inheritance 都不能弱化。
 

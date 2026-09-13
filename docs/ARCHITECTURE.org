@@ -98,9 +98,11 @@ enforcement remain in the tool runtime and orchestrator.
 
 The base prompt contains only cross-task coding behavior. Tool schemas come
 from gptel, and Emacs-specific procedures are progressively disclosed through
-instruction skills. ~web_search~ returns result titles and URLs for discovery;
-it does not fetch result pages or provide article text, so the prompt does not
-treat those links as already-read sources.
+instruction skills. ~web_search~ returns titles, URLs, snippets and references.
+~web_open~ fetches source text into immutable session-local snapshots; ~web_find~
+searches those snapshots. All three share the ~web_search~ permission.
+The default source is keyless Bing RSS; Tavily is optional and independent of
+the gptel model. See README for source registration, dependencies and limits.
 
 Bundled Org prompt resources are enumerated in ~prompts/manifest.txt~. Tests
 require the manifest to cover every bundled ~.org~ prompt exactly once, so a
@@ -120,13 +122,13 @@ state containers.
 
 ** Tools, Permissions, And Audit
 
-~magent-tools.el~ owns one canonical catalog of 17 ~gptel-tool~ structs:
+~magent-tools.el~ owns one canonical catalog of 19 ~gptel-tool~ structs:
 
 - ~read_file~, ~write_file~, ~edit_file~
 - ~grep~, ~glob~, ~bash~
 - ~emacs_read~, ~emacs_eval~, ~emacs_eval_live~, ~read_tool_output~
 - ~spawn_agent~, ~send_agent_message~, ~wait_agent~, ~list_agents~, ~close_agent~
-- ~update_plan~, ~web_search~
+- ~update_plan~, ~web_search~, ~web_open~, ~web_find~
 
 ~read_file~ requires an explicit ~source=disk~ or ~source=live-buffer~. The
 live-buffer source reads an existing file-visiting buffer, including unsaved

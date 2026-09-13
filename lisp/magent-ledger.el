@@ -1369,6 +1369,12 @@ Return nil when BODY alone exceeds the configured session quota."
                     spill :result-id)))
         (magent-tool-output-spill--safe-id result-id "result id")
         (cl-pushnew result-id ids :test #'equal)))
+    (dolist (item (and thread (magent-thread-all-items thread)))
+      (mapc (lambda (reference)
+              (magent-tool-output-spill--safe-id reference "web reference")
+              (cl-pushnew reference ids :test #'equal))
+            (magent-tool-output-spill--object-value
+             (magent-thread-item-metadata item) :web-references)))
     (nreverse ids)))
 
 (defun magent-tool-output-spill-fork-session

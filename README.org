@@ -516,7 +516,9 @@ The AI agent has access to these tools (can be customized per agent):
 | ~list_agents~        | no          | List child-agent jobs for the current session           |
 | ~close_agent~        | yes         | Close or cancel a child-agent job                       |
 | ~update_plan~        | yes         | Record task progress in the native plan view             |
-| ~web_search~         | no          | Search the web via DuckDuckGo                           |
+| ~web_search~         | no          | Configurable search with snippets and source references |
+| ~web_open~           | no          | Read, page, refresh or follow links in source snapshots |
+| ~web_find~           | no          | Find literal text in a stored page or PDF snapshot      |
 
 The canonical catalog in ~magent-tools.el~ owns each tool's name, implementation,
 and permission key. Ordinary turns request all available catalog tools; command
@@ -530,6 +532,99 @@ deny rules still apply. Permission bypass disables ordinary checks and should
 be used only deliberately, but it cannot suppress the once-only approval on
 ~emacs_eval~ and ~emacs_eval_live~. It also cannot re-enable a globally
 disabled tool or add a tool omitted from an Action's exact ~:tools~ allowlist.
+
+** Web search and source reading
+
+Web tools work independently of the gptel backend/model. No OpenAI Responses
+backend is needed; the main model can remain DeepSeek. The default search
+source is ~bing~, which reads public search RSS without an API key. curl must
+be available in Emacs's ~exec-path~ (normally already present on macOS).
+
+| Source | Credentials | Filters | Tradeoff |
+|--------+-------------+---------+----------|
+| ~bing~ (default) | None | No guaranteed domain/date filters | Public RSS, not a supported search API; ranking and availability can change |
+| ~duckduckgo~ | None | No guaranteed domain/date filters | HTML parsing needs libxml2; CAPTCHA is an explicit error |
+| ~tavily~ | Tavily key | Domain list and lookback days | Official API with service quotas and usage costs |
+
+Choose a source explicitly; errors never silently switch providers:
+
+#+begin_src emacs-lisp
+(setq magent-web-search-provider 'bing) ; default, no key
+;; Optional alternatives:
+;; (setq magent-web-search-provider 'duckduckgo)
+;; (setq magent-web-search-provider 'tavily)
+#+end_src
+
+For [[https://docs.tavily.com/documentation/api-reference/endpoint/search][Tavily Search]], provide ~TAVILY_API_KEY~ in the *Emacs process* environment, or an
+~auth-source~ entry with host ~api.tavily.com~ and user ~apikey~. Alternatively,
+~magent-web-tavily-api-key~ accepts a zero-argument key function. A shell export
+does not update an already running GUI Emacs. Credentials stay out of tool
+arguments, result metadata and process argv. Requests contain the query and
+explicit filters, not conversation history. Tavily generated answers and raw
+content are disabled; the main model interprets the returned search snippets.
+
+Bing's RSS response includes terms restricting use to personal, non-commercial
+RSS rendering; other uses require Microsoft's permission. Do not treat this
+endpoint as a licensed production search API. Deployments needing a supported
+API or different usage rights should select Tavily or register their own source.
+Keyless sources also cannot guarantee availability under rate limits or changes
+to the public endpoints. No CAPTCHA solving, browser-cookie reuse or private
+Codex endpoint is involved.
+
+~web_search~ keeps the existing ~query~ and ~max_results~ arguments and adds
+optional ~domains~ and ~recency~ (days). Unsupported filters fail before a
+network request. With keyless sources, ~site:~ in the query is only a search
+hint. Results label the provider and return titles, URLs, snippets and opaque
+session references. RSS dates are not presented as article publication dates.
+
+~web_open~ accepts a URL or reference. Search references fetch the page; page
+references read the same stored text. ~start_line~/~line_count~ page through it,
+~link_id~ follows a numbered link, ~refresh~ creates a new reference, and ~page~
+selects a real PDF page. ~web_find~ performs case-insensitive literal matching
+within extracted lines and returns a continuation when needed. Cite the source
+URL, not the opaque reference. HTML extraction requires libxml2; text PDFs need
+~pdftotext~ from Poppler. JavaScript-only sites, scans/OCR and rendered PDF images
+are not supported. Non-UTF-8 pages may have imperfect text decoding.
+
+Snapshots reuse session-private spill storage and its TTL/quota. Session replay
+and fork retain available references; expired references fail instead of
+silently fetching different text under old line numbers. Network processes are
+local even for TRAMP projects, use the user's proxy environment, have timeout,
+size and redirect bounds, and stop on tool cancellation. URL guards reject
+credentials, non-HTTP(S) protocols and literal local addresses; they are not a
+DNS rebinding defense or an OS/network sandbox. All three tools share the
+~web_search~ permission and global enable switch. Action Steps must list each
+required tool in their exact ~:tools~ allowlist.
+
+*** Adding a search source
+
+Load ~magent-web~ and call ~magent-web-register-search-provider~ with a symbol,
+a function and the supported filters. Registration replaces that symbol's
+adapter; there is no routing framework or separate model setting.
+
+#+begin_src emacs-lisp
+(require 'magent-web)
+(magent-web-register-search-provider
+ 'example
+ (lambda (query options callback)
+   ;; Start an asynchronous request using QUERY and OPTIONS.
+   ;; Call CALLBACK with (:results (ENTRY ...)) or (:error "Message").
+   ;; Each ENTRY has string :title, :url, :snippet and optional
+   ;; string :published-date. Return a zero-argument cancellation function.
+   (my-search-request query options callback))
+ '(domains recency)) ; omit filters the source cannot enforce
+(setq magent-web-search-provider 'example)
+#+end_src
+
+~options~ contains ~:max-results~ (1..20), ~:domains~ (list of host names or nil)
+and ~:recency~ (days or nil). An empty result list is successful; network, auth,
+quota and parse failures are errors. The adapter returns normalized source
+records, while Magent owns reference allocation, tool results, timeout and
+exactly-once completion. Adapters are trusted Elisp and must release their
+resources when cancelled. See ~test/magent-web-test.el~ for an executable fake
+adapter and ~test/magent-web-live-test.el~ for the opt-in keyless live probe.
+
+** Tool selection
 
 Tool availability is controlled by:
 

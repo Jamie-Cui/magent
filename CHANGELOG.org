@@ -14,6 +14,14 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Added
 
+- Configurable web search sources independent of the gptel model: keyless Bing
+  RSS by default, optional DuckDuckGo HTML and Tavily's official API. A small
+  registration API supports additional adapters with explicit filter support.
+- ~web_open~ and ~web_find~ read, page, follow links and search immutable
+  session-local HTML/text/PDF snapshots. References follow spill retention and
+  session fork semantics; all web tools share the ~web_search~ permission.
+  Network operations use curl; HTML needs libxml2 and PDF text needs pdftotext.
+
 - Bounded, visible retries for truncated Chat Completions streams before
   assistant text is emitted. ~magent-stream-retry-limit~ defaults to 2; retries
   use the same provider input, retain completed tools, count toward the total
