@@ -6,10 +6,10 @@
 
 ;;; Commentary:
 
-;; Global single-execution queue for Magent runtime submissions.  Each
-;; submission retains its exact runtime session wrapper and one canonical
-;; request context.  Cancellation remains identity-scoped even though the
-;; first implementation runs one turn at a time.
+;; Session-scoped FIFO execution for Magent runtime submissions.  Independent
+;; sessions run concurrently, including sessions in the same project.  Each
+;; submission retains its exact runtime session wrapper and request context;
+;; completion and cancellation always address the exact submission.
 
 ;;; Code:
 
@@ -33,7 +33,7 @@
   finalized)
 
 (defvar magent-runtime-queue--active nil
-  "Currently running `magent-runtime-submission'.")
+  "List of running `magent-runtime-submission' objects.")
 
 (defvar magent-runtime-queue--pending nil
   "Queued `magent-runtime-submission' objects.")
@@ -41,21 +41,22 @@
 (cl-defstruct (magent-runtime-arbiter-ticket
                (:constructor magent-runtime-arbiter-ticket-create)
                (:copier nil))
-  "One backend-neutral ticket in the global execution FIFO."
+  "One backend-neutral ticket in a session execution FIFO."
   owner
   token
   id
   starter
   rollback
+  session
   starting
   finishing
   finish-requested)
 
 (defvar magent-runtime-queue--arbiter-active nil
-  "Active `magent-runtime-arbiter-ticket', regardless of backend.")
+  "List of active `magent-runtime-arbiter-ticket' objects, one per session.")
 
 (defvar magent-runtime-queue--arbiter-pending nil
-  "Global FIFO of backend-neutral execution tickets.")
+  "Pending backend-neutral tickets, ordered by submission time.")
 
 (defvar magent-runtime-queue--arbiter-ticket-adapters
   (make-hash-table :test #'eq :weakness 'key)
@@ -95,7 +96,7 @@ Callbacks keep the runtime queue independent of backend-specific token types.")
          (magent-runtime-arbiter-ticket-finishing ticket))
      (pcase (magent-runtime-arbiter-ticket-owner ticket)
        ('runtime
-        (or (eq token magent-runtime-queue--active)
+        (or (memq token magent-runtime-queue--active)
             (memq token magent-runtime-queue--pending)))
        (_
         (let ((live-p
@@ -123,7 +124,7 @@ Rollback failures never mask the original starter error."
   "Start TICKET transactionally.
 Return `active' when it remains active, `finished' when its starter
 synchronously finalized it, or (error . ERR) after rolling it back."
-  (setq magent-runtime-queue--arbiter-active ticket)
+  (push ticket magent-runtime-queue--arbiter-active)
   (setf (magent-runtime-arbiter-ticket-starting ticket) t
         (magent-runtime-arbiter-ticket-finish-requested ticket) nil)
   (condition-case err
@@ -132,8 +133,7 @@ synchronously finalized it, or (error . ERR) after rolling it back."
         (setf (magent-runtime-arbiter-ticket-starting ticket) nil)
         (if (magent-runtime-arbiter-ticket-finish-requested ticket)
             (progn
-              (when (eq magent-runtime-queue--arbiter-active ticket)
-                (setq magent-runtime-queue--arbiter-active nil))
+              (magent-runtime-queue--arbiter-release-ticket ticket)
               'finished)
           'active))
     (t
@@ -143,60 +143,79 @@ synchronously finalized it, or (error . ERR) after rolling it back."
      (magent-runtime-queue--arbiter-rollback-ticket ticket err)
      (setf (magent-runtime-arbiter-ticket-starting ticket) nil
            (magent-runtime-arbiter-ticket-finish-requested ticket) t)
-     (when (eq magent-runtime-queue--arbiter-active ticket)
-       (setq magent-runtime-queue--arbiter-active nil))
+     (magent-runtime-queue--arbiter-release-ticket ticket)
      (cons 'error err))))
 
+(defun magent-runtime-queue--arbiter-release-ticket (ticket)
+  "Release exact TICKET without affecting other sessions."
+  (setq magent-runtime-queue--arbiter-active
+        (delq ticket magent-runtime-queue--arbiter-active))
+  (remhash ticket magent-runtime-queue--arbiter-ticket-adapters))
+
+(defun magent-runtime-queue--arbiter-blocked-p (ticket)
+  "Return non-nil when TICKET's captured session already has an active turn."
+  (cl-some (lambda (active)
+             (eq (magent-runtime-arbiter-ticket-session active)
+                 (magent-runtime-arbiter-ticket-session ticket)))
+           magent-runtime-queue--arbiter-active))
+
 (defun magent-runtime-queue--arbiter-start-next ()
-  "Start the first live ticket in the global FIFO and return its id."
-  (let (started)
-    (while (and (not magent-runtime-queue--arbiter-active)
-                magent-runtime-queue--arbiter-pending
-                (not started))
-      (let ((ticket (pop magent-runtime-queue--arbiter-pending)))
-        (when (magent-runtime-queue--arbiter-ticket-live-p ticket)
-          (pcase (magent-runtime-queue--arbiter-start-ticket ticket)
-            ('active (setq started ticket))
-            ('finished nil)
-            (`(error . ,err)
-             ;; This ticket was already accepted asynchronously, so its
-             ;; backend rollback is the durable failure report.  Do not make
-             ;; the preceding ticket's finish path fail as collateral damage.
-             (display-warning
-              'magent
-              (format "Queued starter failed for %s: %s"
-                      (magent-runtime-arbiter-ticket-id ticket)
-                      (error-message-string err))
-              :warning))))))
-    (and started (magent-runtime-arbiter-ticket-id started))))
+  "Start runnable session FIFO heads and return the first started ticket id.
+A busy session never blocks another session.  Starting and finishing tickets
+retain their session until all synchronous callbacks have returned."
+  (let (first-id ticket)
+    (while (setq ticket
+                 (cl-find-if
+                  (lambda (candidate)
+                    (not (magent-runtime-queue--arbiter-blocked-p candidate)))
+                  magent-runtime-queue--arbiter-pending))
+      (setq magent-runtime-queue--arbiter-pending
+            (delq ticket magent-runtime-queue--arbiter-pending))
+      (when (magent-runtime-queue--arbiter-ticket-live-p ticket)
+        (pcase (magent-runtime-queue--arbiter-start-ticket ticket)
+          ('active
+           (unless first-id
+             (setq first-id (magent-runtime-arbiter-ticket-id ticket))))
+          ('finished nil)
+          (`(error . ,err)
+           ;; Accepted asynchronous work reports failure through its backend
+           ;; rollback.  It must not fail an unrelated completion callback.
+           (display-warning
+            'magent
+            (format "Queued starter failed for %s: %s"
+                    (magent-runtime-arbiter-ticket-id ticket)
+                    (error-message-string err))
+            :warning)))))
+    first-id))
 
 (defun magent-runtime-queue--arbiter-reconcile ()
-  "Discard inactive tickets and resume the global FIFO."
-  (unless (and magent-runtime-queue--arbiter-active
-               (magent-runtime-queue--arbiter-ticket-live-p
-                magent-runtime-queue--arbiter-active))
-    (setq magent-runtime-queue--arbiter-active nil))
+  "Discard inactive tickets and resume runnable session FIFOs."
+  (dolist (ticket (copy-sequence magent-runtime-queue--arbiter-active))
+    (unless (magent-runtime-queue--arbiter-ticket-live-p ticket)
+      (magent-runtime-queue--arbiter-release-ticket ticket)))
   (setq magent-runtime-queue--arbiter-pending
         (cl-remove-if-not #'magent-runtime-queue--arbiter-ticket-live-p
                           magent-runtime-queue--arbiter-pending))
-  (unless magent-runtime-queue--arbiter-active
-    (magent-runtime-queue--arbiter-start-next)))
+  (magent-runtime-queue--arbiter-start-next))
 
 (defun magent-runtime-queue-arbitrate
     (owner token id starter &optional rollback live-p scope session)
-  "Submit OWNER's TOKEN and STARTER to the global execution FIFO.
+  "Submit OWNER's TOKEN and STARTER to its session execution FIFO.
 ID is the stable backend submission id.  ROLLBACK receives a starter error
 and must undo backend state established by STARTER.  LIVE-P, SCOPE, and
 SESSION are optional zero-argument callbacks used to inspect non-runtime
 tokens without coupling the arbiter to their representation.  Return
-`started' or `queued'."
+`started' or `queued'.  Session identity is captured at submission time;
+separate sessions may execute concurrently even within one project."
   (magent-runtime-queue--arbiter-reconcile)
   (let ((ticket (magent-runtime-arbiter-ticket-create
                  :owner owner :token token :id id :starter starter
                  :rollback rollback)))
     (magent-runtime-queue--set-ticket-adapters
      ticket live-p scope session)
-    (if magent-runtime-queue--arbiter-active
+    (setf (magent-runtime-arbiter-ticket-session ticket)
+          (magent-runtime-queue--ticket-session-object ticket))
+    (if (magent-runtime-queue--arbiter-blocked-p ticket)
         (progn
           (setq magent-runtime-queue--arbiter-pending
                 (nconc magent-runtime-queue--arbiter-pending (list ticket)))
@@ -207,13 +226,11 @@ tokens without coupling the arbiter to their representation.  Return
            (magent-runtime-queue--arbiter-start-next))
          'started)
         (`(error . ,err)
-         (condition-case nil
-             (magent-runtime-queue--arbiter-start-next)
-           (error nil))
+         (magent-runtime-queue--arbiter-start-next)
          (signal (car err) (cdr err)))))))
 
 (defun magent-runtime-queue-arbiter-cancel (owner token)
-  "Remove OWNER's queued TOKEN from the global execution FIFO."
+  "Remove OWNER's queued TOKEN from its session execution FIFO."
   (setq magent-runtime-queue--arbiter-pending
         (cl-remove-if
          (lambda (ticket)
@@ -224,78 +241,65 @@ tokens without coupling the arbiter to their representation.  Return
          magent-runtime-queue--arbiter-pending)))
 
 (defun magent-runtime-queue-arbiter-finish (owner token &optional before-advance)
-  "Finish active OWNER TOKEN and start the next global FIFO ticket.
-When BEFORE-ADVANCE is non-nil, call it after the backend has released its
-active token but while this arbiter ticket still owns the execution lease.
-Return the id of the next ticket when one starts, `handled' when the token
-was finished without a successor, or nil when TOKEN did not own the lease."
-  (when (and magent-runtime-queue--arbiter-active
-             (eq (magent-runtime-arbiter-ticket-owner
-                  magent-runtime-queue--arbiter-active)
-                 owner)
-             (eq (magent-runtime-arbiter-ticket-token
-                  magent-runtime-queue--arbiter-active)
-                 token))
-    (let ((ticket magent-runtime-queue--arbiter-active))
-      (cond
-       ((magent-runtime-arbiter-ticket-finishing ticket)
-        ;; A completion hook re-entered the finish path.  The outer finish
-        ;; transaction still owns advancement.
-        (setf (magent-runtime-arbiter-ticket-finish-requested ticket) t)
-        'handled)
-       ((magent-runtime-arbiter-ticket-starting ticket)
-        ;; Synchronous completion from inside a starter must run its cleanup
-        ;; before the starter returns, but advancement remains deferred.
+  "Finish exact active OWNER TOKEN and resume runnable session FIFO heads.
+Call BEFORE-ADVANCE after releasing the backend token but while the ticket
+still owns its session.  Return a successor id, `handled' without a successor,
+or nil when TOKEN is not active."
+  (when-let* ((ticket
+               (cl-find-if
+                (lambda (candidate)
+                  (and (eq (magent-runtime-arbiter-ticket-owner candidate) owner)
+                       (eq (magent-runtime-arbiter-ticket-token candidate) token)))
+                magent-runtime-queue--arbiter-active)))
+    (cond
+     ((magent-runtime-arbiter-ticket-finishing ticket)
+      (setf (magent-runtime-arbiter-ticket-finish-requested ticket) t)
+      'handled)
+     ((magent-runtime-arbiter-ticket-starting ticket)
+      (unwind-protect
+          (when before-advance (funcall before-advance))
+        (setf (magent-runtime-arbiter-ticket-finish-requested ticket) t))
+      'handled)
+     (t
+      (let (next-id)
+        (setf (magent-runtime-arbiter-ticket-finishing ticket) t)
         (unwind-protect
-            (when before-advance
-              (funcall before-advance))
-          (setf (magent-runtime-arbiter-ticket-finish-requested ticket) t))
-        'handled)
-       (t
-        (let (next-id)
-          (setf (magent-runtime-arbiter-ticket-finishing ticket) t)
-          (unwind-protect
-              (when before-advance
-                (funcall before-advance))
-            (setf (magent-runtime-arbiter-ticket-finishing ticket) nil)
-            (when (eq magent-runtime-queue--arbiter-active ticket)
-              (setq magent-runtime-queue--arbiter-active nil
-                    next-id (magent-runtime-queue--arbiter-start-next))))
-          (or next-id 'handled)))))))
+            (when before-advance (funcall before-advance))
+          (setf (magent-runtime-arbiter-ticket-finishing ticket) nil)
+          (magent-runtime-queue--arbiter-release-ticket ticket)
+          (setq next-id (magent-runtime-queue--arbiter-start-next)))
+        (or next-id 'handled))))))
 
-(defun magent-runtime-queue-arbiter-owner ()
-  "Return the backend tag owning global execution, or nil."
+(defun magent-runtime-queue-arbiter-owner (&optional session)
+  "Return an active backend owner, optionally for exact SESSION.
+Without SESSION this is an aggregate busy query, not a submission selector."
   (magent-runtime-queue--arbiter-reconcile)
-  (and magent-runtime-queue--arbiter-active
-       (magent-runtime-arbiter-ticket-owner
-        magent-runtime-queue--arbiter-active)))
+  (when-let* ((ticket (if session
+                         (cl-find session magent-runtime-queue--arbiter-active
+                                  :key #'magent-runtime-arbiter-ticket-session
+                                  :test #'eq)
+                       (car magent-runtime-queue--arbiter-active))))
+    (magent-runtime-arbiter-ticket-owner ticket)))
 
 (defun magent-runtime-queue-execution-active-p ()
-  "Return non-nil while any backend owns the global execution lease."
+  "Return non-nil while any backend owns a session execution lease."
   (and (magent-runtime-queue-arbiter-owner) t))
 
-(declare-function magent-session-scope-origin "magent-session")
+(defun magent-runtime-queue-active-submissions ()
+  "Return a fresh list of all active runtime submissions."
+  (copy-sequence magent-runtime-queue--active))
 
-(defun magent-runtime-queue-active-scope ()
-  "Return the project/global scope owning the execution lease, or nil."
-  (magent-runtime-queue--arbiter-reconcile)
-  (when-let* ((ticket magent-runtime-queue--arbiter-active)
-              (token (magent-runtime-arbiter-ticket-token ticket)))
-    (let ((scope
-           (pcase (magent-runtime-arbiter-ticket-owner ticket)
-             ('runtime
-              (when-let* ((runtime-session
-                           (magent-runtime-submission-runtime-session token)))
-                (magent-runtime-session-scope runtime-session)))
-             (_ (magent-runtime-queue--ticket-adapter-call
-                 ticket :scope)))))
-      (if (and scope (fboundp 'magent-session-scope-origin))
-          (magent-session-scope-origin scope)
-        scope))))
-
-(defun magent-runtime-queue-active-submission ()
-  "Return the active runtime submission, or nil."
-  magent-runtime-queue--active)
+(defun magent-runtime-queue-active-submission (&optional runtime-session)
+  "Return the active submission for exact RUNTIME-SESSION.
+Without RUNTIME-SESSION, return the sole active submission, or signal when
+multiple sessions are running.  Use `magent-runtime-queue-active-submissions'
+for aggregate inspection."
+  (if runtime-session
+      (cl-find runtime-session magent-runtime-queue--active
+               :key #'magent-runtime-submission-runtime-session :test #'eq)
+    (when (cdr magent-runtime-queue--active)
+      (error "Multiple Magent sessions are active; specify a runtime session"))
+    (car magent-runtime-queue--active)))
 
 (defun magent-runtime-queue-processing-p ()
   "Return non-nil when a runtime submission is active."
@@ -325,7 +329,7 @@ runtime session wrapper."
     (unless effective-starter
       (error "Runtime submission has no starter: %s"
              (magent-runtime-submission-id submission)))
-    (setq magent-runtime-queue--active submission)
+    (push submission magent-runtime-queue--active)
     (setf (magent-runtime-submission-starter submission) effective-starter)
     (setf (magent-runtime-submission-status submission) 'running
           (magent-runtime-submission-started-at submission) (float-time))
@@ -333,8 +337,8 @@ runtime session wrapper."
 
 (defun magent-runtime-queue--rollback-start (submission err)
   "Undo partial runtime startup for SUBMISSION after ERR."
-  (when (eq magent-runtime-queue--active submission)
-    (setq magent-runtime-queue--active nil))
+  (setq magent-runtime-queue--active
+        (delq submission magent-runtime-queue--active))
   (setf (magent-runtime-submission-status submission) 'failed
         (magent-runtime-submission-finished-at submission) (float-time)
         (magent-runtime-submission-detail submission)
@@ -364,25 +368,21 @@ Return SUBMISSION's id."
      (magent-runtime-queue--rollback-start submission err)))
   (magent-runtime-submission-id submission))
 
-(defun magent-runtime-queue-finish-active
-    (&optional status detail before-advance)
-  "Finish the active submission with STATUS and DETAIL.
-Call BEFORE-ADVANCE after releasing the backend-active slot but before the
-next global FIFO ticket starts.  Return the next submission id when one is
-started."
-  (let ((finished magent-runtime-queue--active))
-    (when finished
-      (setf (magent-runtime-submission-status finished)
-          (or status 'completed)
-          (magent-runtime-submission-finished-at finished)
-          (float-time)
-          (magent-runtime-submission-detail finished) detail)
-      (setq magent-runtime-queue--active nil)
-      (let ((disposition
-             (magent-runtime-queue-arbiter-finish
-              'runtime finished before-advance)))
-        (unless (eq disposition 'handled)
-          disposition)))))
+(defun magent-runtime-queue-finish
+    (submission &optional status detail before-advance)
+  "Finish exact active SUBMISSION with STATUS and DETAIL.
+Call BEFORE-ADVANCE after releasing the backend slot but before the next
+turn of this session starts.  Other sessions keep their active submissions."
+  (when (memq submission magent-runtime-queue--active)
+    (setf (magent-runtime-submission-status submission) (or status 'completed)
+          (magent-runtime-submission-finished-at submission) (float-time)
+          (magent-runtime-submission-detail submission) detail)
+    (setq magent-runtime-queue--active
+          (delq submission magent-runtime-queue--active))
+    (let ((disposition
+           (magent-runtime-queue-arbiter-finish
+            'runtime submission before-advance)))
+      (unless (eq disposition 'handled) disposition))))
 
 (defun magent-runtime-queue-remove-session (runtime-session)
   "Remove queued submissions for exact RUNTIME-SESSION and return them."
@@ -442,8 +442,7 @@ The comparison is by exact session object identity.  This is used by session
   replacement and clear transactions; equal ids are deliberately insufficient."
   (let (owners)
     (dolist (ticket
-             (append (and magent-runtime-queue--arbiter-active
-                          (list magent-runtime-queue--arbiter-active))
+             (append magent-runtime-queue--arbiter-active
                      magent-runtime-queue--arbiter-pending))
       (when (eq session
                 (magent-runtime-queue--ticket-session-object ticket))
@@ -454,12 +453,6 @@ The comparison is by exact session object identity.  This is used by session
 (defun magent-runtime-queue-session-busy-p (session)
   "Return non-nil when active or queued work captures exact SESSION."
   (and (magent-runtime-queue-session-busy-owners session) t))
-
-(defun magent-runtime-queue-active-session-object ()
-  "Return the exact Magent session owning the global execution lease."
-  (magent-runtime-queue--arbiter-reconcile)
-  (magent-runtime-queue--ticket-session-object
-   magent-runtime-queue--arbiter-active))
 
 (provide 'magent-runtime-queue)
 ;;; magent-runtime-queue.el ends here

@@ -49,6 +49,11 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Changed
 
+- Independent conversations now execute concurrently, including multiple
+  sessions in one project. Turns within a session retain FIFO ordering.
+  Completion, cancellation, and startup failures affect only the exact
+  submission; Doctor reports all active conversations.
+
 - Ordinary agent turns with no final answer fail visibly with
   ~empty-completion~ instead of reporting completion. No recovery request is
   added. ~magent-execution-result-completed-p~ replaces the old success-named

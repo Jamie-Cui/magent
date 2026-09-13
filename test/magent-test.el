@@ -14038,8 +14038,6 @@
               magent-session--current-scope "/tmp/project-b")
         (magent-runtime-queue-submit active-a #'ignore)
         (magent-runtime-queue-submit queued-a #'ignore)
-        (magent-runtime-queue-submit
-         queued-b #'magent-runtime-api--start-submission)
         (cl-letf (((symbol-function 'magent-runtime-api--start-submission)
                    (lambda (submission)
                      (push (magent-runtime-submission-id submission)
@@ -14050,6 +14048,9 @@
                     'magent-session-save-deferred-for-session)
                    (lambda (session &optional scope _delay)
                      (push (list session scope) save-calls))))
+          (magent-runtime-queue-submit
+           queued-b #'magent-runtime-api--start-submission)
+          (should (eq (magent-runtime-queue-active-submission session-b) queued-b))
           (should (= (magent-runtime-cancel session-a) 2)))
         (should (eq (magent-runtime-submission-status active-a)
                     'cancelled))
@@ -14212,7 +14213,8 @@
          (runtime-session
           (magent-runtime-session-create
            :id "session-1" :scope 'global :magent-session session))
-         (blocker (magent-runtime-submission-create :id "blocker")))
+         (blocker (magent-runtime-submission-create
+                   :id "blocker" :runtime-session runtime-session)))
     (magent-runtime-queue-submit blocker #'ignore)
     (cl-letf (((symbol-function 'magent-agent-registry-get)
                (lambda (name _scope)
@@ -14245,7 +14247,8 @@
           (magent-runtime-session-create
            :id "session-1" :scope 'global
            :magent-session (magent-session-create :id "session-1")))
-         (blocker (magent-runtime-submission-create :id "blocker"))
+         (blocker (magent-runtime-submission-create
+                   :id "blocker" :runtime-session runtime-session))
          (target
           (magent-runtime-submission-create
            :id "target" :runtime-session runtime-session))
@@ -14323,7 +14326,8 @@
           (magent-runtime-session-create
            :id "freeze-session" :scope 'global
            :magent-session (magent-session-create :agent agent)))
-         (blocker (magent-runtime-submission-create :id "blocker")))
+         (blocker (magent-runtime-submission-create
+                   :id "blocker" :runtime-session runtime-session)))
     (magent-runtime-queue-submit blocker #'ignore)
     (cl-letf (((symbol-function 'magent-session-save-deferred-for-session)
                #'ignore))
@@ -16478,7 +16482,7 @@
       (should (eq (magent-skills-get "same" "/project-a") base-skill))
       (should (eq (magent-capability-get "same" "/project-a") base-cap)))))
 
-(ert-deftest magent-test-global-arbiter-rolls-back-failed-starter-before-next ()
+(ert-deftest magent-test-session-arbiter-rolls-back-failed-starter-before-next ()
   "A failed backend starter is rolled back before the next FIFO ticket starts."
   (require 'magent-runtime-queue)
   (let* ((magent-runtime-queue--active nil)
@@ -16503,15 +16507,16 @@
              (error "starter failed")))
       (magent-runtime-queue-submit
        good (lambda (_submission)
-              (should-not (eq magent-runtime-queue--active bad))
+              (should-not (memq bad magent-runtime-queue--active))
               (should (eq (magent-runtime-submission-status bad) 'failed))
               (push 'good order)))
-      (magent-runtime-queue-finish-active 'completed)
+      (magent-runtime-queue-finish
+       (magent-runtime-queue-active-submission) 'completed)
       (should (equal (nreverse order) '(bad rollback good)))
-      (should (eq magent-runtime-queue--active good))
+      (should (equal magent-runtime-queue--active (list good)))
       (should (eq (magent-runtime-queue-arbiter-owner) 'runtime)))))
 
-(ert-deftest magent-test-global-arbiter-defers-fifo-advance-until-starter-returns ()
+(ert-deftest magent-test-session-arbiter-defers-fifo-advance-until-starter-returns ()
   "Synchronous finalization inside a starter cannot reentrantly start its peer."
   (require 'magent-runtime-queue)
   (let* ((magent-runtime-queue--active nil)
@@ -16527,7 +16532,8 @@
     (magent-runtime-queue-submit
      synchronous
      (lambda (_submission)
-       (magent-runtime-queue-finish-active 'completed)
+       (magent-runtime-queue-finish
+       (magent-runtime-queue-active-submission) 'completed)
        (should-not next-started)
        (setq starter-returned t)))
     (magent-runtime-queue-submit
@@ -16535,9 +16541,10 @@
      (lambda (_submission)
        (should starter-returned)
        (setq next-started t)))
-    (magent-runtime-queue-finish-active 'completed)
+    (magent-runtime-queue-finish
+       (magent-runtime-queue-active-submission) 'completed)
     (should next-started)
-    (should (eq magent-runtime-queue--active next))))
+    (should (equal magent-runtime-queue--active (list next)))))
 
 (ert-deftest magent-test-acp-session-list-filters-exact-cwd-scope ()
   "ACP session/list exposes only sessions belonging to the requested cwd."
@@ -16575,7 +16582,7 @@
       (should (eq (magent-runtime-session-from-id "same-id" "/b") runtime-b))
       (should-not (magent-runtime-session-from-id "same-id")))))
 
-(ert-deftest magent-test-runtime-completion-holds-global-lease-through-callback ()
+(ert-deftest magent-test-runtime-completion-holds-session-lease-through-callback ()
   "Completion releases backend busy state before callbacks, but not FIFO order."
   (require 'magent-runtime-api)
   (let* ((magent-runtime-queue--active nil)
@@ -16617,7 +16624,6 @@
           (magent-runtime-session-create
            :id "same" :scope "/b"
            :magent-session (magent-session-create :id "same")))
-         (blocker (magent-runtime-submission-create :id "blocker"))
          completion-a
          started-b
          (submission-a
@@ -16628,20 +16634,18 @@
          (submission-b
           (magent-runtime-submission-create
            :id "b" :runtime-session runtime-b)))
-    (magent-runtime-queue-submit blocker #'ignore)
     (magent-runtime-queue-submit submission-a #'ignore)
     (magent-runtime-queue-submit
      submission-b (lambda (_submission) (setq started-b t)))
-    (should (= (magent-runtime-pending-count runtime-a) 1))
-    (should (= (magent-runtime-pending-count runtime-b) 1))
+    (should (= (magent-runtime-pending-count runtime-a) 0))
+    (should (= (magent-runtime-pending-count runtime-b) 0))
     (cl-letf (((symbol-function 'magent-session-save-deferred-for-session)
                #'ignore))
       (should (= (magent-runtime-cancel runtime-a) 1)))
     (should (eq completion-a 'cancelled))
-    (should-not started-b)
+    (should started-b)
     (should (= (magent-runtime-pending-count runtime-a) 0))
-    (should (= (magent-runtime-pending-count runtime-b) 1))
-    (magent-runtime-queue-finish-active 'completed)
+    (should (= (magent-runtime-pending-count runtime-b) 0))
     (should started-b)
     (should (eq (magent-runtime-queue-active-submission) submission-b))))
 
@@ -17947,6 +17951,178 @@ CURL-EXIT simulates that exit code through gptel's real process sentinel."
     (should (equal (plist-get plan :type) "array"))
     (should (equal (plist-get (plist-get plan :items) :type) "object"))
     (should (eq (plist-get (plist-get plan :items) :additionalProperties) :json-false))))
+
+
+(defmacro magent-test--with-session-queues (&rest body)
+  "Run BODY with isolated session queue and runtime registries."
+  (declare (indent 0) (debug t))
+  `(let ((magent-runtime-queue--active nil)
+         (magent-runtime-queue--pending nil)
+         (magent-runtime-queue--arbiter-active nil)
+         (magent-runtime-queue--arbiter-pending nil)
+         (magent-runtime-queue--arbiter-ticket-adapters
+          (make-hash-table :test #'eq))
+         (magent-runtime-api--sessions (make-hash-table :test #'equal))
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (magent-session--current-scope 'global)
+         (magent--current-session nil))
+     ,@body))
+
+(defun magent-test--queue-session (id scope)
+  "Create an independent runtime session with ID in SCOPE."
+  (magent-runtime-session-create
+   :id id :scope scope :magent-session (magent-session-create :id id)))
+
+(ert-deftest magent-test-runtime-concurrent-session-fifos ()
+  "Sessions in one project overlap, retain FIFO order, and finish by identity."
+  (require 'magent-runtime-api)
+  (magent-test--with-session-queues
+    (let* ((a (magent-test--queue-session "a" "/same"))
+           (b (magent-test--queue-session "b" "/same"))
+           (a1 (magent-runtime-submission-create :id "a1" :runtime-session a))
+           (a2 (magent-runtime-submission-create :id "a2" :runtime-session a))
+           (b1 (magent-runtime-submission-create :id "b1" :runtime-session b))
+           (b2 (magent-runtime-submission-create :id "b2" :runtime-session b))
+           order)
+      (dolist (submission (list a1 a2 b1 b2))
+        (magent-runtime-queue-submit
+         submission (lambda (started)
+                      (push (magent-runtime-submission-id started) order))))
+      (should (equal (reverse order) '("a1" "b1")))
+      (should (= (length (magent-runtime-queue-active-submissions)) 2))
+      (should (eq (magent-runtime-queue-active-submission a) a1))
+      (should (eq (magent-runtime-queue-active-submission b) b1))
+      (should-error (magent-runtime-queue-active-submission))
+      (should (= (magent-runtime-pending-count a) 1))
+      (magent-runtime-api--finish-submission b1 'completed "B")
+      (should (equal (reverse order) '("a1" "b1" "b2")))
+      (should (eq (magent-runtime-queue-active-submission a) a1))
+      (should (eq (magent-runtime-queue-active-submission b) b2))
+      (magent-runtime-api--finish-submission b1 'completed "late B")
+      (should (eq (magent-runtime-queue-active-submission b) b2))
+      (cl-letf (((symbol-function 'magent-session-save-deferred-for-session)
+                 #'ignore))
+        (should (= (magent-runtime-cancel a) 2)))
+      (should (eq (magent-runtime-submission-status a1) 'cancelled))
+      (should (eq (magent-runtime-submission-status a2) 'cancelled))
+      (should (eq (magent-runtime-queue-active-submission b) b2))
+      (magent-runtime-api--finish-submission b2 'completed "B2")
+      (should-not (magent-runtime-processing-p))
+      (should-not (magent-runtime-queue-arbiter-owner)))))
+
+(ert-deftest magent-test-runtime-concurrent-completion-reentrancy ()
+  "Callbacks can start another session while this session keeps FIFO order."
+  (require 'magent-runtime-api)
+  (magent-test--with-session-queues
+    (let* ((a (magent-test--queue-session "a" 'global))
+           (b (magent-test--queue-session "b" 'global))
+           (a1 (magent-runtime-submission-create :id "a1" :runtime-session a))
+           (a2 (magent-runtime-submission-create :id "a2" :runtime-session a))
+           (a3 (magent-runtime-submission-create :id "a3" :runtime-session a))
+           (b1 (magent-runtime-submission-create :id "b1" :runtime-session b))
+           order
+           (start (lambda (submission)
+                    (push (magent-runtime-submission-id submission) order))))
+      (setf (magent-runtime-submission-on-complete a1)
+            (lambda (_status _result)
+              (should-not (magent-runtime-queue-active-submission a))
+              (magent-runtime-queue-submit a3 start)
+              (magent-runtime-queue-submit b1 start)
+              (should (eq (magent-runtime-submission-status a2) 'queued))
+              (should (eq (magent-runtime-submission-status a3) 'queued))
+              (should (eq (magent-runtime-queue-active-submission b) b1))))
+      (magent-runtime-queue-submit a1 start)
+      (magent-runtime-queue-submit a2 start)
+      (magent-runtime-api--finish-submission a1 'completed "done")
+      (should (equal (reverse order) '("a1" "b1" "a2")))
+      (magent-runtime-api--finish-submission a2 'completed "done")
+      (should (equal (reverse order) '("a1" "b1" "a2" "a3")))
+      (should (eq (magent-runtime-queue-active-submission b) b1)))))
+
+(ert-deftest magent-test-runtime-concurrent-starter-failure-isolated ()
+  "A queued startup error advances its own FIFO and preserves a running peer."
+  (require 'magent-runtime-api)
+  (magent-test--with-session-queues
+    (let* ((a (magent-test--queue-session "a" 'global))
+           (b (magent-test--queue-session "b" 'global))
+           (a1 (magent-runtime-submission-create :id "a1" :runtime-session a))
+           (bad (magent-runtime-submission-create :id "bad" :runtime-session a))
+           (a3 (magent-runtime-submission-create :id "a3" :runtime-session a))
+           (b1 (magent-runtime-submission-create :id "b1" :runtime-session b)))
+      (magent-runtime-queue-submit a1 #'ignore)
+      (magent-runtime-queue-submit bad (lambda (_) (error "Startup failed")))
+      (magent-runtime-queue-submit a3 #'ignore)
+      (magent-runtime-queue-submit b1 #'ignore)
+      (cl-letf (((symbol-function 'display-warning) #'ignore))
+        (magent-runtime-api--finish-submission a1 'completed "done"))
+      (should (eq (magent-runtime-submission-status bad) 'failed))
+      (should (eq (magent-runtime-queue-active-submission a) a3))
+      (should (eq (magent-runtime-queue-active-submission b) b1)))))
+
+(ert-deftest magent-test-runtime-concurrent-wrappers-share-session-fifo ()
+  "Two wrappers capturing the same ledger cannot run overlapping turns."
+  (require 'magent-runtime-api)
+  (magent-test--with-session-queues
+    (let* ((a (magent-test--queue-session "a" 'global))
+           (alias (magent-runtime-session-create
+                   :id "a" :scope 'global
+                   :magent-session (magent-runtime-session-magent-session a)))
+           (a1 (magent-runtime-submission-create :id "a1" :runtime-session a))
+           (a2 (magent-runtime-submission-create :id "a2" :runtime-session alias)))
+      (magent-runtime-queue-submit a1 #'ignore)
+      (magent-runtime-queue-submit a2 #'ignore)
+      (should (eq (magent-runtime-submission-status a2) 'queued))
+      (magent-runtime-api--finish-submission a1 'completed "done")
+      (should (eq (magent-runtime-queue-active-submission alias) a2)))))
+
+(ert-deftest magent-test-runtime-concurrent-streams-preserve-history ()
+  "Interleaved provider callbacks remain in their exact session and turn."
+  (require 'magent-runtime-api)
+  (magent-test--with-session-queues
+    (let* ((gptel-backend (gptel-make-openai "concurrent-test" :key "test"))
+           (gptel-model 'gpt-4o-mini)
+           (magent-enable-capabilities nil)
+           (magent-request-timeout 0)
+           (agent (magent-agent-info-create :name "build" :mode 'primary))
+           (a (magent-test--queue-session "a" 'global))
+           (b (magent-test--queue-session "b" 'global))
+           callbacks prompts completions)
+      (cl-letf (((symbol-function 'magent-runtime-activate-scope) #'ignore)
+                ((symbol-function 'magent-session-refresh-agent) #'ignore)
+                ((symbol-function 'magent-session-save-deferred-for-session)
+                 #'ignore)
+                ((symbol-function 'gptel-request)
+                 (lambda (prompt &rest args)
+                   (setq callbacks (append callbacks
+                                           (list (plist-get args :callback))))
+                   (push prompt prompts))))
+        (magent-runtime-submit a "A first" :agent agent :tools nil)
+        (magent-runtime-submit a "A second" :agent agent :tools nil
+                               :on-complete
+                               (lambda (status _) (push status completions)))
+        (magent-runtime-submit b "B first" :agent agent :tools nil)
+        (should (= (length callbacks) 2))
+        (funcall (nth 0 callbacks) "Alpha " '(:stream t))
+        (funcall (nth 1 callbacks) "Beta only" '(:stream t))
+        (funcall (nth 1 callbacks) t '(:content "Beta only"))
+        (should (magent-runtime-queue-active-submission a))
+        (should-not (magent-runtime-queue-active-submission b))
+        (funcall (nth 0 callbacks) "answer" '(:stream t))
+        (funcall (nth 0 callbacks) t '(:content "Alpha answer"))
+        (should (= (length callbacks) 3))
+        (let ((next-prompt (format "%S" (car prompts))))
+          (should (string-match-p "Alpha answer" next-prompt))
+          (should-not (string-match-p "Beta only" next-prompt)))
+        (funcall (nth 2 callbacks) "Alpha second" '(:stream t))
+        (funcall (nth 2 callbacks) t '(:content "Alpha second")))
+      (should (equal completions '(completed)))
+      (dolist (pair (list (cons a "Beta only") (cons b "Alpha")))
+        (should-not
+         (string-match-p
+          (cdr pair)
+          (format "%S" (magent-test--session-transcript
+                         (magent-runtime-session-magent-session (car pair)))))))
+      (should-not (magent-runtime-processing-p)))))
 
 (provide 'magent-test)
 ;;; magent-test.el ends here

@@ -322,8 +322,8 @@ PREVIOUS selects that many responses before the last one."
                (magent-runtime-processing-p))
           (and (fboundp 'magent-session-current-scope)
                (magent-session-current-scope))
-          (and (fboundp 'magent-runtime-queue-active-submission)
-               (magent-runtime-queue-active-submission))
+          (and (fboundp 'magent-runtime-queue-active-submissions)
+               (magent-runtime-queue-active-submissions))
           (and (fboundp 'magent-runtime-queue-length)
                (magent-runtime-queue-length))
           (and (boundp 'magent-session--scoped-sessions)
@@ -572,8 +572,13 @@ PREVIOUS selects that many responses before the last one."
          (assistant-msg (magent-live-test--latest-assistant-message messages))
          (tool-msg (magent-live-test--latest-tool-message messages))
          (submission
-          (and (fboundp 'magent-runtime-queue-active-submission)
-               (magent-runtime-queue-active-submission)))
+          (cl-find-if
+           (lambda (entry)
+             (let ((runtime (magent-runtime-submission-runtime-session entry)))
+               (and (magent-runtime-session-p runtime)
+                    (eq session
+                        (magent-runtime-session-magent-session runtime)))))
+           (magent-runtime-queue-active-submissions)))
          (loop (and submission
                     (magent-runtime-submission-handle submission))))
     (list :processing (and (fboundp 'magent-runtime-processing-p)
@@ -819,12 +824,10 @@ return that path."
            (magent-live-test--kill-magent-test-buffers)
            (magent-session-activate 'global)
            ,@body)
-       (when-let* ((submission
-                    (and (fboundp 'magent-runtime-queue-active-submission)
-                         (magent-runtime-queue-active-submission)))
-                   (runtime-session
-                    (magent-runtime-submission-runtime-session submission)))
-         (ignore-errors (magent-runtime-cancel runtime-session)))
+       (dolist (submission (magent-runtime-queue-active-submissions))
+         (when-let* ((runtime-session
+                      (magent-runtime-submission-runtime-session submission)))
+           (magent-runtime-cancel runtime-session)))
        (magent-live-test--kill-magent-test-buffers)
        (when (file-directory-p magent-session-directory)
          (delete-directory magent-session-directory t)))))

@@ -29,8 +29,8 @@ explicit command registration and invocation belong in ~magent-action.el~.
   the invocation lifecycle; ~magent-action-session.el~ adds isolated durable
   persistence without becoming a frontend.
 - ~magent-runtime-api.el~ is the frontend-neutral runtime and session API.
-- ~magent-runtime-queue.el~ owns the global single-execution queue and
-  session-scoped cancellation.
+- ~magent-runtime-queue.el~ owns per-session FIFO execution and session-scoped
+  cancellation; independent sessions run concurrently, even in one project.
 
 * Supported Flow
 
@@ -111,10 +111,12 @@ entry surfaces; it must not infer skills from the Action registry.
 - Magent still explicitly registers its config for the generic agent-shell
   picker, and temporarily advises four private context functions for remote-safe
   and blank-line context handling.
-- Runtime execution uses a global single-execution queue.
+- Runtime execution is serial within each session and concurrent across sessions,
+  including sessions in the same project. Completion and cancellation address
+  exact submissions; a busy or approval-waiting session does not block peers.
 - Cancellation is session-scoped: cancelling one ACP session cancels that
-  session's active and queued submissions without removing other sessions'
-  queued work.
+  session's active and queued submissions without interrupting other sessions'
+  active or queued work.
 - Per-request instruction skill overrides, scope-aware ~/$skill~ projection,
   and Elisp-native Action command projections are supported. Per-request agent
   overrides are not currently exposed by the supported frontend.
