@@ -288,8 +288,10 @@ Assistant progress messages are completed before tool execution and the final
 answer occupies its own item. Providers that expose message phases keep those
 values unchanged. For providers without phases, pre-tool text is commentary
 and terminal sample text is the answer. This is a display/replay contract, not
-an extra reasoning or judge pass. The prompt asks for short evidence-based
-updates and a self-contained final answer; hidden reasoning is independent.
+an extra reasoning or judge pass. The prompt asks for short, evidence-based
+updates in plain paragraphs and a self-contained final answer; hidden reasoning
+is independent. OpenAI-compatible Chat continuations retain any visible
+pre-tool text in the provider-native assistant tool-call message.
 
 Responses output items are stored as opaque JSON in ~provider~ items, with the
 backend name, endpoint identity, and model. The gptel adapter observes gptel's decoded stream events;

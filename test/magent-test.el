@@ -3579,6 +3579,11 @@
     (should (string-match-p
              "final diff, affected callers, and observable invariants" prompt))
     (should (string-match-p "remaining failed validation" prompt))
+    (should (string-match-p
+             "plain prose paragraph without a heading or bullet list" prompt))
+    (should (string-match-p "do not go beyond 6 tool calls" prompt))
+    (should (string-match-p
+             "changes a requirement during execution" prompt))
     (should-not (string-match-p "fewer than 4 lines" prompt))
     (should-not (string-match-p "One word answers are best" prompt))
     (should-not (string-match-p "<system-reminder>" prompt))
@@ -17488,6 +17493,41 @@
     (when done (insert "data: [DONE]\n\n"))
     (goto-char (point-min))
     (gptel-curl--parse-stream backend info)))
+
+(ert-deftest magent-test-chat-stream-preserves-pre-tool-text-in-native-message ()
+  "Visible Chat text before a tool call remains in native continuation."
+  (require 'magent-sampling-gptel)
+  (require 'gptel-openai)
+  (magent-sampling-gptel--install-boundary-advice)
+  (let* ((backend (gptel-make-openai
+                   "deepseek-fixture" :key "fixture"
+                   :host "api.deepseek.com"
+                   :endpoint "/v1/chat/completions"))
+         (state (magent-sampling-gptel--make-state))
+         (request (magent-sampling-request-create :stream t))
+         (info (list :stream t :backend backend
+                     :data (list :messages [])
+                     :context
+                     (list :magent-sampling-gptel t
+                           :magent-native-context (cons request state))))
+         (text (magent-test--chat-stream-chunk
+                backend info '(:content "Inspecting the adapter.") nil)))
+    ;; gptel delivers the parser result to Magent before parsing the next
+    ;; stream chunk, so preserve that real callback order in the fixture.
+    (magent-sampling-gptel--callback request state nil text info)
+    (magent-test--chat-stream-chunk
+     backend info
+     '(:tool_calls
+       [(:index 0 :id "call_1" :type "function"
+         :function (:name "read_file" :arguments "{\"path\":\"README.org\"}"))])
+     "tool_calls" t)
+    (let* ((messages (plist-get (plist-get info :data) :messages))
+           (assistant (aref messages 0)))
+      (should (= (length messages) 1))
+      (should (equal (plist-get assistant :role) "assistant"))
+      (should (equal (plist-get assistant :content)
+                     "Inspecting the adapter."))
+      (should (= (length (plist-get assistant :tool_calls)) 1)))))
 
 (ert-deftest magent-test-chat-stream-requires-model-completion ()
   "Clean transport EOF cannot complete truncated text or dispatch partial tools."

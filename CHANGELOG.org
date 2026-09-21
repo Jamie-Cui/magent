@@ -77,6 +77,9 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Changed
 
+- Progress updates now use short plain paragraphs, acknowledge material user
+  redirection before further tools, and surface failures immediately only when
+  they change the next action or block progress.
 - Independent conversations now execute concurrently, including multiple
   sessions in one project. Turns within a session retain FIFO ordering.
   Completion, cancellation, and startup failures affect only the exact
@@ -132,6 +135,10 @@ intentional tagged release is planned as ~v0.2.0~.
   request handoff machinery.
 
 ** Fixed
+
+- OpenAI-compatible Chat continuations now retain visible assistant text that
+  precedes a tool call instead of replaying that assistant message with null
+  content. This keeps DeepSeek progress context intact across tool results.
 
 - Native Action completion supplies explicit description affixes, including
   Doctor, for completion frontends such as Vertico.

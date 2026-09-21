@@ -169,8 +169,10 @@ Agent-workflow/UI refactor backlog 已无开放 TODO。未来 hardening 候选�
 
 工具执行前的 assistant 进度消息和最终答复分别保存为独立 item。Provider 提供
 phase 时原样保留；没有 phase 时，工具前文字标为 commentary，最后一次 sample
-的正文作为答复。系统提示要求简洁地说明目标、证据、决策变化和验证结果，
-隐藏的 reasoning 仍独立处理，不额外调用“反思”或“评判”模型。
+的正文作为答复。系统提示要求用无标题、无项目符号的短段落说明目标、证据、
+决策变化和验证结果，隐藏的 reasoning 仍独立处理，不额外调用“反思”或
+“评判”模型。OpenAI-compatible Chat 续接会在 provider 原生 assistant tool-call
+消息中保留工具调用前的可见正文。
 
 Responses 原始 output item 以不透明 JSON 存入 provider item，并记录 backend
 、endpoint identity 和 model。适配层观察 gptel 已解码的事件，HTTP/SSE 仍由 gptel 处理。原始消息
