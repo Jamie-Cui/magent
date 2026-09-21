@@ -125,7 +125,7 @@ specification:
   (magent-default-effort 'xhigh)
   ;; Optional provider thinking policy: nil, enabled, or disabled.
   ;; (magent-default-thinking 'disabled)
-  ;; Optional: show the number of active Actions in the mode line.
+  ;; Optional: show running, failed, and completed Action counts.
   (magent-action-mode-line-mode t)
   :config
   ;; Optional: append an additional personal skill directory.  Later entries
@@ -238,7 +238,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-default-thinking~                      | ~nil~                                 | Default thinking mode; nil/auto uses provider default, or explicitly enable/disable it          |
 | ~magent-agent-shell-session-strategy~          | ~prompt~                              | Prompt to start new or load a saved session; also supports ~new~ and ~latest~                     |
 | ~magent-action-enabled-builtins~               | ~(doctor)~                           | Optional isolated Action groups; changes refresh discovery for future invocations               |
-| ~magent-action-mode-line-mode~                 | ~nil~                                 | Show the active Action count and current-Step details in the global mode line                    |
+| ~magent-action-mode-line-mode~                 | ~nil~                                 | Show global running, failed, and completed Action counts with hover details                    |
 | ~magent-skill-directories~                     | ~user-emacs-directory/magent/skills/~ | Ordered user skill roots; later entries override earlier entries                               |
 | ~magent-load-custom-agents~                    | ~t~                                   | Load custom agents from ~.magent/agent/*.md~                                                     |
 | ~magent-audit~                                 | ~buffer~                              | Audit destination: live buffer, nil to disable, or a JSONL file path                            |
@@ -641,6 +641,14 @@ slash input and their M-x wrappers:
   ~C-u~ on the M-x command for manual probe selection.
 - ~M-x magent-action-list-sessions~ opens the progressive command-session
   viewer; ~M-x magent-action-cancel~ cancels active work.
+- ~M-x magent-action~ selects an Action through your normal completion UI;
+  use a prefix argument to supply Action input. The optional mode line retains
+  failed and completed counts until ~magent-action-mode-line-clear-results~;
+  session viewers provide Org and native source-block highlighting.
+- Interactive Actions can declare ~:modes~ conditions for their source buffer.
+  Project definitions in ~.magent/actions/*.el~ load after explicit approval;
+  source changes require renewed approval. See the Action extension examples
+  in [[file:docs/COMMANDS.org][docs/COMMANDS.org]].
 
 Doctor never gives the model ~emacs_eval~, shell, or file tools.  Its probes
 are trusted read-only Elisp extensions, and only path-normalized, recursively

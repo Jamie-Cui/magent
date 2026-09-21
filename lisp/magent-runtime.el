@@ -28,6 +28,7 @@
 (declare-function magent-capability-load-project-scope "magent-capability")
 (declare-function magent-capability-remove-project-scope "magent-capability")
 (declare-function magent-action-initialize-static "magent-action")
+(declare-function magent-action-load-project-scope "magent-action-project")
 (declare-function magent-skills-initialize-static "magent-skills")
 (declare-function magent-skills-load-project-scope "magent-skills")
 (declare-function magent-skills-remove-project-scope "magent-skills")
@@ -62,7 +63,11 @@ wins; when all functions return nil, scope is derived from
            :remove-project magent-skills-remove-project-scope)
     (:name actions
            :static-feature magent-action
-           :static magent-action-initialize-static)
+           :static magent-action-initialize-static
+           :load-project-feature magent-action-project
+           :load-project magent-action-load-project-scope
+           :remove-project-feature magent-action-project
+           :remove-project magent-action-remove-project-scope)
     (:name capabilities
            :static-feature magent-capability
            :static magent-capability-initialize-static
@@ -280,7 +285,11 @@ interactive context is global, not that project definitions were unloaded.")
 When SCOPE is nil, derive it from the current buffer context."
   (magent-runtime-ensure-initialized)
   (let ((target (or scope (magent-runtime-context-scope))))
-    (magent-runtime-activate-scope target)))
+    (magent-runtime-activate-scope target)
+    ;; Action source edits must also be noticed without a project switch.
+    (require 'magent-action-project)
+    (magent-action-load-project-scope target)
+    target))
 
 (defun magent-runtime--remove-project-definitions (scope)
   "Remove retained project definitions for SCOPE."

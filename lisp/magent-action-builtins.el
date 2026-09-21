@@ -168,7 +168,7 @@
    "authority"
    :description "Show the effective tools, permission decisions, and execution boundaries."
    :title "Show Magent authority"
-   :exposure '(slash interactive)
+   :exposure '(slash)
    :session-policy 'current
    :workflow #'magent-action-builtins--authority
    :source-layer 'core))

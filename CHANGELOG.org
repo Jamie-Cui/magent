@@ -14,6 +14,22 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Added
 
+- Interactive Actions can declare nested ~:modes~ conditions using ~major~,
+  ~minor~, ~and~, and ~or~. The picker filters after scope/override resolution,
+  and unsupported direct calls fail before creating an invocation or session.
+- Project ~.magent/actions/*.el~ discovery with persistent content approvals,
+  exact approved-source evaluation, automatic change detection, and project
+  reload/trust-revocation commands. Unapproved source is never executed by
+  background discovery; failed loads publish no partial Action registrations.
+- ~M-x magent-action~ selects an interactive Action using standard minibuffer
+  completion, with descriptions, history, and optional prefix arguments.
+- Action mode-line status shows ~(M: running, failed, completed)~ with separate
+  status faces and dimmed zeroes. Results accumulate globally until cleared
+  together with ~magent-action-mode-line-clear-results~, the mode is disabled,
+  or Emacs exits. Hover shows current Steps and failures; clicks do nothing.
+- Action session viewers use read-only Org mode with markup and native
+  source-block highlighting, retaining the result-first folded Activity view.
+
 - Configurable web search sources independent of the gptel model: keyless Bing
   RSS by default, optional DuckDuckGo HTML and Tavily's official API. A small
   registration API supports additional adapters with explicit filter support.
@@ -42,7 +58,7 @@ intentional tagged release is planned as ~v0.2.0~.
   suppresses reasoning effort, while unsupported explicit mappings fail before
   provider dispatch.
 - An optional ~magent-action-mode-line-mode~ Customize setting that shows the
-  active Action count and exposes each current Step and origin as a tooltip.
+  running, failed, and completed counts with current Steps and failure details.
 - Cross-provider model selection through agent-shell's native ACP model option.
   Magent catalogs every gptel-registered backend/model, keeps selections
   session-local, freezes routes per submission, and supports ~Auto~ fallback to
@@ -112,6 +128,14 @@ intentional tagged release is planned as ~v0.2.0~.
   request handoff machinery.
 
 ** Fixed
+
+- Native Action completion supplies explicit description affixes, including
+  Doctor, for completion frontends such as Vertico.
+- Restrict ~authority~ to chat slash invocation. ~M-x magent-action~ no longer
+  offers this current-conversation inspection without a chat output surface.
+
+- ~magent-action-open-session~ preserves newest-first update order in
+  completion frontends such as Vertico, including when cycling candidates.
 
 - Truncated OpenAI-compatible streams no longer look like empty or successful
   answers merely because curl exited cleanly. The adapter retains the model's

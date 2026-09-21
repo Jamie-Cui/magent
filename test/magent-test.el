@@ -2542,6 +2542,109 @@
           (should-not (magent-action-session-active-invocations)))
       (delete-directory magent-session-directory t))))
 
+(ert-deftest magent-test-action-completion-uses-scoped-interactive-actions ()
+  "Native completion selects scoped Actions and preserves invocation context."
+  (let* ((magent-action--registry nil)
+         (scope "/tmp/action-picker/")
+         (origin (current-buffer))
+         (current-prefix-arg '(4))
+         prepared submitted)
+    (magent-action-register
+     "pick" :description "Run the selected workflow"
+     :exposure '(interactive) :session-policy 'isolated
+     :source-layer 'project :source-scope scope
+     :workflow #'magent-test--empty-action-workflow)
+    (magent-action-register
+     "other-project" :exposure '(interactive) :session-policy 'isolated
+     :source-layer 'project :source-scope "/tmp/another-project/"
+     :workflow #'magent-test--empty-action-workflow)
+    (magent-action-register
+     "slash-only" :exposure '(slash) :session-policy 'current
+     :workflow #'magent-test--empty-action-workflow)
+    (cl-letf (((symbol-function 'magent-runtime-ensure-initialized) #'ignore)
+              ((symbol-function 'magent-runtime-context-scope) (lambda () scope))
+              ((symbol-function 'magent-runtime-prepare-context)
+               (lambda (value) (setq prepared value)))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt table _predicate require-match _initial history)
+                 (should (equal (all-completions "" table) '("pick")))
+                 (should require-match)
+                 (should (eq history 'magent-action-history))
+                 (let* ((metadata (completion-metadata "" table nil))
+                        (annotate (completion-metadata-get
+                                   metadata 'annotation-function)))
+                   (should (eq (completion-metadata-get metadata 'category)
+                               'magent-action))
+                   (should (equal (funcall annotate "pick")
+                                  "  Run the selected workflow")))
+                 "pick"))
+              ((symbol-function 'read-string) (lambda (&rest _) "context"))
+              ((symbol-function 'magent-action-run)
+               (lambda (name &rest args)
+                 (setq submitted (list (current-buffer) name args)))))
+      (call-interactively #'magent-action))
+    (should (equal prepared scope))
+    (should (equal submitted (list origin "pick" '(:argument "context"))))))
+
+(ert-deftest magent-test-action-completion-empty-or-cancelled-does-not-run ()
+  "Empty registries and cancelled selection never start an Action."
+  (let ((magent-action--registry nil))
+    (cl-letf (((symbol-function 'magent-runtime-ensure-initialized) #'ignore)
+              ((symbol-function 'magent-runtime-context-scope) (lambda () 'global))
+              ((symbol-function 'magent-runtime-prepare-context) #'ignore)
+              ((symbol-function 'completing-read)
+               (lambda (&rest _) (signal 'quit nil)))
+              ((symbol-function 'magent-action-run)
+               (lambda (&rest _) (ert-fail "Unexpected Action dispatch"))))
+      (should-error (magent-action) :type 'user-error)
+      (magent-action-register
+       "pick" :exposure '(interactive) :session-policy 'isolated
+       :workflow #'magent-test--empty-action-workflow)
+      (should (eq (condition-case nil (magent-action) (quit 'cancelled))
+                  'cancelled)))))
+
+(ert-deftest magent-test-action-session-picker-keeps-newest-first ()
+  "Session completion preserves update order for display and cycling."
+  (require 'magent-action-session-view)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (magent-action-session-directory nil)
+         (magent-session--metadata-cache (make-hash-table :test #'equal))
+         (directory (magent-session-action-directory "sort-test"))
+         (older (expand-file-name "session-z.json" directory))
+         (newer (expand-file-name "session-a.json" directory))
+         buffer)
+    (unwind-protect
+        (progn
+          (dolist (id '("session-a" "session-z"))
+            (magent-test--write-session-fixture
+             magent-session-directory id
+             (magent-session-action-scope id "sort-test" 'global) id))
+          (set-file-times older (encode-time 0 0 10 1 1 2026))
+          (set-file-times newer (encode-time 0 0 11 1 1 2026))
+          (let ((expected (mapcar #'magent-action-session--session-label
+                                  (list newer older))))
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (_prompt table &rest _)
+                         (let ((metadata (completion-metadata "" table nil)))
+                           (dolist (property '(display-sort-function
+                                               cycle-sort-function))
+                             (let ((sorter (completion-metadata-get
+                                            metadata property)))
+                               (should sorter)
+                               (should (equal
+                                        (funcall sorter
+                                                 (all-completions "" table))
+                                        expected)))))
+                         (cadr expected)))
+                      ((symbol-function 'display-buffer)
+                       (lambda (value &rest _) (setq buffer value))))
+              (call-interactively #'magent-action-open-session)))
+          (should (buffer-live-p buffer))
+          (with-current-buffer buffer
+            (should (string-match-p (regexp-quote older) (buffer-string)))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory magent-session-directory t))))
+
 (ert-deftest magent-test-action-session-viewer-leads-with-final-result ()
   "The Action-session viewer shows the result before folded activity."
   (require 'magent-action-session)
@@ -2569,7 +2672,8 @@
             (magent-action-session-finish-step
              invocation step item-id 'completed "bounded detail"))
           (magent-action--respond
-           invocation "* Diagnosis\n** Summary\nVisible result"
+           invocation (concat "* Diagnosis\n** Summary\nVisible result\n"
+                              "#+begin_src emacs-lisp\n(message \"ok\")\n#+end_src")
            (list :source 'magent-doctor-final))
           (magent-action--finish-completed invocation nil)
           (let ((file (car (magent-session-list-action-files "viewer-test"))))
@@ -2582,12 +2686,30 @@
           (should (buffer-live-p buffer))
           (with-current-buffer buffer
             (should (derived-mode-p 'magent-action-session-mode))
+            (should (derived-mode-p 'org-mode))
+            (should buffer-read-only)
+            (should org-src-fontify-natively)
+            (font-lock-ensure)
+            (goto-char (point-min))
+            (search-forward "** Diagnosis")
+            (should (memq 'org-level-2 (ensure-list
+                                       (get-text-property (1- (point)) 'face))))
+            (search-forward "\"ok\"")
+            (should (memq 'font-lock-string-face
+                          (ensure-list
+                           (get-text-property (- (point) 2) 'face))))
             (should magent-action-session--details-hidden)
             (goto-char (point-min))
             (should (search-forward "Visible result" nil t))
             (let ((result-position (point)))
               (should (search-forward "* Activity" nil t))
-              (should (< result-position (point))))))
+              (should (< result-position (point)))
+              (forward-line 1)
+              (should (invisible-p (point)))
+              (magent-action-session-toggle-all)
+              (should-not (invisible-p (point)))
+              (magent-action-session-toggle-all)
+              (should (invisible-p (point))))))
       (when (buffer-live-p buffer) (kill-buffer buffer))
       (delete-directory magent-session-directory t))))
 
@@ -4010,6 +4132,25 @@
       (should (magent-action-get name 'global)))
     (magent-action-builtins-register '(doctor))
     (should (magent-action-get "doctor" 'global))))
+
+(ert-deftest magent-test-authority-action-is-chat-only ()
+  "Authority stays available in chat and cannot run from the M-x entry."
+  (require 'magent-action-builtins)
+  (let ((magent-action--registry nil))
+    (magent-action-builtins-register '(doctor))
+    (should (magent-action-parse "/authority" 'global))
+    (should (equal (mapcar #'magent-action-spec-name
+                           (magent-action-list 'global 'interactive))
+                   '("doctor")))
+    (cl-letf (((symbol-function 'magent-runtime-ensure-initialized) #'ignore)
+              ((symbol-function 'magent-runtime-context-scope)
+               (lambda () 'global))
+              ((symbol-function 'magent-runtime-prepare-context) #'ignore)
+              ((symbol-function 'magent-runtime-session-current)
+               (lambda (&rest _)
+                 (ert-fail "Chat-only Action reached interactive execution"))))
+      (should (equal (should-error (magent-action-run "authority") :type 'error)
+                     '(error "Unknown interactive Magent action: authority"))))))
 
 (ert-deftest magent-test-action-enabled-builtins-refreshes-live-registry ()
   "Custom changes refresh Action discovery after runtime initialization."

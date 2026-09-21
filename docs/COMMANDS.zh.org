@@ -64,6 +64,9 @@ instruction skill；skill 不存在或在当前 scope 不可用时，会在提�
 
 ** ~/authority~
 
+这是仅供聊天调用的 Action：在 agent-shell 中输入 ~/authority~。
+它不会出现在 ~M-x magent-action~ 中。
+
 返回当前 session agent 的有效 catalog view。每一行显示 permission key、最终
 decision、tool 是否暴露、rule 或 session override 来源、resource sub-rules、
 approval policy，以及执行发生在 host、child Emacs 还是 live Emacs。
@@ -166,6 +169,25 @@ prompt Action 是 ~magent-action-builtins.el~ 中的数据项；第三方包使�
 ~:session-policy~。Workflow 是由 ~magent-define-workflow~ 定义的 Elisp
 generator。分支、循环、局部状态、校验以及对 Emacs 的普通调用都直接使用 Elisp；
 只有真正需要等待异步结果的地方才使用由 Magent 管理的 Step。
+
+~:exposure~ 声明支持的调用入口：~'(slash)~（默认）、~'(interactive)~，或
+~'(slash interactive)~。~M-x magent-action~ 只列出包含 ~interactive~ 的 Action；
+~:session-policy~ 独立决定使用哪个 session。
+
+~:modes~ 可选地限制交互调用所在的原始 buffer：
+
+#+begin_src elisp
+:modes '(major magit-mode)
+:modes '(minor git-commit-mode)
+:modes '(or (major org-mode)
+            (and (major prog-mode) (minor eglot-managed-mode)))
+#+end_src
+
+~major~ 包含派生 mode；~minor~ 检查原始 buffer 中的 mode 变量。~and~ 要求全部
+匹配，~or~ 要求任一匹配。不支持空表达式或任意 Lisp；不写 ~:modes~ 就不限制。
+Slash 调用不检查 mode。先解析项目作用域和同名覆盖，再过滤候选；项目版本不匹配时
+不会回退到全局版本。专用交互命令同样在创建 Action/session 前检查 mode。
+光标是否在 diff 上等具体条件仍由 Workflow 检查。
 
 ~:requires~ 接收一个 Emacs feature symbol 或 feature symbol list。Magent 在
 Invocation preflight 中逐个调用 ~require~。缺少 feature 时 Action 仍可被发现，但
@@ -271,6 +293,38 @@ Project Action definition 会按 canonical project scope 保留。~magent-action
 相同规则，并保留 inactive project snapshot。因此多个项目 session 可以同时使用
 同名 Action 或 skill 覆盖，而不会把一个项目的条目泄漏到另一个项目的菜单。
 
+** 项目 Action 文件
+
+Magent 按文件名顺序扫描项目 ~.magent/actions/*.el~，仅加载顶层、非隐藏的源码文件。
+文件使用普通 Elisp 定义 Workflow 并调用 ~magent-action-register~；加载器自动提供
+~:source-layer 'project~ 和规范化项目 scope，通过注册 API 指定其他层或项目会报错。
+
+#+begin_src elisp
+;;; .magent/actions/check.el -*- lexical-binding: t; -*-
+(magent-define-workflow my-project-check (_invocation)
+  (magent-workflow-process "Run project checks" '("make" "check")))
+
+(magent-action-register
+ "project-check"
+ :description "运行当前项目的检查。"
+ :exposure '(slash interactive)
+ :session-policy 'isolated
+ :workflow #'my-project-check)
+#+end_src
+
+~M-x magent-action~ 在执行未批准的文件前询问。信任记录覆盖完整文件名和内容集合，
+保存在本机 ~magent-action-project-trust-file~ 中；文件新增、删除或内容变化后需要
+重新确认。执行的是确认过的内存快照。这些文件拥有完整的 live Emacs 执行能力；
+信任机制不是沙箱，也不追踪文件间接加载的其他代码。顶层应只做定义和注册，任意
+Elisp 副作用无法在加载失败后回滚。
+
+后台和聊天发现不会弹出确认或执行未经批准的文件。可在项目 buffer 中使用
+~M-x magent-action-trust-project~ 为聊天批准文件，或重新确认此前拒绝的内容。
+~magent-action-reload-project~ 手动重新执行已批准文件；
+~magent-action-forget-project-trust~ 撤销信任并删除当前文件注册。常规发现和调用时
+检查内容变化，无需文件监听。删除全部文件会清除对应注册；加载报错时指出文件名，
+不发布半套项目 Action，也不影响其他项目。已经启动的调用继续使用捕获的 Workflow。
+
 * 用户级 Skill 管理
 
 ~M-x magent-find-skill~ 会搜索 skills.sh，并在独立 buffer 中显示安装量最高的
@@ -312,11 +366,33 @@ Magent 不迁移、也不读取旧 ~commands/~ Action-session 格式；旧文件
 
 | Emacs 命令                        | 用途 |
 |-----------------------------------+------|
+| ~magent-action~                | 使用标准 minibuffer 补全选择并运行 Action |
 | ~magent-action-list-sessions~   | 选择已保存的 Action session，查看最终结果和执行活动 |
 | ~magent-action-cancel~          | 取消提供 cancellation 的活动 isolated Action |
+| ~magent-action-mode-line-clear-results~ | 同时清零 mode line 中的失败数和通过数 |
 
-Action-session viewer 优先显示最终结果，并默认折叠详细 activity。Cancellation
+Action-session viewer 优先显示最终结果，默认折叠详细 activity，并使用 Org 的标题、
+正文标记和代码块语法高亮。~TAB~ 切换当前节，~S-TAB~ 切换 Activity，~q~ 退出。Cancellation
 按 session 隔离，不会取消其他 Magent 对话所属的工作。
+
+~M-x magent-action~ 列出当前 scope 中具有 interactive exposure 的 Actions，
+附带描述和选择历史。它使用与 ~M-x~ 相同的补全界面，包括已启用的
+Vertico/posframe。选择后按 ~RET~ 启动；~C-u M-x magent-action~ 可以输入参数。
+工具权限沿用现有 agent/session 规则。可以在个人配置中绑定快捷键，例如：
+
+#+begin_src elisp
+(keymap-global-set "C-M-x" #'magent-action)
+#+end_src
+
+启用 ~magent-action-mode-line-mode~ 后，全局显示 ~(M: 运行数, 失败数, 通过数)~。
+非零数字分别使用主题的 warning 色加粗、error 色加粗和 success 色；零值灰显，
+全零时保留 ~(M: 0, 0, 0)~。标签和标点保持普通样式。悬停显示计数含义、当前 Step
+和失败原因，不支持点击。
+
+失败和通过持续累计，使用 ~M-x magent-action-mode-line-clear-results~ 同时清零。
+运行中的任务和保存的 session 不受影响；查看 session 不改变计数。取消不计入失败
+或通过；通过以 Action 最终状态 ~completed~ 为准。计数不跨 Emacs 重启保留，
+关闭此 mode 也会清除其跟踪结果。
 
 * 如何选择入口
 

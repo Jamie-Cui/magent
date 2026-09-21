@@ -10,7 +10,8 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'outline)
+(require 'org)
+(require 'org-fold)
 (require 'subr-x)
 (require 'magent-ledger)
 (require 'magent-session)
@@ -31,40 +32,39 @@
 
 (defvar magent-action-session-mode-map
   (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map special-mode-map)
     (define-key map (kbd "TAB") #'magent-action-session-toggle-section)
     (define-key map (kbd "<backtab>") #'magent-action-session-toggle-all)
     (define-key map (kbd "S-TAB") #'magent-action-session-toggle-all)
     map)
   "Keymap for `magent-action-session-mode'.")
 
-(define-derived-mode magent-action-session-mode special-mode "Magent-Action"
-  "Major mode for progressively disclosed Magent action sessions."
-  (setq-local outline-regexp "\\*+ ")
-  (setq-local outline-level
-              (lambda () (1- (- (match-end 0) (match-beginning 0)))))
-  (outline-minor-mode 1))
+(set-keymap-parent magent-action-session-mode-map org-mode-map)
+(define-key magent-action-session-mode-map (kbd "q") #'quit-window)
+
+(define-derived-mode magent-action-session-mode org-mode "Magent-Action"
+  "Read-only Org viewer for progressively disclosed Action sessions."
+  (setq-local org-src-fontify-natively t)
+  (setq-local buffer-read-only t))
 
 (defun magent-action-session-toggle-section ()
   "Toggle the outline section at or above point."
   (interactive)
   (save-excursion
-    (unless (looking-at outline-regexp)
-      (outline-back-to-heading t))
-    (outline-toggle-children)))
+    (org-back-to-heading t)
+    (org-cycle)))
 
 (defun magent-action-session-toggle-all ()
   "Toggle all detail sections in the current session viewer."
   (interactive)
   (if magent-action-session--details-hidden
       (progn
-        (outline-show-all)
+        (org-fold-show-all)
         (setq magent-action-session--details-hidden nil))
     (save-excursion
       (goto-char (point-min))
       (when (re-search-forward "^\\* Activity$" nil t)
         (beginning-of-line)
-        (outline-hide-subtree)))
+        (org-fold-hide-subtree)))
     (setq magent-action-session--details-hidden t)))
 
 (defun magent-action-session--shift-headings (text levels)
@@ -169,7 +169,8 @@
             time status action title id)))
 
 (defun magent-action-open-session (file)
-  "Open read-only viewer for isolated action session FILE."
+  "Open read-only viewer for isolated action session FILE.
+Interactively, offer sessions by last update time, newest first."
   (interactive
    (let ((files (magent-session-list-action-files)))
      (unless files
@@ -178,8 +179,13 @@
                                (cons (magent-action-session--session-label file)
                                      file))
                              files))
-            (selected (completing-read "Action session: "
-                                       (mapcar #'car choices) nil t)))
+            (table (lambda (string predicate action)
+                     (if (eq action 'metadata)
+                         '(metadata
+                           (display-sort-function . identity)
+                           (cycle-sort-function . identity))
+                       (complete-with-action action choices string predicate))))
+            (selected (completing-read "Action session: " table nil t)))
        (list (cdr (assoc selected choices))))))
   (unless (and file (file-exists-p file))
     (user-error "Magent: action session file not found"))
@@ -230,7 +236,7 @@
         (goto-char (point-min))
         (when (re-search-forward "^\\* Activity$" nil t)
           (beginning-of-line)
-          (outline-hide-subtree)
+          (org-fold-hide-subtree)
           (setq magent-action-session--details-hidden t))
         (goto-char (point-min))))
     (display-buffer buffer)))

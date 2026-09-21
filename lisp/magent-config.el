@@ -394,6 +394,14 @@ When nil, Action sessions are stored under
                  directory)
   :group 'magent)
 
+(defcustom magent-action-project-trust-file
+  (expand-file-name "magent/action-trust.json" user-emacs-directory)
+  "Local record of approved project Action source fingerprints.
+Each approval covers one project's complete .magent/actions/*.el contents.
+Project source is trusted live Emacs Lisp, not sandboxed code."
+  :type 'file
+  :group 'magent)
+
 (defcustom magent-audit-buffer-name "*magent-audit*"
   "Name of the buffer used for the Magent audit browser."
   :type 'string

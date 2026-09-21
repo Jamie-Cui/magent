@@ -832,6 +832,59 @@ return that path."
        (when (file-directory-p magent-session-directory)
          (delete-directory magent-session-directory t)))))
 
+(ert-deftest magent-live-test-action-mode-line-counts ()
+  "Real Action lifecycles update counts and clearing preserves saved sessions."
+  :tags '(:magent-live-smoke)
+  (require 'magent)
+  (magent-runtime-ensure-initialized)
+  (magent-live-test--with-isolated-runtime
+    (let ((magent-action--registry nil)
+          (magent-action-session--active-invocations (make-hash-table :test #'equal))
+          (magent-action-mode-line--invocations (make-hash-table :test #'eq))
+          (magent-action-mode-line-label "M")
+          (magent-action-session-directory nil)
+          (default-directory (file-name-as-directory magent-session-directory))
+          (was-enabled magent-action-mode-line-mode)
+          completions running)
+      (unwind-protect
+          (progn
+            (magent-action-mode-line-mode 1)
+            (magent-action-register
+             "status-counts" :exposure '(interactive) :session-policy 'isolated
+             :workflow
+             (iter-lambda (_invocation)
+               (magent-workflow-callback
+                   "Wait for result"
+                   (lambda (done)
+                     (push done completions)
+                     #'ignore))))
+            (dotimes (_ 3)
+              (setq running (magent-action-run "status-counts")))
+            (setq completions (nreverse completions))
+            (funcall (nth 0 completions) 'completed "Done")
+            (funcall (nth 1 completions) 'failed "Expected test failure")
+            (should (equal (substring-no-properties
+                            (magent-action-mode-line--render))
+                           " (M: 1, 1, 1) "))
+            (should (string-match-p "Expected test failure"
+                                    (magent-action-mode-line--tooltip)))
+            (let ((files (magent-session-list-action-files "status-counts")))
+              (should (= (length files) 3))
+              (magent-action-mode-line-clear-results)
+              (should (equal (magent-session-list-action-files "status-counts")
+                             files)))
+            (should (equal (substring-no-properties
+                            (magent-action-mode-line--render))
+                           " (M: 1, 0, 0) "))
+            (magent-action-cancel running)
+            (should (equal (substring-no-properties
+                            (magent-action-mode-line--render))
+                           " (M: 0, 0, 0) ")))
+        (when (and running
+                   (eq (magent-action-invocation-status running) 'active))
+          (magent-action-cancel running))
+        (magent-action-mode-line-mode (if was-enabled 1 -1))))))
+
 (ert-deftest magent-live-test-doctor-mx-shows-live-progress-buffer ()
   "Run the Doctor M-x path with visible progress and a retained result."
   :tags '(:magent-live-smoke)
