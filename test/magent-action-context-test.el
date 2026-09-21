@@ -17,6 +17,35 @@
 (defvar magent-context-test--minor nil)
 (defvar magent-context-test--loads 0)
 
+(ert-deftest magent-context-command-bootstraps-without-main-library ()
+  "The autoloaded picker initializes its runtime in a fresh Emacs."
+  (with-temp-buffer
+    (let* ((load-arguments
+            (cl-loop for directory in load-path
+                     when (and (stringp directory) (file-directory-p directory))
+                     append (list "-L" directory)))
+           (form
+            '(progn
+               (require 'cl-lib)
+               (require 'magent-action)
+               (cl-letf (((symbol-function 'completing-read)
+                          (lambda (_prompt table &rest _)
+                            (unless (member "doctor" (all-completions "" table))
+                              (error "Doctor missing after initialization"))
+                            "doctor"))
+                         ((symbol-function 'magent-action-run)
+                          (lambda (&rest _) 'started)))
+                 (unless (eq (magent-action) 'started)
+                   (error "Action was not dispatched")))))
+           (status
+            (apply #'call-process
+                   (expand-file-name invocation-name invocation-directory)
+                   nil t nil
+                   (append '("-Q" "--batch") load-arguments
+                           (list "--eval" (prin1-to-string form))))))
+      (ert-info ((buffer-string))
+        (should (equal status 0))))))
+
 (defconst magent-context-test--source
   (concat ";;; -*- lexical-binding: t; -*-\n"
           "(cl-incf magent-context-test--loads)\n"

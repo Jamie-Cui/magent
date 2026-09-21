@@ -1728,6 +1728,7 @@ SOURCE-START is the absolute position corresponding to the start of TEXT."
     (action &key argument options observer on-complete)
   "Run interactive-exposed ACTION from the current Emacs context.
 OBSERVER receives Action lifecycle events when non-nil."
+  (require 'magent-runtime)
   (magent-runtime-ensure-initialized)
   (let* ((origin-buffer (current-buffer))
          (origin-directory default-directory)
@@ -1767,6 +1768,7 @@ OBSERVER receives Action lifecycle events when non-nil."
 Only Actions exposed interactively in the current scope are offered.
 With prefix PROMPT-FOR-ARGUMENT, read an argument for the selected Action."
   (interactive "P")
+  (require 'magent-runtime)
   (magent-runtime-ensure-initialized)
   (let* ((origin (current-buffer))
          (scope (magent-runtime-context-scope))
