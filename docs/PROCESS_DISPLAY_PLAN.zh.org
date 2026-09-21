@@ -1,4 +1,6 @@
 #+title: Magent 过程展示改进计划
+#+magent_lang: zh
+#+magent_permalink: /PROCESS_DISPLAY_PLAN.zh.html
 #+options: toc:2 num:nil
 
 状态：已实施并完成确定性验证。最后更新：2026-09-21。

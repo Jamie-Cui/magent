@@ -56,6 +56,7 @@
            ("UI 后端" . "/UI_BACKENDS.zh.html")
            ("Doctor" . "/DOCTOR.zh.html")
            ("PTC 与多模型计划" . "/PTC_MULTI_MODEL_PLAN.zh.html")
+           ("过程展示改进计划" . "/PROCESS_DISPLAY_PLAN.zh.html")
            ("故障排查" . "/TROUBLESHOOTING.zh.html")
            ("发布" . "/RELEASING.zh.html")
            ("贡献" . "/CONTRIBUTING.zh.html")))))
@@ -177,6 +178,7 @@ REPLACEMENTS is an alist of string placeholders to string values."
                  "DOCTOR.org"
                  "DOCTOR.zh.org"
                  "PTC_MULTI_MODEL_PLAN.zh.org"
+                 "PROCESS_DISPLAY_PLAN.zh.org"
                  "TROUBLESHOOTING.org"
                  "TROUBLESHOOTING.zh.org"
                  "RELEASING.org"
