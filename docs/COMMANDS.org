@@ -70,6 +70,9 @@ buffer. A failed compaction leaves the previous context unchanged.
 
 ** ~/authority~
 
+This is a chat-only Action: invoke ~/authority~ in agent-shell. It is not
+offered by ~M-x magent-action~.
+
 Returns the effective catalog view for the current session agent. Each row
 shows the permission key, final decision, whether the tool is exposed, the
 rule or session-override source, resource sub-rules, approval policy, and
@@ -179,6 +182,29 @@ Every registration provides exactly one ~:workflow~ function and an explicit
 ~magent-define-workflow~. Ordinary Elisp owns branching, loops, local
 state, validation, and calls into Emacs; managed Steps are used only where the
 Workflow must suspend for asynchronous work.
+
+~:exposure~ declares the supported entry points: ~'(slash)~ (the default),
+~'(interactive)~, or ~'(slash interactive)~. ~M-x magent-action~ only offers
+Actions that include ~interactive~; ~:session-policy~ independently controls
+which session the Action uses.
+
+~:modes~ optionally restricts interactive invocation in the originating buffer:
+
+#+begin_src elisp
+:modes '(major magit-mode)
+:modes '(minor git-commit-mode)
+:modes '(or (major org-mode)
+            (and (major prog-mode) (minor eglot-managed-mode)))
+#+end_src
+
+Major-mode conditions include derived modes. Minor-mode conditions check the
+mode variable in the originating buffer. ~and~ requires every operand; ~or~
+requires any operand. Empty expressions and arbitrary Lisp are rejected;
+omitting ~:modes~ imposes no mode restriction. Slash calls ignore this field.
+The effective scoped definition is resolved before filtering: a project
+override that fails its mode condition never falls back to a global definition.
+Direct interactive calls recheck the mode before creating an Action/session.
+Checks such as whether point is on a diff remain Workflow responsibilities.
 
 ~:requires~ accepts one Emacs feature symbol or a list of feature symbols.
 Magent calls ~require~ for each feature during invocation preflight. A missing
@@ -306,6 +332,46 @@ scope rule and retains inactive project snapshots. Concurrent sessions for
 different projects can therefore expose same-name Action or skill overrides
 without leaking entries between menus.
 
+** Project Action files
+
+Magent scans the current project's ~.magent/actions/*.el~ in filename order
+(top-level non-hidden source files only). Each file contains ordinary trusted
+Elisp definitions and calls to ~magent-action-register~. Registrations
+automatically receive ~:source-layer 'project~ and the canonical project scope;
+files cannot use this API to register into another scope or source layer.
+For example, save this as ~.magent/actions/check.el~:
+
+#+begin_src elisp
+;;; -*- lexical-binding: t; -*-
+(magent-define-workflow my-project-check (_invocation)
+  (magent-workflow-process "Run project checks" '("make" "check")))
+
+(magent-action-register
+ "project-check"
+ :description "Run this project's checks."
+ :exposure '(slash interactive)
+ :session-policy 'isolated
+ :workflow #'my-project-check)
+#+end_src
+
+~M-x magent-action~ asks before loading unapproved files. Approval covers the
+complete set of filenames and source contents, stored locally in
+~magent-action-project-trust-file~. Added, removed, or changed source requires
+new approval before execution. Evaluation uses the approved in-memory snapshot.
+These files have full live Emacs access; approval is not a sandbox or a promise
+about code loaded indirectly by those files. Keep top-level code limited to
+definitions and registration: arbitrary Lisp side effects cannot be rolled back.
+
+Background/chat discovery does not prompt or execute unapproved files. Use
+~M-x magent-action-trust-project~ from a project buffer to approve files for
+chat use, or to reconsider a declined snapshot. ~magent-action-reload-project~
+explicitly reruns approved sources; ~magent-action-forget-project-trust~ removes
+the approval and current file registrations. Normal discovery and invocation
+notice content changes without a file watcher. Deleting all Action files
+removes their registrations. A load error reports the filename, publishes no
+partial project registrations, and leaves other projects intact. Previously
+running invocations retain their captured Workflows.
+
 * User Skill Management
 
 ~M-x magent-find-skill~ searches skills.sh and displays the ten most-installed
@@ -355,12 +421,41 @@ boundary.
 
 | Emacs command                     | Purpose |
 |-----------------------------------+---------|
+| ~magent-action~                | Choose and run an Action using standard minibuffer completion |
 | ~magent-action-list-sessions~   | Select a saved Action session and inspect its final result and activity |
 | ~magent-action-cancel~          | Cancel an active isolated Action that exposes cancellation |
+| ~magent-action-mode-line-clear-results~ | Clear failed and completed mode-line counts together |
 
 Action-session viewers show the final result first and keep detailed activity
-collapsed by default. Cancellation is session-scoped and does not cancel work
+collapsed by default, with Org heading, markup, and native source-block
+highlighting. ~TAB~ cycles a section, ~S-TAB~ toggles Activity, and ~q~ quits.
+Cancellation is session-scoped and does not cancel work
 belonging to unrelated Magent conversations.
+
+~M-x magent-action~ lists Actions exposed interactively in the current scope,
+with descriptions and selection history. It uses the same completion UI as
+~M-x~, including installed completion frontends such as Vertico/posframe.
+Choose an Action and press ~RET~ to run it. Use ~C-u M-x magent-action~ to
+supply an argument. Tool permissions follow the existing agent/session rules.
+You can bind this entry point in your Emacs configuration, for example:
+
+#+begin_src elisp
+(keymap-global-set "C-M-x" #'magent-action)
+#+end_src
+
+With ~magent-action-mode-line-mode~ enabled, the mode line shows
+~(M: running, failed, completed)~ across all projects. Nonzero counts use the
+warning face in bold, error face in bold, and success face respectively;
+zero counts are dimmed, and ~(M: 0, 0, 0)~ remains visible. The label and
+punctuation use the normal mode-line style. Hover for labeled counts, current
+Steps, and failure reasons; the segment has no click action.
+
+Failed and completed counts accumulate until
+~M-x magent-action-mode-line-clear-results~ clears both together. Running
+Actions and saved sessions are unaffected. Opening a session does not clear
+counts. Cancelled Actions are excluded; completed means the Action's final
+status is ~completed~. Counts are not persisted across Emacs restarts, and
+disabling this optional mode clears its tracked results.
 
 * Choosing The Right Surface
 

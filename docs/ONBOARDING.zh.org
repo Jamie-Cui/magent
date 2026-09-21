@@ -52,6 +52,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 - ~magent-redaction.el~ ：Magent-owned outbound values 的 fail-closed 脱敏。
 - ~magent-agent-job.el~ ：durable child-agent job records 和 JSON shape。
 - ~magent-action.el~ ：Workflow DSL、Step runtime、分层 Action registry 和 Invocation lifecycle。
+- ~magent-action-project.el~ — Approved project Action discovery and loading
 - ~magent-runtime.el~ ：静态初始化与 project-local definitions 的保留式加载。
 - ~magent-runtime-api.el~ ：UI/backend-facing runtime session 和 prompt API。
 - ~magent-runtime-queue.el~ ：会话内 FIFO、会话间并发的 runtime queue 和 session-scoped cancellation。
@@ -115,6 +116,7 @@ Action lifecycle，而不是另一套 UI。
 - ~magent-agent-shell.el~ ：Magent agent-shell config 和 prompt routing。
 - ~magent-acp.el~ ：in-process ACP adapter。
 - ~magent-action.el~ ：Action Workflow、registry 和 slash/interactive projections。
+- ~magent-action-project.el~ — Approved project Action discovery and loading
 - ~magent-action-session.el~ ：isolated Action persistence 和 cancellation。
 - ~magent-action-session-view.el~ ：isolated Action session listing 和 inspection。
 - ~magent-runtime-api.el~ ：UI/backend-facing runtime API。
@@ -256,6 +258,7 @@ API。
 - ~magent-agent-file.el~ ：custom agents 如何从 ~.magent/agent/*.md~ 加载。
 - ~magent-skills.el~ ：skills 如何扩展 agent 能力。
 - ~magent-action.el~ ：trusted package 如何注册显式 slash 或 interactive action。
+- ~magent-action-project.el~ — Approved project Action discovery and loading
 - ~magent-action-session.el~ / ~magent-action-session-view.el~ ：isolated Action Invocation 如何持久化、报告 progress、取消和渲染。
 - ~magent-file-loader.el~ ：agent、skill、capability 共用的 frontmatter parser。
 
@@ -306,6 +309,7 @@ API。
 
 ** Actions
 - *magent-action.el* — Workflow DSL、managed Steps、layered registry 与 Invocation lifecycle
+- *magent-action-project.el* — Approved project Action discovery and loading
 - *magent-action-controls.el* — ~/compact~ 等 core current-session controls
 - *magent-action-skills.el* — scope-aware ~/skills~ Action projection
 - *magent-action-builtins.el* — prompt Action definitions 与 built-in registration

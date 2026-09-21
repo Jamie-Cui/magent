@@ -12,6 +12,8 @@
 
 ;;; Code:
 
+(declare-function magent-action-load-project-scope "magent-action-project")
+
 (require 'cl-lib)
 (require 'map)
 (require 'seq)
@@ -277,6 +279,8 @@ the leading slash, so agent-shell displays them as `/$NAME'."
          (if (magent-runtime-session-p runtime-session-or-scope)
              (magent-runtime-session-scope runtime-session-or-scope)
            runtime-session-or-scope)))
+    (require 'magent-action-project)
+    (magent-action-load-project-scope scope)
     (vconcat
      (append
       (mapcar #'magent-acp--command-entry (magent-action-list scope))
@@ -536,6 +540,8 @@ RESOURCES-BEFORE appear before the frontend resources already stored in INPUT."
          (if (magent-runtime-session-p runtime-session-or-scope)
              (magent-runtime-session-scope runtime-session-or-scope)
            runtime-session-or-scope)))
+    (require 'magent-action-project)
+    (magent-action-load-project-scope scope)
     (when-let* ((parsed (magent-action-parse prompt scope)))
       (list :kind 'command
             :spec (car parsed)

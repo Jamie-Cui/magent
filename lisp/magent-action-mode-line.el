@@ -1,15 +1,15 @@
-;;; magent-action-mode-line.el --- Show active Magent Actions  -*- lexical-binding: t; -*-
+;;; magent-action-mode-line.el --- Show Magent Action status counts  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jamie Cui
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;;; Commentary:
 
-;; Display the number of active Magent Actions in `global-mode-string'.
-;; Hovering over the segment shows one line per Action with its current Step
-;; and originating directory.  Public Action entry points are advised so the
-;; package can observe both interactive and slash-exposed Actions without
-;; depending on Magent's private invocation registries.
+;; Display global running, failed, and completed Action counts as (M: 0, 0, 0)
+;; in `global-mode-string'.  Finished results accumulate until manually
+;; cleared, the mode is disabled, or Emacs exits.  Hovering shows current Steps,
+;; failures, and originating directories.  Public Action entry points are
+;; advised without depending on Magent's private invocation registries.
 ;;
 ;; Customize `magent-action-mode-line-mode' to enable this optional UI.
 
@@ -21,22 +21,32 @@
 (require 'subr-x)
 
 (defgroup magent-action-mode-line nil
-  "Mode-line status for active Magent Actions."
+  "Mode-line status counts for Magent Actions."
   :group 'magent)
 
-(defcustom magent-action-mode-line-label "Magent"
-  "Label displayed before the active Action count."
+(defcustom magent-action-mode-line-label "M"
+  "Label displayed before the running, failed, and completed Action counts."
   :type 'string
   :group 'magent-action-mode-line)
 
 (defface magent-action-mode-line-active-face
-  '((t (:inherit mode-line-emphasis :weight bold)))
-  "Face used when at least one Magent Action is active."
+  '((t (:inherit warning :weight bold)))
+  "Face used for a nonzero running Action count."
   :group 'magent-action-mode-line)
 
 (defface magent-action-mode-line-idle-face
-  '((t (:inherit shadow)))
-  "Face used when no Magent Action is active."
+  '((t (:inherit shadow :weight normal)))
+  "Face used for zero Action counts."
+  :group 'magent-action-mode-line)
+
+(defface magent-action-mode-line-failed-face
+  '((t (:inherit error :weight bold)))
+  "Face used for a nonzero failed Action count."
+  :group 'magent-action-mode-line)
+
+(defface magent-action-mode-line-completed-face
+  '((t (:inherit success :weight normal)))
+  "Face used for a nonzero completed Action count."
   :group 'magent-action-mode-line)
 
 (defvar magent-action-mode-line--invocations (make-hash-table :test #'eq)
@@ -53,30 +63,45 @@
   (force-mode-line-update t))
 
 (defun magent-action-mode-line--track (invocation)
-  "Track active Magent Action INVOCATION and refresh the mode line."
+  "Track active, failed, or completed INVOCATION and refresh the mode line."
   (when (magent-action-invocation-p invocation)
-    (if (eq (magent-action-invocation-status invocation) 'active)
+    (if (memq (magent-action-invocation-status invocation)
+              '(active failed completed))
         (puthash invocation t magent-action-mode-line--invocations)
       (remhash invocation magent-action-mode-line--invocations)))
   (magent-action-mode-line--refresh)
   invocation)
 
-(defun magent-action-mode-line--active-invocations ()
-  "Return tracked active invocations and discard terminal entries."
-  (let (active stale)
+(defun magent-action-mode-line--invocations-with-status (status)
+  "Return tracked invocations with STATUS, pruning cancelled entries.
+Failed and completed invocations remain until their counts are cleared."
+  (let (matches stale)
     (maphash
      (lambda (invocation _present)
        (if (and (magent-action-invocation-p invocation)
-                (eq (magent-action-invocation-status invocation) 'active))
-           (push invocation active)
+                (memq (magent-action-invocation-status invocation)
+                      '(active failed completed)))
+           (when (eq (magent-action-invocation-status invocation) status)
+             (push invocation matches))
          (push invocation stale)))
      magent-action-mode-line--invocations)
     (dolist (invocation stale)
       (remhash invocation magent-action-mode-line--invocations))
-    (sort active
+    (sort matches
           (lambda (left right)
             (string< (format "%s" (magent-action-invocation-id left))
                      (format "%s" (magent-action-invocation-id right)))))))
+
+;;;###autoload
+(defun magent-action-mode-line-clear-results ()
+  "Clear failed and completed Action counts, keeping running Actions.
+Saved Action sessions are unaffected."
+  (interactive)
+  (dolist (invocation
+           (append (magent-action-mode-line--invocations-with-status 'failed)
+                   (magent-action-mode-line--invocations-with-status 'completed)))
+    (remhash invocation magent-action-mode-line--invocations))
+  (magent-action-mode-line--refresh))
 
 (defun magent-action-mode-line--one-line (value)
   "Return VALUE as a trimmed string without embedded whitespace runs."
@@ -95,9 +120,15 @@
               (magent-action-spec-name spec)
             "unknown-action"))
          (step-name
-          (if (magent-action-step-p step)
-              (or (magent-action-step-name step) "Starting")
-            "Starting"))
+          (if (eq (magent-action-invocation-status invocation) 'failed)
+              (let ((result (magent-action-invocation-result invocation)))
+                (concat "Failed: "
+                        (if (magent-execution-result-p result)
+                            (magent-execution-result-content-string result)
+                          "Unknown error")))
+            (if (magent-action-step-p step)
+                (or (magent-action-step-name step) "Starting")
+              "Starting")))
          (origin
           (or (magent-action-invocation-origin-directory invocation)
               (magent-action-invocation-origin-scope invocation)
@@ -111,26 +142,40 @@
                origin)))))
 
 (defun magent-action-mode-line--tooltip ()
-  "Return one line per active Magent Action for the mode-line tooltip."
-  (let ((invocations (magent-action-mode-line--active-invocations)))
-    (if invocations
-        (mapconcat #'magent-action-mode-line--task-line invocations "\n")
-      "No active Magent Actions")))
+  "Return labeled counts, running Actions, and failures for the tooltip."
+  (let* ((active (magent-action-mode-line--invocations-with-status 'active))
+         (failed (magent-action-mode-line--invocations-with-status 'failed))
+         (completed (magent-action-mode-line--invocations-with-status 'completed))
+         (details (append active failed)))
+    (concat
+     (format "Magent Actions — Running: %d, Failed: %d, Completed: %d"
+             (length active) (length failed) (length completed))
+     (when details
+       (concat "\n" (mapconcat #'magent-action-mode-line--task-line
+                               details "\n"))))))
 
 (defun magent-action-mode-line--help-echo (_window _object _position)
   "Return current Action details for a mode-line help request."
   (magent-action-mode-line--tooltip))
 
+(defun magent-action-mode-line--count (status face)
+  "Return the count for STATUS styled with FACE, or dimmed when zero."
+  (let ((count (length (magent-action-mode-line--invocations-with-status status))))
+    (propertize (number-to-string count) 'face
+                (if (zerop count) 'magent-action-mode-line-idle-face face))))
+
 (defun magent-action-mode-line--render ()
-  "Return the propertized Magent Action mode-line segment."
-  (let* ((count (length (magent-action-mode-line--active-invocations)))
-         (face (if (> count 0)
-                   'magent-action-mode-line-active-face
-                 'magent-action-mode-line-idle-face)))
+  "Return three individually styled Action counts with hover help."
+  (let ((counts
+         (list (magent-action-mode-line--count
+                'active 'magent-action-mode-line-active-face)
+               (magent-action-mode-line--count
+                'failed 'magent-action-mode-line-failed-face)
+               (magent-action-mode-line--count
+                'completed 'magent-action-mode-line-completed-face))))
     (propertize
-     (format " %s:%d " magent-action-mode-line-label count)
-     'face face
-     'mouse-face 'mode-line-highlight
+     (concat " (" magent-action-mode-line-label ": "
+             (string-join counts ", ") ") ")
      'help-echo #'magent-action-mode-line--help-echo)))
 
 (defun magent-action-mode-line--install-segment ()
@@ -153,6 +198,7 @@
 Track the returned invocation and preserve the original `:on-complete'
 callback."
   (let ((original-completion (plist-get keyword-arguments :on-complete))
+        (tracked-invocations magent-action-mode-line--invocations)
         invocation)
     (when (and original-completion (not (functionp original-completion)))
       (signal 'wrong-type-argument (list 'functionp original-completion)))
@@ -160,14 +206,18 @@ callback."
           (plist-put
            keyword-arguments :on-complete
            (lambda (status result)
-             (when (magent-action-invocation-p invocation)
-               (remhash invocation magent-action-mode-line--invocations))
+             (when (and (eq tracked-invocations
+                            magent-action-mode-line--invocations)
+                        (magent-action-invocation-p invocation))
+               (magent-action-mode-line--track invocation))
              (magent-action-mode-line--refresh)
              (when original-completion
                (funcall original-completion status result)))))
     (setq invocation
           (apply function (append positional-arguments keyword-arguments)))
-    (magent-action-mode-line--track invocation)))
+    (when (eq tracked-invocations magent-action-mode-line--invocations)
+      (magent-action-mode-line--track invocation))
+    invocation))
 
 (defun magent-action-mode-line--run-a (function action &rest arguments)
   "Call advised FUNCTION for interactive ACTION with ARGUMENTS."
@@ -206,12 +256,15 @@ callback."
   (setq global-mode-string
         (cl-remove 'magent-action-mode-line--mode-line global-mode-string
                    :test #'eq))
-  (clrhash magent-action-mode-line--invocations)
+  ;; Invalidate callbacks installed before disabling the mode.
+  (setq magent-action-mode-line--invocations (make-hash-table :test #'eq))
   (magent-action-mode-line--refresh))
 
 ;;;###autoload
 (define-minor-mode magent-action-mode-line-mode
-  "Show active Magent Action count and details in the mode line."
+  "Show global running, failed, and completed Action counts.
+Results accumulate until `magent-action-mode-line-clear-results' is called,
+this mode is disabled, or Emacs exits.  Cancelled Actions are not counted."
   :init-value nil
   :global t
   :group 'magent-action-mode-line

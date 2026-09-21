@@ -50,6 +50,7 @@ Manages conversation history, scoped definitions, and runtime state.
 - ~magent-redaction.el~ — Fail-closed redaction for Magent-owned outbound values
 - ~magent-agent-job.el~ — Durable child-agent job records and JSON shape
 - ~magent-action.el~ — Workflow DSL, Step runtime, layered Action registry, and Invocation lifecycle
+- ~magent-action-project.el~ — Approved project Action discovery and loading
 - ~magent-runtime.el~ — Static initialization plus retained project-local definition loading
 - ~magent-runtime-api.el~ — UI/backend-facing runtime session and prompt API
 - ~magent-runtime-queue.el~ — Per-session FIFO runtime queues, concurrent sessions, and session-scoped cancellation
@@ -110,6 +111,7 @@ command wrappers use the adjacent Action lifecycle rather than another UI.
 - ~magent-agent-shell.el~ — Magent agent-shell config and prompt routing
 - ~magent-acp.el~ — In-process ACP adapter for agent-shell
 - ~magent-action.el~ — Action Workflow, registry, and slash/interactive projections
+- ~magent-action-project.el~ — Approved project Action discovery and loading
 - ~magent-action-session.el~ — Isolated Action persistence and cancellation
 - ~magent-action-session-view.el~ — Isolated Action session listing and inspection
 - ~magent-runtime-api.el~ — UI/backend-facing runtime API
@@ -255,6 +257,7 @@ Check out:
 - ~magent-agent-file.el~ — How custom agents load from ~.magent/agent/*.md~
 - ~magent-skills.el~ — How skills extend agent capabilities
 - ~magent-action.el~ — How trusted packages register explicit slash or interactive actions
+- ~magent-action-project.el~ — Approved project Action discovery and loading
 - ~magent-action-session.el~ / ~magent-action-session-view.el~ — How isolated Action Invocations persist, report progress, cancel, and render
 - ~magent-file-loader.el~ — The shared frontmatter parser for agents, skills, and capabilities
 
@@ -304,6 +307,7 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 
 ** Actions
 - *magent-action.el* — Workflow DSL, managed Steps, layered registry, and Invocation lifecycle
+- *magent-action-project.el* — Approved project Action discovery and loading
 - *magent-action-controls.el* — Core current-session controls such as ~/compact~
 - *magent-action-skills.el* — Scope-aware ~/skills~ Action projection
 - *magent-action-builtins.el* — Prompt Action definitions and built-in registration

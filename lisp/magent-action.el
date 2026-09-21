@@ -24,6 +24,7 @@
 (require 'magent-session)
 
 (declare-function magent-action-builtins-register "magent-action-builtins")
+(declare-function magent-action-load-project-scope "magent-action-project")
 (declare-function magent-action-session-cancel "magent-action-session")
 (declare-function magent-action-session-finalize "magent-action-session")
 (declare-function magent-action-session-finalize-workflow-turn
@@ -725,7 +726,8 @@ an optional zero-argument cancellation function."
   source-scope
   requires
   registration-id
-  sequence)
+  sequence
+  modes)
 
 (defvar magent-action--registry nil
   "Layered list of registered `magent-action-spec' objects.")
@@ -744,6 +746,12 @@ an optional zero-argument cancellation function."
 
 (defvar magent-action--allow-core-registration nil
   "Non-nil only while Magent registers reserved core Actions.")
+
+(defvar magent-action--project-registration-scope nil
+  "Project scope forced on registrations while loading project Elisp.")
+
+(defvar magent-action-project--allow-prompt nil
+  "Non-nil when a user command may ask to trust project Action files.")
 
 (defun magent-action--registry-changed ()
   "Notify Action registry consumers unless notifications are suppressed."
@@ -813,9 +821,47 @@ When SCOPE is nil, use the current interactive project context."
         (error "Invalid Magent Action exposure: %S" kind)))
     (delete-dups (copy-sequence value))))
 
+(defun magent-action--validate-modes (expression)
+  "Validate a declarative mode EXPRESSION without evaluating Lisp."
+  (unless (and (proper-list-p expression)
+               (pcase (car expression)
+                 ((or 'major 'minor)
+                  (and (= (length expression) 2)
+                       (symbolp (cadr expression))
+                       (cadr expression)
+                       (not (keywordp (cadr expression)))
+                       (not (eq (cadr expression) t))))
+                 ((or 'and 'or)
+                  (and (cdr expression)
+                       (progn
+                         (mapc #'magent-action--validate-modes (cdr expression))
+                         t)))))
+    (error "Invalid Magent Action mode condition: %S" expression)))
+
+(defun magent-action--modes-match-p (expression)
+  "Return whether EXPRESSION matches the current buffer's modes."
+  (pcase (car-safe expression)
+    ('nil t)
+    ('major (derived-mode-p (cadr expression)))
+    ('minor (and (boundp (cadr expression))
+                 (symbol-value (cadr expression))))
+    ('and (cl-every #'magent-action--modes-match-p (cdr expression)))
+    ('or (cl-some #'magent-action--modes-match-p (cdr expression)))))
+
+(defun magent-action-applicable-p (spec &optional buffer)
+  "Return whether Action SPEC supports interactive invocation in BUFFER.
+BUFFER defaults to the current buffer.  Resolve the effective registration
+before calling this function; mode mismatches never select a lower layer."
+  (unless (magent-action-spec-p spec)
+    (signal 'wrong-type-argument (list 'magent-action-spec-p spec)))
+  (with-current-buffer (or buffer (current-buffer))
+    (magent-action--modes-match-p (magent-action-spec-modes spec))))
+
 (cl-defun magent-action-register
-    (name &key description title exposure session-policy workflow
-          (source-layer 'package) source-scope requires)
+    (name &key description title exposure modes session-policy workflow
+          (source-layer (if magent-action--project-registration-scope
+                            'project 'package))
+          (source-scope magent-action--project-registration-scope) requires)
   "Register Magent Action NAME and return its registration token.
 
 WORKFLOW must be a generator Workflow function receiving one
@@ -825,11 +871,20 @@ identify one replaceable registration slot.  REQUIRES is a feature symbol or
 list of feature symbols loaded with `require' before the Workflow or an
 isolated session starts.  EXPOSURE is a non-empty list containing `slash',
 `interactive', or both.  SESSION-POLICY must be explicitly `current' or
-`isolated'."
+`isolated'.  MODES optionally restricts interactive invocation with
+\='(major MODE), \='(minor MODE), or nested \='(and ...) and \='(or ...)
+expressions.  Major modes include derived modes; slash invocation ignores
+MODES.  Project file loading supplies SOURCE-LAYER and SOURCE-SCOPE."
   (unless (functionp workflow)
     (error "Magent Action %S requires a :workflow function" name))
   (unless (memq session-policy magent-action--session-policies)
     (error "Invalid Magent Action session policy: %S" session-policy))
+  (when modes (magent-action--validate-modes modes))
+  (when (and magent-action--project-registration-scope
+             (not (and (eq source-layer 'project)
+                       (equal (magent-session-canonical-scope source-scope)
+                              magent-action--project-registration-scope))))
+    (error "Project Actions must register in their own project scope"))
   (let* ((normalized-requires
           (cond
            ((null requires) nil)
@@ -848,6 +903,7 @@ isolated session starts.  EXPOSURE is a non-empty list containing `slash',
                 :description description
                 :title (or title (and (stringp description) description) key)
                 :exposure (magent-action--normalize-exposure exposure)
+                :modes (copy-tree modes)
                 :session-policy session-policy
                 :workflow workflow
                 :source-layer layer
@@ -1633,6 +1689,10 @@ SOURCE-START is the absolute position corresponding to the start of TEXT."
              submission-adapter)
   "Invoke slash-exposed ACTION for RUNTIME-SESSION."
   (let* ((scope (magent-runtime-session-scope runtime-session))
+         (_project-actions
+          (progn
+            (require 'magent-action-project)
+            (magent-action-load-project-scope scope)))
          (spec
           (if (magent-action-spec-p action)
               (let ((effective
@@ -1668,13 +1728,19 @@ SOURCE-START is the absolute position corresponding to the start of TEXT."
     (action &key argument options observer on-complete)
   "Run interactive-exposed ACTION from the current Emacs context.
 OBSERVER receives Action lifecycle events when non-nil."
+  (require 'magent-runtime)
   (magent-runtime-ensure-initialized)
   (let* ((origin-buffer (current-buffer))
          (origin-directory default-directory)
          (origin-scope (magent-runtime-context-scope))
+         (magent-action-project--allow-prompt t)
          (_prepared (magent-runtime-prepare-context origin-scope))
          (spec (or (magent-action-get action origin-scope 'interactive)
                    (error "Unknown interactive Magent action: %s" action)))
+         (_applicable
+          (unless (magent-action-applicable-p spec origin-buffer)
+            (user-error "Action %s does not support this buffer's modes: %S"
+                        action (magent-action-spec-modes spec))))
          (parent-session (magent-session-get-if-present origin-scope))
          (control-session
           (and (eq (magent-action-spec-session-policy spec) 'current)
@@ -1692,6 +1758,58 @@ OBSERVER receives Action lifecycle events when non-nil."
       :observer observer
       :on-complete on-complete
       :interactive-p t))))
+
+(defvar magent-action-history nil
+  "Minibuffer history of interactively selected Magent Actions.")
+
+;;;###autoload
+(defun magent-action (&optional prompt-for-argument)
+  "Choose and run an Action using the standard completion interface.
+Only Actions exposed interactively in the current scope are offered.
+With prefix PROMPT-FOR-ARGUMENT, read an argument for the selected Action."
+  (interactive "P")
+  (require 'magent-runtime)
+  (magent-runtime-ensure-initialized)
+  (let* ((origin (current-buffer))
+         (scope (magent-runtime-context-scope))
+         (magent-action-project--allow-prompt t)
+         (_prepared (magent-runtime-prepare-context scope))
+         (actions (cl-remove-if-not
+                   (lambda (spec) (magent-action-applicable-p spec origin))
+                   (magent-action-list scope 'interactive)))
+         (names (mapcar #'magent-action-spec-name actions)))
+    (unless names
+      (user-error "No interactive Magent Actions are available"))
+    (let* ((annotate
+            (lambda (name)
+              (when-let* ((spec (cl-find name actions
+                                        :key #'magent-action-spec-name
+                                        :test #'equal)))
+                (concat "  " (or (magent-action-spec-description spec)
+                                 (magent-action-spec-title spec) "")))))
+           (table
+            (lambda (string predicate action)
+              (if (eq action 'metadata)
+                  `(metadata
+                    (category . magent-action)
+                    (annotation-function . ,annotate)
+                    (affixation-function
+                     . ,(lambda (candidates)
+                          (mapcar
+                           (lambda (name)
+                             (list name ""
+                                   (propertize (or (funcall annotate name) "")
+                                               'face 'completions-annotations)))
+                           candidates))))
+                (complete-with-action action names string predicate))))
+           (name (completing-read "Magent action: " table nil t
+                                  nil 'magent-action-history))
+           (argument (and prompt-for-argument
+                          (read-string (format "%s argument: " name)))))
+      (unless (buffer-live-p origin)
+        (user-error "The Action's originating buffer is no longer live"))
+      (with-current-buffer origin
+        (magent-action-run name :argument argument)))))
 
 (provide 'magent-action)
 ;;; magent-action.el ends here
