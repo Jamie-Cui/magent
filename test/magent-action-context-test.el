@@ -265,10 +265,15 @@
 (ert-deftest magent-context-project-rejects-escaping-registration-scope ()
   (magent-context-test--with-project
     (with-temp-file source
-      (insert "(magent-action-register \"escape\" :source-layer 'user "
+      (insert ";;; -*- lexical-binding: t; -*-\n"
+              "(magent-action-register \"escape\" :source-layer 'user "
               ":session-policy 'isolated :workflow (iter-lambda (_) nil))"))
     (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
-      (should-error (magent-action-load-project-scope scope)))
+      (should (string-match-p
+               "Project Actions must register in their own project scope"
+               (error-message-string
+                (should-error (magent-action-load-project-scope scope)
+                              :type 'error)))))
     (should-not magent-action--registry)))
 
 (ert-deftest magent-context-project-load-keeps-lexical-scope-without-visiting-file ()
