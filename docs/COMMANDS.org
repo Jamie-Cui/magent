@@ -354,7 +354,9 @@ For example, save this as ~.magent/actions/check.el~:
  :workflow #'my-project-check)
 #+end_src
 
-~M-x magent-action~ asks before loading unapproved files. Approval covers the
+Opening ~M-x magent-action~ discovers approved files without prompting. Choose
+~manage: reload-project~ to approve new or changed files and load their Actions;
+open the picker again to select them. Approval covers the
 complete set of filenames and source contents, stored locally in
 ~magent-action-project-trust-file~. Added, removed, or changed source requires
 new approval before execution. Evaluation uses the approved in-memory snapshot.
@@ -421,7 +423,7 @@ boundary.
 
 | Emacs command                     | Purpose |
 |-----------------------------------+---------|
-| ~magent-action~                | Choose and run an Action using standard minibuffer completion |
+| ~magent-action~                | Choose an Action or management command using standard minibuffer completion |
 | ~magent-action-list-sessions~   | Select a saved Action session and inspect its final result and activity |
 | ~magent-action-cancel~          | Cancel an active isolated Action that exposes cancellation |
 | ~magent-action-mode-line-clear-results~ | Clear failed and completed mode-line counts together |
@@ -432,11 +434,23 @@ highlighting. ~TAB~ cycles a section, ~S-TAB~ toggles Activity, and ~q~ quits.
 Cancellation is session-scoped and does not cancel work
 belonging to unrelated Magent conversations.
 
-~M-x magent-action~ lists Actions exposed interactively in the current scope,
-with descriptions and selection history. It uses the same completion UI as
-~M-x~, including installed completion frontends such as Vertico/posframe.
-Choose an Action and press ~RET~ to run it. Use ~C-u M-x magent-action~ to
-supply an argument. Tool permissions follow the existing agent/session rules.
+~M-x magent-action~ groups applicable interactive Actions under ~Run action~
+and management commands under ~Manage actions~, with descriptions and selection
+history. It uses the same completion UI as ~M-x~, including Vertico/posframe.
+Management names retain their ~manage:~ prefix in frontends without grouping.
+Choose an entry and press ~RET~. ~C-u M-x magent-action~ reads an argument only
+when selecting an Action; management commands use their own interactive prompts.
+Tool permissions follow the existing agent/session rules.
+
+| Management entry | Purpose and availability |
+|------------------+--------------------------|
+| ~manage: sessions~ | Always available; choose a saved isolated Action session to inspect |
+| ~manage: cancel~ | Choose a running isolated Action to cancel; shown when cancellable work exists |
+| ~manage: reload-project~ | Reload project definitions, confirming unapproved sources; shown in project scope |
+| ~manage: clear-results~ | Clear failed/completed mode-line counts while preserving saved history; shown when results exist |
+
+Management remains available even when no Action applies to the current buffer.
+Both kinds of entry execute in the buffer from which the menu was opened.
 You can bind this entry point in your Emacs configuration, for example:
 
 #+begin_src elisp

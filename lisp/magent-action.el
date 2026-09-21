@@ -25,6 +25,8 @@
 
 (declare-function magent-action-builtins-register "magent-action-builtins")
 (declare-function magent-action-load-project-scope "magent-action-project")
+(declare-function magent-action-mode-line-results-p "magent-action-mode-line")
+(declare-function magent-action-session-active-invocations "magent-action-session")
 (declare-function magent-action-session-cancel "magent-action-session")
 (declare-function magent-action-session-finalize "magent-action-session")
 (declare-function magent-action-session-finalize-workflow-turn
@@ -1760,38 +1762,77 @@ OBSERVER receives Action lifecycle events when non-nil."
       :interactive-p t))))
 
 (defvar magent-action-history nil
-  "Minibuffer history of interactively selected Magent Actions.")
+  "Minibuffer history of selected Magent Actions and management commands.")
+
+(defun magent-action--completion-candidates (actions scope)
+  "Return typed menu candidates for ACTIONS in SCOPE.
+Each entry maps its display name to a plist with a kind, target, and
+description.  Management commands also name their defining library."
+  (append
+   (mapcar
+    (lambda (spec)
+      (cons (magent-action-spec-name spec)
+            (list :kind 'action :target (magent-action-spec-name spec)
+                  :description (or (magent-action-spec-description spec)
+                                   (magent-action-spec-title spec) ""))))
+    actions)
+   '(("manage: sessions"
+      :kind command :target magent-action-list-sessions
+      :library magent-action-session-view
+      :description "View isolated Action history and results…"))
+   (when (and (fboundp 'magent-action-session-active-invocations)
+              (magent-action-session-active-invocations t))
+     '(("manage: cancel"
+        :kind command :target magent-action-cancel :library magent-action
+        :description "Choose a running isolated Action to cancel…")))
+   (when (magent-session-canonical-scope scope)
+     '(("manage: reload-project"
+        :kind command :target magent-action-reload-project
+        :library magent-action-project
+        :description "Reload project Actions; confirm unapproved sources")))
+   (when (and (fboundp 'magent-action-mode-line-results-p)
+              (magent-action-mode-line-results-p))
+     '(("manage: clear-results"
+        :kind command :target magent-action-mode-line-clear-results
+        :library magent-action-mode-line
+        :description "Clear mode-line result counts; keep saved history")))))
 
 ;;;###autoload
 (defun magent-action (&optional prompt-for-argument)
-  "Choose and run an Action using the standard completion interface.
-Only Actions exposed interactively in the current scope are offered.
-With prefix PROMPT-FOR-ARGUMENT, read an argument for the selected Action."
+  "Choose an Action or management command using standard completion.
+Offer applicable interactive Actions in the current scope under Run action,
+and management commands with a `manage:' prefix under Manage actions.
+Opening the menu does not prompt for project source approval; use the
+reload-project management command to approve new or changed definitions.
+With prefix PROMPT-FOR-ARGUMENT, read an argument only for a selected Action."
   (interactive "P")
   (require 'magent-runtime)
   (magent-runtime-ensure-initialized)
   (let* ((origin (current-buffer))
          (scope (magent-runtime-context-scope))
-         (magent-action-project--allow-prompt t)
+         (magent-action-project--allow-prompt nil)
          (_prepared (magent-runtime-prepare-context scope))
          (actions (cl-remove-if-not
                    (lambda (spec) (magent-action-applicable-p spec origin))
                    (magent-action-list scope 'interactive)))
-         (names (mapcar #'magent-action-spec-name actions)))
-    (unless names
-      (user-error "No interactive Magent Actions are available"))
+         (candidates (magent-action--completion-candidates actions scope)))
     (let* ((annotate
             (lambda (name)
-              (when-let* ((spec (cl-find name actions
-                                        :key #'magent-action-spec-name
-                                        :test #'equal)))
-                (concat "  " (or (magent-action-spec-description spec)
-                                 (magent-action-spec-title spec) "")))))
+              (when-let* ((entry (cdr (assoc name candidates))))
+                (concat "  " (plist-get entry :description)))))
            (table
             (lambda (string predicate action)
               (if (eq action 'metadata)
                   `(metadata
                     (category . magent-action)
+                    (display-sort-function . identity)
+                    (cycle-sort-function . identity)
+                    (group-function
+                     . ,(lambda (name transform)
+                          (if transform name
+                            (pcase (plist-get (cdr (assoc name candidates)) :kind)
+                              ('action "Run action")
+                              ('command "Manage actions")))))
                     (annotation-function . ,annotate)
                     (affixation-function
                      . ,(lambda (candidates)
@@ -1801,15 +1842,24 @@ With prefix PROMPT-FOR-ARGUMENT, read an argument for the selected Action."
                                    (propertize (or (funcall annotate name) "")
                                                'face 'completions-annotations)))
                            candidates))))
-                (complete-with-action action names string predicate))))
+                (complete-with-action action candidates string predicate))))
            (name (completing-read "Magent action: " table nil t
                                   nil 'magent-action-history))
-           (argument (and prompt-for-argument
-                          (read-string (format "%s argument: " name)))))
+           (entry (or (cdr (assoc name candidates))
+                      (user-error "No Magent menu entry selected"))))
       (unless (buffer-live-p origin)
-        (user-error "The Action's originating buffer is no longer live"))
+        (user-error "The menu's originating buffer is no longer live"))
       (with-current-buffer origin
-        (magent-action-run name :argument argument)))))
+        (pcase (plist-get entry :kind)
+          ('action
+           (magent-action-run
+            (plist-get entry :target)
+            :argument (and prompt-for-argument
+                           (read-string (format "%s argument: " name)))))
+          ('command
+           (require (plist-get entry :library))
+           (let ((current-prefix-arg nil))
+             (call-interactively (plist-get entry :target)))))))))
 
 (provide 'magent-action)
 ;;; magent-action.el ends here

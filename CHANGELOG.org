@@ -14,6 +14,10 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Added
 
+- The ~M-x magent-action~ picker groups runnable Actions and ~manage:~ commands
+  for isolated session history, cancellation, project reload, and clearing
+  mode-line result counts. Management stays available without runnable Actions;
+  opening the picker no longer prompts for project source approval.
 - Interactive Actions can declare nested ~:modes~ conditions using ~major~,
   ~minor~, ~and~, and ~or~. The picker filters after scope/override resolution,
   and unsupported direct calls fail before creating an invocation or session.

@@ -641,8 +641,11 @@ slash input and their M-x wrappers:
   ~C-u~ on the M-x command for manual probe selection.
 - ~M-x magent-action-list-sessions~ opens the progressive command-session
   viewer; ~M-x magent-action-cancel~ cancels active work.
-- ~M-x magent-action~ selects an Action through your normal completion UI;
-  use a prefix argument to supply Action input. The optional mode line retains
+- ~M-x magent-action~ groups runnable Actions and ~manage:~ commands for saved
+  sessions, cancellation, project reload, and clearing mode-line results.
+  A prefix argument supplies input only for Actions. Opening the picker does
+  not prompt for project approval; choose ~manage: reload-project~ to approve
+  new or changed sources. The optional mode line retains
   failed and completed counts until ~magent-action-mode-line-clear-results~;
   session viewers provide Org and native source-block highlighting.
 - Interactive Actions can declare ~:modes~ conditions for their source buffer.

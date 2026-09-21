@@ -92,6 +92,11 @@ Failed and completed invocations remain until their counts are cleared."
             (string< (format "%s" (magent-action-invocation-id left))
                      (format "%s" (magent-action-invocation-id right)))))))
 
+(defun magent-action-mode-line-results-p ()
+  "Return non-nil when failed or completed Action counts can be cleared."
+  (or (magent-action-mode-line--invocations-with-status 'failed)
+      (magent-action-mode-line--invocations-with-status 'completed)))
+
 ;;;###autoload
 (defun magent-action-mode-line-clear-results ()
   "Clear failed and completed Action counts, keeping running Actions.
