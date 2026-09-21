@@ -364,6 +364,29 @@ requests, so Magent normalizes this boundary before curl serializes it."
          (plist-get info :backend))
     (plist-get (plist-get info :context) :magent-native-context)))
 
+(defun magent-sampling-gptel--preserve-chat-tool-message-content
+    (state info chunk-text)
+  "Preserve visible Chat tool-call text in INFO using STATE and CHUNK-TEXT.
+gptel streams visible content to its callback, but currently records a
+tool-calling assistant message with null content.  Keep the exact streamed
+text in that native message so continuation does not lose the progress text."
+  (let* ((text (concat (magent-sampling-gptel--streamed-text state)
+                       (or chunk-text "")))
+         (data (plist-get info :data))
+         (messages (and (listp data) (plist-get data :messages)))
+         (message (and (vectorp messages)
+                       (> (length messages) 0)
+                       (aref messages (1- (length messages))))))
+    (when (and (not (string-blank-p text))
+               (listp message)
+               (equal (plist-get message :role) "assistant")
+               (vectorp (plist-get message :tool_calls))
+               (let ((content (plist-get message :content)))
+                 (or (null content)
+                     (eq content :null)
+                     (and (stringp content) (string-empty-p content)))))
+      (plist-put message :content text))))
+
 (defun magent-sampling-gptel--native-route-key (backend model)
   "Return a non-secret identity for BACKEND's endpoint and MODEL."
   (secure-hash 'sha256
@@ -559,7 +582,7 @@ requests, so Magent normalizes this boundary before curl serializes it."
           (and (or context chat-context) (list nil))))
     (when context (magent-sampling-gptel--native-input (cdr context) info))
     (when chat-context (puthash :chat-stream t (cdr chat-context)))
-    (prog1 (funcall orig-fn backend info)
+    (let ((result (funcall orig-fn backend info)))
       (when chat-context
         ;; HTTP success and a clean curl exit do not establish model
         ;; completion.  gptel does not currently retain chat finish reasons.
@@ -572,7 +595,9 @@ requests, so Magent normalizes this boundary before curl serializes it."
                    when (and (equal (plist-get choice :index) 0)
                              (stringp reason) (not (string-empty-p reason)))
                    do (puthash :chat-finish-reason reason (cdr chat-context))
-                   and do (plist-put info :stop-reason reason))))
+                   and do (plist-put info :stop-reason reason)))
+        (magent-sampling-gptel--preserve-chat-tool-message-content
+         (cdr chat-context) info result))
       (when context
         (dolist (event (nreverse (cdr magent-sampling-gptel--decoded-events)))
           (if (member (plist-get event :type)
@@ -581,7 +606,8 @@ requests, so Magent normalizes this boundary before curl serializes it."
                (car context) (cdr context) info (plist-get event :response))
             (magent-sampling-gptel--native-event (car context) (cdr context) event))))
       (when (magent-sampling-gptel--managed-info-p info)
-        (magent-sampling-gptel--sanitize-info info)))))
+        (magent-sampling-gptel--sanitize-info info))
+      result)))
 
 (defun magent-sampling-gptel--curl-provider-error (buffer info)
   "Return a structured provider error from curl response BUFFER.
