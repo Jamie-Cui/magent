@@ -2564,19 +2564,35 @@
     (cl-letf (((symbol-function 'magent-runtime-ensure-initialized) #'ignore)
               ((symbol-function 'magent-runtime-context-scope) (lambda () scope))
               ((symbol-function 'magent-runtime-prepare-context)
-               (lambda (value) (setq prepared value)))
+               (lambda (value)
+                 (should-not magent-action-project--allow-prompt)
+                 (setq prepared value)))
+              ((symbol-function 'magent-action-session-active-invocations) #'ignore)
+              ((symbol-function 'magent-action-mode-line-results-p) #'ignore)
               ((symbol-function 'completing-read)
                (lambda (_prompt table _predicate require-match _initial history)
-                 (should (equal (all-completions "" table) '("pick")))
+                 (should (equal (all-completions "" table)
+                                '("pick" "manage: sessions"
+                                  "manage: reload-project")))
                  (should require-match)
                  (should (eq history 'magent-action-history))
                  (let* ((metadata (completion-metadata "" table nil))
                         (annotate (completion-metadata-get
-                                   metadata 'annotation-function)))
+                                   metadata 'annotation-function))
+                        (group (completion-metadata-get metadata 'group-function)))
                    (should (eq (completion-metadata-get metadata 'category)
                                'magent-action))
                    (should (equal (funcall annotate "pick")
-                                  "  Run the selected workflow")))
+                                  "  Run the selected workflow"))
+                   (should (equal (funcall group "pick" nil) "Run action"))
+                   (should (equal (funcall group "manage: sessions" nil)
+                                  "Manage actions"))
+                   (should (equal (funcall group "manage: sessions" t)
+                                  "manage: sessions"))
+                   (should (eq (completion-metadata-get
+                                metadata 'display-sort-function) 'identity))
+                   (should (eq (completion-metadata-get
+                                metadata 'cycle-sort-function) 'identity)))
                  "pick"))
               ((symbol-function 'read-string) (lambda (&rest _) "context"))
               ((symbol-function 'magent-action-run)
@@ -2587,7 +2603,7 @@
     (should (equal submitted (list origin "pick" '(:argument "context"))))))
 
 (ert-deftest magent-test-action-completion-empty-or-cancelled-does-not-run ()
-  "Empty registries and cancelled selection never start an Action."
+  "Empty selections and cancelled menus never start an Action."
   (let ((magent-action--registry nil))
     (cl-letf (((symbol-function 'magent-runtime-ensure-initialized) #'ignore)
               ((symbol-function 'magent-runtime-context-scope) (lambda () 'global))
@@ -2596,7 +2612,10 @@
                (lambda (&rest _) (signal 'quit nil)))
               ((symbol-function 'magent-action-run)
                (lambda (&rest _) (ert-fail "Unexpected Action dispatch"))))
-      (should-error (magent-action) :type 'user-error)
+      (should (eq (condition-case nil (magent-action) (quit 'cancelled))
+                  'cancelled))
+      (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "")))
+        (should-error (magent-action) :type 'user-error))
       (magent-action-register
        "pick" :exposure '(interactive) :session-policy 'isolated
        :workflow #'magent-test--empty-action-workflow)

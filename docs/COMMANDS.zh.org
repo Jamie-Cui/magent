@@ -312,7 +312,9 @@ Magent 按文件名顺序扫描项目 ~.magent/actions/*.el~，仅加载顶层�
  :workflow #'my-project-check)
 #+end_src
 
-~M-x magent-action~ 在执行未批准的文件前询问。信任记录覆盖完整文件名和内容集合，
+打开 ~M-x magent-action~ 时只发现已批准的文件，不弹授权提示。
+选择 ~manage: reload-project~ 批准并加载新增或修改的文件，再次打开菜单即可选择
+其中的 Action。信任记录覆盖完整文件名和内容集合，
 保存在本机 ~magent-action-project-trust-file~ 中；文件新增、删除或内容变化后需要
 重新确认。执行的是确认过的内存快照。这些文件拥有完整的 live Emacs 执行能力；
 信任机制不是沙箱，也不追踪文件间接加载的其他代码。顶层应只做定义和注册，任意
@@ -366,7 +368,7 @@ Magent 不迁移、也不读取旧 ~commands/~ Action-session 格式；旧文件
 
 | Emacs 命令                        | 用途 |
 |-----------------------------------+------|
-| ~magent-action~                | 使用标准 minibuffer 补全选择并运行 Action |
+| ~magent-action~                | 使用标准 minibuffer 补全选择 Action 或管理命令 |
 | ~magent-action-list-sessions~   | 选择已保存的 Action session，查看最终结果和执行活动 |
 | ~magent-action-cancel~          | 取消提供 cancellation 的活动 isolated Action |
 | ~magent-action-mode-line-clear-results~ | 同时清零 mode line 中的失败数和通过数 |
@@ -375,10 +377,21 @@ Action-session viewer 优先显示最终结果，默认折叠详细 activity，�
 正文标记和代码块语法高亮。~TAB~ 切换当前节，~S-TAB~ 切换 Activity，~q~ 退出。Cancellation
 按 session 隔离，不会取消其他 Magent 对话所属的工作。
 
-~M-x magent-action~ 列出当前 scope 中具有 interactive exposure 的 Actions，
-附带描述和选择历史。它使用与 ~M-x~ 相同的补全界面，包括已启用的
-Vertico/posframe。选择后按 ~RET~ 启动；~C-u M-x magent-action~ 可以输入参数。
-工具权限沿用现有 agent/session 规则。可以在个人配置中绑定快捷键，例如：
+~M-x magent-action~ 把当前 scope 中适用的 interactive Actions 列在 ~Run action~
+组，把管理命令列在 ~Manage actions~ 组，附带描述和选择历史。它使用与 ~M-x~ 相同的
+补全界面，包括已启用的 Vertico/posframe。不支持分组的界面仍显示 ~manage:~ 前缀。
+选择后按 ~RET~ 执行；~C-u M-x magent-action~ 只为 Action 询问参数，管理命令使用
+各自的交互流程。工具权限沿用现有 agent/session 规则。
+
+| 管理入口 | 用途与显示条件 |
+|----------+----------------|
+| ~manage: sessions~ | 始终显示；选择已保存的独立 Action session 查看结果和执行记录 |
+| ~manage: cancel~ | 有可取消任务时显示；选择并取消正在运行的独立 Action |
+| ~manage: reload-project~ | 当前有项目时显示；重载项目定义并确认未经批准的内容 |
+| ~manage: clear-results~ | 有累计结果时显示；清除 mode line 的失败／完成计数，保留历史记录 |
+
+当前 buffer 没有适用的 Action 时仍可使用管理入口。两类命令都在打开菜单时的来源
+buffer 中执行。可以在个人配置中绑定快捷键，例如：
 
 #+begin_src elisp
 (keymap-global-set "C-M-x" #'magent-action)
