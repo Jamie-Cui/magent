@@ -185,17 +185,29 @@ TRAMP host.  Local roots retain symlink-aware canonicalization."
          magent-session-summary-title-max-width
          nil nil "...")))))
 
+(defconst magent-session--summary-title-scan-limit 4096
+  "Characters of a message considered when deriving a summary title.
+A title is at most `magent-session-summary-title-max-width' characters and
+only depends on the earliest non-blank text, so cleaning a whole message
+body would cost O(message) for no visible difference.")
+
 (defun magent-session--summary-title-from-thread (thread)
-  "Derive a brief summary title from THREAD."
+  "Derive a brief summary title from THREAD.
+Walk turns directly and stop at the first usable message: materializing every
+item first would make this O(conversation) on a path that only needs the
+earliest one."
   (catch 'title
-    (dolist (item (and thread (magent-thread-all-items thread)))
-      (let ((role (magent-thread-item-role item))
-            (content (magent-thread-item-content item)))
+    (dolist (turn (and thread (magent-thread-turns thread)))
+      (dolist (item (magent-thread-turn-items turn))
         (when (and (eq (magent-thread-item-type item) 'message)
-                   (memq role '(user assistant)))
-          (when-let* ((title (magent-session--clean-summary-title
-                             (magent-session--content-to-string content))))
-            (throw 'title title)))))
+                   (memq (magent-thread-item-role item) '(user assistant)))
+          (let ((content (magent-session--content-to-string
+                          (magent-thread-item-content item))))
+            (when (and (stringp content) (not (string-empty-p content)))
+              (when-let* ((title (magent-session--clean-summary-title
+                                  (substring content 0 (min (length content)
+                                                            magent-session--summary-title-scan-limit)))))
+                (throw 'title title)))))))
     nil))
 
 (defun magent-session-summary-title (session)
@@ -302,6 +314,7 @@ while the mutable thread identity and journal start a new branch."
                 :forked-from-session-id source-session-id
                 :session-metadata session-metadata)
           (magent-thread-journal thread) nil
+          (magent-thread-journal-tail thread) nil
           (magent-thread-snapshot-created-at thread) now
           (magent-thread-last-event-seq thread) 0)
     (dolist (turn (magent-thread-turns thread))
@@ -362,18 +375,22 @@ This is either the symbol `global' or a normalized project root path.")
 (defvar magent-session--pending-saves nil
   "Deferred saves as (SESSION . SCOPE) pairs awaiting the shared timer.")
 
-(defconst magent-session-schema-version 6
+(defconst magent-session-schema-version 7
   "Current schema version written to session JSON files.")
+
+(defconst magent-session--legacy-schema-version 6
+  "Schema version whose session JOURNAL was stored inline and is migrated.")
 
 (defconst magent-session--json-fields
   '(id schema-version kind action status title parent-session-id metadata
-    scope project-root summary-title snapshot journal agent-jobs
-    approval-overrides)
-  "Fields accepted by the current session JSON schema.")
+    scope project-root summary-title agent-jobs approval-overrides)
+  "Fields accepted by the current session header schema.
+The materialized ledger snapshot and the event log are stored in sibling
+files, so neither bulk artifact is re-encoded when a header field changes.")
 
 (defconst magent-session--required-json-fields
-  '(id schema-version scope snapshot journal agent-jobs approval-overrides)
-  "Fields required by the current session JSON schema.")
+  '(id schema-version scope agent-jobs approval-overrides)
+  "Fields required by the current session header schema.")
 
 (define-error 'magent-session-schema-error
   "Unsupported or invalid Magent session schema")
@@ -451,30 +468,196 @@ This is either the symbol `global' or a normalized project root path.")
                             decision))))
     (cons (intern tool) (intern decision))))
 
-(defun magent-session--decode-json-state (data)
-  "Validate and decode nested current-format persistence objects in DATA."
-  (let ((snapshot (cdr (assq 'snapshot data))))
-    (unless snapshot
-      (signal 'magent-session-schema-error
-              (list "Session is missing its ledger snapshot")))
-    (list :snapshot (magent-thread-snapshot-from-alist snapshot)
-          :events (mapcar #'magent-thread-event-from-alist
-                          (cdr (assq 'journal data)))
-          :agent-jobs (mapcar #'magent-agent-job-from-alist
-                              (cdr (assq 'agent-jobs data)))
-          :approval-overrides
-          (mapcar #'magent-session--approval-override-from-alist
-                  (cdr (assq 'approval-overrides data))))))
+(defun magent-session--decode-json-state (snapshot events header)
+  "Decode persistence objects from SNAPSHOT, EVENTS, and HEADER.
+SNAPSHOT is the decoded ledger snapshot alist, EVENTS the already-validated
+events that replay after it, and HEADER the session header alist."
+  (unless snapshot
+    (signal 'magent-session-schema-error
+            (list "Session is missing its ledger snapshot")))
+  (list :snapshot (magent-thread-snapshot-from-alist snapshot)
+        :events events
+        :agent-jobs (mapcar #'magent-agent-job-from-alist
+                            (cdr (assq 'agent-jobs header)))
+        :approval-overrides
+        (mapcar #'magent-session--approval-override-from-alist
+                (cdr (assq 'approval-overrides header)))))
 
-(defun magent-session--persisted-journal (thread)
-  "Return the bounded journal tail persisted for THREAD."
-  (let ((journal (and thread (magent-thread-journal thread)))
-        (limit magent-session-journal-max-events))
-    (if (and (integerp limit)
-             (>= limit 0)
-             (> (length journal) limit))
-        (last journal limit)
-      journal)))
+;;; Session persistence layout
+;;
+;; A session is stored as three files whose sizes and rates of change differ
+;; by orders of magnitude, so each pays only for itself:
+;;
+;;   <id>.json      header plus small mutable session state; listing reads it
+;;   <id>.jsonl     append-only ledger events, one JSON object per line
+;;   <id>.snapshot  materialized ledger state, rewritten only on compaction
+;;
+;; Streaming appends to the log, so persistence costs what changed rather than
+;; what the conversation has accumulated.  Between checkpoints the log is
+;; authoritative: `magent-thread-replay' applies the snapshot first and skips
+;; any logged event its `last-event-seq' already covers, which is what makes
+;; snapshot-then-truncate crash safe.
+
+(defconst magent-session--log-extension ".jsonl"
+  "Suffix of the append-only session event log.")
+
+(defconst magent-session--snapshot-extension ".snapshot"
+  "Suffix of a session's materialized ledger snapshot file.")
+
+(defvar magent-session--persisted-cursor (make-hash-table :test #'eq)
+  "Last journal cons already written per session.
+Holding the cons rather than a sequence number keeps \"which events are new\"
+a constant-time question.")
+
+(defvar magent-session--log-count (make-hash-table :test #'eq)
+  "Number of events appended to each session's log since its checkpoint.")
+
+(defvar magent-session--written-header (make-hash-table :test #'eq)
+  "JSON text last written for each session's header file.
+The header is rewritten on every flush, but most flushes change nothing in
+it; skipping an identical rewrite removes a file replace per save.")
+
+(defun magent-session--log-filepath (filepath)
+  "Return the event-log path paired with session FILEPATH."
+  (magent-session--sibling-filepath filepath magent-session--log-extension))
+
+(defun magent-session--snapshot-filepath (filepath)
+  "Return the ledger-snapshot path paired with session FILEPATH."
+  (magent-session--sibling-filepath filepath magent-session--snapshot-extension))
+
+(defun magent-session--sibling-filepath (filepath extension)
+  "Return FILEPATH's sibling sharing its id and using EXTENSION."
+  (expand-file-name
+   (concat (file-name-nondirectory (file-name-sans-extension filepath))
+           extension)
+   (file-name-directory filepath)))
+
+(defun magent-session--json-text (data)
+  "Return DATA encoded as JSON text with Magent's null and false sentinels.
+`json-serialize' is an order of magnitude faster than `json-encode' but
+rejects Lisp symbols, so values pass through `magent-json-safe-value' first.
+That is what `json-encode' used to coerce silently; doing it explicitly keeps
+the previous on-disk shape while surfacing genuinely unsupported values."
+  (json-serialize (magent-json-safe-value data)
+                  :null-object :null
+                  :false-object :json-false))
+
+(defun magent-session--event-line (event)
+  "Return EVENT encoded as one single-line JSON object.
+Any newline inside the payload is escaped by the encoder, so a line always
+corresponds to exactly one event."
+  (magent-session--json-text (magent-thread-event-to-alist event)))
+
+(defun magent-session--log-text (lines)
+  "Return LINES joined as log text, or the empty string when LINES is nil."
+  (if lines (concat (mapconcat #'identity lines "\n") "\n") ""))
+
+(defun magent-session--write-log-events (filepath events)
+  "Atomically replace the log at FILEPATH with EVENTS."
+  (make-directory (file-name-directory filepath) t)
+  (let* ((directory (file-name-directory filepath))
+         (tempfile (make-temp-file (expand-file-name ".magent-log-" directory)
+                                   nil ".jsonl.tmp")))
+    (unwind-protect
+        (progn
+          (let ((coding-system-for-write 'utf-8-unix))
+            (with-temp-buffer
+              (insert (magent-session--log-text
+                       (mapcar #'magent-session--event-line events)))
+              (write-region (point-min) (point-max) tempfile nil 'silent)))
+          (rename-file tempfile filepath t)
+          (setq tempfile nil))
+      (when (and tempfile (file-exists-p tempfile))
+        (delete-file tempfile)))))
+
+(defun magent-session--append-events-to-log (filepath events)
+  "Append EVENTS to the log at FILEPATH, one JSON object per line."
+  (when events
+    (make-directory (file-name-directory filepath) t)
+    (let ((coding-system-for-write 'utf-8-unix))
+      (with-temp-buffer
+        (insert (magent-session--log-text (mapcar #'magent-session--event-line
+                                                  events)))
+        (write-region (point-min) (point-max) filepath t 'silent)))))
+
+(defun magent-session--parse-log-line (line filepath index)
+  "Return the event encoded by LINE from FILEPATH at 1-based INDEX.
+Signal `magent-session-schema-error' instead of guessing at malformed data."
+  (condition-case err
+      (magent-thread-event-from-alist
+       (json-parse-string line
+                          :object-type 'alist
+                          :array-type 'array
+                          :null-object nil
+                          :false-object :json-false))
+    (error
+     (signal 'magent-session-schema-error
+             (list (format "Invalid session event at %s:%d: %s"
+                           (file-name-nondirectory filepath) index
+                           (error-message-string err)))))))
+
+(defun magent-session--load-log-events (filepath)
+  "Return the validated events logged at FILEPATH.
+A log whose final line is incomplete was interrupted mid-append; that torn
+fragment is dropped and the file is repaired, because it cannot be
+interpreted unambiguously and leaving it would corrupt the next append.  A
+malformed earlier line means real corruption and signals instead."
+  (if (not (file-exists-p filepath))
+      nil
+    (let ((text (with-temp-buffer
+                  (let ((coding-system-for-read 'utf-8-unix))
+                    (insert-file-contents filepath))
+                  (buffer-string))))
+      (let* ((complete (string-suffix-p "\n" text))
+             (lines (butlast (split-string text "\n")))
+             (events (cl-loop for line in lines
+                              for index from 1
+                              collect (magent-session--parse-log-line
+                                       line filepath index))))
+        (unless complete
+          (magent-log "WARN session log %s ends mid-line; dropping the torn tail"
+                      (file-name-nondirectory filepath))
+          (magent-session--write-log-events filepath events))
+        events))))
+
+(defun magent-session--read-json-object (filepath)
+  "Return FILEPATH parsed as a JSON object alist."
+  (with-temp-buffer
+    (let ((coding-system-for-read 'utf-8-unix))
+      (insert-file-contents filepath))
+    (json-parse-buffer
+     :object-type 'alist
+     :array-type 'array
+     :null-object nil
+     :false-object :json-false)))
+
+(defun magent-session--migrate-v6-file (filepath data)
+  "Rewrite schema-6 session DATA at FILEPATH as the current layout.
+Return the equivalent current-version session header.  The log and snapshot
+are written before the v6 file is replaced, so an interrupted migration leaves
+the original file valid and the migration simply runs again."
+  (let* ((logfile (magent-session--log-filepath filepath))
+         (snapshot (cdr (assq 'snapshot data)))
+         (events (mapcar #'magent-thread-event-from-alist
+                         (cdr (assq 'journal data))))
+         (header (delq nil
+                       (mapcar (lambda (entry)
+                                 (pcase (car entry)
+                                   ((or 'journal 'snapshot) nil)
+                                   ('schema-version
+                                    (cons 'schema-version
+                                          magent-session-schema-version))
+                                   (_ entry)))
+                               data))))
+    (magent-session--write-log-events logfile events)
+    (magent-session--write-json-atomic
+     (magent-session--snapshot-filepath filepath) snapshot)
+    (magent-session--write-json-atomic filepath header)
+    (magent-log "INFO migrated session %s from schema %d to %d"
+                (file-name-nondirectory filepath)
+                magent-session--legacy-schema-version
+                magent-session-schema-version)
+    header))
 
 (defun magent-session--write-json-atomic (filepath data)
   "Atomically encode DATA as JSON and replace FILEPATH."
@@ -484,10 +667,10 @@ This is either the symbol `global' or a normalized project root path.")
     (unwind-protect
         (progn
           (with-temp-buffer
-            (let ((json-null :null)
-                  (json-false :json-false)
-                  (coding-system-for-write 'utf-8-unix))
-              (insert (json-encode data))
+            (let ((coding-system-for-write 'utf-8-unix))
+              ;; `magent-session--json-text' returns unibyte UTF-8 bytes.
+              (insert (decode-coding-string (magent-session--json-text data)
+                                            'utf-8))
               (write-region (point-min) (point-max) tempfile nil 'silent)))
           (rename-file tempfile filepath t)
           (setq tempfile nil))
@@ -591,14 +774,21 @@ selected agent, and history limit so runtime UI handles remain valid."
             (magent-session-thread session) nil
             (magent-session-metadata session) nil)
       (remhash session magent-session--loaded-sessions)
-      (when (and filepath (file-exists-p filepath))
-        (condition-case err
-            (progn
-              (delete-file filepath)
-              (remhash filepath magent-session--metadata-cache))
-          (error
-           (magent-log "WARN failed deleting cleared session %s: %s"
-                       filepath (error-message-string err)))))))
+      (remhash session magent-session--persisted-cursor)
+      (remhash session magent-session--log-count)
+      (remhash session magent-session--written-header)
+      (dolist (path (and filepath
+                         (list filepath
+                               (magent-session--log-filepath filepath)
+                               (magent-session--snapshot-filepath filepath))))
+        (when (and path (file-exists-p path))
+          (condition-case err
+              (progn
+                (delete-file path)
+                (remhash filepath magent-session--metadata-cache))
+            (error
+             (magent-log "WARN failed deleting cleared session %s: %s"
+                         path (error-message-string err))))))))
   session)
 
 (defun magent-session-reset ()
@@ -680,53 +870,65 @@ selected agent, and history limit so runtime UI handles remain valid."
       (magent-session--sort-files-by-time
        (directory-files-recursively directory "\\.json$")))))
 
-(defun magent-session--read-validated-data (filepath)
-  "Read and validate current session data from FILEPATH."
-  (with-temp-buffer
-    (insert-file-contents filepath)
-    (let* ((data (json-parse-buffer
-                  :object-type 'alist
-                  :array-type 'array
-                  :null-object nil
-                  :false-object :json-false))
-           (_fields (magent-session--validate-json-fields data))
-           (_schema-version
-            (magent-session--validate-schema-version
-             (cdr (assq 'schema-version data))))
-           (state (magent-session--decode-json-state data))
-           (file-id (magent-session--file-id filepath))
-           (raw-id (cdr (assq 'id data)))
-           (_required-id
-            (unless raw-id
-              (signal 'magent-session-schema-error
-                      (list "Session is missing its id"))))
-           (id (magent-session-validate-id raw-id))
-           (_matching-id
-            (unless (equal id file-id)
-              (signal
-               'magent-session-schema-error
-               (list (format "Session id %S does not match filename %S"
-                             id file-id)))))
-           (scope-name (cdr (assq 'scope data)))
-           (project-root (cdr (assq 'project-root data)))
-           (scope
-            (pcase scope-name
-              ("project"
-               (or (and (stringp project-root)
-                        (magent-session--normalize-project-root project-root))
-                   (signal 'magent-session-schema-error
-                           (list "Project session is missing project-root"))))
-              ("global" 'global)
-              (_
-               (signal 'magent-session-schema-error
-                       (list (format "Invalid session scope: %S"
-                                     scope-name)))))))
-      (list :data data :id id :scope scope :state state))))
+(defun magent-session--read-validated-data (filepath &optional metadata-only)
+  "Read and validate current session data from FILEPATH.
+When METADATA-ONLY is non-nil the snapshot and the event log are not decoded,
+which is what session listing needs and all it should pay for."
+  (let* ((raw (magent-session--read-json-object filepath))
+         (data (if (equal (cdr (assq 'schema-version raw))
+                          magent-session--legacy-schema-version)
+                   (magent-session--migrate-v6-file filepath raw)
+                 raw))
+         (_fields (magent-session--validate-json-fields data))
+         (_schema-version
+          (magent-session--validate-schema-version
+           (cdr (assq 'schema-version data))))
+         (file-id (magent-session--file-id filepath))
+         (raw-id (cdr (assq 'id data)))
+         (_required-id
+          (unless raw-id
+            (signal 'magent-session-schema-error
+                    (list "Session is missing its id"))))
+         (id (magent-session-validate-id raw-id))
+         (_matching-id
+          (unless (equal id file-id)
+            (signal
+             'magent-session-schema-error
+             (list (format "Session id %S does not match filename %S"
+                           id file-id)))))
+         (scope-name (cdr (assq 'scope data)))
+         (project-root (cdr (assq 'project-root data)))
+         (scope
+          (pcase scope-name
+            ("project"
+             (or (and (stringp project-root)
+                      (magent-session--normalize-project-root project-root))
+                 (signal 'magent-session-schema-error
+                         (list "Project session is missing project-root"))))
+            ("global" 'global)
+            (_
+             (signal 'magent-session-schema-error
+                     (list (format "Invalid session scope: %S"
+                                   scope-name))))))
+         ;; Decode the bulk artifacts last: a cheap header problem should not
+         ;; cost a snapshot and log read, and its diagnostic must win.
+         (state
+          (unless metadata-only
+            (let ((snapshot-file (magent-session--snapshot-filepath filepath)))
+              (magent-session--decode-json-state
+               (if (file-exists-p snapshot-file)
+                   (magent-session--read-json-object snapshot-file)
+                 (signal 'magent-session-schema-error
+                         (list "Session is missing its ledger snapshot")))
+               (magent-session--load-log-events
+                (magent-session--log-filepath filepath))
+               data)))))
+    (list :data data :id id :scope scope :state state)))
 
 (defun magent-session--read-file-metadata (filepath)
   "Read lightweight metadata from session FILEPATH."
   (condition-case nil
-      (let* ((validated (magent-session--read-validated-data filepath))
+      (let* ((validated (magent-session--read-validated-data filepath t))
              (data (plist-get validated :data))
              (id (plist-get validated :id))
              (scope (plist-get validated :scope))
@@ -848,8 +1050,96 @@ selected agent, and history limit so runtime UI handles remain valid."
 
 ;;; Session persistence
 
+(defun magent-session--unpersisted-events (session thread)
+  "Return THREAD's journal events not yet appended for SESSION."
+  (let ((cursor (gethash session magent-session--persisted-cursor)))
+    (if cursor
+        (cdr cursor)
+      (magent-thread-journal thread))))
+
+(defun magent-session--header-data-for-session (session scope)
+  "Return the session header JSON DATA for SESSION persisted under SCOPE.
+Only header and small mutable state belong here, so rewriting it stays cheap
+no matter how large the conversation grew."
+  (let* ((origin-scope (magent-session--origin-scope-for-session session scope))
+         (kind (magent-session--metadata-string session 'kind))
+         (action (magent-session--metadata-string session 'action))
+         (status (magent-session--metadata-string session 'status))
+         (title (magent-session--metadata-string session 'title))
+         (parent-session-id
+          (magent-session--metadata-string session 'parent-session-id))
+         (summary-title (magent-session-summary-title session))
+         (approval-overrides
+          (mapcar (lambda (entry)
+                    `((tool . ,(symbol-name (car entry)))
+                      (decision . ,(symbol-name (cdr entry)))))
+                  (magent-session-approval-overrides session))))
+    `((id . ,(magent-session-get-id session))
+      (schema-version . ,magent-session-schema-version)
+      ,@(when kind `((kind . ,kind)))
+      ,@(when action `((action . ,action)))
+      ,@(when status `((status . ,status)))
+      ,@(when title `((title . ,title)))
+      ,@(when parent-session-id `((parent-session-id . ,parent-session-id)))
+      ,@(when (magent-session-metadata session)
+          `((metadata . ,(magent-json-safe-value
+                          (magent-session-metadata session)))))
+      (scope . ,(if (eq origin-scope 'global) "global" "project"))
+      ,@(unless (eq origin-scope 'global)
+          `((project-root . ,origin-scope)))
+      ,@(when summary-title `((summary-title . ,summary-title)))
+      (agent-jobs . ,(vconcat
+                      (mapcar #'magent-agent-job-to-alist
+                              (magent-session-agent-jobs session))))
+      (approval-overrides . ,(vconcat approval-overrides)))))
+
+(defun magent-session--write-header-for-session (session scope filepath)
+  "Write SESSION's header to FILEPATH unless it already holds that content."
+  (let* ((data (magent-session--header-data-for-session session scope))
+         (text (magent-session--json-text data)))
+    (unless (equal text (gethash session magent-session--written-header))
+      (magent-session--write-json-atomic filepath data)
+      (puthash session text magent-session--written-header))
+    filepath))
+
+(defun magent-session--compaction-due-p (session filepath)
+  "Return non-nil when SESSION needs its ledger snapshot rewritten."
+  (or (not (file-exists-p (magent-session--snapshot-filepath filepath)))
+      (and magent-session-log-max-events
+           (<= magent-session-log-max-events
+               (gethash session magent-session--log-count 0)))))
+
+(defun magent-session--bounded-journal (thread)
+  "Return the journal tail retained beside THREAD's snapshot.
+The snapshot already covers everything through its `last-event-seq', so the
+tail is history for inspection rather than replay input."
+  (let ((journal (and thread (magent-thread-journal thread)))
+        (limit magent-session-log-max-events))
+    (if (and (integerp limit)
+             (>= limit 0)
+             (> (length journal) limit))
+        (last journal limit)
+      journal)))
+
+(defun magent-session--write-snapshot-for-session (session filepath)
+  "Write SESSION's materialized ledger snapshot and reset its event log.
+The snapshot is replaced first, so a crash before the log is rewritten leaves
+a superset of events that replay simply skips by `last-event-seq'."
+  (let ((thread (magent-session-thread-ledger session)))
+    (magent-session--write-json-atomic
+     (magent-session--snapshot-filepath filepath)
+     (magent-thread-snapshot-to-alist thread))
+    (magent-session--write-log-events
+     (magent-session--log-filepath filepath)
+     (magent-session--bounded-journal thread)))
+  (puthash session 0 magent-session--log-count)
+  filepath)
+
 (defun magent-session-save-for-session (session scope)
-  "Synchronously save SESSION for explicit SCOPE as <session-id>.json.
+  "Synchronously persist SESSION for explicit SCOPE.
+The header <session-id>.json is rewritten (it is small), new ledger events are
+appended to <session-id>.jsonl, and the materialized snapshot is rewritten only
+when it is missing or the log has grown past `magent-session-log-max-events'.
 This is the persistence primitive for asynchronous callers: it never reads or
 temporarily rebinds the ambient current session or scope."
   (unless (magent-session-p session)
@@ -859,61 +1149,26 @@ temporarily rebinds the ambient current session or scope."
   (let ((thread (magent-session-thread-ledger session)))
     (when (or (magent-thread-turns thread)
               (magent-session-agent-jobs session))
-      (let ((storage-dir (magent-session--scope-storage-directory scope)))
-        (make-directory storage-dir t)
-        (let* ((id (magent-session-get-id session))
-               (filepath (expand-file-name (concat id ".json") storage-dir))
-               (origin-scope (magent-session--origin-scope-for-session
-                              session scope))
-               (kind (magent-session--metadata-string session 'kind))
-               (action (magent-session--metadata-string session 'action))
-               (status (magent-session--metadata-string session 'status))
-               (title (magent-session--metadata-string session 'title))
-               (parent-session-id
-                (magent-session--metadata-string session 'parent-session-id))
-               (summary-title (magent-session-summary-title session))
-               (approval-overrides
-                (mapcar (lambda (entry)
-                          `((tool . ,(symbol-name (car entry)))
-                            (decision . ,(symbol-name (cdr entry)))))
-                        (magent-session-approval-overrides session)))
-               (data `((id . ,id)
-                       (schema-version . ,magent-session-schema-version)
-                       ,@(when kind
-                           `((kind . ,kind)))
-                       ,@(when action
-                           `((action . ,action)))
-                       ,@(when status
-                           `((status . ,status)))
-                       ,@(when title
-                           `((title . ,title)))
-                       ,@(when parent-session-id
-                           `((parent-session-id . ,parent-session-id)))
-                       ,@(when (magent-session-metadata session)
-                           `((metadata . ,(magent-json-safe-value
-                                           (magent-session-metadata session)))))
-                       (scope . ,(if (eq origin-scope 'global)
-                                     "global"
-                                   "project"))
-                       ,@(unless (eq origin-scope 'global)
-                           `((project-root . ,origin-scope)))
-                       ,@(when summary-title
-                           `((summary-title . ,summary-title)))
-                       (snapshot . ,(magent-thread-snapshot-to-alist thread))
-                       (journal . ,(vconcat
-                                    (mapcar #'magent-thread-event-to-alist
-                                            (magent-session--persisted-journal
-                                             thread))))
-                       (agent-jobs . ,(vconcat
-                                       (mapcar
-                                        #'magent-agent-job-to-alist
-                                        (magent-session-agent-jobs session))))
-                       (approval-overrides . ,(vconcat approval-overrides)))))
-          (magent-session--write-json-atomic filepath data)
-          (remhash filepath magent-session--metadata-cache)
-          (magent-log "INFO session saved to %s (%d turns) scope=%s"
-                      id (length (magent-thread-turns thread)) scope)
-          filepath)))))
+      (let* ((storage-dir (magent-session--scope-storage-directory scope))
+             (_ (make-directory storage-dir t))
+             (id (magent-session-get-id session))
+             (filepath (expand-file-name (concat id ".json") storage-dir))
+             (new-events (magent-session--unpersisted-events session thread)))
+        (when new-events
+          (magent-session--append-events-to-log
+           (magent-session--log-filepath filepath) new-events)
+          (puthash session (magent-thread-journal-tail thread)
+                   magent-session--persisted-cursor)
+          (puthash session (+ (gethash session magent-session--log-count 0)
+                              (length new-events))
+                   magent-session--log-count))
+        (magent-session--write-header-for-session session scope filepath)
+        (when (magent-session--compaction-due-p session filepath)
+          (magent-session--write-snapshot-for-session session filepath))
+        (remhash filepath magent-session--metadata-cache)
+        (magent-log "INFO session saved to %s (%d turns) scope=%s"
+                    id (length (magent-thread-turns thread)) scope)
+        filepath))))
 
 (defun magent-session-save-deferred-for-session (session &optional scope delay)
   "Schedule SESSION to be saved for SCOPE after DELAY seconds.
@@ -1006,6 +1261,13 @@ Return a plist with keys `:scope', `:session', and `:id', or nil on error."
                        :approval-overrides approval-overrides
                        :thread thread)))
           (puthash session filepath magent-session--loaded-sessions)
+          ;; Everything on disk is already persisted; only events recorded
+          ;; after this load should ever be appended.
+          (puthash session (magent-thread-journal-tail thread)
+                   magent-session--persisted-cursor)
+          (puthash session 0 magent-session--log-count)
+          (puthash session (magent-session--json-text data)
+                   magent-session--written-header)
           (list :scope scope
                 :session session
                 :id id))

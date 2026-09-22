@@ -128,15 +128,35 @@
     (magent-session-save-for-session session scope)))
 
 (defun magent-test--current-session-json-data (id &optional schema-version)
-  "Return current-format session JSON data for ID and SCHEMA-VERSION."
+  "Return current-format session header JSON data for ID and SCHEMA-VERSION.
+The ledger snapshot and event log live in sibling files."
+  `((id . ,id)
+    (schema-version . ,(or schema-version magent-session-schema-version))
+    (scope . "global")
+    (agent-jobs . [])
+    (approval-overrides . [])))
+
+(defun magent-test--write-json-file (filepath data)
+  "Write DATA to FILEPATH as JSON using the production encoder settings."
+  (with-temp-file filepath
+    (let ((json-null :null)
+          (json-false :json-false))
+      (insert (json-encode data)))))
+
+(defun magent-test--write-empty-session-snapshot (directory id)
+  "Write an empty ledger snapshot for session ID under DIRECTORY."
   (let ((thread (magent-thread-create :id id :session-id id :scope 'global)))
-    `((id . ,id)
-      (schema-version . ,(or schema-version magent-session-schema-version))
-      (scope . "global")
-      (snapshot . ,(magent-thread-snapshot-to-alist thread))
-      (journal . [])
-      (agent-jobs . [])
-      (approval-overrides . []))))
+    (magent-test--write-json-file
+     (expand-file-name (concat id ".snapshot") directory)
+     (magent-thread-snapshot-to-alist thread))))
+
+(defun magent-test--session-log-lines (directory id)
+  "Return the event-log lines for session ID under DIRECTORY."
+  (let ((log (expand-file-name (concat id ".jsonl") directory)))
+    (when (file-exists-p log)
+      (with-temp-buffer
+        (insert-file-contents log)
+        (split-string (buffer-string) "\n" t)))))
 
 (defun magent-test--acp-client-for-runtime
     (runtime-session &optional notification-handlers context-buffer)
@@ -15217,6 +15237,109 @@
       (should (eq (magent-thread-item-status loaded-item) 'completed))
       (should (equal (magent-thread-item-content loaded-item) "done")))))
 
+(ert-deftest magent-test-thread-content-append-journals-only-the-increment ()
+  "Streaming content is journaled as one small increment per chunk."
+  (require 'magent-ledger)
+  (let* ((thread (magent-thread-create :id "thread-append"))
+         (turn (magent-thread-create-turn thread "hello"))
+         (item (magent-thread-start-item
+                thread (magent-thread-turn-id turn) 'message
+                :role 'assistant)))
+    (magent-thread-append-item-content thread item "alpha")
+    (magent-thread-append-item-content thread item "beta")
+    (should (equal (magent-thread-item-content item) "alphabeta"))
+    (let ((events (cl-remove-if-not
+                   (lambda (event)
+                     (eq (magent-thread-event-type event)
+                         'item-content-appended))
+                   (magent-thread-journal thread))))
+      (should (= (length events) 2))
+      (dolist (event events)
+        (should (equal (magent-thread-event-thread-id event) "thread-append"))
+        (should (equal (magent-thread-event-turn-id event)
+                       (magent-thread-turn-id turn)))
+        (should (equal (magent-thread-event-item-id event)
+                       (magent-thread-item-id item))))
+      ;; The payload carries the increment, never the accumulated text, so a
+      ;; persisted event stays proportional to the appended chunk.
+      (let ((event (car events)))
+        (should (equal (magent-thread-event-to-alist event)
+                       `((seq . ,(magent-thread-event-seq event))
+                         (type . "item-content-appended")
+                         (thread-id . "thread-append")
+                         (turn-id . ,(magent-thread-turn-id turn))
+                         (item-id . ,(magent-thread-item-id item))
+                         (payload . ((content . "alpha")))
+                         (created-at . ,(magent-thread-event-created-at
+                                         event)))))))))
+
+(ert-deftest magent-test-thread-content-append-replays-from-snapshot ()
+  "Snapshot plus appended-chunk events rebuild the same content."
+  (require 'magent-ledger)
+  (let* ((thread (magent-thread-create :id "thread-append-replay"))
+         (turn (magent-thread-create-turn thread "hello"))
+         (item (magent-thread-start-item
+                thread (magent-thread-turn-id turn) 'message
+                :role 'assistant)))
+    (magent-thread-append-item-content thread item "one ")
+    (let ((snapshot (magent-thread-snapshot-to-alist thread))
+          (persisted-seq (magent-thread-last-event-seq thread)))
+      (magent-thread-append-item-content thread item "two ")
+      (magent-thread-append-item-content thread item "three")
+      (let* ((tail (cl-remove-if
+                    (lambda (event)
+                      (<= (magent-thread-event-seq event) persisted-seq))
+                    (magent-thread-journal thread)))
+             (loaded (magent-thread-replay
+                      snapshot
+                      (mapcar #'magent-thread-event-from-alist
+                              (mapcar #'magent-thread-event-to-alist tail))))
+             (loaded-item (car (magent-thread-turn-items
+                                (car (magent-thread-turns loaded))))))
+        (should (equal (magent-thread-item-content loaded-item)
+                       "one two three"))))))
+
+(ert-deftest magent-test-thread-journal-tail-tracks-last-event ()
+  "The journal tail cursor stays on the last cons so appends stay O(1)."
+  (require 'magent-ledger)
+  (let* ((thread (magent-thread-create :id "thread-tail"))
+         (turn (magent-thread-create-turn thread "hello"))
+         (item (magent-thread-start-item
+                thread (magent-thread-turn-id turn) 'message
+                :role 'assistant)))
+    (dotimes (_ 50)
+      (magent-thread-append-item-content thread item "x"))
+    (let ((journal (magent-thread-journal thread)))
+      (should (eq (magent-thread-journal-tail thread) (last journal)))
+      (should (= (length journal) (magent-thread-last-event-seq thread)))))
+  (let ((thread (magent-thread-create :id "thread-tail-reset")))
+    (magent-thread--journal-reset thread)
+    (should-not (magent-thread-journal thread))
+    (should-not (magent-thread-journal-tail thread))))
+
+(ert-deftest magent-test-thread-content-append-event-validation-fails-closed ()
+  "Malformed content-append events are rejected instead of losing text."
+  (require 'magent-ledger)
+  (let ((base '((seq . 1)
+                (type . "item-content-appended")
+                (thread-id . "thread-validate")
+                (turn-id . "turn-1")
+                (item-id . "item-1")
+                (created-at . 1.0))))
+    (should-error (magent-thread-event-from-alist
+                   (cons '(payload . ((content . ""))) base)))
+    (should-error (magent-thread-event-from-alist
+                   (cons '(payload . ((content . 5))) base)))
+    (should-error (magent-thread-event-from-alist
+                   (cons '(payload) base)))
+    (should-error (magent-thread-event-from-alist
+                   (cons '(payload . ((content . "ok") (extra . 1))) base)))
+    (should-error (magent-thread-event-from-alist
+                   (cons '(payload . ((content . "ok"))) (cons '(seq . 2) base))))
+    (should (magent-thread-event-p
+             (magent-thread-event-from-alist
+              (cons '(payload . ((content . "ok"))) base))))))
+
 (ert-deftest magent-test-session-save-load-preserves-thread-snapshot-and-journal ()
   "Test session persistence stores and restores ledger snapshot plus journal."
   (require 'magent-session)
@@ -15252,6 +15375,135 @@
                            '(user tool assistant)))))
       (delete-directory magent-session-directory t))))
 
+(ert-deftest magent-test-session-log-torn-tail-is-repaired ()
+  "An interrupted append is dropped and repaired instead of corrupting the log."
+  (let* ((directory (make-temp-file "magent-log-torn-" t))
+         (magent-session-directory directory)
+         (id "torn-log")
+         (file (expand-file-name (concat id ".json") directory))
+         (log (expand-file-name (concat id ".jsonl") directory))
+         (thread (magent-thread-create :id id :session-id id :scope 'global))
+         lines)
+    (unwind-protect
+        (progn
+          (magent-test--write-json-file
+           file (magent-test--current-session-json-data id))
+          (magent-thread-queue-turn thread "hello")
+          ;; Two complete events plus a fragment that a crash left behind.
+          (setq lines (mapcar #'magent-session--event-line
+                              (magent-thread-journal thread)))
+          (with-temp-file log
+            (let ((coding-system-for-write 'utf-8-unix))
+              (insert (mapconcat #'identity lines "\n") "\n"
+                      "{\"seq\":9,\"type\":\"item-star")))
+          (magent-test--write-empty-session-snapshot directory id)
+          (let ((loaded (magent-session-read-file file)))
+            (should loaded)
+            (should (equal (magent-session-id (plist-get loaded :session)) id)))
+          ;; The torn fragment is gone, so the log stays parseable.
+          (let ((text (with-temp-buffer (insert-file-contents log) (buffer-string))))
+            (should (string-suffix-p "\n" text))
+            (should-not (string-match-p "item-star" text))
+            (should (= (length (split-string text "\n" t)) (length lines)))))
+      (delete-directory directory t))))
+
+(ert-deftest magent-test-session-log-corrupt-middle-line-fails-closed ()
+  "A malformed log line that is not the final fragment refuses to load."
+  (let* ((directory (make-temp-file "magent-log-corrupt-" t))
+         (magent-session-directory directory)
+         (id "corrupt-log")
+         (file (expand-file-name (concat id ".json") directory))
+         (log (expand-file-name (concat id ".jsonl") directory))
+         (thread (magent-thread-create :id id :session-id id :scope 'global)))
+    (unwind-protect
+        (progn
+          (magent-test--write-json-file
+           file (magent-test--current-session-json-data id))
+          (magent-thread-queue-turn thread "hello")
+          (let ((lines (mapcar #'magent-session--event-line
+                               (magent-thread-journal thread))))
+            (with-temp-file log
+              (let ((coding-system-for-write 'utf-8-unix))
+                ;; Truncated field in the middle, followed by a good event.
+                (insert (car lines) "\n{\"seq\":7,\"nope\":1}\n"
+                        (car lines) "\n"))))
+          (magent-test--write-empty-session-snapshot directory id)
+          (cl-letf (((symbol-function 'magent-log) #'ignore))
+            (should-not (magent-session-read-file file))))
+      (delete-directory directory t))))
+
+(ert-deftest magent-test-session-v6-migration-preserves-ledger ()
+  "A schema-6 session migrates to the split layout without changing values."
+  (let* ((directory (make-temp-file "magent-migrate-" t))
+         (magent-session-directory directory)
+         (id "legacy-v6")
+         (file (expand-file-name (concat id ".json") directory))
+         (thread (magent-thread-create :id id :session-id id :scope 'global))
+         (turn (magent-thread-queue-turn thread "hello"))
+         (item (magent-thread-start-item
+                thread (magent-thread-turn-id turn) 'message
+                :role 'assistant)))
+    (unwind-protect
+        (progn
+          (magent-thread-append-item-content thread item "legacy text")
+          (magent-thread-complete-item thread item)
+          (magent-thread-complete-turn thread (magent-thread-turn-id turn))
+          (let ((v6 `((id . ,id)
+                      (schema-version . 6)
+                      (scope . "global")
+                      (snapshot . ,(magent-thread-snapshot-to-alist thread))
+                      (journal . ,(vconcat
+                                   (mapcar #'magent-thread-event-to-alist
+                                           (magent-thread-journal thread))))
+                      (agent-jobs . [])
+                      (approval-overrides . []))))
+            (magent-test--write-json-file file v6))
+          (let* ((loaded (magent-session-read-file file))
+                 (restored (magent-session-thread-ledger
+                            (plist-get loaded :session)))
+                 (restored-turn (car (magent-thread-turns restored)))
+                 (restored-item (car (magent-thread-turn-items restored-turn))))
+            (should (equal (magent-thread-item-content restored-item)
+                           "legacy text"))
+            (should (eq (magent-thread-item-status restored-item) 'completed))
+            (should (eq (magent-thread-turn-status restored-turn) 'completed)))
+          ;; Inline journal is gone; the split files and version are in place.
+          (let ((header (with-temp-buffer
+                          (insert-file-contents file)
+                          (json-parse-buffer :object-type 'alist
+                                             :array-type 'array
+                                             :null-object nil
+                                             :false-object :json-false))))
+            (should (equal (cdr (assq 'schema-version header))
+                           magent-session-schema-version))
+            (should-not (assq 'journal header))
+            (should-not (assq 'snapshot header)))
+          (should (file-exists-p (expand-file-name (concat id ".jsonl") directory)))
+          (should (file-exists-p (expand-file-name (concat id ".snapshot") directory)))
+          ;; Idempotent: a second load must not rewrite anything.
+          (let ((before (file-attribute-modification-time
+                         (file-attributes file))))
+            (should (magent-session-read-file file))
+            (should (equal before (file-attribute-modification-time
+                                   (file-attributes file))))))
+      (delete-directory directory t))))
+
+(ert-deftest magent-test-thread-metadata-dedupes-keeping-first-value ()
+  "Merged tool metadata carries one entry per key, the reader-visible one."
+  (require 'magent-ledger)
+  (let* ((thread (magent-thread-create :id "thread-meta"))
+         (turn (magent-thread-create-turn thread "run"))
+         (result (magent-tool-result-create
+                  :status 'completed
+                  :output "ok"
+                  :metadata '(:source "tool-result")))
+         (item (magent-thread-record-tool-result
+                thread (magent-thread-turn-id turn) "call-1" "bash" nil result
+                '(:source "caller"))))
+    (let ((metadata (magent-thread-item-metadata item)))
+      (should (= (cl-count :source metadata) 1))
+      (should (equal (plist-get metadata :source) "tool-result")))))
+
 (ert-deftest magent-test-session-atomic-write-preserves-old-file-on-rename-error ()
   "Test a failed atomic replacement leaves the previous session readable."
   (require 'magent-session)
@@ -15273,10 +15525,10 @@
       (delete-directory directory t))))
 
 (ert-deftest magent-test-session-save-bounds-persisted-journal-tail ()
-  "Test snapshots persist only the configured recent journal tail."
+  "Test compaction keeps only the configured recent journal tail on disk."
   (require 'magent-session)
   (let* ((magent-session-directory (make-temp-file "magent-journal-tail-" t))
-         (magent-session-journal-max-events 3)
+         (magent-session-log-max-events 3)
          (magent-session--scoped-sessions (make-hash-table :test #'equal))
          (magent-session--current-scope 'global)
          (magent--current-session nil))
@@ -15289,18 +15541,28 @@
                session 'user (format "message-%d" index)))
             (should (> (length (magent-thread-journal
                                 (magent-session-thread-ledger session)))
-                       magent-session-journal-max-events))
+                       magent-session-log-max-events))
             (magent-test--save-current-session))
           (let* ((file (car (magent-test--session-files
                              magent-session-directory)))
-                 (json-object-type 'alist)
-                 (json-array-type 'list)
-                 (data (with-temp-buffer
-                         (insert-file-contents file)
-                         (json-read)))
-                 (journal (cdr (assq 'journal data)))
+                 (scope-dir (file-name-directory file))
+                 (id (file-name-sans-extension
+                      (file-name-nondirectory file)))
+                 (header (with-temp-buffer
+                           (insert-file-contents file)
+                           (json-parse-buffer :object-type 'alist
+                                              :array-type 'array
+                                              :null-object nil
+                                              :false-object :json-false)))
                  (loaded (magent-session-read-file file)))
-            (should (= (length journal) 3))
+            ;; The header never carries bulk ledger state any more.
+            (should-not (assq 'snapshot header))
+            (should-not (assq 'journal header))
+            (should (file-exists-p
+                     (expand-file-name (concat id ".snapshot") scope-dir)))
+            (should (= (length (magent-test--session-log-lines
+                                scope-dir id))
+                       magent-session-log-max-events))
             (should (= (length (magent-test--session-transcript
                                 (plist-get loaded :session)))
                        8))))
@@ -15578,10 +15840,9 @@
          (decode-count 0))
     (unwind-protect
         (progn
-          (with-temp-file file
-            (insert
-             (json-encode
-              (magent-test--current-session-json-data "single-decode"))))
+          (magent-test--write-json-file
+           file (magent-test--current-session-json-data "single-decode"))
+          (magent-test--write-empty-session-snapshot directory "single-decode")
           (cl-letf (((symbol-function 'magent-thread-snapshot-from-alist)
                      (lambda (snapshot)
                        (cl-incf decode-count)
@@ -15645,7 +15906,7 @@
       (should-not magent-session--save-timer))))
 
 (ert-deftest magent-test-session-deferred-save-failure-isolates-sessions ()
-  "A failed replacement preserves the prior file and saves other sessions."
+  "A failed save keeps prior files intact and still saves other sessions."
   (let* ((magent-session-directory (make-temp-file "magent-save-failure-" t))
          (magent-session--pending-saves nil)
          (magent-session--save-timer nil)
@@ -15653,23 +15914,27 @@
                  "first" '((user "First") (assistant "Original"))))
          (second (magent-test--session-with-transcript
                   "second" '((user "Second") (assistant "Other session"))))
-         (rename (symbol-function 'rename-file))
+         (append-events (symbol-function 'magent-session--append-events-to-log))
          scheduled warnings)
     (unwind-protect
         (let* ((file (magent-session-save-for-session first 'global))
+               (log (magent-session--log-filepath file))
                (before (with-temp-buffer
                          (insert-file-contents file)
-                         (buffer-string))))
+                         (buffer-string)))
+               (before-log (with-temp-buffer
+                             (insert-file-contents log)
+                             (buffer-string))))
           (magent-test--record-session-entry first 'user "New unsaved request")
           (cl-letf (((symbol-function 'run-at-time)
                      (lambda (_delay _repeat callback)
                        (setq scheduled callback)
                        'save-timer))
-                    ((symbol-function 'rename-file)
-                     (lambda (from to &optional replace)
-                       (if (equal to file)
-                           (signal 'file-error '("Simulated replacement failure"))
-                         (funcall rename from to replace))))
+                    ((symbol-function 'magent-session--append-events-to-log)
+                     (lambda (path events)
+                       (if (equal path log)
+                           (signal 'file-error '("Simulated append failure"))
+                         (funcall append-events path events))))
                     ((symbol-function 'magent-log)
                      (lambda (format-string &rest args)
                        (push (apply #'format format-string args) warnings))))
@@ -15679,8 +15944,11 @@
           (should (equal before (with-temp-buffer
                                   (insert-file-contents file)
                                   (buffer-string))))
+          (should (equal before-log (with-temp-buffer
+                                      (insert-file-contents log)
+                                      (buffer-string))))
           (should (cl-some (lambda (text)
-                             (string-match-p "Simulated replacement failure" text))
+                             (string-match-p "Simulated append failure" text))
                            warnings))
           (should (= (length (magent-test--session-files magent-session-directory)) 2))
           (should-not (directory-files-recursively

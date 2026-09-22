@@ -83,21 +83,26 @@ Tool item 在 provider prompt projection 中会转换成 gptel 所需的历史 ~
 
 * 持久化
 
-持久化格式是 ~snapshot + journal~ 。
+持久化格式是 ~log + snapshot~ ，按变更频率拆成三个文件。
 
-- ~journal~ ：内存中的 append-only event log，记录 ~turn-queued~ 、 ~turn-started~ 、 ~item-started~ 、 ~item-completed~ 、 ~turn-completed~ 等生命周期事件。Session 文件只保留由 ~magent-session-journal-max-events~ 控制的最近有界尾部；tool/permission 审计由 ~magent-audit.el~ 单独负责。
-- ~snapshot~ ：materialized full thread state。它保存当前 thread、turns 和 items，避免每次 resume 都从头 replay。
+- ~<id>.jsonl~ ：磁盘上的 append-only event log，一行一个 JSON 对象，记录 ~turn-queued~ 、 ~turn-started~ 、 ~item-started~ 、 ~item-content-appended~ 、 ~item-completed~ 、 ~turn-completed~ 等生命周期事件。流式内容直接 append 到这里，因此一次保存的代价只和本次变化量成正比，而不是和整个会话成正比。压缩时保留由 ~magent-session-log-max-events~ 控制的有界尾部；tool/permission 审计由 ~magent-audit.el~ 单独负责。
+- ~<id>.snapshot~ ：materialized full thread state。它保存当前 thread、turns 和 items，避免每次 resume 都从头 replay；只有在文件缺失或日志超过 ~magent-session-log-max-events~ 时才重写。
+- ~<id>.json~ ：session header（id、scope、title、status、child-agent jobs、approval overrides）。文件很小，是 session listing 唯一读取的文件。
 
-当前 session schema（version 6）同时写入两者：
+当前 session schema（version 7）同时写入三者：
 
 #+begin_src json
-{
-  "snapshot": { "id": "...", "turns": [] },
-  "journal": [{ "type": "turn-started", "...": "..." }]
-}
+// <id>.json
+{ "id": "...", "schema-version": 7, "scope": "global", "agent-jobs": [] }
+
+// <id>.jsonl   (一行一个事件)
+{ "seq": 1, "type": "turn-queued", "payload": { "turn": { "...": "..." } } }
+
+// <id>.snapshot
+{ "id": "...", "turns": [ { "items": [ { "...": "..." } ] } ] }
 #+end_src
 
-加载器只接受完整、字段精确的 version 6 ~snapshot + journal~。缺少 ledger、版本不同、字段未知或嵌套 shape 无效的文件都会被拒绝；没有旧格式迁移或双写路径。
+加载器只接受完整、字段精确的当前 schema。缺少 ledger、版本不同、字段未知或嵌套 shape 无效的文件都会被拒绝。schema 6 文件（把 ~journal~ 和 ~snapshot~ 内联在同一个文件里）会在首次读取时原地迁移。
 
 Replay 语义：
 
@@ -105,7 +110,7 @@ Replay 语义：
 2. 附加持久化保留的 ~journal~ 尾部，供恢复和 history 检查。
 3. 只应用 ~seq > snapshot.last-event-seq~ 的事件。
 
-因此 ~snapshot~ 是快速恢复点，持久化 ~journal~ 是有界恢复尾部，两者不可互换。
+因此 ~snapshot~ 是快速恢复点，持久化 ~journal~ 是有界恢复尾部，两者不可互换。checkpoint 先写 ~snapshot~ 、后重写日志，所以中途崩溃只会留下一些会被 ~last-event-seq~ 跳过的事件。
 
 * Loop Flow
 

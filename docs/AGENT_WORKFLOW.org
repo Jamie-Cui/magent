@@ -111,29 +111,41 @@ turn parent.
 
 * Persistence
 
-Persistence is ~snapshot + journal~.
+Persistence is ~log + snapshot~, stored as three files that change at very
+different rates.
 
-- ~journal~: append-only in-memory event log. It records lifecycle transitions such
-  as ~turn-queued~, ~turn-started~, ~item-started~, ~item-completed~, and
-  ~turn-completed~. Session files retain a bounded recent tail controlled by
-  ~magent-session-journal-max-events~. Tool and permission audit retention is
-  owned separately by ~magent-audit.el~.
-- ~snapshot~: materialized full thread state. It stores the current
+- ~<id>.jsonl~: append-only on-disk event log, one JSON object per line. It
+  records lifecycle transitions such as ~turn-queued~, ~turn-started~,
+  ~item-started~, ~item-content-appended~, ~item-completed~, and
+  ~turn-completed~. Streaming content appends here, so a save costs what
+  changed rather than what the conversation has accumulated. Compaction retains
+  a bounded recent tail controlled by ~magent-session-log-max-events~. Tool and
+  permission audit retention is owned separately by ~magent-audit.el~.
+- ~<id>.snapshot~: materialized full thread state. It stores the current
   thread, turns, and items so resume does not need to replay from the
-  beginning every time.
+  beginning every time. It is rewritten only when it is missing or the log has
+  grown past ~magent-session-log-max-events~.
+- ~<id>.json~: the session header (identity, scope, title, status, child-agent
+  jobs, approval overrides). It is small, and it is the only file session
+  listing reads.
 
-Session JSON schema v6 writes both:
+Session schema v7 writes all three:
 
 #+begin_src json
-{
-  "snapshot": { "id": "...", "turns": [...] },
-  "journal": [{ "type": "turn-started", "...": "..." }]
-}
+// <id>.json
+{ "id": "...", "schema-version": 7, "scope": "global", "agent-jobs": [] }
+
+// <id>.jsonl   (one event per line)
+{ "seq": 1, "type": "turn-queued", "payload": { "turn": { "...": "..." } } }
+
+// <id>.snapshot
+{ "id": "...", "turns": [ { "items": [ { "...": "..." } ] } ] }
 #+end_src
 
-Loading requires the exact current schema, including ~snapshot + journal~.
-Unknown fields, missing nested ledger fields, and other schema versions are
-rejected rather than converted.
+Loading requires the exact current schema. Unknown fields, missing nested
+ledger fields, and other schema versions are rejected rather than converted.
+Schema 6 files, which stored ~journal~ and ~snapshot~ inline, are migrated in
+place on first read.
 
 Replay semantics:
 
@@ -142,7 +154,9 @@ Replay semantics:
 3. Apply only events with ~seq > snapshot.last-event-seq~.
 
 This means ~snapshot~ is the fast restore point and the persisted ~journal~
-is a bounded recovery tail. The two are not interchangeable.
+is a bounded recovery tail. The two are not interchangeable. Checkpointing
+writes ~snapshot~ first and rewrites the log second, so a crash in between
+leaves events that replay skips by ~last-event-seq~.
 
 * Loop Flow
 
