@@ -357,10 +357,10 @@ This is either the symbol `global' or a normalized project root path.")
   "Sequence number used when multiple sessions are created in one second.")
 
 (defvar magent-session--save-timer nil
-  "Shared idle timer used to flush deferred session saves.")
+  "Shared elapsed-time timer used to flush deferred session saves.")
 
 (defvar magent-session--pending-saves nil
-  "Deferred saves as (SESSION . SCOPE) pairs awaiting the shared idle timer.")
+  "Deferred saves as (SESSION . SCOPE) pairs awaiting the shared timer.")
 
 (defconst magent-session-schema-version 6
   "Current schema version written to session JSON files.")
@@ -916,11 +916,13 @@ temporarily rebinds the ambient current session or scope."
           filepath)))))
 
 (defun magent-session-save-deferred-for-session (session &optional scope delay)
-  "Schedule SESSION to be saved for SCOPE after Emacs is idle.
+  "Schedule SESSION to be saved for SCOPE after DELAY seconds.
+DELAY defaults to `magent-session-save-idle-delay' and is measured from
+scheduling, independently of how long Emacs has been idle.
 SCOPE defaults to SESSION's ledger scope, falling back to the active scope.
 Repeated requests for the same SESSION and SCOPE coalesce behind one shared
-idle timer.  Different sessions remain distinct and no ambient session state
-is consulted when the timer fires."
+timer without postponing it.  Different sessions remain distinct and no
+ambient session state is consulted when the timer fires."
   (unless (magent-session-p session)
     (error "Expected a Magent session, got: %S" session))
   (let ((target-scope (or scope
@@ -934,7 +936,9 @@ is consulted when the timer fires."
       (push (cons session target-scope) magent-session--pending-saves))
     (unless magent-session--save-timer
       (setq magent-session--save-timer
-            (run-with-idle-timer
+            ;; Process output does not reset Emacs idleness.  An idle timer
+            ;; could therefore fire immediately for every streaming chunk.
+            (run-at-time
              (or delay magent-session-save-idle-delay) nil
              #'magent-session--flush-deferred-saves)))
     magent-session--save-timer))

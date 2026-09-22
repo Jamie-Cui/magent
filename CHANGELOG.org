@@ -136,6 +136,11 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Fixed
 
+- Streaming session saves coalesce over elapsed time instead of Emacs idle
+  time, preventing a full session rewrite for each chunk while waiting for
+  model output. The existing ~magent-session-save-idle-delay~ option retains
+  its name and default; explicit synchronous saves are unchanged.
+
 - OpenAI-compatible Chat continuations now retain visible assistant text that
   precedes a tool call instead of replaying that assistant message with null
   content. This keeps DeepSeek progress context intact across tool results.

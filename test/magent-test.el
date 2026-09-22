@@ -15599,7 +15599,7 @@
          (magent-session--pending-saves nil)
          (magent-session--save-timer nil)
          scheduled saved)
-    (cl-letf (((symbol-function 'run-with-idle-timer)
+    (cl-letf (((symbol-function 'run-at-time)
                (lambda (_delay _repeat fn)
                  (setq scheduled fn)
                  'save-timer))
@@ -15615,7 +15615,7 @@
       (should (eq magent-session--current-scope 'global)))))
 
 (ert-deftest magent-test-session-deferred-saves-coalesce-per-session-and-scope ()
-  "One idle timer saves each captured session/scope pair at most once."
+  "One timer saves each captured session/scope pair without postponement."
   (let* ((first (magent-session-create :id "first"))
          (second (magent-session-create :id "second"))
          (magent-session--pending-saves nil)
@@ -15623,8 +15623,10 @@
          scheduled
          (timer-count 0)
          saved)
-    (cl-letf (((symbol-function 'run-with-idle-timer)
-               (lambda (_delay _repeat fn)
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (delay repeat fn)
+                 (should (= delay magent-session-save-idle-delay))
+                 (should-not repeat)
                  (cl-incf timer-count)
                  (setq scheduled fn)
                  'save-timer))
@@ -15641,6 +15643,82 @@
                                  (list second "/b"))))
       (should-not magent-session--pending-saves)
       (should-not magent-session--save-timer))))
+
+(ert-deftest magent-test-session-deferred-save-failure-isolates-sessions ()
+  "A failed replacement preserves the prior file and saves other sessions."
+  (let* ((magent-session-directory (make-temp-file "magent-save-failure-" t))
+         (magent-session--pending-saves nil)
+         (magent-session--save-timer nil)
+         (first (magent-test--session-with-transcript
+                 "first" '((user "First") (assistant "Original"))))
+         (second (magent-test--session-with-transcript
+                  "second" '((user "Second") (assistant "Other session"))))
+         (rename (symbol-function 'rename-file))
+         scheduled warnings)
+    (unwind-protect
+        (let* ((file (magent-session-save-for-session first 'global))
+               (before (with-temp-buffer
+                         (insert-file-contents file)
+                         (buffer-string))))
+          (magent-test--record-session-entry first 'user "New unsaved request")
+          (cl-letf (((symbol-function 'run-at-time)
+                     (lambda (_delay _repeat callback)
+                       (setq scheduled callback)
+                       'save-timer))
+                    ((symbol-function 'rename-file)
+                     (lambda (from to &optional replace)
+                       (if (equal to file)
+                           (signal 'file-error '("Simulated replacement failure"))
+                         (funcall rename from to replace))))
+                    ((symbol-function 'magent-log)
+                     (lambda (format-string &rest args)
+                       (push (apply #'format format-string args) warnings))))
+            (magent-session-save-deferred-for-session first 'global)
+            (magent-session-save-deferred-for-session second 'global)
+            (funcall scheduled))
+          (should (equal before (with-temp-buffer
+                                  (insert-file-contents file)
+                                  (buffer-string))))
+          (should (cl-some (lambda (text)
+                             (string-match-p "Simulated replacement failure" text))
+                           warnings))
+          (should (= (length (magent-test--session-files magent-session-directory)) 2))
+          (should-not (directory-files-recursively
+                       magent-session-directory "\\.json\\.tmp\\'"))
+          ;; A subsequent update can still schedule and persist the failed session.
+          (cl-letf (((symbol-function 'run-at-time)
+                     (lambda (_delay _repeat callback)
+                       (setq scheduled callback)
+                       'save-timer)))
+            (magent-session-save-deferred-for-session first 'global)
+            (funcall scheduled))
+          (let* ((loaded (plist-get (magent-session-read-file file) :session))
+                 (thread (magent-session-thread-ledger loaded)))
+            (should (= (length (magent-thread-turns thread)) 2))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-session-clear-removes-only-its-deferred-save ()
+  "Clearing one session cannot discard another session's pending save."
+  (let* ((magent-session-directory (make-temp-file "magent-save-clear-" t))
+         (magent-session--pending-saves nil)
+         (magent-session--save-timer nil)
+         (first (magent-session-create :id "first"))
+         (second (magent-session-create :id "second"))
+         scheduled saved)
+    (unwind-protect
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (_delay _repeat callback)
+                     (setq scheduled callback)
+                     'save-timer))
+                  ((symbol-function 'magent-session-save-for-session)
+                   (lambda (session scope) (push (list session scope) saved))))
+          (magent-session-save-deferred-for-session first 'global)
+          (magent-session-save-deferred-for-session second 'global)
+          (magent-session-clear first 'global)
+          (should magent-session--save-timer)
+          (funcall scheduled)
+          (should (equal saved (list (list second 'global)))))
+      (delete-directory magent-session-directory t))))
 
 (ert-deftest magent-test-session-install-reconciles-and-persists-restart-state ()
   "Installing persisted work terminalizes non-durable turns, items, and jobs."

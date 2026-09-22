@@ -832,6 +832,92 @@ return that path."
        (when (file-directory-p magent-session-directory)
          (delete-directory magent-session-directory t)))))
 
+(ert-deftest magent-live-test-session-saves-coalesce-streaming-updates ()
+  "Real timers coalesce streaming updates and retain terminal session data."
+  :tags '(:magent-live-smoke)
+  (require 'magent-session)
+  (let* ((magent-session-directory (make-temp-file "magent-live-save-" t))
+         (magent-session--pending-saves nil)
+         (magent-session--save-timer nil)
+         (magent-session--current-scope 'global)
+         (magent-session-save-idle-delay 0.1)
+         (first (magent-session-create :id "stream-first"))
+         (second (magent-session-create :id "stream-second"))
+         (sessions (list first second))
+         (save (symbol-function 'magent-session-save-for-session))
+         (chunks 0)
+         (saves 0)
+         (started (float-time))
+         first-save producer entries)
+    (unwind-protect
+        (progn
+          (dolist (session sessions)
+            (let* ((thread (magent-session-thread-ledger session))
+                   (turn (magent-thread-create-turn thread "Stream"))
+                   (item (magent-thread-start-item
+                          thread (magent-thread-turn-id turn) 'message
+                          :role 'assistant :content "")))
+              (push (list session thread turn item) entries)))
+          (cl-letf (((symbol-function 'magent-session-save-for-session)
+                     (lambda (session scope)
+                       (when (memq session sessions)
+                         (cl-incf saves)
+                         (unless first-save
+                           (setq first-save (- (float-time) started))))
+                       (funcall save session scope))))
+            (setq started (float-time)
+                  producer
+                  (run-at-time
+                   0 0.02
+                   (lambda ()
+                     (cl-incf chunks)
+                     (dolist (entry entries)
+                       (pcase-let ((`(,session ,thread ,_turn ,item) entry))
+                         (magent-thread-append-item-content thread item "x")
+                         (magent-session-save-deferred-for-session session 'global)))
+                     (when (= chunks 40)
+                       (cancel-timer producer)))))
+            (magent-live-test--wait-until
+             (lambda () (and (= chunks 40) (null magent-session--pending-saves)))
+             5 "Streaming saves did not finish")
+            (should (>= first-save 0.09))
+            (should (> saves 2))
+            (should (< saves 40))
+            (dolist (entry entries)
+              (pcase-let ((`(,session ,thread ,turn ,item) entry))
+                (if (eq session first)
+                    (progn
+                      (magent-thread-complete-item thread item)
+                      (magent-thread-complete-turn thread (magent-thread-turn-id turn))
+                      (magent-session-save-for-session session 'global))
+                  (magent-thread-cancel-item thread item "Cancelled")
+                  (magent-thread-interrupt-turn thread (magent-thread-turn-id turn))
+                  (magent-session-save-deferred-for-session session 'global))))
+            (magent-live-test--wait-until
+             (lambda () (null magent-session--pending-saves))
+             5 "Interrupted session was not saved"))
+          (dolist (entry entries)
+            (pcase-let* ((`(,session ,_thread ,turn ,item) entry)
+                         (file (expand-file-name
+                                (concat (magent-session-id session) ".json")
+                                (magent-session--scope-storage-directory 'global)))
+                         (loaded (plist-get (magent-session-read-file file) :session))
+                         (restored (magent-thread-find-turn
+                                    (magent-session-thread-ledger loaded)
+                                    (magent-thread-turn-id turn)))
+                         (restored-item (cl-find (magent-thread-item-id item)
+                                                (magent-thread-turn-items restored)
+                                                :key #'magent-thread-item-id
+                                                :test #'equal)))
+              (should (eq (magent-thread-turn-status restored)
+                          (if (eq session first) 'completed 'interrupted)))
+              (should (equal (magent-thread-item-content restored-item)
+                             (make-string 40 ?x))))))
+      (when (timerp producer) (cancel-timer producer))
+      (dolist (session sessions)
+        (magent-session--cancel-deferred-save-for-session session))
+      (delete-directory magent-session-directory t))))
+
 (ert-deftest magent-live-test-action-mode-line-counts ()
   "Real Action lifecycles update counts and clearing preserves saved sessions."
   :tags '(:magent-live-smoke)
