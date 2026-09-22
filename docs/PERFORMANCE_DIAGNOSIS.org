@@ -1,4 +1,6 @@
 #+TITLE: Loop performance diagnosis (2026-09-22)
+#+magent_lang: en
+#+options: toc:nil num:nil
 
 * Verified persistence bottleneck
 

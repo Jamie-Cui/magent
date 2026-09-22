@@ -44,6 +44,7 @@
            ("Child Agents" . "/AGENT_JOBS.html")
            ("UI Backends" . "/UI_BACKENDS.html")
            ("Doctor" . "/DOCTOR.html")
+           ("Performance" . "/PERFORMANCE_DIAGNOSIS.html")
            ("Troubleshooting" . "/TROUBLESHOOTING.html")
            ("Releasing" . "/RELEASING.html")
            ("Contributing" . "/CONTRIBUTING.html")))
