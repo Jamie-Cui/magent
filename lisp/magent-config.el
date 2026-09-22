@@ -545,7 +545,10 @@ this persistence limit."
   :group 'magent)
 
 (defcustom magent-session-save-idle-delay 0.25
-  "Idle delay in seconds before UI-triggered session saves run.
+  "Delay in seconds before coalesced session saves run.
+Despite the retained option name, this is elapsed time from scheduling,
+not Emacs idle time.  New updates do not postpone an already pending save.
+Busy Emacs processing may delay the timer beyond this interval.
 Explicit calls to `magent-session-save-for-session' remain synchronous."
   :type 'number
   :group 'magent)

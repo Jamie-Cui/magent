@@ -1,0 +1,52 @@
+#+TITLE: Loop performance diagnosis (2026-09-22)
+
+* Verified persistence bottleneck
+
+The deferred session save used an idle timer.  During provider streaming,
+Emacs can already be idle longer than the configured 250 ms, so each new
+chunk could trigger another full JSON rewrite.  The elapsed-time timer fix
+in ~magent-session.el~ coalesces updates without postponing the first save.
+
+In an isolated Emacs 31.0.91 daemon, 40 synthetic chunks at 20 ms intervals
+gave these three-run medians with actual JSON encoding and disk writes:
+
+| Session JSON | Previous saves | Current saves | Previous save time | Current save time |
+|--------------+----------------+---------------+--------------------+-------------------|
+| About 24 KB  |             39 |             5 |             214 ms |             21 ms |
+| About 2 MB   |             12 |             4 |             885 ms |            390 ms |
+
+The synthetic completion time changed little.  A single 2 MB save still
+blocked Emacs for up to about 111 ms in both versions.
+
+* Stage evidence and limits
+
+Magent already emits ~llm-request-start~, ~llm-request-end~,
+~tool-call-start~, and ~tool-call-end~ lifecycle events.  A temporary sink
+and save wrapper measured one deterministic live smoke tool turn: about
+83 ms from the first request start to its first provider event, 134 ms in
+~emacs_eval~, under 1 ms from tool completion to the continuation request,
+and about 1 ms for its terminal session save.  This test stubs provider
+transport.  A separate ACP smoke test issued three session updates; their
+combined local dispatch time was 2.2 ms.  These small fixtures do not
+measure long agent-shell transcripts or a real model.
+
+One recent persisted completed turn took 242 seconds with 22 tool items.
+The tool-item intervals total 36 seconds; reasoning-item intervals total
+108 seconds.  Ledger item intervals can overlap or contain provider waits,
+so their totals cannot be used to assign all remaining time to one cause.
+
+Two isolated real-provider diagnostic turns failed before a provider event:
+that daemon could not decrypt its configured authinfo file because the
+required secret key was unavailable there.  These failures are not
+performance samples.  Keep real provider debugging in an isolated Emacs
+server as described in ~TROUBLESHOOTING.org~.
+
+* Next measurement
+
+Once an isolated server can use the configured provider, capture monotonic
+times for request start, first normalized event, tool completion, next
+request start, turn completion, session save, and ACP update.  Record only
+event types, durations, counts, and sizes.  Compare ordinary, tool-use,
+and long-history turns before changing provider continuation or session
+serialization.  The previous save fix is supported by a real-timer live
+smoke test and the unit suite.
