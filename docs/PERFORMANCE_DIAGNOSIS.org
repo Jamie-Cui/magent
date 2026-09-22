@@ -52,3 +52,61 @@ event types, durations, counts, and sizes.  Compare ordinary, tool-use,
 and long-history turns before changing provider continuation or session
 serialization.  The previous save fix is supported by a real-timer live
 smoke test and the unit suite.
+
+* Root cause and fix: session persistence rewrote the whole conversation
+
+Continued measurement showed the remaining cost was not the coalescing
+interval but the write itself.  Every flush re-encoded the entire session, so
+a save cost the whole conversation while the change was one streaming chunk.
+
+Attribution of one 43.6 ms save of a 1.4 MB session (Emacs 31.0.91, batch):
+
+| Stage                                | Time   | Share |
+|--------------------------------------+--------+-------|
+| ~json-encode~ of the whole payload   | 33.0ms | 76%   |
+| ~write-region~ to the temporary file | 7.5ms  | 17%   |
+| ledger traversal                     | 1.1ms  | 3%    |
+
+A real-timer streaming replay (850 chunks over 6.5s, about 131 chunks/s) spent
+1684 ms inside session saves, or 25.9% of wall time.  The ledger already had
+~append-event~, ~apply-event~, and ~replay~, but streaming content bypassed
+the journal entirely: ~magent-thread-append-item-content~ updated only the
+materialized snapshot, so the journal could not represent the change and the
+whole state had to be rewritten.
+
+The fix makes the log able to represent what actually happens:
+
+1. ~item-content-appended~ journals only the appended chunk, and applying it
+   appends to the item, so persistence is proportional to the change.
+2. The journal is appended in constant time through a cached tail cons
+   instead of walking it per event.
+3. Schema 7 splits persistence into ~<id>.json~ (small header),
+   ~<id>.jsonl~ (append-only events), and ~<id>.snapshot~ (materialized state,
+   rewritten only when the log passes ~magent-session-log-max-events~).
+4. The header is rewritten only when its content actually changed, and
+   ~magent-session-summary-title~ no longer materializes every item.
+
+Same workload after the change, on a 1.4 MB session:
+
+| Metric                 | Before | After      |
+|------------------------+--------+------------|
+| Wall time inside saves | 25.9%  | 1.6-2.3%   |
+| Mean save              | 93.5ms | 4.3-6.1ms  |
+
+Cost is now independent of conversation size, which is the property that
+matters.  The same workload against ledgers of 1.6 MB, 2.8 MB, and 8.8 MB gave
+6.5-10.4 ms (first run of the process, cold), 6.6 ms, and 6.6-8.1 ms per save,
+where the previous design grew from 44 ms at 1.4 MB to 116 ms at 5.8 MB.
+
+The remaining per-save cost is the append itself.  Note that
+~write-region-inhibit-fsync~ is ~t~ in batch and ~nil~ interactively, so an
+interactive Emacs also fsyncs each append; that was left at the Emacs default
+to preserve the previous durability level.
+
+Migration was verified against the real corpus: 977 session files copied to a
+temporary tree, migrated, and compared with a representation-insensitive
+comparison of every turn, item, input, output, and metadata value.  973 files
+were value-identical, 4 were not session files, and 0 values changed.  52
+files differed only in that shadowed duplicate metadata keys, which readers
+already ignored through ~assq~, are no longer written.
+

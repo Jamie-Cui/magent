@@ -553,13 +553,15 @@ Explicit calls to `magent-session-save-for-session' remain synchronous."
   :type 'number
   :group 'magent)
 
-(defcustom magent-session-journal-max-events 2000
-  "Maximum recent ledger events persisted beside a session snapshot.
-The in-memory journal remains append-only.  Saved session files retain a
-bounded replay/audit tail because the materialized snapshot already contains
-all state through its `last-event-seq'.  Nil keeps the full journal."
-  :type '(choice (const :tag "Keep the full journal" nil)
-                 (natnum :tag "Recent events"))
+(defcustom magent-session-log-max-events 2000
+  "Maximum logged events allowed before a session checkpoint is rewritten.
+Streaming appends ledger events to <session-id>.jsonl, so this bounds how
+much replay a checkpoint rewrite may accumulate rather than how much of the
+conversation is stored.  Lower values compact more often; higher values make
+each save cheaper.  Nil disables automatic compaction, leaving only the
+initial checkpoint."
+  :type '(choice (const :tag "Never compact automatically" nil)
+                 (natnum :tag "Logged events"))
   :group 'magent)
 
 (defcustom magent-child-agent-max-depth 1

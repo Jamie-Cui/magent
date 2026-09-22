@@ -123,6 +123,28 @@ intentional tagged release is planned as ~v0.2.0~.
   ~magent-start~ compatibility entry, and an isolated temporary context
   compatibility block. Interactive buffers, prompts, queues, slash menus,
   skills, and interrupts now use agent-shell's native commands directly.
+- Session persistence is now an append-only event log instead of a periodic
+  full rewrite. Schema 7 stores a session as three files chosen by rate of
+  change: ~<id>.json~ (small header, read by session listing),
+  ~<id>.jsonl~ (append-only ledger events, one JSON object per line), and
+  ~<id>.snapshot~ (materialized ledger state, rewritten only on compaction).
+  Streaming appends one small event per chunk, so a save costs what changed
+  instead of what the conversation has accumulated. Measured on a real 1.4 MB
+  session, sustained streaming previously blocked Emacs for 26% of wall time;
+  it is now about 2%, and the per-save cost is flat from 1.6 MB to 8.8 MB
+  sessions (~6-8 ms) where it previously grew from 44 ms to 116 ms.
+  ~magent-session-journal-max-events~ is replaced by
+  ~magent-session-log-max-events~, which now bounds logged events before a
+  checkpoint rewrite instead of bounding a persisted journal tail.
+- Ledger streaming content is journaled as a new ~item-content-appended~ event
+  carrying only the appended chunk, replacing the never-emitted
+  ~item-updated~ event. The in-memory journal is now appended in constant time
+  instead of walking the whole log per event.
+- Session checkpoint files are encoded with ~json-serialize~ after
+  normalization, and tool metadata merges no longer emit duplicate JSON keys.
+  Reading a session emits a value-identical ledger to schema 6; the only
+  difference is that shadowed duplicate keys, which every reader already
+  ignored, are no longer written.
 
 ** Removed
 
@@ -133,6 +155,9 @@ intentional tagged release is planned as ~v0.2.0~.
   submission, region/symbol helpers, interruption, Action selection, and
   one-shot skill selection, together with private busy-state recovery and
   request handoff machinery.
+- Removed ~magent-session-journal-max-events~, replaced by
+  ~magent-session-log-max-events~. Schema 6 session files are migrated in
+  place on first read; only the schema 7 layout is read afterwards.
 
 ** Fixed
 

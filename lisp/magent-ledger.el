@@ -45,7 +45,7 @@
     turn-interrupted
     turn-dropped
     item-started
-    item-updated
+    item-content-appended
     item-completed
     item-failed
     item-cancelled)
@@ -65,6 +65,9 @@
   turns
   items
   journal
+  ;; Internal cursor onto the last cons of `journal'.  Maintained only to keep
+  ;; journal appends constant-time; never persisted.
+  journal-tail
   snapshot-created-at
   last-event-seq)
 
@@ -407,7 +410,8 @@ REQUIRED keys must also have non-nil values."
     (op-id . ,(magent-thread-turn-op-id turn))
     (status . ,(magent-thread--symbol-name-or-nil
                 (magent-thread-turn-status turn)))
-    (input . ,(magent-thread-turn-input turn))
+    (input . ,(let ((input (magent-thread-turn-input turn)))
+                (and input (magent-json-safe-value input))))
     (items . ,(vconcat
                (mapcar #'magent-thread-item-to-alist
                        (magent-thread-turn-items turn))))
@@ -458,15 +462,16 @@ REQUIRED keys must also have non-nil values."
             ('turn-status-changed '(status))
             ('turn-completed '(usage))
             ((or 'turn-failed 'turn-interrupted 'turn-dropped) '(error))
-            ((or 'item-started 'item-updated 'item-completed) '(item))
+            ((or 'item-started 'item-completed) '(item))
+            ('item-content-appended '(content))
             ((or 'item-failed 'item-cancelled) '(item error)))))
     (when (memq type '(turn-queued turn-started turn-status-changed
                        turn-completed turn-failed turn-interrupted
-                       turn-dropped item-started item-updated item-completed
-                       item-failed item-cancelled))
+                       turn-dropped item-started item-content-appended
+                       item-completed item-failed item-cancelled))
       (unless (and (stringp turn-id) (not (string-empty-p turn-id)))
         (error "Invalid journal event %s: turn-id is required" type)))
-    (when (memq type '(item-started item-updated item-completed
+    (when (memq type '(item-started item-content-appended item-completed
                        item-failed item-cancelled))
       (unless (and (stringp item-id) (not (string-empty-p item-id)))
         (error "Invalid journal event %s: item-id is required" type)))
@@ -475,10 +480,16 @@ REQUIRED keys must also have non-nil values."
     (when (memq type '(turn-queued turn-started))
       (magent-thread-turn-from-alist
        (magent-thread--alist-get 'turn payload)))
-    (when (memq type '(item-started item-updated item-completed
+    (when (memq type '(item-started item-completed
                        item-failed item-cancelled))
       (magent-thread-item-from-alist
        (magent-thread--alist-get 'item payload)))
+    (when (eq type 'item-content-appended)
+      ;; Fail closed: a non-string or empty increment would silently lose text.
+      (let ((chunk (magent-thread--event-payload-value :content payload)))
+        (unless (and (stringp chunk) (> (length chunk) 0))
+          (error "Invalid journal event %s: content must be a nonempty string"
+                 type))))
     alist))
 
 (defun magent-thread-snapshot-to-alist (thread)
@@ -491,7 +502,8 @@ REQUIRED keys must also have non-nil values."
                 (magent-thread-status thread)))
     (created-at . ,(magent-thread-created-at thread))
     (updated-at . ,(magent-thread-updated-at thread))
-    (preview . ,(magent-thread-preview thread))
+    (preview . ,(let ((preview (magent-thread-preview thread)))
+                  (and preview (magent-json-safe-value preview))))
     (metadata . ,(let ((metadata (magent-thread-metadata thread)))
                    (and metadata (magent-json-safe-value metadata))))
     (turns . ,(vconcat
@@ -627,6 +639,28 @@ REQUIRED keys must also have non-nil values."
   "Update THREAD's `updated-at' timestamp to NOW."
   (setf (magent-thread-updated-at thread) (or now (magent-thread--now))))
 
+(defun magent-thread--journal-append (thread event)
+  "Append EVENT to THREAD's in-memory journal in constant time.
+Return EVENT.  The journal length grows with the number of recorded facts,
+so this must not walk it; `magent-thread-journal-tail' caches the last cons
+and is repaired when a caller replaced the journal behind our back."
+  (let ((head (magent-thread-journal thread))
+        (cell (list event)))
+    (if (null head)
+        (setf (magent-thread-journal thread) cell)
+      (let ((tail (magent-thread-journal-tail thread)))
+        (unless (and (consp tail) (null (cdr tail)))
+          (setq tail (last head)))
+        (setcdr tail cell)))
+    (setf (magent-thread-journal-tail thread) cell))
+  event)
+
+(defun magent-thread--journal-reset (thread)
+  "Discard THREAD's in-memory journal and its tail cursor."
+  (setf (magent-thread-journal thread) nil
+        (magent-thread-journal-tail thread) nil)
+  thread)
+
 (defun magent-thread-append-event (thread event)
   "Append EVENT to THREAD journal and apply it to materialized state."
   (let* ((seq (1+ (or (magent-thread-last-event-seq thread) 0)))
@@ -636,8 +670,7 @@ REQUIRED keys must also have non-nil values."
                   event)))
     (setf (magent-thread-last-event-seq thread)
           (max seq (or (magent-thread-event-seq event) seq)))
-    (setf (magent-thread-journal thread)
-          (nconc (magent-thread-journal thread) (list event)))
+    (magent-thread--journal-append thread event)
     (magent-thread-apply-event thread event)
     event))
 
@@ -793,15 +826,16 @@ REQUIRED keys must also have non-nil values."
                  (magent-thread-item-updated-at item) now)
            (magent-thread--replace-item turn item)
            (magent-thread--update-timestamp thread now))))
-      ('item-updated
+      ('item-content-appended
        (when-let* ((item (magent-thread--find-item
-                         thread
-                         (magent-thread-event-item-id event))))
-         (let ((incoming (magent-thread--event-payload-item payload)))
-           (when (magent-thread-item-p incoming)
-             (magent-thread--merge-item item incoming))
-           (setf (magent-thread-item-updated-at item) now)
-           (magent-thread--update-timestamp thread now))))
+                          thread
+                          (magent-thread-event-item-id event))))
+         (let ((chunk (magent-thread--event-payload-value :content payload)))
+           (when (and (stringp chunk) (> (length chunk) 0))
+             (setf (magent-thread-item-content item)
+                   (concat (or (magent-thread-item-content item) "") chunk)
+                   (magent-thread-item-updated-at item) now)
+             (magent-thread--update-timestamp thread now)))))
       ((or 'item-completed 'item-failed 'item-cancelled)
        (when-let* ((item (magent-thread--find-item
                          thread
@@ -865,8 +899,7 @@ SNAPSHOT may be nil, a `magent-thread', or a snapshot alist."
                      (magent-thread-event-from-alist event))))
         (let ((already-applied (<= (or (magent-thread-event-seq event) 0)
                                    (or (magent-thread-last-event-seq thread) 0))))
-          (setf (magent-thread-journal thread)
-                (nconc (magent-thread-journal thread) (list event)))
+          (magent-thread--journal-append thread event)
           (unless already-applied
             (setf (magent-thread-last-event-seq thread)
                   (max (or (magent-thread-last-event-seq thread) 0)
@@ -1572,23 +1605,41 @@ Create it when needed."
          :phase phase
          :metadata metadata))))
 
-(defun magent-thread-append-item-content
-    (thread item chunk &optional output-p)
-  "Append CHUNK to ITEM's content, or output when OUTPUT-P is non-nil.
-This updates the materialized snapshot only; callers should complete or
-fail the item with a terminal journal event containing the final content."
+(defun magent-thread-append-item-content (thread item chunk)
+  "Append CHUNK to ITEM's content, recording the increment in THREAD.
+The journal event carries only CHUNK, so persistence stays proportional to
+the appended text instead of to the whole conversation.  The materialized
+content is updated by applying that event, so callers must pass an ITEM
+already owned by THREAD."
   (when (and item (stringp chunk) (> (length chunk) 0))
-    (let* ((old (if output-p
-                    (magent-thread-item-output item)
-                  (magent-thread-item-content item)))
-           (new (concat (or old "") chunk))
-           (now (magent-thread--now)))
-      (if output-p
-          (setf (magent-thread-item-output item) new)
-        (setf (magent-thread-item-content item) new))
-      (setf (magent-thread-item-updated-at item) now)
-      (magent-thread--update-timestamp thread now)))
+    (magent-thread-append-event
+     thread
+     (magent-thread-event-create
+      :type 'item-content-appended
+      :thread-id (magent-thread-id thread)
+      :turn-id (magent-thread-item-turn-id item)
+      :item-id (magent-thread-item-id item)
+      :payload (list :content chunk))))
   item)
+
+(defun magent-thread--first-wins-plist (plist)
+  "Return PLIST without duplicate keys, keeping the first value for each.
+Callers merge metadata with `append', so the same key can appear twice.  JSON
+objects cannot express that, and every reader resolves a plist with
+`plist-get', which takes the first match, so dropping later duplicates
+preserves the effective value while keeping persisted output unambiguous."
+  (if (not (magent-json--plist-p plist))
+      plist
+    (let (out seen)
+      (while plist
+        (let ((key (pop plist))
+              (value (pop plist)))
+          (unless (memq key seen)
+            (push key seen)
+            ;; Metadata lists are tiny; appending keeps key/value pairs
+            ;; adjacent, which reversing the flat list would not.
+            (setq out (append out (list key value))))))
+      out)))
 
 (defun magent-thread-record-projected-tool-result
     (thread turn-id call-id name args result &optional metadata)
@@ -1599,11 +1650,12 @@ fail the item with a terminal journal event containing the final content."
          (status (magent-tool-result-status-value normalized))
          (safe-result (magent-tool-result-output-string normalized))
          (result-metadata
-          (append
-           (when (magent-tool-result-exit-code normalized)
-             (list :exit-code (magent-tool-result-exit-code normalized)))
-           (magent-tool-result-metadata normalized)
-           metadata))
+          (magent-thread--first-wins-plist
+           (append
+            (when (magent-tool-result-exit-code normalized)
+              (list :exit-code (magent-tool-result-exit-code normalized)))
+            (magent-tool-result-metadata normalized)
+            metadata)))
          (item (or (magent-thread--find-item thread call-id)
                    (magent-thread-start-item
                     thread turn-id 'tool
