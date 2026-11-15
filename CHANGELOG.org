@@ -91,6 +91,11 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Changed
 
+- A remote directory without a detected project is now its own session scope
+  instead of the shared ~global~ scope. Sharing ~global~ across hosts mixed
+  their conversation history and resolved relative tool paths against the local
+  Emacs directory, so file edits and commands could target the wrong machine.
+  A local directory without a project keeps ~global~.
 - ACP session capabilities are now advertised in the schema location,
   ~agentCapabilities.sessionCapabilities~, and mirrored to the top-level field
   older agent-shell releases read. Frontends that follow the schema now see

@@ -9497,10 +9497,111 @@ The ledger snapshot and event log live in sibling files."
       (delete-directory directory t))))
 
 (ert-deftest magent-test-session-scope-from-directory-falls-back-to-global ()
-  "Test session scope is global when no project root is detected."
+  "A local directory without a project keeps the shared global scope."
   (cl-letf (((symbol-function 'magent-project-root)
              (lambda (&optional _directory _no-fallback) nil)))
-    (should (eq (magent-session-scope-from-directory "/tmp/") 'global))))
+    (should (eq (magent-session-scope-from-directory "/tmp/") 'global))
+    (should (eq (magent-session-scope-from-directory "/home/user/") 'global))))
+
+(ert-deftest magent-test-session-remote-general-scope-is-per-host ()
+  "A remote directory without a project becomes its own scope.
+Sharing `global' across hosts mixed their history and made tool paths resolve
+on the local machine instead of the project host."
+  (cl-letf (((symbol-function 'magent-project-root)
+             (lambda (&optional _directory _no-fallback) nil))
+            ((symbol-function 'file-truename)
+             (lambda (&rest _args)
+               (ert-fail "Remote scope derivation performed file I/O"))))
+    (let ((host-a (magent-session-scope-from-directory "/ssh:hosta:/home/user/"))
+          (host-a-sub (magent-session-scope-from-directory "/ssh:hosta:/srv/"))
+          (host-b (magent-session-scope-from-directory "/ssh:hostb:/home/user/")))
+      (should (stringp host-a))
+      (should (stringp host-b))
+      (should-not (equal host-a host-b))
+      (should-not (equal host-a host-a-sub))
+      ;; A remote host is never folded into the local global bucket.
+      (should-not (eq host-a 'global))
+      ;; Storage stays under the project-scope layout and never under global/.
+      (should (string-match-p "/projects/" (magent-session--scope-storage-directory
+                                            host-a)))
+      (should-not (equal (magent-session--scope-storage-directory host-a)
+                         (magent-session--scope-storage-directory host-b))))))
+
+(ert-deftest magent-test-session-remote-general-scope-resolves-tools-remotely ()
+  "A remote general scope gives file tools the project host as their root.
+Without this, every relative tool path resolved against the local Emacs
+`default-directory', editing local files while the user worked on a host."
+  (require 'magent-tools)
+  (cl-letf (((symbol-function 'magent-project-root)
+             (lambda (&optional _directory _no-fallback) nil))
+            ((symbol-function 'file-truename) (lambda (path) path)))
+    (let* ((scope (magent-session-scope-from-directory "/ssh:hosta:/home/user/"))
+           (magent-tools--request-context
+            (magent-request-context-create :scope scope :project-root scope))
+           (canonical (magent-tools-canonical-resource-path "src/a.el")))
+      (should (file-remote-p canonical))
+      (should (equal canonical "/ssh:hosta:/home/user/src/a.el")))))
+
+(ert-deftest magent-test-acp-session-list-separates-remote-general-hosts ()
+  "Remote general sessions are listed only for their own host."
+  (require 'magent-acp)
+  (cl-letf (((symbol-function 'magent-project-root)
+             (lambda (&optional _directory _no-fallback) nil))
+            ;; Scopes are stored without a trailing slash, matching what
+            ;; `magent-session-scope-from-directory' produces.
+            ((symbol-function 'magent-runtime-list-sessions-for-scope)
+             (lambda (scope)
+               (cond
+                ((equal scope "/ssh:hosta:/home/user")
+                 '((:id "a" :scope "/ssh:hosta:/home/user"
+                        :project-root "/ssh:hosta:/home/user" :updated-at 0.0)
+                   (:id "b" :scope "/ssh:hostb:/home/user"
+                        :project-root "/ssh:hostb:/home/user" :updated-at 0.0)))
+                ((equal scope "/ssh:hostb:/home/user")
+                 '((:id "b" :scope "/ssh:hostb:/home/user"
+                        :project-root "/ssh:hostb:/home/user" :updated-at 0.0)))
+                (t '())))))
+    (let ((host-a (map-elt (magent-acp--session-list-response
+                            "/ssh:hosta:/home/user/")
+                           'sessions))
+          (host-b (map-elt (magent-acp--session-list-response
+                            "/ssh:hostb:/home/user/")
+                           'sessions)))
+      (should (equal (mapcar (lambda (entry) (map-elt entry 'sessionId))
+                             (append host-a nil))
+                     '("a")))
+      (should (equal (mapcar (lambda (entry) (map-elt entry 'sessionId))
+                             (append host-b nil))
+                     '("b"))))))
+
+(ert-deftest magent-test-session-remote-general-scope-round-trips-persistence ()
+  "A remote general session saves, reloads, and lists under its own scope only."
+  (require 'magent-runtime-api)
+  (let* ((magent-session-directory (make-temp-file "magent-remote-scope-" t))
+         (scope "/ssh:hosta:/home/user")
+         session file loaded)
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-project-root)
+                   (lambda (&optional _directory _no-fallback)
+                     "/ssh:hosta:/home/user/"))
+                  ((symbol-function 'file-truename) (lambda (path) path)))
+          (setq scope (magent-session-scope-from-directory
+                       "/ssh:hosta:/home/user/"))
+          (setq session (magent-session-create :id "remote-one"))
+          (magent-test--record-session-entry session 'user "remote hello")
+          (setq file (magent-session-save-for-session session scope))
+          (setq loaded (magent-session-read-file file))
+          ;; Stored under the project layout, never under global/.
+          (should (string-match-p
+                   "/projects/[[:xdigit:]]+/remote-one[.]json\\'"
+                   file))
+          (should (equal (plist-get loaded :scope) scope))
+          (should (equal (mapcar (lambda (entry) (plist-get entry :id))
+                                 (magent-runtime-list-sessions-for-scope scope))
+                         '("remote-one")))
+          ;; The shared global bucket never exposes another host's session.
+          (should-not (magent-runtime-list-sessions-for-scope 'global)))
+      (delete-directory magent-session-directory t))))
 
 (ert-deftest magent-test-session-remote-scope-normalization-performs-no-file-io ()
   "Remote session routing normalizes TRAMP names without contacting the host."
@@ -15963,6 +16064,34 @@ The ledger snapshot and event log live in sibling files."
           (let* ((loaded (plist-get (magent-session-read-file file) :session))
                  (thread (magent-session-thread-ledger loaded)))
             (should (= (length (magent-thread-turns thread)) 2))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-session-clear-deletes-inline-image-media ()
+  "Clearing a session removes its stored images and leaves other sessions alone."
+  (let* ((magent-session-directory (make-temp-file "magent-media-clear-" t))
+         (session (magent-session-create :id "media-one"))
+         (other (magent-session-create :id "media-two"))
+         (block (magent-session-media-store
+                 'global "media-one" "image/png"
+                 (magent-test--tiny-png-bytes)))
+         (other-block (magent-session-media-store
+                       'global "media-two" "image/png"
+                       (magent-test--tiny-png-bytes))))
+    (unwind-protect
+        (progn
+          (dolist (entry (list (cons session block) (cons other other-block)))
+            (let* ((target (car entry))
+                   (image (cdr entry))
+                   (thread (magent-session-thread-ledger target))
+                   (turn (magent-thread-create-turn thread "look")))
+              (magent-thread-record-user-message-if-needed
+               thread (magent-thread-turn-id turn) "look" nil
+               (list :content-blocks (vector image)))))
+          (should (magent-session-media-file 'global "media-one" block))
+          (magent-session-clear session 'global)
+          (should-not (magent-session-media-file 'global "media-one" block))
+          ;; Another session's images are untouched.
+          (should (magent-session-media-file 'global "media-two" other-block)))
       (delete-directory magent-session-directory t))))
 
 (ert-deftest magent-test-session-clear-removes-only-its-deferred-save ()

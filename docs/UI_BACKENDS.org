@@ -29,6 +29,10 @@ explicit command registration and invocation belong in ~magent-action.el~.
   the invocation lifecycle; ~magent-action-session.el~ adds isolated durable
   persistence without becoming a frontend.
 - ~magent-runtime-api.el~ is the frontend-neutral runtime and session API.
+- Session scope is the detected project root, a remote directory that has no
+  project root, or ~global~ for a local directory without one.  Two remote
+  hosts therefore never share history, and a remote general conversation still
+  resolves tool paths on its own host.
 - ~magent-runtime-queue.el~ owns per-session FIFO execution and session-scoped
   cancellation; independent sessions run concurrently, even in one project.
 

@@ -677,9 +677,16 @@ the original file valid and the migration simply runs again."
 
 (defun magent-session-scope-from-directory (&optional directory)
   "Return the session scope derived from DIRECTORY.
-Returns a normalized project root string or the symbol `global'."
+A detected project root becomes the scope.  A local directory without a
+project keeps the shared `global' scope, so ordinary local conversations stay
+in one place.  A remote directory without a project becomes its own scope:
+one shared `global' bucket would mix history from different hosts and would
+resolve tool paths on the local machine instead of the project host."
   (or (magent-session--normalize-project-root
        (magent-project-root directory t))
+      (let ((target (or directory default-directory)))
+        (when (file-remote-p target)
+          (magent-session--normalize-project-root target)))
       'global))
 
 (defun magent-session-current-scope ()
