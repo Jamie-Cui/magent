@@ -509,6 +509,40 @@ text in that native message so continuation does not lose the progress text."
              state)
     (puthash :native-input-captured t state)))
 
+(defun magent-sampling-gptel--entry-media (entry)
+  "Return ENTRY's Magent media parts, or nil.
+Magent records prompt entries as `(prompt . (TEXT :media PARTS))' so the plain
+text stays readable by every gptel backend while media remains explicit."
+  (when (and (eq (car-safe entry) 'prompt)
+             (proper-list-p (cdr entry))
+             (stringp (car (cdr entry))))
+    (plist-get (cddr entry) :media)))
+
+(defun magent-sampling-gptel--parse-entry (original backend entry)
+  "Return parsed messages for ENTRY, attaching Magent media parts.
+gptel owns the backend-specific media encoding through `gptel--inject-media',
+so Magent supplies files as temporary request context and reuses that path
+instead of duplicating per-backend payload shapes."
+  (let ((parsed (funcall original backend (list entry)))
+        (media (magent-sampling-gptel--entry-media entry)))
+    (cond
+     ((null media) parsed)
+     ((not (and (fboundp 'gptel--model-capable-p)
+                (gptel--model-capable-p 'media)))
+      (message "Magent: current model does not accept images; sending text only")
+      parsed)
+     (t
+      ;; `gptel--inject-media' reads media through `gptel-context', which gptel
+      ;; only loads for its own context features.  Load it on demand so
+      ;; non-image conversations keep the smaller startup.
+      (require 'gptel-context)
+      (let ((gptel-context
+             (mapcar (lambda (part)
+                       (list (plist-get part :media) :mime (plist-get part :mime)))
+                     media)))
+        (gptel--inject-media backend parsed))
+      parsed))))
+
 (defun magent-sampling-gptel--parse-list-a (original backend prompt)
   "Project Magent PROMPT extensions at the single gptel BACKEND boundary."
   (if (not magent-sampling-gptel--replay-request)
@@ -534,8 +568,13 @@ text in that native message so continuation does not lose the progress text."
                   (when (equal (plist-get item :type) "function_call")
                     (push (plist-get item :call_id) calls))))))))
       (if (zerop (hash-table-count native))
-          (funcall original backend
-                   (cl-remove-if (lambda (entry) (eq (car-safe entry) 'provider)) prompt))
+          (if (cl-some #'magent-sampling-gptel--entry-media prompt)
+              (cl-loop for entry in prompt
+                       unless (eq (car-safe entry) 'provider)
+                       append (magent-sampling-gptel--parse-entry
+                               original backend entry))
+            (funcall original backend
+                     (cl-remove-if (lambda (entry) (eq (car-safe entry) 'provider)) prompt)))
         (cl-loop for entry in prompt
                  for type = (car-safe entry)
                  append
@@ -557,7 +596,8 @@ text in that native message so continuation does not lose the progress text."
                         (member (plist-get (cddr entry) :native-id) ids)) nil)
                   ((and (eq type 'tool) (member (plist-get (cdr entry) :id) calls))
                    (gptel--parse-tool-results backend (list (cdr entry))))
-                  (t (funcall original backend (list entry)))))))))
+                  (t (magent-sampling-gptel--parse-entry
+                      original backend entry))))))))
 
 (defun magent-sampling-gptel--sanitize-after-parse-response-a
     (orig-fn backend response info)

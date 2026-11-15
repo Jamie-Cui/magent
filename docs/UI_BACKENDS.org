@@ -77,16 +77,43 @@ already queued work, or a provider-native tool continuation.
 * Session Lifecycle
 
 Magent implements ACP ~session/new~, ~session/list~, ~session/load~,
-~session/resume~, and ~session/fork~.  ~agent-shell-fork~ creates a new durable
-session with an independent ledger and the source conversation as its initial
-history.  The source and fork retain separate ids and diverge after creation.
+~session/resume~, ~session/fork~, and ~session/set_title~.  ~agent-shell-fork~
+creates a new durable session with an independent ledger and the source
+conversation as its initial history.  The source and fork retain separate ids
+and diverge after creation.
+
+Session capabilities are advertised in the schema location,
+~agentCapabilities.sessionCapabilities~, and mirrored to the top-level
+~sessionCapabilities~ field that older agent-shell releases read.  Both spellings
+list ~list~, ~load~, ~resume~, ~fork~, and ~title~.  Frontends that follow the
+schema, such as agent-chat, therefore see history, forking, and renaming as
+supported.
 
 Forking is exact-scope and fail-closed: the requested cwd must resolve to the
-source session's scope, and the source must have no active or queued work.
-Stable frontend options such as the selected agent, model route, effort,
-thinking mode, and automatic capability setting are inherited.  Session approval overrides,
-child-agent jobs, and one-shot skills are deliberately reset.  Referenced
-spilled tool outputs are copied into the fork's private session storage.
+source session's scope.  The source may keep running.  A fork copies only its
+committed (terminal) turns, matching Codex ~thread/fork~ snapshot semantics, so
+an in-flight or queued turn is omitted rather than blocking the fork; the source
+conversation is never modified.  Stable frontend options such as the selected
+agent, model route, effort, thinking mode, and automatic capability setting are
+inherited and persisted.  Session approval overrides, child-agent jobs, and
+one-shot skills are deliberately reset.  Referenced spilled tool outputs and
+inline images are copied into the fork's private session storage.
+
+A frontend that forks by starting a fresh client and then loading the fork, as
+agent-chat does, can do so while the source turn is still running: the fork is
+bound and replayed without displacing the source session installed for its own
+client.  Resuming an idle saved session still installs it as before.
+
+~session/set_title~ persists an explicit single-line title on the Magent session
+and then publishes ~session_info_update~.  The stored title is the canonical
+projection used by ~session/list~ and every later load, so a rename survives a
+restart instead of being derived again from the first message.
+
+Session options are durable.  The selected agent, explicit model route, effort,
+thinking mode, and automatic-capability setting are mirrored into the session
+header whenever they change and restored when a saved session is loaded.  An
+option whose agent or model disappeared from the current configuration is logged
+and skipped, so a stale session still opens.
 
 * Development Boundary
 
@@ -123,9 +150,30 @@ entry surfaces; it must not infer skills from the Action registry.
 - ACP session config exposes ~Automatic capabilities~. Disabling it suppresses
   contextual capability auto-resolution for future turns in that session while
   retaining explicitly selected instruction skills.
-- Model routes are session-local in memory.  Cross-Emacs persistence of an
-  explicit route is not yet implemented; a loaded session returns to ~Auto~.
-- Forking an active turn and forking across project scopes are not supported.
+- Forking across project scopes is not supported.
+- Inline images require a model that advertises gptel media support and an
+  Emacs build with the matching image type.  The attachment marker stays in the
+  transcript when either is missing.
+
+* Inline images
+
+Magent accepts ACP ~image~ prompt content blocks with an inline ~data~ payload
+whose ~mimeType~ is one of ~image/png~, ~image/jpeg~, ~image/webp~, or
+~image/gif~.  Each payload is validated against its declared type and bounded by
+~magent-inline-image-max-bytes~ before anything is written.  Remote image URIs
+are rejected rather than fetched.
+
+Validated images are stored once in a private, content-addressed media directory
+under ~magent-session-directory~ and recorded in the session ledger as a small
+reference block.  The provider projection turns those references into gptel media
+parts, so images travel only to models that advertise media support; other models
+receive the attachment marker as text.  Compaction input is text-only.  History
+replay re-emits each stored image as its own ~user_message_chunk~, which lets both
+agent-shell and agent-chat rebuild the attachment they originally sent.
+
+Stored images live for the session's lifetime: they are copied by forks and
+removed by ~magent-session-clear~.  No time-based cleanup runs, because deleting
+an image would silently break replay of the turn that referenced it.
 
 * Progress and plan projection
 

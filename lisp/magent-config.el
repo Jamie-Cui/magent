@@ -501,6 +501,15 @@ cannot be resolved, bash tool calls fail without affecting other Magent tools."
   :type 'natnum
   :group 'magent)
 
+(defcustom magent-inline-image-max-bytes (* 20 1024 1024)
+  "Maximum decoded bytes accepted in one inline prompt image.
+Frontends send images as ACP `image' content blocks.  Larger payloads are
+rejected before they reach the session ledger, so one attachment cannot bloat
+a conversation or the model request.  This mirrors the ACP image convention
+used by agent-shell and agent-chat."
+  :type 'natnum
+  :group 'magent)
+
 (defcustom magent-tool-result-model-max-length 12000
   "Maximum tool output body characters kept in model-visible history.
 Longer bodies are truncated before they are recorded in the session ledger,

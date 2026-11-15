@@ -106,15 +106,23 @@ the currently installed session is not replaced."
   t)
 
 (defun magent-runtime-api--wrap-session (session scope)
-  "Return runtime wrapper for Magent SESSION at SCOPE."
+  "Return runtime wrapper for Magent SESSION at SCOPE.
+A wrapper created for a newly loaded SESSION restores its durable options, and
+so does an existing wrapper replaced by a different SESSION object for the
+same id; that second case is how `session/load' of a saved file adopts the
+saved agent, model, effort, thinking, and capability setting."
   (magent-runtime-session-ensure-registerable scope session t)
   (let* ((id (magent-runtime-api--session-id session))
          (key (magent-runtime-api--session-key scope id))
          (existing (gethash key magent-runtime-api--sessions)))
     (if existing
-        (progn
+        (let ((replaced
+               (not (eq (magent-runtime-session-magent-session existing)
+                        session))))
           (setf (magent-runtime-session-scope existing) scope
                 (magent-runtime-session-magent-session existing) session)
+          (when replaced
+            (magent-runtime-api--restore-options existing))
           existing)
       (let ((runtime-session
              (magent-runtime-session-create
@@ -122,6 +130,7 @@ the currently installed session is not replaced."
               :scope scope
               :magent-session session)))
         (puthash key runtime-session magent-runtime-api--sessions)
+        (magent-runtime-api--restore-options runtime-session)
         runtime-session))))
 
 (defun magent-runtime-session-current (&optional scope)
@@ -151,10 +160,11 @@ queued submission starts."
 
 (defun magent-runtime-session-fork (source-runtime-session)
   "Return a detached, durable fork of SOURCE-RUNTIME-SESSION.
-The source must have no active or queued work.  Conversation state and stable
-session options are copied, while approvals, child jobs, and one-shot skills
-start empty.  The fork remains detached from the ambient scope until its first
-submission so the source frontend stays current."
+The source may keep running: only its committed (terminal) turns are copied,
+which matches Codex `thread/fork' snapshot semantics.  Stable session options
+are copied, while approvals, child jobs, and one-shot skills start empty.  The
+fork remains detached from the ambient scope until its first submission so the
+source frontend stays current."
   (unless (magent-runtime-session-p source-runtime-session)
     (error "Expected a runtime session, got: %S" source-runtime-session))
   (magent-runtime-api--assert-session-available source-runtime-session)
@@ -166,14 +176,15 @@ submission so the source frontend stays current."
     (when-let* ((thread (magent-session-thread source-session)))
       (unless (equal (magent-thread-scope thread) scope)
         (error "Magent: source thread scope does not match its runtime scope")))
-    (when (magent-runtime-queue-session-busy-p source-session)
-      (user-error "Magent: cannot fork a session with active or queued work"))
     (let* ((fork-session (magent-session-fork source-session scope))
            (fork-id (magent-session-get-id fork-session))
            (source-id (magent-runtime-session-id source-runtime-session))
            (key (magent-runtime-api--session-key scope fork-id))
            (spill-ids
             (magent-thread-spill-result-ids
+             (magent-session-thread source-session)))
+           (media-ids
+            (magent-session-media-references
              (magent-session-thread source-session)))
            runtime-session
            completed)
@@ -187,6 +198,8 @@ submission so the source frontend stays current."
              scope fork-session t)
             (magent-tool-output-spill-fork-session
              scope source-id fork-id spill-ids)
+            (magent-session-media-fork-session
+             scope source-id fork-id media-ids)
             (magent-session-save-for-session fork-session scope)
             (setq runtime-session
                   (magent-runtime-api--wrap-session fork-session scope))
@@ -201,6 +214,26 @@ submission so the source frontend stays current."
                   (list :capabilities-enabled
                         (magent-runtime-session-capabilities-enabled-p
                          source-runtime-session)))
+            ;; The fork is a durable session of its own, so its inherited
+            ;; options must survive a later `session/load' as well.
+            (magent-runtime-api--mirror-agent-option runtime-session)
+            (magent-runtime-api--mirror-model-option runtime-session)
+            (magent-runtime-api--mirror-option
+             runtime-session 'effort
+             (and (magent-runtime-session-effort runtime-session)
+                  (magent-effort-option-string
+                   (magent-runtime-session-effort runtime-session))))
+            (magent-runtime-api--mirror-option
+             runtime-session 'thinking
+             (and (magent-runtime-session-thinking runtime-session)
+                  (magent-thinking-option-string
+                   (magent-runtime-session-thinking runtime-session))))
+            (magent-runtime-api--mirror-option
+             runtime-session 'capabilities-enabled
+             (if (magent-runtime-session-capabilities-enabled-p
+                  runtime-session)
+                 "enabled" "disabled"))
+            (magent-session-save-for-session fork-session scope)
             (setq completed t)
             (magent-log "INFO runtime session forked: %s -> %s scope=%s"
                         source-id fork-id scope)
@@ -218,6 +251,11 @@ submission so the source frontend stays current."
               (magent-tool-output-spill-delete-session scope fork-id)
             (error
              (magent-log "WARN failed rolling back fork spills %s: %s"
+                         fork-id (error-message-string err))))
+          (condition-case err
+              (magent-session-media-delete-session scope fork-id)
+            (error
+             (magent-log "WARN failed rolling back fork media %s: %s"
                          fork-id (error-message-string err)))))))))
 
 (defun magent-runtime-session-from-id (session-id &optional scope)
@@ -270,12 +308,122 @@ submission so the source frontend stays current."
                  runtime-session agent-or-name))
          (session (magent-runtime-session-magent-session runtime-session)))
     (magent-session-set-agent session agent)
+    (magent-runtime-api--persist-agent-option runtime-session)
     agent))
 
 (defun magent-runtime-session-agent-name (runtime-session)
   "Return RUNTIME-SESSION's active agent name."
   (let ((agent (magent-runtime-api--resolve-agent runtime-session)))
     (and agent (magent-agent-info-name agent))))
+
+;;; Persisted session options
+
+;; ACP and interactive frontends expose per-session agent, model, effort,
+;; thinking, and capability switches.  Those live on the runtime wrapper, so
+;; they are mirrored into the durable session metadata whenever they change.
+;; Without that mirror a `session/load' silently returned to defaults, which
+;; changed later turn behavior instead of reporting the loss.
+
+(defun magent-runtime-api--mirror-option (runtime-session key value)
+  "Record KEY=VALUE in RUNTIME-SESSION's durable session metadata.
+VALUE nil removes the key.  This only updates memory; `--persist-option'
+adds the deferred save used by interactive changes, while fork batches the
+mirroring and saves the new session once."
+  (let ((session (magent-runtime-session-magent-session runtime-session)))
+    (when (magent-session-p session)
+      (magent-session-set-metadata-value session key value))))
+
+(defun magent-runtime-api--persist-option (runtime-session key value)
+  "Mirror KEY=VALUE into RUNTIME-SESSION's session metadata and save it.
+Persistence is deferred with the ordinary session save timer so a burst of
+option changes costs one header rewrite."
+  (magent-runtime-api--mirror-option runtime-session key value)
+  (let ((session (magent-runtime-session-magent-session runtime-session)))
+    (when (magent-session-p session)
+      (magent-session-save-deferred-for-session
+       session (magent-runtime-session-scope runtime-session)))))
+
+(defun magent-runtime-api--mirror-agent-option (runtime-session)
+  "Mirror RUNTIME-SESSION's selected agent name into its session metadata."
+  (let ((agent (magent-session-agent
+                (magent-runtime-session-magent-session runtime-session))))
+    (magent-runtime-api--mirror-option
+     runtime-session 'agent-name
+     (and agent (magent-agent-info-name agent)))))
+
+(defun magent-runtime-api--persist-agent-option (runtime-session)
+  "Persist RUNTIME-SESSION's selected agent name."
+  (magent-runtime-api--mirror-agent-option runtime-session)
+  (magent-runtime-api--persist-session-save runtime-session))
+
+(defun magent-runtime-api--mirror-model-option (runtime-session)
+  "Mirror RUNTIME-SESSION's explicit model route into session metadata.
+The opaque descriptor id is stable across restarts and resolves back through
+the gptel model registry, so an unavailable provider is reported instead of
+silently rerouting the conversation."
+  (let* ((route (magent-runtime-session-model-route runtime-session))
+         (descriptor (and route
+                          (magent-sampling-gptel-descriptor-for-route route))))
+    (magent-runtime-api--mirror-option
+     runtime-session 'model-id
+     (and descriptor (magent-model-descriptor-id descriptor)))))
+
+(defun magent-runtime-api--persist-model-option (runtime-session)
+  "Persist RUNTIME-SESSION's explicit model route."
+  (magent-runtime-api--mirror-model-option runtime-session)
+  (magent-runtime-api--persist-session-save runtime-session))
+
+(defun magent-runtime-api--persist-session-save (runtime-session)
+  "Schedule a durable save for RUNTIME-SESSION's session."
+  (let ((session (magent-runtime-session-magent-session runtime-session)))
+    (when (magent-session-p session)
+      (magent-session-save-deferred-for-session
+       session (magent-runtime-session-scope runtime-session)))))
+
+(defun magent-runtime-api--restore-options (runtime-session)
+  "Restore durable option metadata onto a freshly created RUNTIME-SESSION.
+Unknown agents and models are logged and skipped: a session must stay usable
+after its definitions or provider configuration changes."
+  (let* ((session (magent-runtime-session-magent-session runtime-session))
+         (scope (magent-runtime-session-scope runtime-session))
+         (agent-name (magent-session-metadata-value session 'agent-name))
+         (model-id (magent-session-metadata-value session 'model-id))
+         (effort (magent-session-metadata-value session 'effort))
+         (thinking (magent-session-metadata-value session 'thinking))
+         (capabilities
+          (magent-session-metadata-value session 'capabilities-enabled)))
+    (when (and (stringp agent-name) (not (magent-session-agent session)))
+      (condition-case err
+          (magent-runtime-session-set-agent runtime-session agent-name)
+        (error
+         (magent-log
+          "WARN ignoring unavailable restored agent %s in scope %s: %s"
+          agent-name scope (error-message-string err)))))
+    (when (stringp model-id)
+      (if-let* ((descriptor
+                 (magent-sampling-gptel-model-descriptor model-id)))
+          (magent-runtime-session-set-model-route
+           runtime-session
+           (magent-sampling-gptel-descriptor-route descriptor 'session))
+        (magent-log
+         "WARN ignoring unavailable restored model %s in scope %s"
+         model-id scope)))
+    (when (stringp effort)
+      (condition-case err
+          (magent-runtime-session-set-effort runtime-session effort)
+        (error
+         (magent-log "WARN ignoring restored effort %s: %s"
+                     effort (error-message-string err)))))
+    (when (stringp thinking)
+      (condition-case err
+          (magent-runtime-session-set-thinking runtime-session thinking)
+        (error
+         (magent-log "WARN ignoring restored thinking mode %s: %s"
+                     thinking (error-message-string err)))))
+    (when (member capabilities '("enabled" "disabled"))
+      (magent-runtime-session-set-capabilities-enabled
+       runtime-session (equal capabilities "enabled")))
+    runtime-session))
 
 (defun magent-runtime-session-model-route-option (runtime-session)
   "Return RUNTIME-SESSION's explicit model route, or nil for automatic routing."
@@ -294,6 +442,7 @@ Pass nil to restore automatic routing."
            (magent-model-route-relabel
             (magent-sampling-gptel-validate-route route) 'session))))
     (setf (magent-runtime-session-model-route runtime-session) stored-route)
+    (magent-runtime-api--persist-model-option runtime-session)
     stored-route))
 
 (defun magent-runtime-session-clear-model-route (runtime-session)
@@ -360,6 +509,8 @@ current selection.  This is a read-only public preflight API for extensions."
   (magent-runtime-api--assert-session-available runtime-session)
   (let ((option (magent-effort-option-or-auto effort)))
     (setf (magent-runtime-session-effort runtime-session) option)
+    (magent-runtime-api--persist-option
+     runtime-session 'effort (magent-effort-option-string option))
     option))
 
 (defun magent-runtime-session-thinking-option (runtime-session)
@@ -373,6 +524,8 @@ current selection.  This is a read-only public preflight API for extensions."
   (magent-runtime-api--assert-session-available runtime-session)
   (let ((option (magent-thinking-option-or-auto thinking)))
     (setf (magent-runtime-session-thinking runtime-session) option)
+    (magent-runtime-api--persist-option
+     runtime-session 'thinking (magent-thinking-option-string option))
     option))
 
 (defun magent-runtime-session-capabilities-enabled-p (runtime-session)
@@ -392,6 +545,8 @@ current selection.  This is a read-only public preflight API for extensions."
       (setq metadata nil))
     (setf (magent-runtime-session-metadata runtime-session)
           (plist-put metadata :capabilities-enabled (and enabled t))))
+  (magent-runtime-api--persist-option
+   runtime-session 'capabilities-enabled (if enabled "enabled" "disabled"))
   (magent-runtime-session-capabilities-enabled-p runtime-session))
 
 (defun magent-runtime-session-clear-pending-skills (runtime-session)

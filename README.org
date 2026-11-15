@@ -207,6 +207,12 @@ From a source buffer, use agent-shell's native ~M-x agent-shell-send-region~ or
 ~M-x agent-shell-send-dwim~ commands.  In a Magent shell, use
 ~M-x agent-shell-interrupt~ (normally ~C-c C-c~) to interrupt a request.
 
+Magent accepts inline image prompts from any ACP frontend that advertises image
+input.  PNG, JPEG, WebP, and GIF payloads up to ~magent-inline-image-max-bytes~
+are stored in the session's private media directory and sent to gptel as media
+parts for models that support media; other models still receive a text
+attachment marker.  Images survive ~session/load~ and session forks.
+
 TRAMP projects use the same entry point.  Visit a remote file or Dired
 directory, then run ~M-x magent-start~.  Magent keeps its control plane on the
 local Emacs host: agent-shell/ACP, gptel, sessions, Actions, child-agent
@@ -244,6 +250,7 @@ Customize with ~M-x customize-group RET magent RET~. Key settings:
 | ~magent-audit~                                 | ~buffer~                              | Audit destination: live buffer, nil to disable, or a JSONL file path                            |
 | ~magent-agent-directory~                       | ~".magent/agent"~                   | Relative path to custom agent dir                                                              |
 | ~magent-session-directory~                     | =~/.emacs.d/magent/sessions/=         | Base directory for global sessions and per-project session subdirectories                      |
+| ~magent-inline-image-max-bytes~                | 20 MiB                              | Maximum decoded bytes accepted in one inline prompt image                                      |
 | ~magent-grep-program~                          | ~"rg"~                              | Preferred ripgrep executable; falls back to Git on the same project host                       |
 | ~magent-grep-max-matches~                      | ~100~                                 | Max matches from grep searches                                                                 |
 | ~magent-glob-max-results~                      | ~500~                                 | Maximum paths returned by one glob                                                             |
