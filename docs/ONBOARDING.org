@@ -49,6 +49,7 @@ Manages conversation history, scoped definitions, and runtime state.
 - ~magent-action-builtin-doctor.el~ — Trusted read-only probes and one sanitized tool-free analysis request
 - ~magent-redaction.el~ — Fail-closed redaction for Magent-owned outbound values
 - ~magent-agent-job.el~ — Durable child-agent job records and JSON shape
+- ~magent-codex.el~ — Optional Codex ACP turns for child-agent jobs
 - ~magent-action.el~ — Workflow DSL, Step runtime, layered Action registry, and Invocation lifecycle
 - ~magent-action-project.el~ — Approved project Action discovery and loading
 - ~magent-runtime.el~ — Static initialization plus retained project-local definition loading
@@ -295,6 +296,7 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 - *magent-ledger.el* — Canonical thread/turn/item state machine, journal, and snapshot
 - *magent-session.el* — Ledger projections, scoped JSON persistence, and spill storage
 - *magent-agent-job.el* — Durable child-agent job state, runtime registry, and JSON shape
+- *magent-codex.el* — Optional Codex ACP turns for child-agent jobs
 - *magent-audit.el* — Live-buffer or JSONL audit records for tool decisions
 
 ** Sampling & Runtime

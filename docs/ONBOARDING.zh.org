@@ -51,6 +51,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 - ~magent-action-builtin-doctor.el~ ：受信任只读 probes 和一次脱敏后的无工具分析请求。
 - ~magent-redaction.el~ ：Magent-owned outbound values 的 fail-closed 脱敏。
 - ~magent-agent-job.el~ ：durable child-agent job records 和 JSON shape。
+- ~magent-codex.el~ ：可选的 Codex ACP 子任务执行。
 - ~magent-action.el~ ：Workflow DSL、Step runtime、分层 Action registry 和 Invocation lifecycle。
 - ~magent-action-project.el~ — Approved project Action discovery and loading
 - ~magent-runtime.el~ ：静态初始化与 project-local definitions 的保留式加载。
@@ -297,6 +298,7 @@ API。
 - *magent-ledger.el* — canonical thread/turn/item 状态机、journal 与 snapshot
 - *magent-session.el* — ledger projections、scoped JSON persistence 与 spill storage
 - *magent-agent-job.el* — durable child-agent job 状态、runtime registry 与 JSON shape
+- *magent-codex.el* — 可选的 Codex ACP 子任务执行
 - *magent-audit.el* — tool decision 的 live-buffer 或 JSONL audit records
 
 ** Sampling 与 Runtime

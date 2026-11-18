@@ -14,8 +14,8 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'gptel)
-(require 'magent-sampling)
+(require 'subr-x)
+(require 'magent-sampling-gptel)
 
 (cl-defstruct (magent-agent-info
                (:constructor nil)
@@ -34,7 +34,9 @@ Fields:
 - EFFORT: Optional reasoning effort override for this agent
 - THINKING: Optional thinking mode override for this agent
 - COLOR: Optional display color for UI
-- MODEL: Optional model specification (providerID . modelID)
+- EXECUTOR: \\='magent for gptel sampling or \\='codex for Codex ACP
+- BACKEND: Optional registered gptel backend name
+- MODEL: Optional model identifier as a string or symbol
 - PROMPT: Optional custom system prompt
 - PERMISSION: Permission ruleset for tool access control
 - FILE-PATH: Backing file path for file-defined agents
@@ -50,6 +52,8 @@ Fields:
   effort
   thinking
   color
+  (executor 'magent)
+  backend
   model
   prompt
   (permission nil)
@@ -67,71 +71,32 @@ Fields:
     (or (eq info-mode 'all)
         (eq info-mode mode))))
 
-(defun magent-agent-info-apply-gptel-overrides (info body-thunk)
-  "Apply per-agent gptel variable overrides and call BODY-THUNK.
-INFO is a magent-agent-info struct.  BODY-THUNK is a zero-argument
-function called with the overrides in effect.
-
-The agent's MODEL field can be:
-- nil: use global `gptel-backend' and `gptel-model'
-- A gptel backend object: use it with global `gptel-model'
-- A cons (BACKEND . MODEL-SYMBOL): use both overrides
-
-The agent's TEMPERATURE field, if non-nil, overrides `gptel-temperature'."
-  (let* ((model-field (magent-agent-info-model info))
-         (gptel-backend (cond
-                         ((and (consp model-field)
-                               (gptel-backend-p (car model-field)))
-                          (car model-field))
-                         ((gptel-backend-p model-field)
-                          model-field)
-                         (t (default-value 'gptel-backend))))
-         (gptel-model (cond
-                       ((and (consp model-field)
-                             (symbolp (cdr model-field)))
-                        (cdr model-field))
-                       ((null model-field)
-                        (default-value 'gptel-model))
-                       ((symbolp model-field) model-field)
-                       ((stringp model-field) (intern model-field))
-                       (t (default-value 'gptel-model))))
-         (gptel-temperature (or (magent-agent-info-temperature info)
-                                (default-value 'gptel-temperature))))
-    (funcall body-thunk)))
-
 (defun magent-agent-info-model-route (info)
-  "Return INFO's explicit `magent-model-route', or nil.
-The route preserves the existing agent MODEL field contract.  A symbol or
-string selects a model on the default gptel backend, a backend object selects
-that backend with the default model, and (BACKEND . MODEL) selects both."
+  "Resolve INFO's explicit gptel route from its saved backend and model IDs."
   (unless (magent-agent-info-p info)
     (error "Expected Magent agent info, got: %S" info))
-  (when-let* ((model-field (magent-agent-info-model info)))
-    (let ((backend
-           (cond
-            ((and (consp model-field)
-                  (gptel-backend-p (car model-field)))
-             (car model-field))
-            ((gptel-backend-p model-field) model-field)
-            (t (default-value 'gptel-backend))))
-          (model
-           (cond
-            ((and (consp model-field)
-                  (or (symbolp (cdr model-field))
-                      (stringp (cdr model-field))))
-             (if (symbolp (cdr model-field))
-                 (cdr model-field)
-               (intern (cdr model-field))))
-            ((or (symbolp model-field) (stringp model-field))
-             (if (symbolp model-field)
-                 model-field
-               (intern model-field)))
-            (t (default-value 'gptel-model)))))
-      (magent-model-route-create
-       :backend backend
-       :model model
-       :source 'agent
-       :profile-agent (magent-agent-info-name info)))))
+  (let ((name (magent-agent-info-backend info))
+        (model (magent-agent-info-model info)))
+    (when (or name model)
+      (when (eq (magent-agent-info-executor info) 'codex)
+        (error "Codex agents must be started as child jobs"))
+      (let* ((descriptor
+              (and name
+                   (cl-find name (magent-sampling-gptel-model-catalog)
+                            :key #'magent-model-descriptor-backend-name
+                            :test #'equal)))
+             (backend (if name
+                          (if descriptor
+                              (magent-model-descriptor-backend descriptor)
+                            (error "Unknown gptel backend: %s" name))
+                        (default-value 'gptel-backend))))
+        (magent-model-route-create
+         :backend backend
+         :model (cond ((stringp model) (intern model))
+                      (model model)
+                      (t (default-value 'gptel-model)))
+         :source 'agent
+         :profile-agent (magent-agent-info-name info))))))
 
 (defun magent-agent-info-format-for-display (info)
   "Format INFO as a string for display in listings."
@@ -148,7 +113,18 @@ that backend with the default model, and (BACKEND . MODEL) selects both."
   "Check if INFO is a valid agent info structure."
   (and (magent-agent-info-p info)
        (stringp (magent-agent-info-name info))
-       (magent-agent-info-valid-mode-p (magent-agent-info-mode info))))
+       (magent-agent-info-valid-mode-p (magent-agent-info-mode info))
+       (memq (magent-agent-info-executor info) '(magent codex))
+       (let ((model (magent-agent-info-model info))
+             (backend (magent-agent-info-backend info)))
+         (and (or (null model)
+                  (and (symbolp model) (not (string-empty-p (symbol-name model))))
+                  (and (stringp model) (not (string-empty-p model))))
+              (or (null backend)
+                  (and (stringp backend) (not (string-empty-p backend))))
+              (or (eq (magent-agent-info-executor info) 'magent)
+                  (and (eq (magent-agent-info-mode info) 'subagent)
+                       (null backend)))))))
 
 (provide 'magent-agent-info)
 ;;; magent-agent-info.el ends here

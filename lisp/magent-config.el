@@ -564,6 +564,13 @@ initial checkpoint."
                  (natnum :tag "Logged events"))
   :group 'magent)
 
+(defcustom magent-codex-enabled nil
+  "Whether to allow Codex child jobs.
+Set this before initializing Magent to register the default Codex agent.
+The executor uses the separately installed codex-acp.el package."
+  :type 'boolean
+  :group 'magent)
+
 (defcustom magent-child-agent-max-depth 1
   "Maximum depth for recursive child-agent spawning.
 A value of 1 allows the visible root agent to spawn direct child agents,

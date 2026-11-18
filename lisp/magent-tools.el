@@ -32,6 +32,7 @@
 (require 'magent-web-page)
 
 (declare-function magent-agent-run-turn "magent-agent")
+(declare-function magent-codex-run-turn "magent-codex")
 (declare-function magent-agent-loop-abort "magent-agent-loop")
 (declare-function magent-agent-loop-p "magent-agent-loop" t t)
 
@@ -1518,6 +1519,7 @@ result containing combined stdout and stderr plus the process exit status."
                  :job job
                  :detail detail
                  :scope scope
+                 :audit-context (magent-request-context-audit-snapshot context)
                  :ui-visible
                  (magent-request-context-ui-visible-p
                   (or context magent-tools--request-context))))))
@@ -1681,6 +1683,9 @@ When INCLUDE-PROMPT is non-nil, include a prompt preview."
     (agent . ,(magent-agent-job-agent-name job))
     (task_name . ,(magent-agent-job-task-name job))
     (status . ,(magent-tools--agent-job-status-string job))
+    ,@(cl-loop for key in '(executor backend model)
+               for value = (alist-get key (magent-agent-job-metadata job))
+               when value collect (cons key value))
     ,@(when include-prompt
         `((prompt_preview
            . ,(when-let* ((prompt (magent-agent-job-prompt job)))
@@ -1721,18 +1726,51 @@ When IDS is nil, return all jobs in chronological creation order."
               ids)
     (reverse (magent-session-agent-jobs session))))
 
-(defun magent-tools--agent-job-update-from-child
-    (job child-session status response &optional error)
-  "Update JOB from CHILD-SESSION with STATUS, RESPONSE, and optional ERROR."
-  (setf (magent-agent-job-transcript job)
-        (magent-tools--agent-job-transcript child-session))
-  (magent-agent-job-set-status job status response error)
-  job)
+(defun magent-tools--codex-job-turn
+    (job agent prompt parent-context parent-scope on-session on-complete)
+  "Run JOB's Codex turn in its original project and return its canceller."
+  (unless magent-codex-enabled
+    (user-error "The Codex executor is disabled"))
+  (let* ((metadata (magent-agent-job-metadata job))
+         (root (or (and parent-context
+                        (magent-request-context-project-root parent-context))
+                   (magent-session-canonical-scope parent-scope)))
+         (directory (and (stringp root)
+                         (file-name-as-directory (file-truename root))))
+         (saved-directory (alist-get 'project-root metadata))
+         (thread-id (alist-get 'codex-thread-id metadata))
+         (model (if (assq 'codex-model-selection metadata)
+                    (alist-get 'codex-model-selection metadata)
+                  (let ((value (magent-agent-info-model agent)))
+                    (and value (format "%s" value)))))
+         (effort (if (assq 'codex-effort metadata)
+                     (alist-get 'codex-effort metadata)
+                   (magent-effort-option-string (magent-agent-info-effort agent)))))
+    (unless (and directory (file-directory-p directory))
+      (user-error "Start Codex from a Magent project session"))
+    (when (and saved-directory (not (equal directory saved-directory)))
+      (user-error "Codex job belongs to a different project: %s" saved-directory))
+    (setf (magent-agent-job-metadata job)
+          `((executor . "codex")
+            (project-root . ,directory)
+            (codex-thread-id . ,thread-id)
+            (codex-model-selection . ,model)
+            (codex-effort . ,effort)
+            (model . ,(alist-get 'model metadata))))
+    (require 'magent-codex)
+    (magent-codex-run-turn
+     directory thread-id model prompt
+     :effort effort
+     :approval-provider
+     (and parent-context
+          (magent-request-context-approval-provider parent-context))
+     :audit-context (magent-request-context-audit-snapshot parent-context)
+     :on-session on-session :on-complete on-complete)))
 
 (defun magent-tools--agent-job-start
     (job agent prompt child-session parent-context parent-session)
-  "Start JOB with AGENT and PROMPT using CHILD-SESSION.
-Return the child loop handle when startup succeeds."
+  "Start JOB using AGENT and PROMPT under PARENT-CONTEXT and PARENT-SESSION.
+CHILD-SESSION holds the native agent ledger and is nil for Codex."
   (let* ((agent-name (magent-agent-info-name agent))
          (parent-scope (or (and parent-context
                                 (magent-request-context-scope parent-context))
@@ -1749,7 +1787,8 @@ Return the child loop handle when startup succeeds."
          (effective-permission
           (magent-tools--effective-child-permission parent-context agent))
          (child-request-context
-          (magent-request-context-create
+          (when child-session
+            (magent-request-context-create
            :id (magent-lifecycle-events-generate-id)
            :scope (and parent-context
                        (magent-request-context-scope parent-context))
@@ -1792,78 +1831,83 @@ Return the child loop handle when startup succeeds."
            :permission-profile effective-permission
            :live-p (and parent-context
                         (magent-request-context-live-p parent-context))
-           :event-context subagent-context))
-         child-loop)
-    (magent-agent-job-set-status job 'running)
-    (magent-tools--render-agent-job-event
-     'started job prompt parent-context parent-scope t)
-    (magent-tools--persist-parent-session parent-session parent-scope)
-    (magent-agent-job-put-runtime
-     (magent-agent-job-id job)
-     (list :session child-session
-           :agent agent
-           :request-context child-request-context
-           :subagent-context subagent-context
-           :loop nil))
-    (condition-case err
-        (progn
-          (setq child-loop
-                (magent-agent-run-turn
-                 child-request-context
-                 :on-complete
-                 (lambda (response)
-                   (magent-lifecycle-events-stop-subagent subagent-context)
-                   (let* ((completed (magent-execution-result-completed-p response))
-                          (text (magent-execution-result-content-string response))
-                          (failed (not completed)))
-                     (magent-tools--agent-job-update-from-child
-                      job child-session
-                      (if failed 'failed 'completed)
-                      (unless failed text)
-                      (when failed text))
-                     (magent-tools--render-agent-job-event
-                      (if failed 'failed 'completed)
-                      job text parent-context parent-scope nil)
-                     (magent-tools--persist-parent-session
-                      parent-session parent-scope)))))
-          (magent-agent-job-put-runtime
-           (magent-agent-job-id job)
-           (list :session child-session
-                 :agent agent
-                 :request-context child-request-context
-                 :subagent-context subagent-context
-                 :loop child-loop))
-          (magent-tools--register-cancel-cleanup
-           (lambda ()
-             (unless (magent-tools--agent-job-terminal-p job)
-               (magent-lifecycle-events-stop-subagent subagent-context)
+           :event-context subagent-context)))
+         (job-id (magent-agent-job-id job))
+         (runtime (list :session child-session :agent agent :cancel nil
+                        :context subagent-context)))
+    (cl-labels
+        ((active-p ()
+           (and (eq (magent-agent-job-runtime job-id) runtime)
+                (eq (magent-agent-job-status job) 'running)))
+         (record-native-route ()
+           (when child-session
+             (setf (magent-agent-job-metadata job)
+                   (cons '(executor . "magent")
+                         (magent-tools--agent-inheritance-metadata
+                          parent-context child-request-context agent child-session)))))
+         (finish (status text)
+           (when (active-p)
+             (setf (plist-get runtime :cancel) nil)
+             (if child-session
+                 (setf (magent-agent-job-transcript job)
+                       (magent-tools--agent-job-transcript child-session))
                (setf (magent-agent-job-transcript job)
-                     (magent-tools--agent-job-transcript child-session))
-               (magent-agent-job-set-status
-                job 'cancelled nil "Parent request was aborted")
-               (magent-tools--render-agent-job-event
-                'cancelled job "Parent request was aborted"
-                parent-context parent-scope nil)
-               (magent-tools--persist-parent-session parent-session parent-scope)
-               (when (and child-loop
-                          (fboundp 'magent-agent-loop-p)
-                          (magent-agent-loop-p child-loop))
-                 (magent-agent-loop-abort child-loop))
-               (magent-agent-job-clear-runtime
-                (magent-agent-job-id job)))))
-          child-loop)
-      (error
-       (magent-lifecycle-events-stop-subagent subagent-context)
-       (magent-tools--agent-job-update-from-child
-        job child-session 'failed nil
-        (format "Error: child-agent request failed: %s"
-                (error-message-string err)))
-       (magent-tools--render-agent-job-event
-        'failed job (magent-agent-job-error job)
-        parent-context parent-scope nil)
-       (magent-tools--persist-parent-session parent-session parent-scope)
-       (magent-agent-job-clear-runtime (magent-agent-job-id job))
-       nil))))
+                     (append (magent-agent-job-transcript job)
+                             (list `((role . "assistant") (content . ,text))))))
+             (record-native-route)
+             (magent-lifecycle-events-stop-subagent subagent-context)
+             (magent-agent-job-set-status
+              job status (and (eq status 'completed) text)
+              (unless (eq status 'completed) text))
+             (magent-tools--render-agent-job-event
+              status job text parent-context parent-scope nil)
+             (magent-tools--persist-parent-session parent-session parent-scope)))
+         (cancel-turn (reason)
+           (when (active-p)
+             (let ((cancel (plist-get runtime :cancel)))
+               (finish 'cancelled reason)
+               (magent-agent-job-clear-runtime job-id)
+               (when cancel (funcall cancel)))))
+         (codex-session (thread-id model)
+           (when (active-p)
+             (let ((metadata (magent-agent-job-metadata job)))
+               (setf (alist-get 'codex-thread-id metadata) thread-id
+                     (alist-get 'model metadata) model
+                     (magent-agent-job-metadata job) metadata))
+             (magent-tools--persist-parent-session parent-session parent-scope))))
+      (magent-agent-job-put-runtime job-id runtime)
+      (magent-agent-job-set-status job 'running)
+      (magent-tools--render-agent-job-event
+       'started job prompt parent-context parent-scope t)
+      (magent-tools--persist-parent-session parent-session parent-scope)
+      (condition-case err
+          (let ((cancel
+                 (if child-session
+                     (let ((loop
+                            (magent-agent-run-turn
+                             child-request-context :on-complete
+                             (lambda (response)
+                               (finish
+                                (if (magent-execution-result-completed-p response)
+                                    'completed 'failed)
+                                (magent-execution-result-content-string response))))))
+                       (record-native-route)
+                       (when (and (fboundp 'magent-agent-loop-p)
+                                  (magent-agent-loop-p loop))
+                         (lambda () (magent-agent-loop-abort loop))))
+                   (setf (magent-agent-job-transcript job)
+                         (append (magent-agent-job-transcript job)
+                                 (list `((role . "user")
+                                         (content . ,prompt)))))
+                   (magent-tools--codex-job-turn
+                    job agent prompt parent-context parent-scope
+                    #'codex-session #'finish))))
+            (when (active-p)
+              (setf (plist-get runtime :cancel) cancel))
+            (magent-tools--register-cancel-cleanup
+             (lambda () (cancel-turn "Parent request was aborted"))))
+        (error
+         (finish 'failed (error-message-string err)))))))
 
 (defun magent-tools--spawn-agent (callback agent-name prompt &optional task-name)
   "Spawn a durable child-agent job using AGENT-NAME and PROMPT."
@@ -1876,13 +1920,17 @@ Return the child loop handle when startup succeeds."
      ((not (magent-agent-info-mode-p agent 'subagent))
       (magent-tools--fail
        callback (format "Error: agent '%s' is not a subagent" agent-name)))
+     ((and (eq (magent-agent-info-executor agent) 'codex)
+           (not magent-codex-enabled))
+      (magent-tools--fail callback "Error: the Codex executor is disabled"))
      ((not (and (stringp prompt) (not (string-empty-p prompt))))
       (magent-tools--fail callback "Error: prompt is required"))
      (t
       (let* ((parent-context magent-tools--request-context)
              (parent-session (magent-tools--parent-session))
              (parent-scope (magent-tools--parent-scope))
-             (child-session (magent-session-create :agent agent))
+             (child-session (when (eq (magent-agent-info-executor agent) 'magent)
+                              (magent-session-create :agent agent)))
              (parent-session-id (magent-session-get-id parent-session))
              (depth-error (magent-tools--child-agent-depth-error
                            parent-context))
@@ -1909,27 +1957,16 @@ Return the child loop handle when startup succeeds."
                       (agent-depth
                        . ,(magent-tools--child-agent-depth parent-context))
                       (child-session-id
-                       . ,(magent-session-get-id child-session))
+                       . ,(and child-session
+                               (magent-session-get-id child-session)))
                       (ui-visibility . "summary-only")
                       (max-depth . ,magent-child-agent-max-depth)))
               (magent-agent-job-set-status job 'failed nil depth-error)
               (magent-tools--render-agent-job-event
                'failed job depth-error parent-context parent-scope t)
               (magent-tools--persist-parent-session parent-session parent-scope))
-          (let ((child-loop
-                 (magent-tools--agent-job-start
-                  job agent prompt child-session parent-context parent-session)))
-            (when-let* ((runtime (magent-agent-job-runtime
-                                 (magent-agent-job-id job))))
-              (setf (magent-agent-job-metadata job)
-                    (magent-tools--agent-inheritance-metadata
-                     parent-context
-                     (plist-get runtime :request-context)
-                     agent
-                     child-session))
-              (magent-tools--persist-parent-session
-               parent-session parent-scope))
-            child-loop))
+          (magent-tools--agent-job-start
+           job agent prompt child-session parent-context parent-session))
         (let ((output
                (magent-tools--agent-job-result-json
                 (append
@@ -1953,8 +1990,14 @@ Return the child loop handle when startup succeeds."
          (parent-scope (magent-tools--parent-scope))
          (job (and parent-session
                    (magent-session-agent-job parent-session job-id)))
-         (runtime (and job
-                       (magent-agent-job-runtime job-id))))
+         (runtime (and job (magent-agent-job-runtime job-id)))
+         (codex-job (and job
+                         (equal "codex" (alist-get 'executor
+                                                   (magent-agent-job-metadata job)))))
+         (agent (or (plist-get runtime :agent)
+                    (and codex-job
+                         (magent-agent-registry-get
+                          (magent-agent-job-agent-name job) parent-scope)))))
     (cond
      ((null job)
       (magent-tools--fail
@@ -1970,28 +2013,19 @@ Return the child loop handle when startup succeeds."
        callback
        (format "Error: agent job '%s' is %s"
                job-id (magent-tools--agent-job-status-string job))))
-     ((not runtime)
+     ((and codex-job
+           (not (and agent (eq (magent-agent-info-executor agent) 'codex))))
+      (magent-tools--fail callback "Error: the Codex profile is unavailable"))
+     ((not (or runtime codex-job))
       (magent-tools--fail
-       callback
-       (format
-        "Error: agent job '%s' has no live runtime; resume support is not available yet"
-        job-id)))
+       callback (format "Error: agent job '%s' has no live runtime" job-id)))
      ((not (and (stringp message) (not (string-empty-p message))))
       (magent-tools--fail callback "Error: message is required"))
      (t
-      (let ((agent (plist-get runtime :agent))
-            (child-session (plist-get runtime :session)))
-        (magent-tools--agent-job-start
-         job agent message child-session
-         parent-context parent-session)
-        (when-let* ((runtime (magent-agent-job-runtime job-id)))
-          (setf (magent-agent-job-metadata job)
-                (magent-tools--agent-inheritance-metadata
-                 parent-context
-                 (plist-get runtime :request-context)
-                 agent
-                 child-session))
-          (magent-tools--persist-parent-session parent-session parent-scope))
+      (magent-tools--agent-job-start
+       job agent message (plist-get runtime :session) parent-context parent-session)
+      (if (eq (magent-agent-job-status job) 'failed)
+          (magent-tools--fail callback (magent-agent-job-error job))
         (magent-tools--complete
          callback
          (magent-tools--agent-job-result-json
@@ -2102,16 +2136,18 @@ When INCLUDE-CLOSED is non-nil, include terminal closed/cancelled jobs."
         `((status . "already_closed")
           (job . ,(magent-tools--agent-job-summary job))))))
      (t
-      (when-let* ((loop (and (memq (magent-agent-job-status job)
-                                  '(queued running waiting))
-                            (plist-get runtime :loop))))
-        (when (and (fboundp 'magent-agent-loop-p)
-                   (magent-agent-loop-p loop))
-          (magent-agent-loop-abort loop)))
-      (magent-agent-job-set-status
-       job 'closed (magent-agent-job-result job)
-       (or close-reason (magent-agent-job-error job)))
-      (magent-agent-job-clear-runtime job-id)
+      (let ((cancel (plist-get runtime :cancel))
+            (child-session (plist-get runtime :session)))
+        (when (and cancel child-session)
+          (setf (magent-agent-job-transcript job)
+                (magent-tools--agent-job-transcript child-session)))
+        (magent-agent-job-set-status
+         job 'closed (magent-agent-job-result job)
+         (or close-reason (magent-agent-job-error job)))
+        (magent-agent-job-clear-runtime job-id)
+        (when cancel
+          (magent-lifecycle-events-stop-subagent (plist-get runtime :context))
+          (funcall cancel)))
       (magent-tools--render-agent-job-event
        'closed job (or close-reason "closed") parent-context parent-scope t)
       (magent-tools--persist-parent-session session parent-scope)
@@ -2370,7 +2406,7 @@ See `magent-agent-loop-filter-display-args'.")
 (defvar magent-tools--send-agent-message-tool
   (gptel-make-tool
    :name "send_agent_message"
-   :description "Send follow-up input to an existing child-agent job after it has completed or failed and still has live runtime state."
+   :description "Send follow-up input to an idle child-agent job. Codex jobs can reopen their saved thread after reconnecting."
    :args (list '(:name "job_id"
                        :type string
                        :description "Child-agent job id returned by spawn_agent")

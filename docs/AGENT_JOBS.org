@@ -48,7 +48,9 @@ save queue, so tool callbacks do not synchronously rewrite session JSON.
 * Runtime Flow
 
 1. ~spawn_agent~ creates a ~magent-agent-job~ in the parent session.
-2. The child request starts through the Magent-owned loop in ~magent-agent-loop.el~.
+2. A Magent child starts the Magent-owned loop. A Codex child starts a Codex ACP
+   turn through ~magent-codex.el~. Both return a cancellation function to the
+   shared job lifecycle.
 3. The child runs with summary-only UI so it does not write its full transcript into the parent conversation body.
 4. Completion, failure, and close transitions notify wait observers and update
    the durable job record.
@@ -84,6 +86,35 @@ persisted under the parent session's ~agent-jobs~ data.
 When agent-shell resumes a persisted parent session, its ~agent-jobs~ data is
 restored with it. Active request handles are not restored after Emacs restart,
 but saved job metadata, result/error state, and transcripts remain persisted.
+
+* Model Configuration And Migration
+
+Magent profiles select a model by ID and may name a registered gptel backend.
+The session model still takes precedence for the primary agent. A child with
+an independent route uses its own sampling options or the target defaults.
+
+Elisp profiles that formerly supplied a gptel backend object or a
+~(BACKEND . MODEL)~ pair as ~:model~ must supply the registered backend name as
+~:backend~ and the model ID as ~:model~. An object without an explicit model uses
+~:backend~ alone. Existing scalar ~model~ fields already describe a model on
+the default gptel backend. Saving a profile now writes both names when
+specified. Previous saves that discarded backend identity need the intended
+backend supplied by the user.
+
+* Codex Job Lifetime
+
+Magent persists the executor, project directory, Codex thread ID, selected
+settings and actual model in the existing job metadata. A completed or failed
+Codex job can resume on an available profile in the same project, even after
+the parent session is reloaded. Restart reconciliation still marks previously
+running jobs interrupted. Each turn opens and releases an ACP connection;
+connection-scoped directory grants end when that connection closes.
+
+Magent forwards each workspace permission request with the options offered by
+Codex. Only the matching request receives the decision. Closing the job or
+aborting its parent cancels the active turn and removes pending approvals.
+Codex uses the workspace tools supplied by ~codex-acp.el~ and its own model
+configuration. Magent retains the dispatch permission and task transcript.
 
 * Boundaries
 

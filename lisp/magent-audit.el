@@ -22,6 +22,7 @@
 (require 'subr-x)
 (require 'magent-config)
 (require 'magent-approval)
+(require 'magent-agent-job)
 (require 'magent-lifecycle-events)
 (require 'magent-protocol)
 (require 'magent-redaction)
@@ -375,6 +376,11 @@ PRESERVE-ENTRY-ID is the record id to keep point on after refresh."
       (call_id . ,(magent-audit--safe-identifier (plist-get props :call-id)))
       (request_id . ,(magent-audit--safe-identifier
                       (plist-get props :request-id)))
+      ,@(when-let* ((execution (plist-get props :execution)))
+          `((execution
+             . ,(mapcar (lambda (pair)
+                          (cons (car pair) (magent-audit--safe-identifier (cdr pair))))
+                        execution))))
       (title . nil)
       (title_length . ,(magent-audit--string-length
                         (plist-get props :title)))
@@ -639,6 +645,20 @@ False and malformed values are omitted by `magent-audit--compact-alist'."
         :args (plist-get event :args)
         :result (plist-get event :result)
         :title (plist-get event :title))))
+    ('agent-job-event
+     (let ((status (plist-get event :event))
+           (job (plist-get event :job)))
+       (when (and (memq status '(completed failed cancelled closed))
+                  (magent-agent-job-p job))
+         (magent-audit-record
+          'agent-job
+          :audit-context (plist-get event :audit-context)
+          :call-id (magent-agent-job-id job)
+          :status status
+          :execution
+          (cl-loop for key in '(executor backend model)
+                   for value = (alist-get key (magent-agent-job-metadata job))
+                   when value collect (cons key value))))))
     ('subagent-start
      (magent-audit-record
       'subagent-start

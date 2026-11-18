@@ -24,7 +24,7 @@
 
 (defconst magent-agent-file--frontmatter-keys
   '(:description :mode :hidden :temperature :top-p :effort :thinking :color
-    :model :permissions)
+    :executor :backend :model :permissions)
   "Supported custom-agent frontmatter keys.")
 
 (defun magent-agent-file--agent-dir (&optional directory)
@@ -145,6 +145,13 @@ Returns \\='primary, \\='subagent, or \\='all (default)."
                 rules)))
       (nreverse rules))))
 
+(defun magent-agent-file--parse-executor (value)
+  "Parse the executor named by VALUE, defaulting to Magent."
+  (pcase value
+    ((or 'nil "magent" 'magent) 'magent)
+    ((or "codex" 'codex) 'codex)
+    (_ (error "Unknown agent executor: %S" value))))
+
 (defun magent-agent-file--parse-model (value)
   "Parse model frontmatter VALUE."
   (cond
@@ -191,6 +198,9 @@ Returns the agent info if successful, nil otherwise."
                               (magent-agent-file--frontmatter-thinking
                                frontmatter)
                               :color (plist-get frontmatter :color)
+                              :executor (magent-agent-file--parse-executor
+                                         (plist-get frontmatter :executor))
+                              :backend (plist-get frontmatter :backend)
                               :model (magent-agent-file--parse-model
                                       (plist-get frontmatter :model))
                               :prompt (when (> (length body) 0) body)
@@ -198,9 +208,10 @@ Returns the agent info if successful, nil otherwise."
                               :file-path filepath
                               :source-layer (if source-scope 'project 'builtin)
                               :source-scope source-scope)))
-            (when (magent-agent-info-valid-p agent-info)
-              (magent-agent-registry-register agent-info)
-              agent-info))))
+            (unless (magent-agent-info-valid-p agent-info)
+              (error "Invalid agent execution configuration for %s" name))
+            (magent-agent-registry-register agent-info)
+            agent-info)))
     (error
      (magent-log "ERROR loading agent file %s: %s" filepath
                  (error-message-string err))
@@ -259,15 +270,6 @@ Returns number of agents loaded."
                       "\n")))
         (insert " " (magent-agent-file--yaml-scalar (cdr entry)) "\n")))))
 
-(defun magent-agent-file--serializable-model (model)
-  "Return the model id from MODEL for custom agent frontmatter."
-  (cond
-   ((null model) nil)
-   ((symbolp model) model)
-   ((stringp model) model)
-   ((and (consp model) (symbolp (cdr model))) (cdr model))
-   (t (error "Agent model is not file-serializable: %S" model))))
-
 (defun magent-agent-file-load-project-scope (scope)
   "Reload project-local agents for SCOPE."
   (magent-agent-registry-remove-project-scope scope)
@@ -276,6 +278,8 @@ Returns number of agents loaded."
 (defun magent-agent-file-save (agent-info &optional directory)
   "Save AGENT-INFO to a .md file in DIRECTORY or project root.
 Returns the filepath if successful."
+  (unless (magent-agent-info-valid-p agent-info)
+    (error "Invalid agent execution configuration"))
   (let* ((name (magent-agent-info-name agent-info))
          (agent-dir (magent-agent-file--agent-dir directory))
          (filepath (expand-file-name (concat name ".md") agent-dir)))
@@ -311,8 +315,11 @@ Returns the filepath if successful."
                 (magent-agent-file--yaml-scalar
                  (magent-agent-info-color agent-info))
                 "\n"))
-      (when-let* ((model (magent-agent-file--serializable-model
-                          (magent-agent-info-model agent-info))))
+      (when (eq (magent-agent-info-executor agent-info) 'codex)
+        (insert "executor: codex\n"))
+      (when-let* ((backend (magent-agent-info-backend agent-info)))
+        (insert "backend: " (magent-agent-file--yaml-scalar backend) "\n"))
+      (when-let* ((model (magent-agent-info-model agent-info)))
         (insert "model: " (magent-agent-file--yaml-scalar model) "\n"))
       (magent-agent-file--insert-permissions
        (magent-agent-info-permission agent-info))

@@ -10,6 +10,7 @@ lisp/magent-protocol.el
 lisp/magent-audit.el
 lisp/magent-ledger.el
 lisp/magent-agent-job.el
+lisp/magent-codex.el
 lisp/magent-sampling.el
 lisp/magent-sampling-gptel.el
 lisp/magent-session.el
