@@ -25,6 +25,6 @@ jobs:
         RECIPE: (magent :fetcher github :repo "Jamie-Cui/magent" :files ("lisp/magent*.el" "prompts" "skills"))
         # set this to true if warnings should be treated as errors:
         WARN_IS_ERROR: true
-        # set this to false (or remove it) if the package isn't on MELPA:
-        EXIST_OK: false
+        # Magent is already published on MELPA.
+        EXIST_OK: true
       run: echo $GITHUB_REF && make -C ~/melpazoid
