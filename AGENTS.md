@@ -97,7 +97,7 @@ For real gptel/tool debugging, prefer an isolated server and the playbook in
 
 ## Architecture
 
-Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and permission-based tool access. All LLM communication is delegated to **gptel**. UI integration depends on `agent-shell` and `acp`; package requirements currently target Emacs 29.1+.
+Magent is an Emacs Lisp AI coding agent with a multi-agent architecture and permission-based tool access. Magent-owned turns use **gptel** for provider calls. Optional Codex child turns use the Codex ACP adapter. UI integration depends on `agent-shell` and `acp`; package requirements currently target Emacs 29.1+.
 
 ### Module Dependency Graph
 
@@ -114,6 +114,7 @@ magent.el (package entry point and lazy runtime bootstrap)
   ├─ magent-ledger.el            (thread/turn/item state machine, journal, snapshot)
   ├─ magent-session.el           (thread ledger projections, JSON persistence)
   ├─ magent-agent-job.el         (durable child-agent job state and JSON shape)
+  ├─ magent-codex.el             (optional Codex ACP turns for child-agent jobs)
   ├─ magent-runtime-queue.el     (UI-neutral per-session turn queues and session-scoped cancellation)
   ├─ magent-runtime-api.el       (UI/backend-facing runtime session and prompt API)
   ├─ magent-project-instructions.el (bounded scoped AGENTS.md discovery and prompt injection)

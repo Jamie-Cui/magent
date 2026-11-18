@@ -952,18 +952,24 @@ but omit the reason prefix from the ordinary tool-call UI."
     (let* ((request-id (plist-get request :request-id))
            (tool-name (or (plist-get request :tool-name) "tool"))
            (summary (or (plist-get request :summary) tool-name))
-           (args (or (plist-get request :args) [])))
+           (args (or (plist-get request :args) []))
+           (forwarded (plist-get request :acp-tool-call)))
       (magent-acp--request
        client request-id "session/request_permission"
        `((sessionId . ,session-id)
-         (toolCall . ((toolCallId . ,request-id)
-                      (title . ,summary)
-                      (kind . ,(magent-acp--tool-kind
-                                (plist-get request :perm-key)))
-                      (status . "pending")
-                      (rawInput . ,(magent-acp--raw-input-object args))))
-         (options . ,(magent-acp--permission-options
-                      (plist-get request :approval-policy))))))))
+         (toolCall . ,(if forwarded
+                          (cons (cons 'toolCallId request-id)
+                                (assq-delete-all 'toolCallId
+                                                 (copy-sequence forwarded)))
+                        `((toolCallId . ,request-id)
+                          (title . ,summary)
+                          (kind . ,(magent-acp--tool-kind
+                                    (plist-get request :perm-key)))
+                          (status . "pending")
+                          (rawInput . ,(magent-acp--raw-input-object args)))))
+         (options . ,(or (plist-get request :acp-permission-options)
+                         (magent-acp--permission-options
+                          (plist-get request :approval-policy)))))))))
 
 (defun magent-acp--permission-decision (response)
   "Return Magent approval decision from ACP permission RESPONSE."
@@ -983,7 +989,17 @@ but omit the reason prefix from the ordinary tool-call UI."
     (when request-id
       (magent-approval-resolve-request
        request-id
-       (magent-acp--permission-decision response)))))
+       (if-let* ((request (magent-approval-pending-request request-id))
+                 (options (plist-get request :acp-permission-options)))
+           (let ((outcome (map-nested-elt response '(:result outcome outcome)))
+                 (choice (map-nested-elt response '(:result outcome optionId))))
+             (if (and (equal outcome "selected") (stringp choice)
+                      (seq-some (lambda (option)
+                                  (equal choice (map-elt option 'optionId)))
+                                options))
+                 choice
+               'deny-once))
+         (magent-acp--permission-decision response))))))
 
 (defun magent-acp--callback-buffer (client buffer)
   "Return callback buffer for CLIENT, preferring explicit BUFFER."

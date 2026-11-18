@@ -19,6 +19,7 @@
 (require 'subr-x)
 (require 'gptel-request)
 (require 'magent-config)
+(require 'magent-agent-registry)
 (require 'magent-json)
 (require 'magent-lifecycle-events)
 (require 'magent-sampling)
@@ -645,13 +646,28 @@ across Magent's own serial tool queue without claiming OS-level isolation."
        :summary summary
        :args args-plist))))
 
-(defun magent-agent-loop-tools-for-provider (tools)
-  "Return gptel TOOLS with JSON-safe provider argument schemas."
+(defun magent-agent-loop-tools-for-provider (tools &optional scope)
+  "Return gptel TOOLS with JSON-safe schemas and agents available in SCOPE."
   (mapcar
    (lambda (tool)
      (gptel-make-tool
       :name (gptel-tool-name tool)
-      :description (gptel-tool-description tool)
+      :description
+      (if (equal (gptel-tool-name tool) "spawn_agent")
+          (concat (gptel-tool-description tool)
+                  "\nAvailable profiles: "
+                  (mapconcat
+                   (lambda (agent)
+                     (format "%s (%s)" (magent-agent-info-name agent)
+                             (or (magent-agent-info-description agent)
+                                 "child agent")))
+                   (seq-filter
+                    (lambda (agent)
+                      (or (eq (magent-agent-info-executor agent) 'magent)
+                          magent-codex-enabled))
+                    (magent-agent-registry-list nil 'subagent nil scope))
+                   "; "))
+        (gptel-tool-description tool))
       :args (magent-agent-loop--json-safe-tool-args
              (gptel-tool-args tool))
       :function (gptel-tool-function tool)

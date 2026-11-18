@@ -82,6 +82,11 @@ intentional tagged release is planned as ~v0.2.0~.
   session-local, freezes routes per submission, and supports ~Auto~ fallback to
   agent or gptel defaults.  Child agents may override inherited routes with
   their own explicit model.
+- Agent profiles can explicitly select a gptel backend and model. Native
+  children on a different route use their own sampling options.
+- Opt-in Codex child jobs share the Magent task lifecycle and forward
+  workspace approvals to the originating conversation. Follow-ups can load
+  the existing Codex thread from the saved job.
 - A documented Semantic Versioning policy, public compatibility boundary, and
   repeatable release checklist.
 - The initial release baseline: the agent-shell and in-process ACP frontend,
@@ -129,6 +134,9 @@ intentional tagged release is planned as ~v0.2.0~.
   request context.  Prompt, request-local agent, tools, skills, model route,
   effort, thinking mode, approvals, observer, and turn identity are frozen once in that
   context, which is the sole input to ~magent-agent-run-turn~.
+- Elisp agent profiles use ~:backend~ for the registered backend name and
+  ~:model~ for a model ID. Supply those two fields in place of an earlier
+  backend object or backend/model pair in ~:model~.
 - Project-local agent, skill, capability, and Action definitions now remain
   keyed by canonical project scope. Request execution resolves the exact
   runtime session scope, eliminating active-overlay registry swaps and the

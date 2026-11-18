@@ -474,6 +474,7 @@ invalid explicit route, which must still fail loudly during resolution."
                 runtime-session agent-or-name)))
     (or (magent-runtime-session-model-route runtime-session)
         (magent-agent-info-model agent)
+        (magent-agent-info-backend agent)
         (default-value 'gptel-backend)
         (default-value 'gptel-model))))
 

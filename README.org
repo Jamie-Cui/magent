@@ -495,11 +495,36 @@ The YAML frontmatter supports:
 - ~effort~: Override reasoning effort: ~auto~, ~minimal~, ~low~, ~medium~, ~high~, or ~xhigh~
 - ~thinking~: Override thinking mode: ~auto~, ~enabled~, or ~disabled~. Explicit
   ~disabled~ suppresses reasoning effort for the request.
-- ~model~: Override the default model for this agent.  Child agents prefer this
-  explicit route over the frozen route inherited from their parent.
+- ~executor~: ~magent~ (default) or ~codex~. Codex profiles use ~mode: subagent~.
+- ~backend~: Optional registered gptel backend name for the Magent executor.
+- ~model~: Model ID for the selected executor. Magent children prefer an
+  explicit backend/model route over the route of their parent. A child on a
+  different route uses its own sampling options and target model defaults.
 - ~permissions~: Mapping of permission groups to ~allow~, ~deny~, ~ask~, or nested file-pattern rules
 
 Unknown frontmatter fields and non-canonical permission keys are rejected.
+
+** Codex Child Agents
+
+Install [[https://github.com/Jamie-Cui/codex-acp.el][codex-acp.el]], authenticate
+the Codex CLI, and set ~magent-codex-enabled~ to ~t~ before initializing Magent.
+In a Magent project conversation, ask the primary agent to delegate work to
+~codex~. The built-in profile uses the Codex default model. To select a model
+per project, add ~.magent/agent/codex.md~:
+
+#+begin_src markdown
+---
+description: Implement and test agreed changes with Codex
+mode: subagent
+executor: codex
+model: "your-codex-model-id"
+---
+#+end_src
+
+Set the ID to a model available to your Codex account, or omit the field for
+the Codex default. Ask the primary agent to use ~send_agent_message~ for
+follow-ups on the existing job. Permissions requested by Codex workspace
+tools appear in the original Magent conversation.
 
 * Available Tools
 

@@ -110,7 +110,8 @@ defaults are used.  PHASE is retained as a policy seam for future request
 builders without adding a phase router today."
   (unless (magent-agent-info-p agent)
     (error "Expected Magent agent info, got: %S" agent))
-  (let* ((agent-route (magent-agent-info-model-route agent))
+  (let* ((agent-route (unless explicit-route
+                        (magent-agent-info-model-route agent)))
          (selected (or explicit-route
                        agent-route
                        parent-route
@@ -330,25 +331,32 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                :context context
                :resolution
                (magent-capability-resolution-to-plist capability-resolution)))
-            (magent-agent-info-apply-gptel-overrides
-             agent
-             (lambda ()
-               (let* ((route
+            (let ((parent-route
+                   (magent-request-context-parent-model-route request-state)))
+              (let* ((route
                        (magent-agent-resolve-model-route
                         agent
                         :explicit-route
                         (magent-request-context-model-route request-state)
-                        :parent-route
-                        (magent-request-context-parent-model-route
-                         request-state)))
+                        :parent-route parent-route))
+                      (independent-route
+                       (and parent-route
+                            (or (not (eq (magent-model-route-backend route)
+                                         (magent-model-route-backend parent-route)))
+                                (not (equal (magent-model-route-model route)
+                                            (magent-model-route-model parent-route))))))
                       (inherited-temperature
-                       (magent-request-context-temperature request-state))
+                       (unless independent-route
+                         (magent-request-context-temperature request-state)))
                       (inherited-top-p
-                       (magent-request-context-top-p request-state))
+                       (unless independent-route
+                         (magent-request-context-top-p request-state)))
                       (inherited-effort
-                       (magent-request-context-effort request-state))
+                       (unless independent-route
+                         (magent-request-context-effort request-state)))
                       (inherited-thinking
-                       (magent-request-context-thinking request-state))
+                       (unless independent-route
+                         (magent-request-context-thinking request-state)))
                       (backend (magent-model-route-backend route))
                       (model (magent-model-route-model route))
                       (temperature (or inherited-temperature
@@ -359,11 +367,13 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                                  (magent-agent-info-top-p agent)))
                       (effort-option (or inherited-effort
                                          (magent-agent-info-effort agent)
+                                         (and independent-route 'auto)
                                          (magent-effort-option-or-auto
                                           magent-default-effort)))
                       (thinking-option
                        (or inherited-thinking
                            (magent-agent-info-thinking agent)
+                           (and independent-route 'auto)
                            (magent-thinking-option-or-auto
                             magent-default-thinking)))
                       (thinking (magent-thinking-effective thinking-option))
@@ -379,17 +389,13 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                        (magent-request-context-backend request-state)
                        backend
                        (magent-request-context-temperature request-state)
-                       (or (magent-request-context-temperature request-state)
-                           temperature)
+                       temperature
                        (magent-request-context-top-p request-state)
-                       (or (magent-request-context-top-p request-state)
-                           top-p)
+                       top-p
                        (magent-request-context-effort request-state)
-                       (or (magent-request-context-effort request-state)
-                           effort-option)
+                       effort-option
                        (magent-request-context-thinking request-state)
-                       (or (magent-request-context-thinking request-state)
-                           thinking-option)
+                       thinking-option
                        (magent-request-context-skill-names request-state)
                        (copy-sequence resolved-skill-names)
                        (magent-request-context-capability-context request-state)
@@ -418,7 +424,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                         (gptel-model model)
                         (gptel-temperature temperature)
                         (request-tools
-                         (magent-agent-loop-tools-for-provider tools))
+                         (magent-agent-loop-tools-for-provider tools request-scope))
                         (_tool-capability-preflight
                          (when (and request-tools
                                     (eq (magent-sampling-gptel-route-tool-capability route)
@@ -824,7 +830,7 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                             :turn-id (magent-request-context-turn-id request-state)
                             :sampler #'magent-sampling-gptel-sample))
                      (sample)
-                     loop)))))))
+                     loop))))))
       (error
        (let ((message (error-message-string err)))
          (magent-agent--fail-request-turn
@@ -843,6 +849,9 @@ request envelope; ON-COMPLETE receives one final `magent-execution-result'."
   (unless (magent-session-p
            (magent-request-context-session request-context))
     (error "Request context has no Magent session"))
+  (when-let* ((agent (magent-request-context-agent request-context)))
+    (when (eq (magent-agent-info-executor agent) 'codex)
+      (error "Codex agents must be started as child jobs")))
   (unless (stringp (magent-request-context-prompt request-context))
     (error "Request context has no prompt"))
   (magent-agent--execute-turn

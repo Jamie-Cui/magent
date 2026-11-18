@@ -10,6 +10,8 @@
 
 ;;; Code:
 
+(require 'map)
+(require 'seq)
 (require 'cl-lib)
 (require 'subr-x)
 
@@ -173,7 +175,13 @@ closures, tool arguments, or prompt/command bodies."
   "Resolve REQUEST-ID with DECISION and invoke its callback.
 Return non-nil when a pending request was found."
   (when-let* ((entry (gethash request-id magent-approval--pending-requests)))
-    (unless (memq decision magent-approval--decisions)
+    (unless
+        (or (memq decision magent-approval--decisions)
+            (and (stringp decision)
+                 (seq-some
+                  (lambda (option) (equal decision (map-elt option 'optionId)))
+                  (plist-get (plist-get entry :request)
+                             :acp-permission-options))))
       (error "Invalid Magent approval decision: %S" decision))
     (setq decision
           (magent-approval-normalize-decision

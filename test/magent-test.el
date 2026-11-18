@@ -2084,29 +2084,6 @@ The ledger snapshot and event log live in sibling files."
     (let ((display (magent-agent-info-format-for-display agent)))
       (should (string-match-p "(hidden)" display)))))
 
-(ert-deftest magent-test-agent-info-apply-gptel-overrides ()
-  "Test applying agent-level gptel variable overrides."
-  (require 'magent-agent-registry)
-  (let ((gptel-backend (gptel-make-openai "default" :key "key"))
-        (gptel-model 'default-model)
-        (gptel-temperature 1.0))
-    ;; Agent with temperature override
-    (let ((agent (magent-agent-info-create
-                  :name "t" :mode 'primary :temperature 0.3)))
-      (magent-agent-info-apply-gptel-overrides
-       agent
-       (lambda ()
-         (should (= gptel-temperature 0.3))
-         ;; Backend and model unchanged
-         (should (equal (gptel-backend-name gptel-backend) "default")))))
-    ;; Agent with no overrides
-    (let ((agent (magent-agent-info-create :name "t2" :mode 'primary)))
-      (magent-agent-info-apply-gptel-overrides
-       agent
-       (lambda ()
-         (should (= gptel-temperature 1.0))
-         (should (eq gptel-model 'default-model)))))))
-
 (ert-deftest magent-test-agent-run-turn-records-runtime-inheritance ()
   "Test request context records inherited runtime sampling settings."
   (require 'magent-agent)
@@ -9300,6 +9277,7 @@ The ledger snapshot and event log live in sibling files."
   (require 'magent-audit)
   (require 'magent-agent-loop)
   (let* ((directory (make-temp-file "magent-audit-" t))
+         (default-directory (file-name-as-directory (expand-file-name "~")))
          (magent-audit (expand-file-name "audit.jsonl" directory))
          (magent-session--scoped-sessions (make-hash-table :test #'equal))
          (magent-session--current-scope 'global)
@@ -12753,7 +12731,7 @@ Without this, every relative tool path resolved against the local Emacs
          (profile-agent
           (magent-agent-info-create
            :name "explore" :mode 'subagent
-           :model (cons backend-a 'agent-a)))
+           :backend "A" :model 'agent-a))
          (plain-agent
           (magent-agent-info-create :name "plain" :mode 'subagent))
          (primary
@@ -16807,6 +16785,7 @@ Without this, every relative tool path resolved against the local Emacs
                  :description "Review: #safe"
                  :mode 'subagent
                  :color "#aabbcc"
+                 :backend "Specific Provider"
                  :model 'model-x
                  :permission permission
                  :prompt "Review carefully.")))
@@ -16818,6 +16797,7 @@ Without this, every relative tool path resolved against the local Emacs
                          "Review: #safe"))
           (should (equal (magent-agent-info-color loaded) "#aabbcc"))
           (should (eq (magent-agent-info-model loaded) 'model-x))
+          (should (equal (magent-agent-info-backend loaded) "Specific Provider"))
           (should (equal (magent-agent-info-permission loaded) permission)))
       (delete-directory directory t))))
 
@@ -16907,14 +16887,16 @@ Without this, every relative tool path resolved against the local Emacs
       (delete-file file))))
 
 (ert-deftest magent-test-agent-info-symbol-model-overrides-gptel-model ()
-  "A file-backed symbol model is applied without changing the backend."
-  (require 'magent-agent-info)
-  (let ((gptel-model 'default-model)
-        captured)
-    (magent-agent-info-apply-gptel-overrides
-     (magent-agent-info-create :name "model" :mode 'primary :model 'custom-model)
-     (lambda () (setq captured gptel-model)))
-    (should (eq captured 'custom-model))))
+  "A scalar model selects a model on the default gptel backend."
+  (let* ((gptel--known-backends nil)
+         (gptel-backend (gptel-make-openai "test" :key "key"
+                                          :models '(default-model custom-model)))
+         (gptel-model 'default-model)
+         (agent (magent-agent-info-create :name "model" :mode 'primary
+                                          :model 'custom-model))
+         (route (magent-agent-resolve-model-route agent)))
+    (should (eq gptel-backend (magent-model-route-backend route)))
+    (should (eq 'custom-model (magent-model-route-model route)))))
 
 (ert-deftest magent-test-project-tool-skill-is-rejected-without-loading-code ()
   "Project tool skills fail closed and never load companion Elisp."
@@ -19214,6 +19196,181 @@ CURL-EXIT simulates that exit code through gptel's real process sentinel."
       (should-not (magent-runtime-processing-p)))))
 
 (load (expand-file-name "test/magent-web-test.el" magent-test--root-directory) nil t)
+
+(ert-deftest magent-test-native-child-sampling-uses-its-own-route ()
+  "A native child uses its configured provider and sampling options."
+  (require 'magent-agent)
+  (let* ((gptel--known-backends nil)
+         (parent (gptel-make-openai "parent-test" :key "key" :models '(parent)))
+         (child (gptel-make-openai "child-test" :key "key" :models '(child)))
+         (agent (magent-agent-info-create :name "review" :mode 'subagent
+                                          :backend "child-test" :model 'child
+                                          :effort 'low :thinking 'enabled
+                                          :temperature 0.25))
+         (session (magent-session-create :agent agent))
+         (context (magent-request-context-create
+                   :id "child" :scope 'global :prompt "Review" :session session
+                   :agent agent
+                   :parent-model-route
+                   (magent-model-route-create :backend parent :model 'parent)
+                   :effort 'xhigh :thinking 'disabled :temperature 0.8 :top-p 0.9))
+         request)
+    (cl-letf (((symbol-function 'magent-agent-loop-start)
+               (lambda (loop) (setq request (magent-agent-loop-request loop))))
+              ((symbol-function 'magent-tools-get-gptel-tools-for-permission)
+               (lambda (&rest _) nil)))
+      (magent-agent-run-turn context :on-complete #'ignore))
+    (should (eq child (magent-sampling-request-backend request)))
+    (should (eq 'child (magent-sampling-request-model request)))
+    (should (eq 'low (magent-request-context-effort context)))
+    (should (eq 'enabled (magent-request-context-thinking context)))
+    (should (= 0.25 (magent-request-context-temperature context)))
+    (should-not (magent-request-context-top-p context))))
+
+(ert-deftest magent-test-codex-job-resumes-saved-thread-and-rejects-late-completion ()
+  "Spawn, reload and close a Codex job through the ordinary child-job tools."
+  (require 'magent-codex)
+  (let* ((magent-codex-enabled t)
+         (directory (file-name-as-directory (file-truename temporary-file-directory)))
+         (magent-agent-job--runtimes (make-hash-table :test #'equal))
+         (session (magent-session-create :id "codex-parent"))
+         (agent (magent-agent-info-create :name "codex" :mode 'subagent
+                                          :executor 'codex :model "codex-model"))
+         (magent-tools--request-context
+          (magent-request-context-create :id "request" :session session
+                                         :scope directory :project-root directory))
+         calls complete cancelled job job-id)
+    (cl-letf (((symbol-function 'magent-agent-registry-get)
+               (lambda (&rest _) agent))
+              ((symbol-function 'magent-tools--persist-parent-session) #'ignore)
+              ((symbol-function 'magent-tools--render-agent-job-event) #'ignore)
+              ((symbol-function 'magent-codex-run-turn)
+               (lambda (cwd thread model prompt &rest options)
+                 (push (list cwd thread model prompt) calls)
+                 (funcall (plist-get options :on-session) "thread-1" model)
+                 (setq complete (plist-get options :on-complete))
+                 (lambda () (setq cancelled t)))))
+      (magent-tools--spawn-agent #'ignore "codex" "Make a change")
+      (setq job (car (magent-session-agent-jobs session))
+            job-id (magent-agent-job-id job))
+      (should (eq 'running (magent-agent-job-status job)))
+      (should (equal "codex-model" (alist-get 'model
+                                            (magent-tools--agent-job-summary job))))
+      (funcall complete 'completed "First result")
+      (should (equal "First result" (magent-agent-job-result job)))
+      (magent-agent-job-clear-runtime job-id)
+      (setq job (magent-agent-job-from-alist (magent-agent-job-to-alist job)))
+      (magent-session-add-agent-job session job)
+      (magent-tools--send-agent-message #'ignore job-id "Add a test")
+      (should (equal calls (list (list directory "thread-1" "codex-model" "Add a test")
+                                 (list directory nil "codex-model" "Make a change"))))
+      (magent-tools--close-agent #'ignore job-id)
+      (should cancelled)
+      (funcall complete 'completed "Late result")
+      (should (eq 'closed (magent-agent-job-status job)))
+      (should-not (magent-agent-job-runtime job-id)))))
+
+(ert-deftest magent-test-codex-acp-exact-approval-options-and-cancel ()
+  "Codex approvals use their original option IDs and cancel clears pending work."
+  (require 'magent-codex)
+  (require 'magent-acp)
+  (let* ((magent-approval--pending-requests (make-hash-table :test #'equal))
+         (magent-approval--completed-requests (make-hash-table :test #'equal))
+         (options [((optionId . "allow-directory-turn") (kind . "allow_once"))
+                   ((optionId . "reject") (kind . "reject_once"))])
+         (incoming
+          `((id . "child-approval") (method . "session/request_permission")
+            (params . ((sessionId . "thread-1")
+                       (toolCall . ((toolCallId . "child-tool") (title . "Allow directory")))
+                       (options . ,options)))))
+         requests sent-response forwarded cancel-notification
+         permission notification finish-prompt outcome shutdown cancel)
+    (cl-letf (((symbol-value 'features) (cons 'codex-acp features))
+              ((symbol-function 'codex-acp-make-client)
+               (lambda (&rest _) 'mock-client))
+              ((symbol-function 'acp-subscribe-to-requests)
+               (lambda (&rest args) (setq permission (plist-get args :on-request))))
+              ((symbol-function 'acp-subscribe-to-notifications)
+               (lambda (&rest args) (setq notification (plist-get args :on-notification))))
+              ((symbol-function 'acp-send-request)
+               (lambda (&rest args)
+                 (let* ((request (plist-get args :request))
+                        (success (plist-get args :on-success))
+                        (method (map-elt request :method)))
+                   (push method requests)
+                   (pcase method
+                     ("initialize" (funcall success '((protocolVersion . 1))))
+                     ("session/load"
+                      (should (equal "thread-1"
+                                     (map-nested-elt request '(:params sessionId))))
+                      (funcall notification
+                               '((method . "session/update")
+                                 (params . ((sessionId . "thread-1")
+                                            (update . ((sessionUpdate . "agent_message_chunk")
+                                                       (content . ((type . "text")
+                                                                   (text . "Old transcript")))))))))
+                      (funcall success '((sessionId . "thread-1")
+                                         (models . ((currentModelId . "old-model"))))))
+                     ("session/set_config_option"
+                      (should (equal "new-model"
+                                     (map-nested-elt request '(:params value))))
+                      (funcall success nil))
+                     ("session/prompt" (setq finish-prompt success))))))
+              ((symbol-function 'magent-acp--request)
+               (lambda (_client id _method params) (setq forwarded (cons id params))))
+              ((symbol-function 'acp-send-response)
+               (lambda (&rest args) (setq sent-response (plist-get args :response))))
+              ((symbol-function 'acp-send-notification)
+               (lambda (&rest args) (setq cancel-notification (plist-get args :notification))))
+              ((symbol-function 'acp-shutdown) (lambda (&rest _) (setq shutdown t))))
+      (setq cancel
+            (magent-codex-run-turn
+             temporary-file-directory "thread-1" "new-model" "Continue"
+             :approval-provider (magent-acp--approval-provider nil "parent")
+             :on-session #'ignore
+             :on-complete (lambda (status text) (setq outcome (cons status text)))))
+      (should (equal requests
+                     '("session/prompt" "session/set_config_option"
+                       "session/load" "initialize")))
+      (dolist (choice '("allow-directory-turn" "reject"))
+        (funcall permission incoming)
+        (should (equal options (map-elt (cdr forwarded) 'options)))
+        (magent-acp--response-sender
+         :response (acp-make-session-request-permission-response
+                    :request-id (car forwarded) :option-id choice))
+        (should (equal choice (map-nested-elt sent-response '(:result outcome optionId)))))
+      (funcall permission incoming)
+      (should (= 1 (magent-approval-pending-count)))
+      (funcall cancel)
+      (should (= 0 (magent-approval-pending-count)))
+      (should (equal "session/cancel" (map-elt cancel-notification :method)))
+      (funcall finish-prompt '((stopReason . "cancelled")))
+      (should (eq 'cancelled (car outcome)))
+      (should shutdown))))
+
+(ert-deftest magent-test-codex-cancel-startup-ignores-late-initialize ()
+  "Cancelling an initializing Codex connection cannot start another request."
+  (require 'magent-codex)
+  (let (initialize requests shutdown result)
+    (cl-letf (((symbol-value 'features) (cons 'codex-acp features))
+              ((symbol-function 'codex-acp-make-client)
+               (lambda (&rest _) 'mock-client))
+              ((symbol-function 'acp-subscribe-to-requests) #'ignore)
+              ((symbol-function 'acp-subscribe-to-notifications) #'ignore)
+              ((symbol-function 'acp-shutdown)
+               (lambda (&rest _) (setq shutdown t)))
+              ((symbol-function 'acp-send-request)
+               (lambda (&rest args)
+                 (push (map-elt (plist-get args :request) :method) requests)
+                 (setq initialize (plist-get args :on-success)))))
+      (funcall (magent-codex-run-turn
+                temporary-file-directory nil nil "Work"
+                :on-session #'ignore
+                :on-complete (lambda (status _) (setq result status))))
+      (funcall initialize '((protocolVersion . 1)))
+      (should (equal '("initialize") requests))
+      (should (eq 'cancelled result))
+      (should shutdown))))
 
 (provide 'magent-test)
 ;;; magent-test.el ends here

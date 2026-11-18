@@ -141,9 +141,10 @@ Returns the default agent info structure, or nil if not found."
   "Set the default agent to NAME.
 Returns the new default agent info, or nil if not found."
   (magent-agent-registry-ensure-initialized)
-  (when (magent-agent-registry-get name)
-    (setq magent-agent-registry--default-agent name)
-    (magent-agent-registry-get name)))
+  (when-let* ((agent (magent-agent-registry-get name)))
+    (when (eq (magent-agent-info-executor agent) 'magent)
+      (setq magent-agent-registry--default-agent name)
+      agent)))
 
 ;;; Agent listing
 

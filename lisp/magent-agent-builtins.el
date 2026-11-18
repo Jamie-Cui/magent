@@ -15,6 +15,7 @@
 ;;; Code:
 
 (require 'magent-agent-info)
+(require 'magent-config)
 (require 'magent-permission)
 (require 'magent-prompt)
 
@@ -115,14 +116,20 @@
 
 (defun magent-agent-builtins-list ()
   "Return all built-in agent definitions."
-  (list
-   (magent-agent-builtins--build)
-   (magent-agent-builtins--plan)
-   (magent-agent-builtins--general)
-   (magent-agent-builtins--explore)
-   (magent-agent-builtins--compaction)
-   (magent-agent-builtins--title)
-   (magent-agent-builtins--summary)))
+  (append
+   (list
+    (magent-agent-builtins--build)
+    (magent-agent-builtins--plan)
+    (magent-agent-builtins--general)
+    (magent-agent-builtins--explore)
+    (magent-agent-builtins--compaction)
+    (magent-agent-builtins--title)
+    (magent-agent-builtins--summary))
+   (when magent-codex-enabled
+     (list
+      (magent-agent-info-create
+       :name "codex" :mode 'subagent :executor 'codex :native t
+       :description "Implement and verify approved coding tasks with Codex")))))
 
 (provide 'magent-agent-builtins)
 ;;; magent-agent-builtins.el ends here
