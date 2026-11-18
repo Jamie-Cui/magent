@@ -15,6 +15,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'image)
 (require 'map)
 (require 'subr-x)
 (require 'magent-agent-info)
@@ -25,6 +26,7 @@
 (require 'magent-agent-job)
 
 (declare-function magent-agent-registry-get "magent-agent-registry")
+(declare-function magent-tool-output-spill--safe-id "magent-ledger" (value kind))
 
 ;;; Session state structure
 
@@ -258,16 +260,6 @@ earliest one."
   "Return SESSION's canonical thread ledger."
   (magent-session--ensure-thread session))
 
-(defun magent-session--forkable-p (session)
-  "Return non-nil when SESSION has a stable ledger snapshot to fork."
-  (let ((thread (magent-session-thread session)))
-    (or (null thread)
-        (and (not (eq (magent-thread-status thread) 'active))
-             (cl-every #'magent-thread-terminal-turn-p
-                       (magent-thread-turns thread))
-             (cl-every #'magent-thread-terminal-item-p
-                       (magent-thread-all-items thread))))))
-
 (defun magent-session--deep-copy-data (value)
   "Return a recursive copy of JSON-like VALUE, including strings."
   (cond
@@ -317,21 +309,27 @@ while the mutable thread identity and journal start a new branch."
           (magent-thread-journal-tail thread) nil
           (magent-thread-snapshot-created-at thread) now
           (magent-thread-last-event-seq thread) 0)
+    ;; An active source turn is not committed history.  Drop every non-terminal
+    ;; turn so the branch starts from the same durable prefix a restart would
+    ;; recover, exactly as Codex forks a thread without its in-flight turn.
+    (setf (magent-thread-turns thread)
+          (cl-remove-if-not #'magent-thread-terminal-turn-p
+                            (magent-thread-turns thread)))
     (dolist (turn (magent-thread-turns thread))
       (setf (magent-thread-turn-thread-id turn) session-id))
     thread))
 
 (defun magent-session-fork (source scope)
   "Return an independent fork of SOURCE in exact SCOPE.
-The fork retains conversation history, the selected agent, and the history
-limit.  Session-scoped approvals, child jobs, and unrelated metadata are not
-inherited.  SOURCE is never modified."
+The fork retains SOURCE's committed conversation history, the selected agent,
+and the history limit.  A turn that is still running or queued is not committed
+history, so it is omitted and SOURCE keeps executing; this matches Codex
+`thread/fork' snapshot semantics.  Session-scoped approvals, child jobs, and
+unrelated metadata are not inherited.  SOURCE is never modified."
   (unless (magent-session-p source)
     (error "Expected a Magent session, got: %S" source))
   (unless scope
     (error "An explicit session scope is required"))
-  (unless (magent-session--forkable-p source)
-    (user-error "Magent: cannot fork a session with non-terminal work"))
   (let* ((source-id
           (or (magent-session-id source)
               (error "Magent: cannot fork a session without an id")))
@@ -679,9 +677,16 @@ the original file valid and the migration simply runs again."
 
 (defun magent-session-scope-from-directory (&optional directory)
   "Return the session scope derived from DIRECTORY.
-Returns a normalized project root string or the symbol `global'."
+A detected project root becomes the scope.  A local directory without a
+project keeps the shared `global' scope, so ordinary local conversations stay
+in one place.  A remote directory without a project becomes its own scope:
+one shared `global' bucket would mix history from different hosts and would
+resolve tool paths on the local machine instead of the project host."
   (or (magent-session--normalize-project-root
        (magent-project-root directory t))
+      (let ((target (or directory default-directory)))
+        (when (file-remote-p target)
+          (magent-session--normalize-project-root target)))
       'global))
 
 (defun magent-session-current-scope ()
@@ -788,7 +793,13 @@ selected agent, and history limit so runtime UI handles remain valid."
                 (remhash filepath magent-session--metadata-cache))
             (error
              (magent-log "WARN failed deleting cleared session %s: %s"
-                         path (error-message-string err))))))))
+                         path (error-message-string err))))))
+      (when id
+        (condition-case err
+            (magent-session-media-delete-session target-scope id)
+          (error
+           (magent-log "WARN failed deleting cleared session media %s: %s"
+                       id (error-message-string err)))))))
   session)
 
 (defun magent-session-reset ()
@@ -1135,19 +1146,24 @@ a superset of events that replay simply skips by `last-event-seq'."
   (puthash session 0 magent-session--log-count)
   filepath)
 
-(defun magent-session-save-for-session (session scope)
+(defun magent-session-save-for-session (session scope &optional force)
   "Synchronously persist SESSION for explicit SCOPE.
 The header <session-id>.json is rewritten (it is small), new ledger events are
 appended to <session-id>.jsonl, and the materialized snapshot is rewritten only
 when it is missing or the log has grown past `magent-session-log-max-events'.
 This is the persistence primitive for asynchronous callers: it never reads or
-temporarily rebinds the ambient current session or scope."
+temporarily rebinds the ambient current session or scope.
+
+An untouched session is normally not written, so browsing does not accumulate
+empty conversations.  FORCE writes it anyway; renaming an empty session uses
+this so the new title is listed and can be loaded later."
   (unless (magent-session-p session)
     (error "Expected a Magent session, got: %S" session))
   (unless scope
     (error "An explicit session scope is required"))
   (let ((thread (magent-session-thread-ledger session)))
-    (when (or (magent-thread-turns thread)
+    (when (or force
+              (magent-thread-turns thread)
               (magent-session-agent-jobs session))
       (let* ((storage-dir (magent-session--scope-storage-directory scope))
              (_ (make-directory storage-dir t))
@@ -1414,6 +1430,200 @@ one turn, including an oversized or currently active turn."
       (map-elt block (intern (concat ":" (symbol-name key))))
       (map-elt block (symbol-name key))))
 
+;;; Inline image storage
+;;
+;; ACP frontends send prompt images as base64 content blocks.  Storing them
+;; inside the append-only session log would make every replay pay for the
+;; payload, so images are written once to a private, content-addressed media
+;; directory and the ledger keeps a small reference block.  The reference
+;; survives restarts, forks, and compaction; the bytes are read only when a
+;; model request or an ACP history replay actually needs them.
+
+(defconst magent-session-media-directory-name "media"
+  "Subdirectory of `magent-session-directory' holding inline prompt images.")
+
+(defconst magent-session-media-mime-extensions
+  '(("image/png" "png" png)
+    ("image/jpeg" "jpg" jpeg)
+    ("image/webp" "webp" webp)
+    ("image/gif" "gif" gif))
+  "Supported inline image MIME types, stored extensions, and image types.")
+
+(defun magent-session-media-mime-supported-p (mime)
+  "Return non-nil when MIME is a supported inline image type."
+  (and (stringp mime) (assoc mime magent-session-media-mime-extensions)))
+
+(defun magent-session-media--extension (mime)
+  "Return the stored file extension for MIME."
+  (or (nth 1 (assoc mime magent-session-media-mime-extensions))
+      (error "Unsupported inline image type: %s" mime)))
+
+(defun magent-session-media--image-type (mime)
+  "Return the Emacs image type symbol for MIME."
+  (or (nth 2 (assoc mime magent-session-media-mime-extensions))
+      (error "Unsupported inline image type: %s" mime)))
+
+(defun magent-session-media--scope-key (scope)
+  "Return a filesystem-safe identity key for exact session SCOPE."
+  (if (eq scope 'global)
+      "global"
+    (format "scope-%s"
+            (secure-hash 'sha256
+                         (prin1-to-string
+                          (magent-json-safe-value scope))))))
+
+(defun magent-session-media--ensure-private-directory (directory)
+  "Create DIRECTORY and restrict it to the current user."
+  (make-directory directory t)
+  (set-file-modes directory #o700)
+  directory)
+
+(defun magent-session-media--directory-path (scope session-id)
+  "Return the media directory path for exact SCOPE and SESSION-ID."
+  (expand-file-name
+   (magent-tool-output-spill--safe-id session-id "session id")
+   (expand-file-name
+    (magent-session-media--scope-key scope)
+    (expand-file-name magent-session-media-directory-name
+                      magent-session-directory))))
+
+(defun magent-session-media--directory (scope session-id)
+  "Return and create the private media directory for SCOPE and SESSION-ID."
+  (let* ((root (magent-session-media--ensure-private-directory
+                (expand-file-name magent-session-media-directory-name
+                                  magent-session-directory)))
+         (scope-directory
+          (magent-session-media--ensure-private-directory
+           (expand-file-name (magent-session-media--scope-key scope) root))))
+    (magent-session-media--ensure-private-directory
+     (expand-file-name
+      (magent-tool-output-spill--safe-id session-id "session id")
+      scope-directory))))
+
+(defun magent-session-media-store (scope session-id mime data)
+  "Store decoded image DATA as MIME for SCOPE and SESSION-ID.
+Return the durable reference block recorded in the session ledger.  DATA is
+validated against the declared MIME type before anything is written."
+  (let ((extension (magent-session-media--extension mime)))
+    (unless (and (stringp data) (> (length data) 0))
+      (user-error "Magent: inline image is empty"))
+    (when (> (string-bytes data) magent-inline-image-max-bytes)
+      (user-error "Magent: inline image exceeds the %d MiB limit"
+                  (/ magent-inline-image-max-bytes 1024 1024)))
+    (unless (eq (image-type-from-data data)
+                (magent-session-media--image-type mime))
+      (user-error "Magent: inline image data does not match %s" mime))
+    (let* ((media-id (secure-hash 'sha256 data))
+           (directory (magent-session-media--directory scope session-id))
+           (target (expand-file-name (concat media-id "." extension) directory)))
+      (unless (file-regular-p target)
+        (let ((temporary (make-temp-file
+                          (expand-file-name ".magent-image-" directory))))
+          (unwind-protect
+              (progn
+                (with-temp-buffer
+                  (set-buffer-multibyte nil)
+                  (insert data)
+                  (let ((coding-system-for-write 'no-conversion))
+                    (write-region (point-min) (point-max) temporary nil 'silent)))
+                (set-file-modes temporary #o600)
+                (rename-file temporary target t)
+                (setq temporary nil))
+            (when (and temporary (file-exists-p temporary))
+              (delete-file temporary)))))
+      `((type . "image")
+        (mimeType . ,mime)
+        (mediaId . ,media-id)
+        (bytes . ,(string-bytes data))))))
+
+(defun magent-session-media-file (scope session-id block)
+  "Return the stored file for image reference BLOCK, or nil when absent."
+  (let ((media-id (magent-session--content-block-value block 'mediaId))
+        (mime (magent-session--content-block-value block 'mimeType)))
+    (when (and (stringp media-id)
+               (magent-session-media-mime-supported-p mime)
+               (string-match-p "\\`[[:xdigit:]]+\\'" media-id))
+      (let* ((directory
+              (magent-session-media--directory-path scope session-id))
+             (path (expand-file-name
+                    (concat media-id "."
+                            (magent-session-media--extension mime))
+                    directory)))
+        (and (file-regular-p path)
+             (file-in-directory-p path directory)
+             path)))))
+
+(defun magent-session--content-block-image-p (block)
+  "Return non-nil when BLOCK is an inline image reference or payload."
+  (equal (magent-session--content-block-value block 'type) "image"))
+
+(defun magent-session--content-block-image-mime (block)
+  "Return BLOCK's image MIME type."
+  (magent-session--content-block-value block 'mimeType))
+
+(defun magent-session-media-references (thread)
+  "Return distinct (MEDIA-ID . MIME) pairs referenced by THREAD."
+  (let (references)
+    (dolist (item (and thread (magent-thread-all-items thread)) references)
+      (dolist (block (append (magent-session--metadata-value
+                              (magent-thread-item-metadata item)
+                              :content-blocks)
+                             nil))
+        (when (magent-session--content-block-image-p block)
+          (let ((media-id (magent-session--content-block-value block 'mediaId))
+                (mime (magent-session--content-block-image-mime block)))
+            (when (and (stringp media-id)
+                       (magent-session-media-mime-supported-p mime))
+              (cl-pushnew (cons media-id mime) references :test #'equal))))))))
+
+(defun magent-session-media-delete-session (scope session-id)
+  "Delete inline images belonging to exact SCOPE and SESSION-ID."
+  (let ((directory (magent-session-media--directory-path scope session-id)))
+    (when (file-directory-p directory)
+      (delete-directory directory t))))
+
+(defun magent-session-media-fork-session
+    (scope source-session-id target-session-id media-ids)
+  "Copy MEDIA-IDS in SCOPE from SOURCE-SESSION-ID to TARGET-SESSION-ID.
+Missing source images are already unavailable to the source conversation and
+are skipped.  Any other failure removes the partial target directory."
+  (unless (equal source-session-id target-session-id)
+    (let ((source-directory
+           (magent-session-media--directory-path scope source-session-id))
+          (target-directory nil)
+          completed)
+      (unwind-protect
+          (progn
+            (dolist (entry media-ids)
+              (let* ((media-id (car entry))
+                     (mime (cdr entry))
+                     (source (and (magent-session-media-mime-supported-p mime)
+                                  (expand-file-name
+                                   (concat (magent-tool-output-spill--safe-id
+                                            media-id "media id")
+                                           "."
+                                           (magent-session-media--extension mime))
+                                   source-directory))))
+                (if (and source (file-regular-p source)
+                         (file-in-directory-p source source-directory))
+                    (let* ((directory
+                            (or target-directory
+                                (setq target-directory
+                                      (magent-session-media--directory
+                                       scope target-session-id))))
+                           (target (expand-file-name
+                                    (file-name-nondirectory source) directory)))
+                      (copy-file source target t t nil t)
+                      (set-file-modes target #o600))
+                  (magent-log
+                   "WARN fork skipped unavailable image %s from session %s"
+                   media-id source-session-id))))
+            (setq completed t)
+            target-directory)
+        (unless completed
+          (when target-directory
+            (delete-directory target-directory t)))))))
+
 (defun magent-session--resource-block-text (block)
   "Render one normalized ACP resource BLOCK for model input."
   (let* ((type (magent-session--content-block-value block 'type))
@@ -1446,14 +1656,21 @@ one turn, including an oversized or currently active turn."
               metadata))))
 
 (defun magent-session-content-blocks-to-prompt (content-blocks)
-  "Render normalized CONTENT-BLOCKS as one user-role model prompt."
+  "Render normalized CONTENT-BLOCKS as one user-role model prompt.
+Image blocks render as a short attachment marker: their bytes travel as
+multipart media parts, not as prompt text."
   (let (parts)
     (dolist (block (append content-blocks nil))
       (let ((type (magent-session--content-block-value block 'type)))
         (push
-         (if (or (null type) (equal type "text"))
-             (or (magent-session--content-block-value block 'text) "")
-           (magent-session--resource-block-text block))
+         (cond
+          ((or (null type) (equal type "text"))
+           (or (magent-session--content-block-value block 'text) ""))
+          ((equal type "image")
+           (format "[Attached image: %s]"
+                   (or (magent-session--content-block-image-mime block)
+                       "image")))
+          (t (magent-session--resource-block-text block)))
          parts)))
     (string-trim (mapconcat #'identity (nreverse parts) "\n"))))
 
@@ -1472,6 +1689,22 @@ one turn, including an oversized or currently active turn."
         (magent-session-content-blocks-to-prompt content-blocks))
       (magent-session--turn-message-content turn 'user)
       (magent-thread-turn-input turn)))
+
+(defun magent-session--turn-image-parts (turn scope)
+  "Return resolvable TURN images as gptel multipart media plists.
+Images whose stored file disappeared are skipped: the conversation text still
+records that an image was attached, but the model request must not fail."
+  (let ((session-id (magent-thread-turn-thread-id turn)))
+    (when (and (stringp session-id)
+               (or (eq scope 'global) (stringp scope)))
+      (let (parts)
+        (dolist (block (append (magent-session--turn-content-blocks turn) nil))
+          (when (magent-session--content-block-image-p block)
+            (when-let* ((file (magent-session-media-file scope session-id block)))
+              (push (list :media file
+                          :mime (magent-session--content-block-image-mime block))
+                    parts))))
+        (nreverse parts)))))
 
 (defun magent-session--tool-prompt-entry (item)
   "Return a gptel prompt-list tool plist for ledger ITEM."
@@ -1549,7 +1782,13 @@ Later queued submissions are excluded from the active request."
           (let ((user-text (magent-session--content-to-string
                             (magent-session--turn-user-content turn))))
             (unless (string-empty-p user-text)
-              (push (cons 'prompt user-text) entries))
+              (let ((media (magent-session--turn-image-parts
+                            turn (or (magent-session--scope-for-thread session)
+                                     'global))))
+                (push (if media
+                          (cons 'prompt (list user-text :media media))
+                        (cons 'prompt user-text))
+                      entries)))
             (dolist (item (magent-thread-turn-items turn))
               (pcase (magent-thread-item-type item)
                 ('message
@@ -1599,10 +1838,16 @@ snapshot plus the bounded journal tail."
       ('provider
        (magent-session--provider-context-view session current-turn-id))
       ('compaction
+       ;; The summarizer only needs text: image payloads would be useless to it
+       ;; and the summarizer model may not accept them at all.
        (cl-loop for entry in (magent-session--provider-context-view session current-turn-id)
                 unless (eq (car entry) 'provider)
-                collect (if (and (eq (car entry) 'response) (consp (cdr entry)))
-                            (cons 'response (cadr entry)) entry)))
+                collect (cond
+                         ((and (eq (car entry) 'response) (consp (cdr entry)))
+                          (cons 'response (cadr entry)))
+                         ((and (eq (car entry) 'prompt) (consp (cdr entry)))
+                          (cons 'prompt (car (cdr entry))))
+                         (t entry))))
       ('audit
        (and thread
             `((snapshot . ,(magent-thread-snapshot-to-alist thread))

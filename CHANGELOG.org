@@ -14,6 +14,20 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Added
 
+- ACP inline image prompts. Frontends may send ~image~ content blocks with
+  PNG, JPEG, WebP, or GIF payloads; Magent validates and stores them in a
+  private content-addressed media directory, records a small ledger reference,
+  and sends them to gptel as media parts only for models that accept media.
+  History replay restores the original attachment, forks copy referenced
+  images, and ~magent-inline-image-max-bytes~ bounds each payload.
+- ~session/set_title~ persists an explicit session title and publishes
+  ~session_info_update~, so frontends that advertise title support can rename
+  a conversation without starting a model turn.
+- Session options are durable. The selected agent, explicit model route,
+  effort, thinking mode, and automatic-capability setting are mirrored into the
+  session header and restored by ~session/load~; an option whose agent or model
+  no longer exists is logged and skipped.
+
 - The ~M-x magent-action~ picker groups runnable Actions and ~manage:~ commands
   for isolated session history, cancellation, project reload, and clearing
   mode-line result counts. Management stays available without runnable Actions;
@@ -77,6 +91,18 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Changed
 
+- A remote directory without a detected project is now its own session scope
+  instead of the shared ~global~ scope. Sharing ~global~ across hosts mixed
+  their conversation history and resolved relative tool paths against the local
+  Emacs directory, so file edits and commands could target the wrong machine.
+  A local directory without a project keeps ~global~.
+- ACP session capabilities are now advertised in the schema location,
+  ~agentCapabilities.sessionCapabilities~, and mirrored to the top-level field
+  older agent-shell releases read. Frontends that follow the schema now see
+  history listing, forking, and renaming as supported.
+- ~session/fork~ follows Codex ~thread/fork~ snapshot semantics: a source
+  conversation may keep running, and the fork copies only its committed turns
+  instead of failing on active or queued work.
 - Progress updates now use short plain paragraphs, acknowledge material user
   redirection before further tools, and surface failures immediately only when
   they change the next action or block progress.

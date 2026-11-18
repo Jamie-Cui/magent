@@ -836,6 +836,12 @@ return that path."
   "Real timers coalesce streaming updates and retain terminal session data."
   :tags '(:magent-live-smoke)
   (require 'magent-session)
+  ;; A previous live test can leave one coalesced save timer scheduled.  It
+  ;; would still fire inside this test's measurement window, because the timer
+  ;; reads the dynamically bound pending list, and the resulting early save is
+  ;; indistinguishable from the measured latency.
+  (when (timerp magent-session--save-timer)
+    (cancel-timer magent-session--save-timer))
   (let* ((magent-session-directory (make-temp-file "magent-live-save-" t))
          (magent-session--pending-saves nil)
          (magent-session--save-timer nil)

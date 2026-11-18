@@ -30,6 +30,12 @@ child-agent coordination, ~emacs_read~, ~emacs_eval~, ~emacs_eval_live~, and
 the TRAMP filesystem, and agent-shell context rendering does not perform image
 or containment queries for remote files.
 
+A remote directory without a detected project is its own session scope rather
+than the shared `global~ scope.  Sharing `global~ would mix conversations from
+different hosts and would leave the request without a project root, so relative
+tool paths would resolve against the local Emacs directory.  A local directory
+without a project keeps `global~, because one local bucket is unambiguous.
+
 The canonical tool catalog declares one locality for every tool:
 
 | Locality | Tools | Contract |

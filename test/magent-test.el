@@ -9497,10 +9497,111 @@ The ledger snapshot and event log live in sibling files."
       (delete-directory directory t))))
 
 (ert-deftest magent-test-session-scope-from-directory-falls-back-to-global ()
-  "Test session scope is global when no project root is detected."
+  "A local directory without a project keeps the shared global scope."
   (cl-letf (((symbol-function 'magent-project-root)
              (lambda (&optional _directory _no-fallback) nil)))
-    (should (eq (magent-session-scope-from-directory "/tmp/") 'global))))
+    (should (eq (magent-session-scope-from-directory "/tmp/") 'global))
+    (should (eq (magent-session-scope-from-directory "/home/user/") 'global))))
+
+(ert-deftest magent-test-session-remote-general-scope-is-per-host ()
+  "A remote directory without a project becomes its own scope.
+Sharing `global' across hosts mixed their history and made tool paths resolve
+on the local machine instead of the project host."
+  (cl-letf (((symbol-function 'magent-project-root)
+             (lambda (&optional _directory _no-fallback) nil))
+            ((symbol-function 'file-truename)
+             (lambda (&rest _args)
+               (ert-fail "Remote scope derivation performed file I/O"))))
+    (let ((host-a (magent-session-scope-from-directory "/ssh:hosta:/home/user/"))
+          (host-a-sub (magent-session-scope-from-directory "/ssh:hosta:/srv/"))
+          (host-b (magent-session-scope-from-directory "/ssh:hostb:/home/user/")))
+      (should (stringp host-a))
+      (should (stringp host-b))
+      (should-not (equal host-a host-b))
+      (should-not (equal host-a host-a-sub))
+      ;; A remote host is never folded into the local global bucket.
+      (should-not (eq host-a 'global))
+      ;; Storage stays under the project-scope layout and never under global/.
+      (should (string-match-p "/projects/" (magent-session--scope-storage-directory
+                                            host-a)))
+      (should-not (equal (magent-session--scope-storage-directory host-a)
+                         (magent-session--scope-storage-directory host-b))))))
+
+(ert-deftest magent-test-session-remote-general-scope-resolves-tools-remotely ()
+  "A remote general scope gives file tools the project host as their root.
+Without this, every relative tool path resolved against the local Emacs
+`default-directory', editing local files while the user worked on a host."
+  (require 'magent-tools)
+  (cl-letf (((symbol-function 'magent-project-root)
+             (lambda (&optional _directory _no-fallback) nil))
+            ((symbol-function 'file-truename) (lambda (path) path)))
+    (let* ((scope (magent-session-scope-from-directory "/ssh:hosta:/home/user/"))
+           (magent-tools--request-context
+            (magent-request-context-create :scope scope :project-root scope))
+           (canonical (magent-tools-canonical-resource-path "src/a.el")))
+      (should (file-remote-p canonical))
+      (should (equal canonical "/ssh:hosta:/home/user/src/a.el")))))
+
+(ert-deftest magent-test-acp-session-list-separates-remote-general-hosts ()
+  "Remote general sessions are listed only for their own host."
+  (require 'magent-acp)
+  (cl-letf (((symbol-function 'magent-project-root)
+             (lambda (&optional _directory _no-fallback) nil))
+            ;; Scopes are stored without a trailing slash, matching what
+            ;; `magent-session-scope-from-directory' produces.
+            ((symbol-function 'magent-runtime-list-sessions-for-scope)
+             (lambda (scope)
+               (cond
+                ((equal scope "/ssh:hosta:/home/user")
+                 '((:id "a" :scope "/ssh:hosta:/home/user"
+                        :project-root "/ssh:hosta:/home/user" :updated-at 0.0)
+                   (:id "b" :scope "/ssh:hostb:/home/user"
+                        :project-root "/ssh:hostb:/home/user" :updated-at 0.0)))
+                ((equal scope "/ssh:hostb:/home/user")
+                 '((:id "b" :scope "/ssh:hostb:/home/user"
+                        :project-root "/ssh:hostb:/home/user" :updated-at 0.0)))
+                (t '())))))
+    (let ((host-a (map-elt (magent-acp--session-list-response
+                            "/ssh:hosta:/home/user/")
+                           'sessions))
+          (host-b (map-elt (magent-acp--session-list-response
+                            "/ssh:hostb:/home/user/")
+                           'sessions)))
+      (should (equal (mapcar (lambda (entry) (map-elt entry 'sessionId))
+                             (append host-a nil))
+                     '("a")))
+      (should (equal (mapcar (lambda (entry) (map-elt entry 'sessionId))
+                             (append host-b nil))
+                     '("b"))))))
+
+(ert-deftest magent-test-session-remote-general-scope-round-trips-persistence ()
+  "A remote general session saves, reloads, and lists under its own scope only."
+  (require 'magent-runtime-api)
+  (let* ((magent-session-directory (make-temp-file "magent-remote-scope-" t))
+         (scope "/ssh:hosta:/home/user")
+         session file loaded)
+    (unwind-protect
+        (cl-letf (((symbol-function 'magent-project-root)
+                   (lambda (&optional _directory _no-fallback)
+                     "/ssh:hosta:/home/user/"))
+                  ((symbol-function 'file-truename) (lambda (path) path)))
+          (setq scope (magent-session-scope-from-directory
+                       "/ssh:hosta:/home/user/"))
+          (setq session (magent-session-create :id "remote-one"))
+          (magent-test--record-session-entry session 'user "remote hello")
+          (setq file (magent-session-save-for-session session scope))
+          (setq loaded (magent-session-read-file file))
+          ;; Stored under the project layout, never under global/.
+          (should (string-match-p
+                   "/projects/[[:xdigit:]]+/remote-one[.]json\\'"
+                   file))
+          (should (equal (plist-get loaded :scope) scope))
+          (should (equal (mapcar (lambda (entry) (plist-get entry :id))
+                                 (magent-runtime-list-sessions-for-scope scope))
+                         '("remote-one")))
+          ;; The shared global bucket never exposes another host's session.
+          (should-not (magent-runtime-list-sessions-for-scope 'global)))
+      (delete-directory magent-session-directory t))))
 
 (ert-deftest magent-test-session-remote-scope-normalization-performs-no-file-io ()
   "Remote session routing normalizes TRAMP names without contacting the host."
@@ -15965,6 +16066,34 @@ The ledger snapshot and event log live in sibling files."
             (should (= (length (magent-thread-turns thread)) 2))))
       (delete-directory magent-session-directory t))))
 
+(ert-deftest magent-test-session-clear-deletes-inline-image-media ()
+  "Clearing a session removes its stored images and leaves other sessions alone."
+  (let* ((magent-session-directory (make-temp-file "magent-media-clear-" t))
+         (session (magent-session-create :id "media-one"))
+         (other (magent-session-create :id "media-two"))
+         (block (magent-session-media-store
+                 'global "media-one" "image/png"
+                 (magent-test--tiny-png-bytes)))
+         (other-block (magent-session-media-store
+                       'global "media-two" "image/png"
+                       (magent-test--tiny-png-bytes))))
+    (unwind-protect
+        (progn
+          (dolist (entry (list (cons session block) (cons other other-block)))
+            (let* ((target (car entry))
+                   (image (cdr entry))
+                   (thread (magent-session-thread-ledger target))
+                   (turn (magent-thread-create-turn thread "look")))
+              (magent-thread-record-user-message-if-needed
+               thread (magent-thread-turn-id turn) "look" nil
+               (list :content-blocks (vector image)))))
+          (should (magent-session-media-file 'global "media-one" block))
+          (magent-session-clear session 'global)
+          (should-not (magent-session-media-file 'global "media-one" block))
+          ;; Another session's images are untouched.
+          (should (magent-session-media-file 'global "media-two" other-block)))
+      (delete-directory magent-session-directory t))))
+
 (ert-deftest magent-test-session-clear-removes-only-its-deferred-save ()
   "Clearing one session cannot discard another session's pending save."
   (let* ((magent-session-directory (make-temp-file "magent-save-clear-" t))
@@ -17604,13 +17733,45 @@ The ledger snapshot and event log live in sibling files."
     (should (= (length (magent-thread-turns fork-thread)) 2))
     (should (= (length (magent-thread-turns source-thread)) 1))))
 
-(ert-deftest magent-test-session-fork-rejects-non-terminal-ledger ()
-  "A fork cannot capture a queued or otherwise non-terminal turn."
+(ert-deftest magent-test-session-fork-excludes-non-terminal-ledger ()
+  "A fork snapshots committed turns and drops queued work.
+Codex forks a thread while an earlier turn is still running and omits the
+in-flight work, so Magent keeps the source untouched and starts the branch
+from the same durable prefix a restart would recover."
   (let* ((source (magent-session-create :id "busy-source"))
+         (thread (magent-session-thread-ledger source))
+         (queued (magent-thread-queue-turn thread "queued"))
+         (fork (magent-session-fork source 'global))
+         (fork-thread (magent-session-thread fork)))
+    (should (= (length (magent-thread-turns thread)) 1))
+    (should (eq (magent-thread-turn-status queued) 'queued))
+    (should-not (magent-thread-turns fork-thread))
+    (should-not (magent-thread-find-turn fork-thread
+                                         (magent-thread-turn-id queued)))))
+
+(ert-deftest magent-test-session-fork-copies-committed-prefix-only ()
+  "Forking a busy conversation keeps completed turns and the source intact."
+  (let* ((source (magent-session-create :id "live-source"))
          (thread (magent-session-thread-ledger source)))
-    (magent-thread-queue-turn thread "queued")
-    (should-error (magent-session-fork source 'global) :type 'user-error)
-    (should (= (length (magent-thread-turns thread)) 1))))
+    (magent-test--record-session-entry source 'user "committed question")
+    (magent-test--record-session-entry source 'assistant "committed answer")
+    (let* ((live-thread (magent-session-thread-ledger source))
+           (active (magent-thread-create-turn live-thread "in-flight"))
+           (fork (magent-session-fork source 'global))
+           (fork-thread (magent-session-thread fork)))
+      (should (eq (magent-thread-turn-status active) 'in-progress))
+      (should (= (length (magent-thread-turns fork-thread)) 1))
+      (should (equal (mapcar (lambda (entry)
+                               (list (magent-test--transcript-role entry)
+                                     (magent-test--transcript-content entry)))
+                             (magent-test--session-transcript fork))
+                     '((user "committed question")
+                       (assistant "committed answer"))))
+      ;; The source keeps the active turn it was executing.
+      (should (= (length (magent-thread-turns thread)) 2))
+      (should (eq (magent-thread-turn-status
+                   (magent-thread-active-turn thread))
+                  'in-progress)))))
 
 (ert-deftest magent-test-runtime-session-fork-copies-config-spills-and-persists ()
   "Runtime fork preserves stable options and session-private tool results."
@@ -17701,10 +17862,13 @@ The ledger snapshot and event log live in sibling files."
                         fork-runtime))))
       (delete-directory magent-session-directory t))))
 
-(ert-deftest magent-test-runtime-session-fork-rejects-queue-owner-before-clone ()
-  "Runtime fork checks the exact queue owner before creating a session."
+(ert-deftest magent-test-runtime-session-fork-allows-busy-source ()
+  "Runtime fork snapshots a busy source instead of rejecting it.
+The source keeps executing; only its committed turns reach the branch."
   (require 'magent-runtime-api)
   (let* ((source (magent-session-create :id "queue-source"))
+         (fork (magent-session-create :id "queue-fork"))
+         (magent-runtime-api--sessions (make-hash-table :test #'equal))
          (runtime
           (magent-runtime-session-create
            :id "queue-source" :scope 'global :magent-session source))
@@ -17712,9 +17876,14 @@ The ledger snapshot and event log live in sibling files."
     (cl-letf (((symbol-function 'magent-runtime-queue-session-busy-p)
                (lambda (candidate) (eq candidate source)))
               ((symbol-function 'magent-session-fork)
-               (lambda (&rest _args) (setq cloned t))))
-      (should-error (magent-runtime-session-fork runtime) :type 'user-error))
-    (should-not cloned)))
+               (lambda (&rest _args) (setq cloned t) fork))
+              ((symbol-function 'magent-tool-output-spill-fork-session)
+               (lambda (&rest _args) t))
+              ((symbol-function 'magent-session-save-for-session)
+               (lambda (&rest _args) t)))
+      (let ((forked (magent-runtime-session-fork runtime)))
+        (should cloned)
+        (should (equal (magent-runtime-session-id forked) "queue-fork"))))))
 
 (ert-deftest magent-test-runtime-session-fork-rolls-back-new-artifacts ()
   "A failed durable save removes only the new fork artifacts."
@@ -17744,6 +17913,437 @@ The ledger snapshot and event log live in sibling files."
       (should-error (magent-runtime-session-fork runtime)))
     (should (equal cleared (list fork 'global)))
     (should (equal spill-deleted '(global "rollback-fork")))))
+
+(ert-deftest magent-test-runtime-session-options-survive-session-load ()
+  "Session options persist and are restored by a later `session/load'.
+Agent Chat and agent-shell both treat these as session state, so a reloaded
+conversation must not silently return to the default agent or model policy."
+  (require 'magent-runtime-api)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (gptel--known-backends nil)
+         (backend (gptel-make-openai "Persistence Provider" :key "key"
+                                     :models '(persisted-model)))
+         (gptel-backend backend)
+         (gptel-model 'persisted-model)
+         (agent (magent-agent-info-create
+                 :name "build" :mode 'primary :description "Build"))
+         (descriptor
+          (cl-find backend (magent-sampling-gptel-model-catalog)
+                   :key #'magent-model-descriptor-backend))
+         (session (magent-test--session-with-transcript
+                   "options-session" '((user "Remember my settings"))))
+         (magent-runtime-api--sessions (make-hash-table :test #'equal))
+         (runtime-session
+          (magent-runtime-session-create
+           :id "options-session" :scope 'global :magent-session session)))
+    (unwind-protect
+        (progn
+          (magent-session-set-agent session agent)
+          (magent-runtime-api--persist-agent-option runtime-session)
+          (magent-runtime-session-set-model-route
+           runtime-session
+           (magent-sampling-gptel-descriptor-route descriptor 'session))
+          (magent-runtime-session-set-effort runtime-session 'high)
+          (magent-runtime-session-set-thinking runtime-session 'enabled)
+          (magent-runtime-session-set-capabilities-enabled runtime-session nil)
+          (cl-letf (((symbol-function 'magent-session-save-deferred-for-session)
+                     (lambda (&rest _args) nil)))
+            (magent-session-save-for-session session 'global))
+          (should (equal (magent-session-metadata-value session 'agent-name)
+                         "build"))
+          (should (equal (magent-session-metadata-value session 'effort)
+                         "high"))
+          (let* ((loaded (magent-session-read-file
+                          (expand-file-name "global/options-session.json"
+                                            magent-session-directory)))
+                 (restored
+                  (magent-runtime-api--wrap-session
+                   (plist-get loaded :session) 'global)))
+            (should (equal (magent-runtime-session-agent-name restored)
+                           "build"))
+            (should (equal (magent-model-route-model
+                            (magent-runtime-session-model-route restored))
+                           'persisted-model))
+            (should (eq (magent-runtime-session-effort restored) 'high))
+            (should (eq (magent-runtime-session-thinking restored) 'enabled))
+            (should-not (magent-runtime-session-capabilities-enabled-p
+                         restored))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-runtime-session-restores-unknown-options-safely ()
+  "An unavailable saved model is skipped instead of failing the load."
+  (require 'magent-runtime-api)
+  (let* ((session (magent-test--session-with-transcript
+                   "stale-options" '((user "Stale settings"))
+                   '((model-id . "gptel/Gone/gone-model"))))
+         (runtime-session
+          (magent-runtime-session-create
+           :id "stale-options" :scope 'global :magent-session session)))
+    (cl-letf (((symbol-function 'magent-sampling-gptel-model-descriptor)
+               (lambda (_id) nil)))
+      (magent-runtime-api--restore-options runtime-session))
+    (should-not (magent-runtime-session-model-route runtime-session))))
+
+(defconst magent-test--tiny-png-base64
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=="
+  "Base64 of a one-pixel PNG used by inline image tests.")
+
+(defun magent-test--tiny-png-bytes ()
+  "Return the decoded one-pixel PNG fixture."
+  (base64-decode-string magent-test--tiny-png-base64))
+
+(defun magent-test--prompt-entry-media (entry)
+  "Return ENTRY's media parts, tolerating a plain text prompt entry."
+  (and (consp entry)
+       (listp (cdr entry))
+       (plist-get (cddr entry) :media)))
+
+(defun magent-test--image-prompt (text)
+  "Return an ACP prompt with TEXT and one inline PNG image."
+  (vector (list (cons 'type "text") (cons 'text text))
+          (list (cons 'type "image")
+                (cons 'mimeType "image/png")
+                (cons 'data magent-test--tiny-png-base64))))
+
+(ert-deftest magent-test-acp-inline-image-materializes-to-session-media ()
+  "ACP inline images become small durable references plus a private file."
+  (require 'magent-acp)
+  (let* ((magent-session-directory (make-temp-file "magent-images-" t))
+         (session (magent-session-create :id "image-session"))
+         (runtime-session
+          (magent-runtime-session-create
+           :id "image-session" :scope 'global :magent-session session))
+         (input (magent-acp--prompt-input (magent-test--image-prompt "look"))))
+    (unwind-protect
+        (progn
+          (should (member "[Attached image: image/png]"
+                          (split-string (plist-get input :display-text)
+                                        "\n")))
+          (should (= (length (plist-get input :image-blocks)) 1))
+          (should-not (plist-get input :resource-blocks))
+          (let* ((materialized (magent-acp--materialize-images
+                                input runtime-session))
+                 (blocks (append (plist-get materialized :content-blocks) nil))
+                 (image (car (cl-remove-if-not
+                              (lambda (block)
+                                (equal (map-elt block 'type) "image"))
+                              blocks))))
+            (should (equal (map-elt image 'type) "image"))
+            (should (map-elt image 'mediaId))
+            (should-not (map-elt image 'data))
+            (should (file-regular-p
+                     (magent-session-media-file 'global "image-session" image)))
+            ;; The display text and image labels survive materialization.
+            (should (string-match-p
+                     "\\[Attached image: image/png\\]"
+                     (plist-get materialized :display-text)))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-acp-inline-image-rejects-invalid-payloads ()
+  "Invalid, oversized, or remote image payloads fail before any write."
+  (require 'magent-acp)
+  (let ((magent-session-directory (make-temp-file "magent-images-" t))
+        (magent-inline-image-max-bytes 8))
+    (unwind-protect
+        (dolist (case `((unsupported-mime
+                         . [((type . "image")
+                             (mimeType . "image/tiff")
+                             (data . ,magent-test--tiny-png-base64))])
+                        (empty-payload
+                         . [((type . "image")
+                             (mimeType . "image/png")
+                             (data . ""))])
+                        (mismatched-data
+                         . [((type . "image")
+                             (mimeType . "image/png")
+                             (data . ,(base64-encode-string "not a png")))] )
+                        (remote-uri
+                         . [((type . "image")
+                             (mimeType . "image/png")
+                             (uri . "https://example.com/a.png"))])
+                        (oversized
+                         . [((type . "image")
+                             (mimeType . "image/png")
+                             (data . ,magent-test--tiny-png-base64))])))
+          (should-error (magent-acp--prompt-input (cdr case))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-session-provider-view-attaches-image-media ()
+  "A stored image travels as a media part, not as prompt text.
+Compaction input drops media because the summarizer only needs text."
+  (require 'magent-runtime-api)
+  (let* ((magent-session-directory (make-temp-file "magent-images-" t))
+         (magent-session--current-scope 'global)
+         (session (magent-session-create :id "image-session"))
+         (runtime-session
+          (magent-runtime-session-create
+           :id "image-session" :scope 'global :magent-session session))
+         (block (magent-session-media-store
+                 'global "image-session" "image/png"
+                 (magent-test--tiny-png-bytes))))
+    (unwind-protect
+        (progn
+          (magent-runtime-api--prepare-turn
+           runtime-session "look"
+           (list :content-blocks
+                 (vector (list (cons 'type "text") (cons 'text "look"))
+                         block)))
+          (let* ((context (magent-session-context-view session 'provider))
+                 (prompt-entry
+                  (car (cl-remove-if-not (lambda (entry)
+                                           (eq (car entry) 'prompt))
+                                         context)))
+                 (media (magent-test--prompt-entry-media prompt-entry)))
+            (should (string-prefix-p "look" (car (cdr prompt-entry))))
+            (should (= (length media) 1))
+            (should (file-regular-p (plist-get (car media) :media)))
+            (should (equal (plist-get (car media) :mime) "image/png"))
+            (let* ((compaction
+                    (magent-session-context-view session 'compaction))
+                   (compaction-entry
+                    (car (cl-remove-if-not (lambda (entry)
+                                             (eq (car entry) 'prompt))
+                                           compaction))))
+              (should-not (magent-test--prompt-entry-media compaction-entry)))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-acp-session-load-replays-inline-images ()
+  "Session replay restores the image attachment a frontend originally sent."
+  (require 'magent-acp)
+  (let* ((magent-session-directory (make-temp-file "magent-images-" t))
+         (session (magent-session-create :id "image-session"))
+         (runtime-session
+          (magent-runtime-session-create
+           :id "image-session" :scope 'global :magent-session session))
+         (block (magent-session-media-store
+                 'global "image-session" "image/png"
+                 (magent-test--tiny-png-bytes)))
+         (notifications nil)
+         (client (magent-test--acp-client-for-runtime
+                  runtime-session
+                  (list (lambda (notification)
+                          (push notification notifications))))))
+    (unwind-protect
+        (progn
+          (magent-runtime-api--prepare-turn
+           runtime-session "look"
+           (list :content-blocks
+                 (vector (list (cons 'type "text") (cons 'text "look"))
+                         block)))
+          (let* ((thread (magent-session-thread-ledger session))
+                 (item (car (cl-remove-if-not
+                             (lambda (candidate)
+                               (and (eq (magent-thread-item-type candidate)
+                                        'message)
+                                    (eq (magent-thread-item-role candidate)
+                                        'user)))
+                             (magent-thread-all-items thread)))))
+            (magent-acp--emit-item-replay client "image-session" item))
+          (let ((images
+                 (delq nil
+                       (mapcar
+                        (lambda (notification)
+                          (let ((content (map-elt
+                                          (map-elt (map-elt notification 'params)
+                                                   'update)
+                                          'content)))
+                            (when (equal (map-elt content 'type) "image")
+                              content)))
+                        notifications))))
+            (should (= (length images) 1))
+            (should (equal (map-elt (car images) 'mimeType) "image/png"))
+            (should (equal (base64-decode-string (map-elt (car images) 'data))
+                           (magent-test--tiny-png-bytes)))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-session-fork-copies-inline-images ()
+  "A fork keeps the images its copied turns reference."
+  (let* ((magent-session-directory (make-temp-file "magent-images-" t))
+         (source (magent-session-create :id "image-source"))
+         (block (magent-session-media-store
+                 'global "image-source" "image/png"
+                 (magent-test--tiny-png-bytes))))
+    (unwind-protect
+        (progn
+          (magent-thread-queue-turn
+           (magent-session-thread-ledger source) "look" nil
+           (list :content-blocks
+                 (vector (list (cons 'type "text") (cons 'text "look")) block)))
+          (magent-thread-record-user-message-if-needed
+           (magent-session-thread-ledger source)
+           (magent-thread-turn-id
+            (car (magent-thread-turns
+                  (magent-session-thread-ledger source))))
+           "look" nil
+           (list :content-blocks
+                 (vector (list (cons 'type "text") (cons 'text "look")) block)))
+          (let* ((media-ids (magent-session-media-references
+                             (magent-session-thread source)))
+                 (fork (magent-session-fork source 'global)))
+            (should (= (length media-ids) 1))
+            (magent-session-media-fork-session
+             'global "image-source" (magent-session-id fork) media-ids)
+            (should (file-regular-p
+                     (magent-session-media-file
+                      'global (magent-session-id fork) block)))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-acp-initialize-advertises-session-capabilities-in-spec-location ()
+  "ACP session capabilities appear where conforming frontends read them.
+Agent Chat reads only `agentCapabilities.sessionCapabilities', while older
+agent-shell releases read the top-level copy, so both must agree."
+  (require 'magent-acp)
+  (let* ((response (magent-acp--initialize-response))
+         (agent-capabilities (map-elt response 'agentCapabilities))
+         (nested (map-elt agent-capabilities 'sessionCapabilities))
+         (top-level (map-elt response 'sessionCapabilities)))
+    (should (eq (map-elt agent-capabilities 'loadSession) t))
+    (should (equal nested top-level))
+    (dolist (key '(list load resume fork title))
+      (should (map-contains-key nested key)))
+    (should-not (cdr (assq 'fork nested)))
+    (should-not (cdr (assq 'title nested)))))
+
+(ert-deftest magent-test-acp-session-set-title-persists-and-notifies ()
+  "ACP `session/set_title' stores, saves, and publishes an explicit title."
+  (require 'magent-acp)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (session (magent-test--session-with-transcript
+                   "title-session" '((user "First prompt"))))
+         (runtime-session
+          (magent-runtime-session-create
+           :id "title-session" :scope 'global :magent-session session))
+         (notifications nil)
+         (client (magent-test--acp-client-for-runtime
+                  runtime-session
+                  (list (lambda (notification)
+                          (push notification notifications)))))
+         response failure)
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'magent-acp--runtime-session-by-id)
+                     (lambda (_session-id _scope) runtime-session)))
+            (magent-acp--handle-request
+             client
+             '((:method . "session/set_title")
+               (:params . ((sessionId . "title-session")
+                           (title . "  Named session  "))))
+             (lambda (value) (setq response value))
+             (lambda (err) (setq failure err))))
+          (should-not failure)
+          (should (equal (map-elt response 'title) "Named session"))
+          (should (equal (magent-session-metadata-value session 'title)
+                         "Named session"))
+          (should (equal (magent-session-summary-title session)
+                         "Named session"))
+          (let* ((file (expand-file-name "global/title-session.json"
+                                         magent-session-directory))
+                 (saved (magent-session-read-file file)))
+            (should (equal (magent-session-summary-title
+                            (plist-get saved :session))
+                           "Named session")))
+          (should (cl-find-if
+                   (lambda (notification)
+                     (and (equal (map-elt notification 'method) "session/update")
+                          (let ((update (map-elt (map-elt notification 'params)
+                                                 'update)))
+                            (and (equal (map-elt update 'sessionUpdate)
+                                        "session_info_update")
+                                 (equal (map-elt update 'title)
+                                        "Named session")))))
+                   notifications)))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-acp-session-set-title-persists-empty-session ()
+  "Renaming an untouched session still creates a listable, loadable session."
+  (require 'magent-acp)
+  (let* ((magent-session-directory (make-temp-file "magent-sessions-" t))
+         (session (magent-session-create :id "empty-title"))
+         (runtime-session
+          (magent-runtime-session-create
+           :id "empty-title" :scope 'global :magent-session session)))
+    (unwind-protect
+        (progn
+          (should-not (magent-thread-turns
+                       (magent-session-thread-ledger session)))
+          (magent-acp--handle-set-title runtime-session "Named before chat")
+          (let* ((file (expand-file-name "global/empty-title.json"
+                                         magent-session-directory))
+                 (loaded (magent-session-read-file file)))
+            (should (file-regular-p file))
+            (should (equal (magent-session-summary-title
+                            (plist-get loaded :session))
+                           "Named before chat"))))
+      (delete-directory magent-session-directory t))))
+
+(ert-deftest magent-test-acp-session-set-title-rejects-invalid-titles ()
+  "ACP `session/set_title' rejects titles a frontend cannot display."
+  (require 'magent-acp)
+  (dolist (case `((blank . "   ")
+                  (multiline . "one\ntwo")
+                  (control . "title\0")
+                  (non-string . 42)
+                  (oversized . ,(make-string 201 ?x))))
+    (let ((error-text
+           (condition-case err
+               (progn (magent-acp--normalized-session-title (cdr case)) nil)
+             (error (error-message-string err)))))
+      (should error-text))))
+
+(ert-deftest magent-test-acp-loads-fork-without-displacing-busy-source ()
+  "A fork-then-load frontend keeps the running source installed.
+Agent Chat forks by starting a fresh client, calling `session/fork', and then
+loading the fork for history replay; the source conversation must keep running.
+A fresh session from disk still replaces the installed session as before."
+  (require 'magent-acp)
+  (let* ((magent-acp--client-session-scopes
+          (make-hash-table :test #'eq :weakness #'key))
+         (magent-runtime-queue--active nil)
+         (magent-runtime-queue--pending nil)
+         (magent-runtime-queue--arbiter-active nil)
+         (magent-runtime-queue--arbiter-pending nil)
+         (magent-session--scoped-sessions (make-hash-table :test #'equal))
+         (scope "/project")
+         (source-session (magent-session-create :id "acp-source"))
+         (fork-session (magent-session-create :id "acp-fork"))
+         (source-runtime
+          (magent-runtime-session-create
+           :id "acp-source" :scope scope :magent-session source-session))
+         (fork-runtime
+          (magent-runtime-session-create
+           :id "acp-fork" :scope scope :magent-session fork-session))
+         (client '((:context-buffer . nil)
+                   (:notification-handlers . nil)
+                   (:request-handlers . nil)))
+         response failure)
+    (magent-session-install scope source-session)
+    (cl-letf (((symbol-function 'magent-runtime-queue-session-busy-p)
+               (lambda (session) (eq session source-session)))
+              ((symbol-function 'magent-acp--load-candidate)
+               (lambda (_id _scope) (list :runtime-session fork-runtime)))
+              ((symbol-function 'magent-acp--scope-for-cwd)
+               (lambda (_cwd) scope))
+              ((symbol-function 'magent-runtime-prepare-context)
+               (lambda (_scope) t))
+              ((symbol-function 'magent-acp--replay-session)
+               (lambda (&rest _args) t))
+              ((symbol-function 'magent-acp--available-commands)
+               (lambda (&optional _arg) []))
+              ((symbol-function 'magent-runtime-session-title)
+               (lambda (_session) nil))
+              ((symbol-function 'magent-agent-registry-primary-agents)
+               (lambda (&optional _scope) nil)))
+      (magent-acp--handle-request
+       client
+       '((:method . "session/load")
+         (:params . ((sessionId . "acp-fork") (cwd . "/project"))))
+       (lambda (value) (setq response value))
+       (lambda (err) (setq failure err))))
+    (should-not failure)
+    (should (equal (map-elt response 'sessionId) "acp-fork"))
+    (should (eq (magent-session-get-if-present scope) source-session))
+    (should (equal (magent-acp--client-session-scope client "acp-fork")
+                   scope))))
 
 (ert-deftest magent-test-acp-session-fork-negotiates-and-binds-new-session ()
   "ACP advertises fork only with a working exact-scope request path."

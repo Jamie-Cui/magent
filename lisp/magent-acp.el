@@ -296,21 +296,32 @@ the leading slash, so agent-shell displays them as `/$NAME'."
     (models . ,(magent-acp--models runtime-session))
     (configOptions . ,(magent-acp--config-options runtime-session))))
 
+(defun magent-acp--session-capabilities ()
+  "Return Magent's advertised ACP session capabilities."
+  '((list . t)
+    (load . t)
+    (resume . t)
+    (fork)
+    (title)))
+
 (defun magent-acp--initialize-response ()
-  "Return ACP initialize response."
-  `((protocolVersion . ,magent-acp-protocol-version)
-    (agentCapabilities . ((loadSession . t)
-                          (promptCapabilities
-                           . ((embeddedContext . t)
-                              (image . :false)
-                              (audio . :false)))))
-    (sessionCapabilities . ((list . t)
-                            (load . t)
-                            (resume . t)
-                            (fork)))
-    (modes . ,(magent-acp--modes))
-    (models . ,(magent-acp--models))
-    (authMethods . [])))
+  "Return ACP initialize response.
+
+Session capabilities are advertised in both supported spellings: the
+schema-defined nested location inside `agentCapabilities', and a top-level
+copy that older frontends such as agent-shell already read."
+  (let ((session-capabilities (magent-acp--session-capabilities)))
+    `((protocolVersion . ,magent-acp-protocol-version)
+      (agentCapabilities . ((loadSession . t)
+                            (promptCapabilities
+                             . ((embeddedContext . t)
+                                (image . t)
+                                (audio . :false)))
+                            (sessionCapabilities . ,session-capabilities)))
+      (sessionCapabilities . ,session-capabilities)
+      (modes . ,(magent-acp--modes))
+      (models . ,(magent-acp--models))
+      (authMethods . []))))
 
 (defun magent-acp--alist-plist-get (value key)
   "Return KEY from VALUE supporting keyword and symbol alists."
@@ -444,6 +455,34 @@ keywords."
         ,@(when-let* ((size (magent-acp--alist-plist-get block 'size)))
             `((size . ,size)))))))
 
+(defun magent-acp--normalized-image-block (block)
+  "Return validated inline image BLOCK with decoded payload size checked.
+The returned block keeps the base64 payload; `magent-acp--materialize-images'
+later replaces it with a durable media reference."
+  (let ((mime (magent-acp--alist-plist-get block 'mimeType))
+        (data (magent-acp--alist-plist-get block 'data))
+        (uri (magent-acp--alist-plist-get block 'uri)))
+    ;; ACP also allows an image reference by URI.  Magent never fetches remote
+    ;; resources for a prompt, so only inline payloads are accepted.
+    (when (and (null data) (stringp uri))
+      (error "Magent does not fetch image URIs; send inline image data"))
+    (unless (magent-session-media-mime-supported-p mime)
+      (error "Unsupported ACP inline image type: %s" mime))
+    (unless (and (stringp data) (> (length data) 0))
+      (error "ACP inline image is empty"))
+    (let ((decoded (condition-case nil
+                       (base64-decode-string data)
+                     (error (error "Invalid ACP inline image data")))))
+      (when (> (string-bytes decoded) magent-inline-image-max-bytes)
+        (error "ACP inline image exceeds the %d MiB limit"
+               (/ magent-inline-image-max-bytes 1024 1024)))
+      (unless (eq (image-type-from-data decoded)
+                  (magent-session-media--image-type mime))
+        (error "ACP inline image data does not match %s" mime)))
+    `((type . "image")
+      (mimeType . ,mime)
+      (data . ,data))))
+
 (defun magent-acp--normalize-prompt-block (block)
   "Return normalized ACP prompt BLOCK."
   (let ((type (magent-acp--alist-plist-get block 'type)))
@@ -451,6 +490,8 @@ keywords."
      ((or (null type) (equal type "text"))
       (magent-acp--content-block
        (or (magent-acp--alist-plist-get block 'text) "")))
+     ((equal type "image")
+      (magent-acp--normalized-image-block block))
      ((member type '("resource" "resource_link" "file"))
       (magent-acp--normalize-resource-block
        block (if (equal type "resource") "resource" "resource_link")))
@@ -479,10 +520,16 @@ keywords."
                        (or (magent-acp--alist-plist-get block 'text) "")
                      ""))
                  blocks "")))
+         (image-blocks
+          (cl-remove-if-not
+           (lambda (block)
+             (equal (magent-acp--alist-plist-get block 'type) "image"))
+           blocks))
          (resource-blocks
           (cl-remove-if
            (lambda (block)
-             (equal (magent-acp--alist-plist-get block 'type) "text"))
+             (member (magent-acp--alist-plist-get block 'type)
+                     '("text" "image")))
            blocks))
          (paths (delete-dups
                  (delq nil (mapcar #'magent-acp--resource-path
@@ -492,6 +539,11 @@ keywords."
                     (magent-acp--resource-label
                      block (magent-acp--alist-plist-get block 'type)))
                   resource-blocks))
+         (image-labels
+          (mapcar (lambda (block)
+                    (or (magent-acp--alist-plist-get block 'mimeType)
+                        "image"))
+                  image-blocks))
          (display-text
           (string-trim
            (string-join
@@ -499,12 +551,16 @@ keywords."
                   (list (and (not (string-empty-p text)) text)
                         (and labels
                              (format "[Attached: %s]"
-                                     (string-join labels ", ")))))
+                                     (string-join labels ", ")))
+                        (and image-labels
+                             (format "[Attached image: %s]"
+                                     (string-join image-labels ", ")))))
             "\n"))))
     (list :text text
           :display-text display-text
           :content-blocks (vconcat blocks)
           :resource-blocks resource-blocks
+          :image-blocks image-blocks
           :context (list :file-path (car paths)
                          :resource-paths paths))))
 
@@ -513,12 +569,19 @@ keywords."
 RESOURCES-BEFORE appear before the frontend resources already stored in INPUT."
   (let* ((resources (append resources-before
                             (plist-get input :resource-blocks)))
-         (blocks (vconcat (cons (magent-acp--content-block text) resources)))
+         (images (plist-get input :image-blocks))
+         (blocks (vconcat (cons (magent-acp--content-block text) resources)
+                          images))
          (labels
           (mapcar (lambda (block)
                     (magent-acp--resource-label
                      block (magent-acp--alist-plist-get block 'type)))
                   resources))
+         (image-labels
+          (mapcar (lambda (block)
+                    (or (magent-acp--alist-plist-get block 'mimeType)
+                        "image"))
+                  images))
          (display-text
           (string-trim
            (string-join
@@ -526,13 +589,47 @@ RESOURCES-BEFORE appear before the frontend resources already stored in INPUT."
                   (list text
                         (and labels
                              (format "[Attached: %s]"
-                                     (string-join labels ", ")))))
+                                     (string-join labels ", ")))
+                        (and image-labels
+                             (format "[Attached image: %s]"
+                                     (string-join image-labels ", ")))))
             "\n")))
          (result (copy-sequence input)))
     (setq result (plist-put result :text text)
           result (plist-put result :display-text display-text)
           result (plist-put result :content-blocks blocks))
     result))
+
+(defun magent-acp--materialize-images (input runtime-session)
+  "Replace inline image payloads in INPUT with durable media references.
+The returned INPUT is JSON-safe and small enough to append to the session log;
+the bytes live in the session-private media directory."
+  (let ((images (plist-get input :image-blocks)))
+    (if (null images)
+        input
+      (let* ((scope (magent-runtime-session-scope runtime-session))
+             (session-id (magent-runtime-session-id runtime-session))
+             (stored
+              (mapcar (lambda (block)
+                        (let ((mime (magent-acp--alist-plist-get block 'mimeType))
+                              (data (magent-acp--alist-plist-get block 'data)))
+                          (magent-session-media-store
+                           scope session-id mime
+                           (base64-decode-string data))))
+                      images))
+             (pending (copy-sequence stored))
+             (blocks
+              (vconcat
+               (mapcar (lambda (block)
+                         (if (equal (magent-acp--alist-plist-get block 'type)
+                                    "image")
+                             (pop pending)
+                           block))
+                       (append (plist-get input :content-blocks) nil))))
+             (result (copy-sequence input)))
+        (setq result (plist-put result :content-blocks blocks))
+        (setq result (plist-put result :image-blocks (vconcat stored)))
+        result))))
 
 (defun magent-acp--slash-command (prompt &optional runtime-session-or-scope)
   "Return slash command parsed from PROMPT for RUNTIME-SESSION-OR-SCOPE."
@@ -1039,6 +1136,32 @@ does not prepare definitions or install a session into the runtime registry."
                          (plist-get entry :scope) scope))
                       (magent-runtime-list-sessions-for-scope scope))))))))
 
+(defun magent-acp--replay-item-images (client session-id item)
+  "Replay ITEM's stored inline images for SESSION-ID.
+Each image becomes its own `user_message_chunk' so a frontend can rebuild the
+attachment it originally sent.  Images whose stored file is gone are skipped:
+the accompanying text already records that an attachment existed."
+  (let ((scope (magent-acp--client-session-scope client session-id))
+        (blocks (magent-session--metadata-value
+                 (magent-thread-item-metadata item) :content-blocks)))
+    (when (and scope blocks)
+      (dolist (block (append blocks nil))
+        (when (magent-session--content-block-image-p block)
+          (when-let* ((file (magent-session-media-file
+                             scope session-id block)))
+            (with-temp-buffer
+              (set-buffer-multibyte nil)
+              (insert-file-contents-literally file)
+              (magent-acp--session-update
+               client session-id
+               `((sessionUpdate . "user_message_chunk")
+                 (content . ((type . "image")
+                             (mimeType
+                              . ,(magent-session--content-block-image-mime
+                                  block))
+                             (data . ,(base64-encode-string
+                                       (buffer-string) t)))))))))))))
+
 (defun magent-acp--emit-item-replay (client session-id item)
   "Replay ledger ITEM to CLIENT for SESSION-ID."
   (pcase (magent-thread-item-type item)
@@ -1057,7 +1180,8 @@ does not prepare definitions or install a session into the runtime registry."
          client session-id
          `((sessionUpdate . "user_message_chunk")
            (content . ,(magent-acp--content-block
-                        (magent-thread-item-content item))))))
+                        (magent-thread-item-content item)))))
+        (magent-acp--replay-item-images client session-id item))
        ('assistant
         (magent-acp--session-update
          client session-id
@@ -1174,6 +1298,54 @@ does not prepare definitions or install a session into the runtime registry."
        (error "Unknown Magent config option: %s" config-id)))
     (magent-acp--session-response runtime-session)))
 
+(defun magent-acp--loads-beside-busy-peer-p (scope candidate session-id)
+  "Return non-nil when CANDIDATE must load beside a busy same-scope peer.
+CANDIDATE must already be registered, must not be the session installed at
+SCOPE, and that installed session must still own active or queued work.  This
+is the fork-then-load sequence used by frontends that branch a conversation
+without disturbing the source."
+  (let ((runtime-session (plist-get candidate :runtime-session))
+        (installed (magent-session-get-if-present scope)))
+    (and runtime-session
+         (equal session-id (magent-runtime-session-id runtime-session))
+         installed
+         (not (eq installed
+                  (magent-runtime-session-magent-session runtime-session)))
+         (magent-runtime-queue-session-busy-p installed))))
+
+(defconst magent-acp-session-title-max-length 200
+  "Maximum accepted length of an explicit ACP session title.")
+
+(defun magent-acp--normalized-session-title (value)
+  "Return VALUE as a persisted single-line session title.
+Reject non-strings, control characters, blank text, and oversized titles so a
+frontend cannot store a title that its own picker cannot display."
+  (unless (stringp value)
+    (error "A session title must be a string"))
+  (when (string-match-p "[[:cntrl:]]" value)
+    (error "A session title must be a single line without control characters"))
+  (let ((title (string-trim value)))
+    (cond
+     ((string-empty-p title)
+      (error "A session title must not be blank"))
+     ((> (length title) magent-acp-session-title-max-length)
+      (error "A session title must be at most %d characters"
+             magent-acp-session-title-max-length))
+     (t title))))
+
+(defun magent-acp--handle-set-title (runtime-session value)
+  "Persist VALUE as RUNTIME-SESSION's explicit title and return the stored text.
+The title lives in the Magent session metadata so every later load, list, and
+projection agrees."
+  (unless (magent-runtime-session-p runtime-session)
+    (error "Expected a Magent runtime session, got: %S" runtime-session))
+  (let ((session (magent-runtime-session-magent-session runtime-session))
+        (title (magent-acp--normalized-session-title value)))
+    (magent-session-set-metadata-value session 'title title)
+    (magent-session-save-for-session
+     session (magent-runtime-session-scope runtime-session) t)
+    title))
+
 (defun magent-acp--stop-reason (status result)
   "Return ACP stopReason for Magent STATUS and RESULT."
   (pcase status
@@ -1216,24 +1388,40 @@ does not prepare definitions or install a session into the runtime registry."
                   (candidate (magent-acp--load-candidate session-id scope)))
              (unless candidate
                (error "Unknown session in requested cwd: %s" session-id))
-             ;; Preflight exact-session replacement before preparing scope.
              (let ((candidate-session
                     (or (plist-get candidate :session)
                         (when-let* ((runtime-session
                                     (plist-get candidate :runtime-session)))
                           (magent-runtime-session-magent-session
                            runtime-session)))))
-               (magent-runtime-session-ensure-registerable
-                scope candidate-session))
-             (magent-runtime-prepare-context scope)
-             (let ((runtime-session
-                    (or (plist-get candidate :runtime-session)
-                        (magent-runtime-session-register
-                         scope (plist-get candidate :session)))))
-               (when (equal method "session/load")
-                 (magent-acp--replay-session client runtime-session))
-               (magent-acp--session-success
-                client runtime-session on-success))))
+               (if (magent-acp--loads-beside-busy-peer-p
+                    scope candidate session-id)
+                   ;; A frontend that forks by starting a fresh client and
+                   ;; then loading the fork must not wait for the source turn,
+                   ;; and must not steal the scope's installed session from it.
+                   ;; Binding the already-registered fork is sufficient: prompts
+                   ;; address the session by id, and the first submission
+                   ;; installs it exactly as any concurrent session is installed.
+                   (progn
+                     (magent-runtime-prepare-context scope)
+                     (let ((runtime-session
+                            (plist-get candidate :runtime-session)))
+                       (when (equal method "session/load")
+                         (magent-acp--replay-session client runtime-session))
+                       (magent-acp--session-success
+                        client runtime-session on-success)))
+                 ;; Preflight exact-session replacement before preparing scope.
+                 (magent-runtime-session-ensure-registerable
+                  scope candidate-session)
+                 (magent-runtime-prepare-context scope)
+                 (let ((runtime-session
+                        (or (plist-get candidate :runtime-session)
+                            (magent-runtime-session-register
+                             scope (plist-get candidate :session)))))
+                   (when (equal method "session/load")
+                     (magent-acp--replay-session client runtime-session))
+                   (magent-acp--session-success
+                    client runtime-session on-success))))))
           ("session/fork"
            (let* ((source-id (map-elt params 'sessionId))
                   (_ (magent-session-validate-id source-id))
@@ -1265,13 +1453,26 @@ does not prepare definitions or install a session into the runtime registry."
               on-success
               (magent-acp--handle-set-config-option
                params (magent-acp--request-session-scope client session-id)))))
+          ("session/set_title"
+           (let* ((session-id (map-elt params 'sessionId))
+                  (scope (magent-acp--request-session-scope client session-id))
+                  (runtime-session
+                   (magent-acp--runtime-session-by-id session-id scope)))
+             (unless runtime-session
+               (error "Unknown session: %s" session-id))
+             (let ((title (magent-acp--handle-set-title
+                           runtime-session (map-elt params 'title))))
+               (magent-acp--notify-session-info client runtime-session)
+               (funcall on-success `((title . ,title))))))
           ("session/prompt"
            (let* ((session-id (map-elt params 'sessionId))
                   (runtime-session
                    (magent-acp--runtime-session-by-id
                     session-id
                     (magent-acp--request-session-scope client session-id)))
-                  (input (magent-acp--prompt-input (map-elt params 'prompt)))
+                  (input (magent-acp--materialize-images
+                          (magent-acp--prompt-input (map-elt params 'prompt))
+                          runtime-session))
                   (instruction-text (plist-get input :text))
                   (command
                    (and runtime-session
