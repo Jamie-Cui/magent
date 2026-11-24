@@ -8,7 +8,7 @@ Magent is an Emacs-native AI coding agent. Its core design choice is that a seri
 
 The boundary is intentionally narrow:
 
-- Provider transport, HTTP/SSE handling, model selection, and API keys stay in ~gptel~ through ~gptel-request~.
+- Magent-owned turns use ~gptel-request~ for provider calls. The optional Codex child executor opens an ACP connection through ~magent-codex.el~ and uses Codex's model and workspace tools.
 - Conversational interaction is supported only through ~agent-shell~ and its in-process ACP adapter. Explicit registered Actions may also expose trusted ~M-x~ command wrappers without creating another conversation frontend.
 - Agent execution, Action invocation, tool orchestration, permission decisions, sessions, skills, capabilities, and child-agent jobs are owned by Magent.
 - Codex-style seatbelt, bubblewrap, sandbox, and shell isolation are out of scope. Magent permissions are workflow controls and audit records, not an OS security boundary.
@@ -30,11 +30,10 @@ child-agent coordination, ~emacs_read~, ~emacs_eval~, ~emacs_eval_live~, and
 the TRAMP filesystem, and agent-shell context rendering does not perform image
 or containment queries for remote files.
 
-A remote directory without a detected project is its own session scope rather
-than the shared `global~ scope.  Sharing `global~ would mix conversations from
-different hosts and would leave the request without a project root, so relative
-tool paths would resolve against the local Emacs directory.  A local directory
-without a project keeps `global~, because one local bucket is unambiguous.
+When Emacs detects a project, its root determines the session scope. Outside a
+project, each normalized remote directory has its own history and provides the
+base for relative tool paths on that host. Local directories outside projects
+share the ~global~ scope.
 
 The canonical tool catalog declares one locality for every tool:
 
@@ -116,11 +115,25 @@ new prompt layer must update the manifest as well as the package data recipe.
 
 ** UI And Runtime API
 
-The supported conversational frontend is ~agent-shell~. ~magent-agent-shell.el~ registers the Magent agent-shell configuration and ~magent-acp.el~ implements the in-process ACP adapter. ACP text and resource blocks are normalized separately: the full structured input is persisted in turn metadata and reconstructed as user-role model context, while local ~file://~ resources contribute scoped file paths for project-instruction and capability resolution. For each ~session/prompt~, ACP dispatches a registered slash command to its Action through ~magent-action.el~ and sends an ordinary prompt directly to ~magent-runtime-api.el~. Action-owned agent turns and Workflow Steps also submit through that runtime API; an Action may complete without entering the general agent loop. ~magent-runtime-queue.el~ currently runs one active turn globally, while preserving session-scoped and exact-submission cancellation. Explicit ~M-x~ command wrappers share the Action Invocation lifecycle rather than forming a parallel conversation frontend.
+~magent-agent-shell.el~ registers the agent-shell configuration.
+~magent-acp.el~ handles ACP text, resource, and inline image blocks. The
+session retains user input for replay, and local ~file://~ resources also
+provide paths for project instruction discovery and capability resolution.
+
+ACP dispatches registered slash commands through ~magent-action.el~. Ordinary
+prompts and Action agent Steps enter ~magent-runtime-api.el~. Direct Actions
+can complete outside the queue. ~magent-runtime-queue.el~ runs one turn at a
+time per session, in submission order. Sessions in the same project can run
+concurrently. Cancellation can target a session or an individual submission.
+Explicit ~M-x~ command wrappers use the same Action invocation lifecycle.
 
 ** Ledger And Persistence
 
-The durable source of truth is a ~thread -> turn -> item~ ledger. ~magent-ledger.el~ defines the state objects, transitions, and journal events. ~magent-runtime-api.el~ creates user submissions, while ~magent-runtime-queue.el~ schedules active execution. ~magent-session.el~ atomically stores a materialized ~snapshot~ plus a bounded tail of the in-memory append-only ~journal~. The snapshot records ~last-event-seq~, so retained events at or below that watermark remain inspectable but are not replayed twice.
+~magent-ledger.el~ records thread, turn, and item transitions. In schema 7,
+~magent-session.el~ lists sessions from their ~<id>.json~ headers, appends new
+events to ~<id>.jsonl~, and checkpoints the thread state in ~<id>.snapshot~.
+Restoring a session replays only events newer than the snapshot's
+~last-event-seq~. See [[file:AGENT_WORKFLOW.org][Agent workflow]] for checkpoint and migration details.
 
 Named context views make consumer intent explicit: ~ledger~, ~transcript~,
 ~provider~, ~compaction~, and ~audit~. They are not interchangeable canonical
@@ -207,7 +220,7 @@ This catalog intentionally has no compatibility aliases:
 8. ~magent-agent-loop.el~ receives normalized text, reasoning, tool-call, and completion events.
 9. Tool calls are accumulated until ~tool-call-batch-end~, then dispatched serially through the orchestrator.
 10. Tool results update the same ledger item that started with the tool call.
-11. If tool output should be shown to the model, ~magent-agent.el~ rebuilds the prompt from the ledger and starts the next sampling request.
+11. When the provider supplies a continuation, ~magent-agent.el~ resumes it with the recorded tool results.
 12. If a provider completes with empty assistant text, ~magent-agent.el~ fails the turn with ~empty-completion~ metadata and does not issue another request.
 13. Completion, failure, abort, or queue drop transitions the turn to its terminal state and notifies the ACP observer.
 14. A plain prompt resolves the pending ACP request from the turn result. For Action-owned work, the runtime callback first returns to the Action Invocation, whose terminal lifecycle then resolves the ACP request or reports the result to its interactive caller.

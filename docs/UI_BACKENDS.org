@@ -41,16 +41,15 @@ explicit command registration and invocation belong in ~magent-action.el~.
 1. Start Magent with ~M-x magent-start~, or register Magent
    with ~magent-agent-shell-ensure-config~ and select it from ~M-x agent-shell~.
 2. agent-shell calls the in-process ACP client from ~magent-acp.el~.
-3. ACP normalizes text and resource blocks separately. Local ~file://~ resources
-   populate scoped request paths, while resource bodies remain user-role context
-   when history is reconstructed.
+3. ACP preserves text, resources, and inline images as structured user input.
+   Local ~file://~ resources also provide request paths for project discovery.
 4. ACP resolves registered slash input against the runtime session's exact
    scope and invokes it through ~magent-action.el~. Ordinary prompts go
    directly to ~magent-runtime-api.el~. Command-owned turns and workflow steps
    also use that API; direct handlers may complete without a general agent turn.
 5. The runtime API freezes one ~magent-request-context~ with
-   ~:ui-visibility 'none~ before queueing.  The queue starts exactly one active
-   turn at a time and passes that context unchanged to ~magent-agent-run-turn~.
+   ~:ui-visibility 'none~ before queueing. Each session runs one turn at a time
+   and passes the captured context to ~magent-agent-run-turn~.
 6. The agent loop emits Magent-native observer events; ~magent-acp.el~ converts
    them to ACP ~session/update~ messages for agent-shell.
 7. ACP prompt requests remain pending until the corresponding ordinary turn or
@@ -69,14 +68,11 @@ explicit command registration and invocation belong in ~magent-action.el~.
   global backend or model variables.  ~Auto~ clears that route and displays the
   currently resolved agent/default model.
 
-Model routing is resolved and frozen when a runtime submission is created.
-The precedence for a user-facing turn is session route, explicit agent model,
-then gptel defaults.  A child agent instead prefers its own explicit model over
-the frozen parent route and otherwise inherits the parent.  The route object
-also retains agent-profile and phase fields as an API seam for future
-per-agent or per-phase policy; there is no phase router in the current runtime.
-Switching the session model affects only later submissions, not active work,
-already queued work, or a provider-native tool continuation.
+Magent freezes the model route at submission. For a primary turn it uses
+the session selection, then the agent profile, then the gptel defaults.
+A Magent child uses its own explicit route or inherits the parent's frozen
+route. Codex children select their model through the Codex profile. Changing
+the session model takes effect on the next submission.
 
 * Session Lifecycle
 
@@ -155,17 +151,14 @@ entry surfaces; it must not infer skills from the Action registry.
   contextual capability auto-resolution for future turns in that session while
   retaining explicitly selected instruction skills.
 - Forking across project scopes is not supported.
-- Inline images require a model that advertises gptel media support and an
-  Emacs build with the matching image type.  The attachment marker stays in the
-  transcript when either is missing.
 
 * Inline images
 
 Magent accepts ACP ~image~ prompt content blocks with an inline ~data~ payload
 whose ~mimeType~ is one of ~image/png~, ~image/jpeg~, ~image/webp~, or
-~image/gif~.  Each payload is validated against its declared type and bounded by
-~magent-inline-image-max-bytes~ before anything is written.  Remote image URIs
-are rejected rather than fetched.
+~image/gif~. Emacs must recognize the decoded image as the declared type.
+~magent-inline-image-max-bytes~ limits each decoded payload to 20 MiB by
+default. A URI-only image block fails validation.
 
 Validated images are stored once in a private, content-addressed media directory
 under ~magent-session-directory~ and recorded in the session ledger as a small

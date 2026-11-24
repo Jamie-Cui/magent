@@ -20,7 +20,10 @@ public compatibility boundary, and release checklist.
 
 * Agent Workflow
 
-Magent now uses a durable child-agent lifecycle for collaborative agent work: spawn, message, wait, list, resume/inspect, and close. The lifecycle is implemented on top of the Magent-owned agent loop while provider integration stays with ~gptel-request~.
+The primary agent can start child jobs, wait for results, and send follow-up
+instructions using the same job ID. Magent saves each job with the parent
+conversation. By default, children run in Magent's gptel-backed loop. The
+optional Codex executor runs project tasks through ACP.
 
 #+CAPTION: Magent architecture boundary with agent-shell and explicit command entry paths
 [[file:docs/assets/img/diagrams/architecture-boundary.svg]]
@@ -317,13 +320,22 @@ The same bypass state is also exposed as the customize option
 
 ** Session Scope
 
-Magent runtime state is scoped by project, and the supported agent-shell
-workflow associates sessions with the current project:
+The directory where you start Magent determines which saved conversations
+the session picker offers. Paths below are relative to ~magent-session-directory~.
 
-- In a recognized project, prompts, agent selection, clear, and resume operate on that project's current session.
-- Saved project sessions live under ~magent-session-directory/projects/<sha1(project-root)>/~.
-- Outside any project, Magent falls back to the global session behavior and saves directly under ~magent-session-directory~.
-- Permission decisions and sensitive tools are audited only in the live ~*magent-audit*~ buffer by default. Set ~magent-audit~ to nil to disable recording or to a file path to append JSONL records.
+- In a recognized project, the project root is the scope. Sessions live in ~projects/<sha1(scope)>/~.
+- In a TRAMP directory without a project, the normalized remote directory is the scope. Its sessions use the same hashed directory layout, and relative tool paths resolve on that host.
+- Local directories without a project share the ~global~ scope. Their sessions live in ~global/~.
+
+Each session runs its prompts in order. Separate sessions can work concurrently,
+even in the same project. Use ~M-x agent-shell-fork~ to branch from the finished
+turns of a conversation while the source continues working. The fork inherits
+the selected agent, model route, effort, thinking mode, and automatic capability
+setting. Loading a saved session also restores these options.
+
+Permission decisions and sensitive tools are audited in the live ~*magent-audit*~
+buffer by default. Set ~magent-audit~ to nil to disable recording or to a file
+path to append JSONL records.
 
 Project-local agent, skill, capability, and Action definitions remain keyed by
 canonical project scope. Each request resolves definitions against its exact
@@ -415,6 +427,7 @@ Magent uses a multi-agent architecture where different agents have different cap
 | ~plan~ | primary | Planning agent with restricted file edits (only ~.magent/plan/*.md~) |
 | ~explore~ | subagent | Fast codebase exploration (read/grep/glob/bash only) |
 | ~general~ | subagent | General-purpose subagent for child-agent tasks |
+| ~codex~ | subagent | Runs a Codex task in a project when ~magent-codex-enabled~ is enabled |
 | ~compaction~ | primary (hidden) | Session summarization / conversation compaction |
 | ~title~ | primary (hidden) | Conversation title generation |
 | ~summary~ | primary (hidden) | Pull-request style summary generation |
@@ -524,7 +537,8 @@ model: "your-codex-model-id"
 Set the ID to a model available to your Codex account, or omit the field for
 the Codex default. Ask the primary agent to use ~send_agent_message~ for
 follow-ups on the existing job. Permissions requested by Codex workspace
-tools appear in the original Magent conversation.
+tools appear in the original Magent conversation. See [[file:docs/AGENT_JOBS.org][Child-agent jobs]]
+for the conditions for resuming a saved thread.
 
 * Available Tools
 

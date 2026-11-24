@@ -24,7 +24,8 @@ invocation 则属于 ~magent-action.el~ 。
 - ~magent-action.el~ 负责 registered slash/interactive command discovery 和
   invocation lifecycle； ~magent-action-session.el~ 提供 isolated durable
   persistence，但不构成 frontend。
-- ~magent-runtime-api.el~ 是 frontend-neutral runtime/session API。
+- ~magent-runtime-api.el~ 提供独立于前端的运行时和会话接口。会话作用域取项目根目录。
+  对于项目之外的目录，TRAMP 使用规范化的远程目录，本机使用共享的 ~global~ 作用域。
 - ~magent-runtime-queue.el~ 负责会话内 FIFO、会话间并发和 session-scoped cancellation。
 
 * 受支持的流程
@@ -32,15 +33,14 @@ invocation 则属于 ~magent-action.el~ 。
 1. 使用 ~M-x magent-start~ 启动 Magent；也可以先调用
    ~magent-agent-shell-ensure-config~ 注册配置，再从 ~M-x agent-shell~ 中选择 Magent。
 2. agent-shell 调用 ~magent-acp.el~ 中的进程内 ACP client。
-3. ACP 分别规范化 text 和 resource blocks。本地 ~file://~ resource 会提供 scoped
-   request path；history 重建时 resource body 始终保持 user-role context。
+3. ACP 将文本、资源和内联图片保存为结构化的用户输入。本地 ~file://~ 资源还会提供路径，
+   用于查找适用的项目指令。
 4. ACP 按 runtime session 的精确 scope 解析 registered slash input，并通过
    ~magent-action.el~ 调用；普通 prompt 直接进入 ~magent-runtime-api.el~ 。Command
    拥有的 turn 和 workflow step 同样使用该 API；direct handler 可以不进入通用 agent
    turn 而直接完成。
-5. runtime API 在排队前一次创建并冻结带 ~:ui-visibility 'none~ 的
-   ~magent-request-context~；queue 每次只启动一个 active turn，并把该 context 原样交给
-   ~magent-agent-run-turn~ 。
+5. 运行时在排队前创建带 ~:ui-visibility 'none~ 的 ~magent-request-context~ 。
+   同一会话一次执行一轮，开始时将已冻结的上下文传给 ~magent-agent-run-turn~ 。
 6. agent loop 发出 Magent-native observer events； ~magent-acp.el~ 将其转换成发给
    agent-shell 的 ACP ~session/update~ 消息。
 7. ACP prompt request 会保持 pending，直到对应的普通 turn 或 command invocation
@@ -57,25 +57,25 @@ invocation 则属于 ~magent-action.el~ 。
   model。选择模型只会保存 session-local route，不会修改 gptel 的全局 backend 或
   model 变量。~Auto~ 会清除该 route，并显示当前由 agent/default 解析出的模型。
 
-Model route 会在 runtime submission 创建时完成解析并冻结。用户可见 turn 的优先级为
-session route、agent 显式模型、gptel 默认值；child agent 则优先使用自身显式模型，
-否则继承冻结的 parent route。route object 还保留 agent profile 与 phase 字段，作为
-未来 per-agent/per-phase policy 的 API 接口；当前 runtime 并未实现 phase router。
-切换 session 模型只影响后续 submission，不影响 active work、已经 queued 的 work，
-也不影响 provider-native tool continuation。
+模型路由在提交时确定。主 agent 依次使用会话选择、agent 配置和 gptel 默认值。
+Magent 子任务优先使用自己的显式路由，否则继承父请求的路由。Codex 子任务通过
+Codex 配置选择模型。切换会话模型从下一次提交起生效。
 
 * Session 生命周期
 
-Magent 实现 ACP ~session/new~、~session/list~、~session/load~、~session/resume~ 和
-~session/fork~。~agent-shell-fork~ 会创建新的 durable session，以 source conversation
-作为初始历史，同时使用完全独立的 ledger。source 与 fork 拥有不同 id，并从创建点起
-独立演进。
+ACP 支持 ~session/new~ 、 ~session/list~ 、 ~session/load~ 、 ~session/resume~ 、
+~session/fork~ 和 ~session/set_title~ 。初始化时，会话能力列在
+~agentCapabilities.sessionCapabilities~ 中。顶层 ~sessionCapabilities~ 提供相同的内容，
+供旧版前端读取。
 
-Fork 按精确 scope fail closed：请求 cwd 必须解析到 source session 的 scope，source
-也不能拥有 active 或 queued work。selected agent、model route、effort、thinking
-mode 和 automatic capability 设置等稳定 frontend option 会被继承；session approval override、
-child-agent job 和 one-shot skill 会被显式重置。历史中引用的 spilled tool output
-会复制到 fork 自己的私有 session storage。
+在同一作用域中运行 ~M-x agent-shell-fork~ 可以创建有独立 ID 和历史记录的新会话。
+源会话可以继续运行。分支只复制已经结束的轮次，正在运行和排队的请求留在源会话。
+分支继承已选 agent、模型路由、推理强度、思考模式和自动能力设置，并复制引用的工具输出
+文件和内联图片。分支的审批覆盖规则、子任务和一次性技能从空状态开始。
+
+~session/set_title~ 保存单行标题，随后发送 ~session_info_update~ 。
+重新列出或加载会话时会显示该标题。会话设置也保存在文件头中，加载时会恢复。
+若已选 agent 或模型配置已被删除，Magent 会记录并跳过该项，继续打开会话。
 
 * 开发边界
 
@@ -105,9 +105,17 @@ registered Action command projections 与 skill descriptors 展示为两个独�
   per-request agent overrides。
 - ACP session config 暴露 ~Automatic capabilities~ ；关闭后，该 session 后续 turn 不再
   自动解析 contextual capabilities，但显式选择的 instruction skills 仍然生效。
-- Model route 当前只保存在 session 内存中；尚未实现跨 Emacs 持久化。加载已保存的
-  session 后会回到 ~Auto~。
-- 不支持在 active turn 执行期间 fork，也不支持跨 project scope fork。
+
+* 内联图片
+
+ACP 的 ~image~ 块通过 ~data~ 提交 Base64 数据，支持 PNG、JPEG、WebP 和 GIF。
+Emacs 须能识别图片格式并确认其与 ~mimeType~ 一致。 ~magent-inline-image-max-bytes~
+限制单张图片解码后的大小，默认上限为 20 MiB。仅提供 URI 的图片会被拒绝。
+
+图片按内容哈希存入会话私有目录，ledger 只保存引用。支持图片的模型通过 gptel
+收到媒体数据，纯文本模型收到附件文字标记。压缩上下文只使用文本。回放时每张图片
+通过独立的 ~user_message_chunk~ 返回给前端。分支复制引用的图片，
+~magent-session-clear~ 会清除该会话的图片。
 
 * 进度与计划投影
 

@@ -139,7 +139,7 @@ magent.el (package entry point and lazy runtime bootstrap)
   ├─ magent-tools.el             (canonical catalog of 19 gptel-tool structs)
   ├─ magent-agent.el             (magent-agent-run-turn: builds prompts and starts the Magent loop)
   ├─ magent-agent-info.el        (agent metadata struct and helpers)
-  ├─ magent-agent-builtins.el    (7 built-in agent definitions)
+  ├─ magent-agent-builtins.el    (seven default agents and the opt-in Codex profile)
   ├─ magent-agent-registry.el    (scope-aware registry and project definitions)
   ├─ magent-agent-file.el        (loads custom agents from .magent/agent/*.md)
   ├─ magent-permission.el        (rule-based tool access control per agent)
@@ -206,7 +206,7 @@ magent.el (package entry point and lazy runtime bootstrap)
 
 ### Agent Definitions
 
-Built-in agents: `build` (default), `plan`, `explore`, `general`, `compaction`, `title`, `summary`. Defined in `magent-agent-builtins.el` with `cl-defstruct magent-agent-info` in `magent-agent-info.el` (fields: name, description, mode, native, hidden, temperature, top-p, effort, thinking, color, model, prompt, permission, source-layer, source-scope). Agent modes: `primary` (user-facing), `subagent` (internal), `all` (either).
+`magent-agent-builtins.el` registers `build` (default), `plan`, `explore`, `general`, `compaction`, `title`, and `summary`. When `magent-codex-enabled` is set before initialization it also registers `codex`. The `magent-agent-info` struct in `magent-agent-info.el` holds the profile, including executor, backend name, and model ID. Magent agents can use `primary`, `subagent`, or `all` mode. Codex profiles require `subagent` mode and use Codex model settings.
 
 Custom agents: `.magent/agent/*.md` files with YAML frontmatter + markdown body (system prompt). Frontmatter is parsed by `magent-file-loader.el`; keys use their exact kebab-case spelling, unknown keys are rejected, and list-valued fields use YAML sequences.
 

@@ -17,7 +17,8 @@ Magent 使用 durable child-agent jobs 来支持协作式 agent 工作。它替�
 | ~list_agents~ | 列出当前 parent session 下的 child jobs。 |
 | ~close_agent~ | 关闭 job，并在存在 live request 时 abort。 |
 
-这些工具共用 ~agent~ permission key。旧的 ~delegate~ 工具不保留 compatibility wrapper。
+这些工具共用 ~agent~ 权限。无论使用哪种执行器，父 agent 都通过同一个任务 ID
+等待结果或发送追问。Codex 任务还会保存线程 ID，供执行器下次连接时使用。
 
 * 数据模型
 
@@ -38,35 +39,33 @@ Magent 使用 durable child-agent jobs 来支持协作式 agent 工作。它替�
 
 合法状态包括 ~queued~ 、 ~running~ 、 ~waiting~ 、 ~completed~ 、 ~failed~ 、 ~closed~ 和 ~cancelled~ 。
 
-Parent ~magent-session~ 会在 ~agent-jobs~ slot 中持久化 child jobs。active loop 的 runtime-only state 存在 ~magent-agent-job--runtimes~ ，以 job id 为 key。这样 parent session JSON 足够恢复和检查 job 元数据，同时不会尝试序列化 live request handle。
+父会话将这些记录保存在 ~<id>.json~ 文件头的 ~agent-jobs~ 字段中。运行期间，
+~magent-agent-job--runtimes~ 按任务 ID 保存当前执行状态。
 
-~magent-agent-job.el~ 同时拥有 status observers。~wait_agent~ 订阅状态转换并只使用
-一个 deadline timer，不做轮询。Child 状态变化通过 session deferred-save queue
-调度 parent-session 持久化，因此 tool callback 不会同步重写 session JSON。
+~wait_agent~ 订阅 ~magent-agent-job.el~ 发出的状态变更通知，并用一个定时器控制
+等待时限。子任务状态变化后，父会话通过延迟保存队列将结果写入磁盘。
 
 * 运行流程
 
 1. ~spawn_agent~ 在 parent session 中创建 ~magent-agent-job~ 。
-2. child request 通过 ~magent-agent-loop.el~ 中的 Magent-owned loop 启动。
+2. 默认执行器通过 ~magent-agent-loop.el~ 运行子任务。Codex 执行器通过
+   ~magent-codex.el~ 启动一次 ACP 请求。两种执行器都把取消函数交给任务管理模块。
 3. child 使用 summary-only UI，不把完整 transcript 写进 parent conversation body。
 4. completion、failure 和 close transition 会通知 wait observer，并更新 durable
    job record。
 5. tool result 向 root agent 返回 model-visible JSON summary。
 
-成功的 ~spawn_agent~ result 会包含机器可读的 ~next_action~，使用返回的 job id
-调用 ~wait_agent~。它不会固化 timeout，因此宿主策略仍是权威来源。 ~wait_agent~
-省略 timeout 时使用正数 ~magent-request-timeout~；该设置被禁用时使用有限的 300 秒
-fallback。单次 wait 超时不会取消或关闭 child job。
-
-Provider 边界仍然是 ~magent-sampling-gptel.el~ 里的 ~gptel-request~ 。Magent 自己负责 orchestration、tool dispatch、persistence、abort 和 child-job coordination。
+~spawn_agent~ 成功时返回的 ~next_action~ 会用任务 ID 调用 ~wait_agent~ 。
+省略等待时限时使用 ~magent-request-timeout~ 的正数值，否则等待 300 秒。
+等待超时后，子任务仍可继续运行。
 
 * 继承
 
-Child jobs 会在合理范围内继承 parent request context：
+使用默认 ~magent~ 执行器的子任务通过 ~gptel-request~ 调用模型，并从父请求继承以下上下文。
 
 - project root 和 session scope
-- backend/model names
-- temperature、top-p、reasoning effort 和 thinking mode
+- 父请求的模型路由，子 agent 配置可显式指定自己的后端或模型
+- 使用同一路由时继承的 temperature、top-p、reasoning effort 和 thinking mode
 - active skill names 和 capability context
 - 受 parent 与 child agent 双方约束后的 effective permission profile
 - request depth，用于递归 spawn guard
@@ -79,9 +78,35 @@ Child jobs 会在合理范围内继承 parent request context：
 prompt、metadata、result/error 和 transcript 会持久化在 parent session 的
 ~agent-jobs~ 数据中。
 
-Agent-shell 恢复持久化 parent session 时，也会恢复其中的 ~agent-jobs~ 数据。Emacs
-重启后不会恢复 active request handle，但保存的 job metadata、result/error 和
-transcripts 仍会保留。
+重新加载父会话后，可用 ~list_agents~ 查看已保存的任务和结果。将 ~include_closed~
+设为 true 还会列出已关闭或已取消的任务。向 Magent 子任务发送追问需要该任务的运行时
+仍在内存中。Codex 子任务可以按下文所述条件重新打开已保存的线程。
+
+* Magent 子任务的模型配置
+
+主 agent 优先使用会话中选定的模型。Magent 子任务可以在配置中用 ~backend~
+指定已注册的 gptel 后端名称，用 ~model~ 指定模型 ID。子任务切换到不同后端或模型时，
+使用自己的采样设置，其余参数采用目标路由的默认值。
+
+旧 Elisp 配置如果把 gptel 后端对象或 ~(BACKEND . MODEL)~ 传给 ~:model~ ，
+请将后端名称写入 ~:backend~ ，模型 ID 写入 ~:model~ 。只有后端对象时只需设置
+~:backend~ 。先前保存的配置如果丢失了后端名称，需要手动补回。
+
+* 启用和恢复 Codex 子任务
+
+安装 ~codex-acp.el~ 并登录 Codex CLI，在 Magent 初始化前将 ~magent-codex-enabled~
+设为 ~t~ 。在项目会话中，请主 agent 把任务交给内置的 ~codex~ 子 agent。
+项目也可以在 ~.magent/agent/~ 中添加配置，指定 ~executor: codex~ 和 ~mode: subagent~ 。
+可选的 ~model~ 和 ~effort~ 使用 Codex 支持的值，省略时使用 Codex 默认值。
+
+Codex 返回线程 ID 后，Magent 会将它与项目目录、所选模型、推理强度和实际使用的模型
+一同保存。任务完成或失败后，用 ~send_agent_message~ 向原任务 ID 发送追问即可继续该线程。
+重新加载父会话后也可以追问，前提是同一项目仍可使用原 Codex 配置。Emacs 重启时尚在
+排队、运行或等待的任务，会在恢复会话时标为 ~cancelled~ 。
+
+Codex 使用 ~codex-acp.el~ 提供的工作区工具。每一轮使用独立的 ACP 连接，工作区权限
+请求及可选操作会转发到原 Magent 会话，用户的选择只答复对应请求。关闭任务或中止父请求
+会取消正在运行的子任务并清除待处理的审批。连接关闭时，该连接上的目录授权随之失效。
 
 * 边界
 

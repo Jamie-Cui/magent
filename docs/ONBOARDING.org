@@ -67,7 +67,7 @@ Multi-agent architecture with specialized agents for different tasks.
 - ~magent-agent.el~ — Core agent processing: builds gptel prompts, applies overrides, and starts the Magent-owned loop
 - ~magent-project-instructions.el~ — Bounded root-to-resource discovery of scoped project instructions such as ~AGENTS.md~
 - ~magent-agent-info.el~ — Agent metadata struct and helpers
-- ~magent-agent-builtins.el~ — 7 built-in agent definitions
+- ~magent-agent-builtins.el~ — Default agent definitions and the optional Codex profile
 - ~magent-agent-registry.el~ — Scope-aware hash-table registry and project definitions
 - ~magent-agent-file.el~ — Loads custom agents from ~.magent/agent/*.md~ files
 - ~magent-permission.el~ — Rule-based tool access control (allow/deny/ask with glob patterns)
@@ -144,11 +144,12 @@ Magent uses specialized agents with different capabilities:
 - *plan* — Restricted file edits (only ~.magent/plan/*.md~)
 - *explore* — Fast codebase exploration (read/grep/glob/bash only)
 - *general* — General-purpose subagent for child-agent tasks
+- *codex* — Optional child executor enabled by ~magent-codex-enabled~
 - *compaction*, *title*, *summary* — Hidden utility agents
 
 Agents have modes: ~primary~ (user-facing), ~subagent~ (internal), ~all~ (either).
 
-Current child-agent architecture is documented in ~docs/AGENT_JOBS.org~. The Codex workflow alignment plan remains useful as implementation history.
+See [[file:AGENT_JOBS.org][Child-agent jobs]] for executor setup, permissions, and follow-ups.
 
 ** Permission System
 
@@ -209,11 +210,10 @@ Keep the terms separate when adding or reviewing defaults:
 
 ** Session Scoping
 
-Sessions are project-aware:
-- In a project: state scoped to that project
-- Outside projects: global session fallback
-- Persists to ~~/.emacs.d/magent/sessions/projects/<sha1>/~
-- Stores durable child-agent job metadata, result/error state, and transcripts in ~agent-jobs~
+- The project root defines the scope when Emacs detects a project.
+- Outside a project, each normalized TRAMP directory has its own scope. Local directories share ~global~.
+- Under ~magent-session-directory~, project and TRAMP scopes use ~projects/<sha1(scope)>/~. The global scope uses ~global/~.
+- The session header stores child-agent metadata, results, errors, and transcripts in ~agent-jobs~.
 
 ** Lazy Initialization
 
@@ -321,7 +321,7 @@ Look at ~test/magent-test.el~ to see how the codebase is tested. Tests mock ~gpt
 ** Agent System
 - *magent-agent.el* — Prompt assembly, request-local agent/tool resolution, and loop startup
 - *magent-agent-info.el* — Agent metadata struct and helpers
-- *magent-agent-builtins.el* — 7 built-in agent definitions
+- *magent-agent-builtins.el* — Default agent definitions and the optional Codex profile
 - *magent-agent-registry.el* — Scope-aware agent registry and project definitions
 - *magent-agent-file.el* — Custom agent loader from ~.magent/agent/*.md~
 - *magent-permission.el* — Tool access control with glob patterns
@@ -388,9 +388,9 @@ ACP conversion in ~magent-acp.el~, and agent-shell-specific behavior in
 *Approach carefully:* Keep child-eval cleanup and host-owned timeout handling robust. Preserve once-only approval for both arbitrary eval tools, session isolation for spilled output, revision validation for writes, and parent/child request-context inheritance.
 
 ** 6. magent-session.el (Medium Complexity)
-*Why it's complex:* Per-project session scoping with global fallback, JSON persistence, ledger-driven UI restoration, child-agent job persistence, and history trimming.
+Session scoping, event-log replay, child-job persistence, and history trimming all affect which conversation the frontend restores.
 
-*Approach carefully:* Session directory calculation uses SHA1 of project root. ~agent-jobs~ must be preserved for child transcript inspection.
+Project and TRAMP directory keys use the SHA-1 hash of the normalized scope. Preserve ~agent-jobs~ when changing the header so child transcripts remain available.
 
 * Development Workflow
 

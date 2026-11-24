@@ -17,7 +17,8 @@ The public child-agent tool surface is:
 | ~list_agents~ | List child jobs for the current parent session. |
 | ~close_agent~ | Close a job and abort its live request when present. |
 
-These tools share the ~agent~ permission key. The old ~delegate~ tool is not kept as a compatibility wrapper.
+These tools share the ~agent~ permission key. The parent uses the same job ID
+with either executor. A Codex job also stores a thread ID internally for follow-ups.
 
 * Data Model
 
@@ -38,7 +39,9 @@ These tools share the ~agent~ permission key. The old ~delegate~ tool is not kep
 
 Valid statuses are ~queued~, ~running~, ~waiting~, ~completed~, ~failed~, ~closed~, and ~cancelled~.
 
-The parent ~magent-session~ persists child jobs in its ~agent-jobs~ slot. Runtime-only state for active loops lives in ~magent-agent-job--runtimes~, keyed by job id. This keeps parent session JSON sufficient for resume/inspection while avoiding serializing live request handles.
+The parent session stores these records in the ~agent-jobs~ field of its
+~<id>.json~ header. The runtime registry ~magent-agent-job--runtimes~ holds
+live execution state keyed by job ID.
 
 ~magent-agent-job.el~ also owns status observers. ~wait_agent~ subscribes to
 those transitions and uses one deadline timer; it does not poll. Child
@@ -62,15 +65,14 @@ timeout so host policy remains authoritative. When ~wait_agent~ omits its
 timeout, it uses a positive ~magent-request-timeout~ or a finite 300-second
 fallback. Timing out one wait does not cancel or close the child job.
 
-The provider boundary remains ~gptel-request~ through ~magent-sampling-gptel.el~. Magent owns orchestration, tool dispatch, persistence, abort behavior, and child-job coordination.
-
 * Inheritance
 
-Child jobs inherit the parent request context where practical:
+Children using the default ~magent~ executor run through ~gptel-request~ and
+receive the following context from the parent request.
 
 - project root and session scope
-- backend/model names
-- temperature, top-p, reasoning effort, and thinking mode
+- the parent's model route, unless the child profile specifies its own
+- temperature, top-p, reasoning effort, and thinking mode when sharing the parent route
 - active skill names and capability context
 - effective permission profile bounded by the parent and child agent
 - request depth for recursive spawn guards
@@ -83,9 +85,10 @@ The supported agent-shell frontend renders compact child-agent lifecycle
 updates. Full child prompt, metadata, result/error, and transcript state remain
 persisted under the parent session's ~agent-jobs~ data.
 
-When agent-shell resumes a persisted parent session, its ~agent-jobs~ data is
-restored with it. Active request handles are not restored after Emacs restart,
-but saved job metadata, result/error state, and transcripts remain persisted.
+After reloading the parent session, use ~list_agents~ to find saved jobs and
+their results. Set ~include_closed~ to true to include closed or cancelled
+jobs. A follow-up to a Magent child requires its live runtime. A Codex child
+can reopen its saved thread under the conditions below.
 
 * Model Configuration And Migration
 
@@ -103,12 +106,21 @@ backend supplied by the user.
 
 * Codex Job Lifetime
 
-Magent persists the executor, project directory, Codex thread ID, selected
-settings and actual model in the existing job metadata. A completed or failed
-Codex job can resume on an available profile in the same project, even after
-the parent session is reloaded. Restart reconciliation still marks previously
-running jobs interrupted. Each turn opens and releases an ACP connection;
-connection-scoped directory grants end when that connection closes.
+To use the built-in ~codex~ profile, install ~codex-acp.el~, authenticate the
+Codex CLI, and set ~magent-codex-enabled~ to ~t~ before Magent initializes.
+In a project session, ask the primary agent to give Codex a task. A project
+profile in ~.magent/agent/~ can select ~executor: codex~ with ~mode: subagent~
+and optionally specify a Codex ~model~ and ~effort~. Omit both to use the
+Codex defaults.
+
+Once Codex returns a thread ID, Magent saves it with the project directory,
+model selection, effort, and actual model. After a job completes or fails,
+~send_agent_message~ with the job ID loads that thread, including after a
+parent session reload, provided the original Codex profile is available in the
+same project. If Emacs restarts with a job still queued, running, or waiting,
+Magent marks it ~cancelled~ when restoring the session. Each turn opens its own
+ACP connection. Directory permissions granted for that connection expire when
+the turn ends.
 
 Magent forwards each workspace permission request with the options offered by
 Codex. Only the matching request receives the decision. Closing the job or

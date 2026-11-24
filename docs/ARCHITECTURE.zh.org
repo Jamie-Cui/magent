@@ -8,7 +8,7 @@ Magent 是一个 Emacs-native 的 AI coding agent。它的核心设计判断是�
 
 系统边界刻意保持清晰：
 
-- Provider transport、HTTP/SSE、模型选择和 API key 继续交给 ~gptel~ ，通过 ~gptel-request~ 调用。
+- Magent 自己执行的轮次通过 ~gptel-request~ 调用模型。可选的 Codex 子任务通过 ~magent-codex.el~ 建立 ACP 连接，使用 Codex 的模型和工作区工具。
 - 会话式交互只支持 ~agent-shell~，中间由进程内 ACP adapter 连接。显式注册的 Action 也可以暴露受信任的 ~M-x~ command wrapper，但不会因此形成第二套会话 frontend。
 - Agent 执行、Action Invocation、工具编排、权限决策、会话、技能、能力解析和 child-agent jobs 由 Magent 自己管理。
 - Codex 风格的 seatbelt、bubblewrap、sandbox 和 shell isolation 不在范围内。Magent 的 permission 是工作流确认和审计，不是 OS 安全边界。
@@ -29,6 +29,10 @@ child-agent coordination、~emacs_read~、~emacs_eval~、~emacs_eval_live~ 与
 ~web_search~ 都留在本机。Remote session key 的规范化不会探测 TRAMP
 filesystem；agent-shell 渲染 remote file context 时也不会进行 image 或
 containment 查询。
+
+Emacs 识别到项目时，项目根目录决定会话作用域。项目之外的每个 TRAMP 目录按规范化
+远程路径保存独立的历史记录，工具的相对路径也从该目录解析。本机的非项目目录共用
+~global~ 作用域。
 
 Canonical tool catalog 为每个工具声明唯一 locality：
 
@@ -98,11 +102,20 @@ manifest 和 package data recipe。
 
 ** UI 与 Runtime API
 
-受支持的会话式 frontend 是 ~agent-shell~。~magent-agent-shell.el~ 注册 Magent 的 agent-shell 配置，~magent-acp.el~ 实现进程内 ACP adapter。ACP text 与 resource block 会分开规范化：完整结构化输入存进 turn metadata，并以 user role 重建给模型；本地 ~file://~ resource 只额外提供 scoped file path，供项目指令发现与 capability resolution 使用。每个 ~session/prompt~ 到达后，ACP 会把已注册 slash command 投影分派给 ~magent-action.el~ 中的 Action，普通 prompt 则直接提交给 ~magent-runtime-api.el~。Action-owned agent turn 和 Workflow Step 同样通过该 runtime API 提交；Action 也可以不进入通用 agent loop 而直接完成。~magent-runtime-queue.el~ 采用会话内 FIFO、会话间并发的执行模型，包括同一项目内的独立会话，同时保留 session-scoped 和 exact-submission cancellation。显式 ~M-x~ command wrapper 复用 Action Invocation lifecycle，不会形成并行的会话 frontend。
+~magent-agent-shell.el~ 注册 agent-shell 配置。 ~magent-acp.el~ 处理 ACP 文本、资源和
+内联图片。会话保存用户输入以便回放，本地 ~file://~ 资源还提供路径，用于查找项目指令和解析能力。
+
+ACP 通过 ~magent-action.el~ 分派已注册的斜杠命令。普通提示和 Action 的 agent Step
+都提交给 ~magent-runtime-api.el~ ，直接执行的 Action 可以在队列之外完成。
+~magent-runtime-queue.el~ 按提交顺序执行同一会话的请求，同一项目中的不同会话可以并发。
+可以取消整个会话的请求，也可以只取消一次提交。显式注册的 ~M-x~ 命令使用同一套 Action 调用流程。
 
 ** Ledger 与持久化
 
-持久化真相源是 ~thread -> turn -> item~ ledger。 ~magent-ledger.el~ 定义状态对象、状态转移和 journal events， ~magent-runtime-api.el~ 创建用户 submission， ~magent-runtime-queue.el~ 调度实际执行， ~magent-session.el~ 以原子替换方式保存 materialized ~snapshot~ 和内存 append-only ~journal~ 的有界尾部。snapshot 记录 ~last-event-seq~，因此保留的旧事件可供检查，但恢复时不会重复 replay。
+~magent-ledger.el~ 记录 thread、turn 和 item 的状态变化。在 schema 7 中，
+~magent-session.el~ 读取 ~<id>.json~ 文件头来列出会话，将新事件追加至 ~<id>.jsonl~ ，
+并把线程状态写入 ~<id>.snapshot~ 快照。恢复时只回放序号大于快照中 ~last-event-seq~
+的事件。快照写入和旧格式迁移的细节见 [[file:AGENT_WORKFLOW.zh.org][Agent 工作流程]]。
 
 Consumer 必须从唯一的 ledger 状态显式选择
 ~ledger~、~transcript~、~provider~、~compaction~ 或 ~audit~ context view；这些
@@ -176,7 +189,7 @@ session 私有、带 TTL/quota 的 spill，只能凭 opaque id 通过 ~read_tool
 8. ~magent-agent-loop.el~ 接收 normalized text、reasoning、tool-call 和 completion events。
 9. tool call 累积到 ~tool-call-batch-end~ 后，通过 orchestrator 串行执行。
 10. tool result 更新同一个 tool item，而不是创建一条独立的持久记录。
-11. 如果 tool output 需要返回给模型， ~magent-agent.el~ 从 ledger 重建 prompt 并开始下一次 sampling。
+11. 当 provider 提供原生续接时， ~magent-agent.el~ 将已记录的工具结果用于该续接，开始下一次采样。
 12. 如果 provider 返回空 assistant text 并明确完成， ~magent-agent.el~ 用 ~empty-completion~ metadata 将本轮标记为 failed，不再发起请求。
 13. completion、failure、abort 或 queued drop 会把 turn 转到 terminal state，并通知 ACP observer。
 14. 普通 prompt 直接用 turn result 结束 pending ACP request。对于 Action-owned work，runtime callback 会先返回 Action Invocation，再由其 terminal lifecycle 结束 ACP request，或向 interactive caller 报告结果。
