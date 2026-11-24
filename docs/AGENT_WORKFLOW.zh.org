@@ -87,11 +87,11 @@ Tool item 在 provider prompt projection 中会转换成 gptel 所需的历史 ~
 
 - ~<id>.jsonl~ ：磁盘上的 append-only event log，一行一个 JSON 对象，记录 ~turn-queued~ 、 ~turn-started~ 、 ~item-started~ 、 ~item-content-appended~ 、 ~item-completed~ 、 ~turn-completed~ 等生命周期事件。流式内容直接 append 到这里，因此一次保存的代价只和本次变化量成正比，而不是和整个会话成正比。压缩时保留由 ~magent-session-log-max-events~ 控制的有界尾部；tool/permission 审计由 ~magent-audit.el~ 单独负责。
 - ~<id>.snapshot~ ：materialized full thread state。它保存当前 thread、turns 和 items，避免每次 resume 都从头 replay；只有在文件缺失或日志超过 ~magent-session-log-max-events~ 时才重写。
-- ~<id>.json~ ：session header（id、scope、title、status、child-agent jobs、approval overrides）。文件很小，是 session listing 唯一读取的文件。
+- ~<id>.json~ 保存会话文件头，其中包括会话 ID、作用域、标题、会话设置、子任务和审批覆盖规则。列出会话只需读取文件头。
 
-当前 session schema（version 7）同时写入三者：
+以下片段展示同一会话的数据在 schema 7 文件中的分布，省略了部分字段。
 
-#+begin_src json
+#+begin_example
 // <id>.json
 { "id": "...", "schema-version": 7, "scope": "global", "agent-jobs": [] }
 
@@ -100,9 +100,10 @@ Tool item 在 provider prompt projection 中会转换成 gptel 所需的历史 ~
 
 // <id>.snapshot
 { "id": "...", "turns": [ { "items": [ { "...": "..." } ] } ] }
-#+end_src
+#+end_example
 
-加载器只接受完整、字段精确的当前 schema。缺少 ledger、版本不同、字段未知或嵌套 shape 无效的文件都会被拒绝。schema 6 文件（把 ~journal~ 和 ~snapshot~ 内联在同一个文件里）会在首次读取时原地迁移。
+首次读取 schema 6 文件时，Magent 先写入日志和快照，再用 schema 7 的文件头替换旧文件。
+其他版本、未知字段或格式无效的 ledger 数据会触发加载错误。
 
 Replay 语义：
 
@@ -119,10 +120,12 @@ Replay 语义：
 3. submission 真正开始时， ~magent-runtime-api.el~ 把 turn 转成 ~in-progress~ 。
 4. ~magent-agent-run-turn~ 幂等复用该 turn/user item，不重复写用户消息。
 5. ~magent-agent-loop~ 消费 normalized LLM events。
-6. Text 和 reasoning deltas 更新 snapshot 中 materialized in-progress items，但不会为每个 chunk 追加 journal event；terminal item event 携带最终内容。
+6. 每个助手文本片段和需要保留的推理片段都会产生一个 ~item-content-appended~ 事件，
+   其中只包含新增文本。延迟保存时，Magent 将这批事件追加到磁盘日志。
 7. Tool-call events 累积到 provider-neutral ~tool-call-batch-end~ 。
 8. Tool dispatch 启动 ~tool~ items，记录 approval metadata，并把同一 item 更新为 ~completed~ 或 ~failed~ 。
-9. Tool output 返回 ~tool-output~ 等 continuation outcome； ~magent-agent-run-turn~ 决定是否从 session ledger 重建 prompt 并继续 sampling。
+9. 循环记录工具结果并向 ~magent-agent-run-turn~ 报告 ~tool-output~ 。当 gptel 提供原生续接时，
+   本轮通过该续接将工具结果发回模型。
 10. Provider 明确完成但 assistant text 为空时，Magent 记录 ~empty-completion~ metadata 并将本轮标记为 failed，不再请求模型。
 11. Assistant completion 记录 assistant message item，并完成 turn。
 12. Abort、failure 和 dropped queued submissions 分别把 turn 转成 ~interrupted~ 、 ~failed~ 或 ~dropped~ ；aborted turn 下的 in-progress items 标记为 ~cancelled~ 。
@@ -134,7 +137,9 @@ Prompt reconstruction 是 ledger-driven。知道 current turn id 时，Magent �
 
 受支持的 frontend 是 agent-shell。 ~magent-agent-shell.el~ 创建由 ~magent-acp.el~ 实现的 in-process ACP client。ACP session/prompt request 把 registered slash command 分派给 ~magent-action.el~ ，普通 prompt 则直接提交 ~magent-runtime-api.el~ ；request 会保持 pending，直到对应 command invocation 或普通 runtime turn completed、failed 或 cancelled。Command-owned turn 和 workflow step 使用同一个 runtime API。Runtime 发出 Magent-native observer events； ~magent-acp.el~ 转换为 ACP ~session/update~ 消息。
 
-~magent-runtime-queue.el~ 负责 queued/active turn state。当前实现一次只有一个全局 active turn。每个 submission 捕获精确 runtime session wrapper 和唯一 request context，因此 cancellation 按对象 identity 隔离：取消一个 ACP session 会移除该 session 的 queued work 并 abort 该 session 的 active turn，不会丢掉其他 session 的 queued turns。
+~magent-runtime-queue.el~ 按提交顺序执行同一会话的请求，每个会话一次只运行一轮。
+不同会话可以并发，即使属于同一项目。取消一个 ACP 会话时，Magent 会中止该会话的当前轮次，
+移除其中的排队请求。其他会话继续处理各自的队列。
 
 agent-shell + ACP 路径是完整的会话式 UI projection 和 slash-command surface。显式
 ~M-x~ wrapper 进入同一个 ~magent-action~ invocation lifecycle，不会形成另一套会话
@@ -150,7 +155,7 @@ Magent 刻意保留以下差异：
 - Magent 用自己的 session JSON ~snapshot + journal~ ，不直接使用 Codex rollout files。
 - Tool call 和 output 在 Magent 中是一个 source-of-truth item 的状态更新。
 - Tool execution 当前由 Magent tool queue 串行化；Codex 更丰富的 per-tool runtime、approval、MCP 和 process execution 机制不在当前范围。
-- Child agents 是 ~AGENT_JOBS.org~ 中描述的 durable Magent jobs，不是 Codex app-server threads。
+- 父会话持久化每个子任务。使用 Codex 执行器的子任务还会保存 Codex 线程 ID，供后续追问使用。详见 [[file:AGENT_JOBS.zh.org][子任务指南]]。
 
 * Backlog / TODO
 
@@ -186,8 +191,8 @@ Responses 原始 output item 以不透明 JSON 存入 provider item，并记录 
 排除不透明续接数据。中断后没有结果的调用会在 replay 中得到明确的未知结果说明，
 不会伪称已执行。
 
-Schema v6 已支持这些 item、phase、metadata 和 output，不需要迁移文件。
-旧的合并消息原样保留，缺失的边界不作推测。普通 turn 缺少最终答复会失败；
+从 schema 6 迁移时，原消息及其 phase 会一并保留。旧记录中已合并且边界缺失的消息
+继续使用未知 phase。普通 turn 缺少最终答复会失败；
 明确允许空结果的直接 Action sampler 保持其契约。completed 只表示执行正常结束，
 不代表工程目标、测试或所有工具都成功。
 

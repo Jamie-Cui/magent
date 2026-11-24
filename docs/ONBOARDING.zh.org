@@ -70,7 +70,7 @@ lazy initialization；agent registry、skills、slash commands 和 capabilities 
 - ~magent-agent.el~ ：核心 agent processing，构造 gptel prompt、应用 overrides，并启动 Magent-owned loop。
 - ~magent-project-instructions.el~ ：从 project root 到请求相关 resource 有界发现 ~AGENTS.md~ 等 scoped project instructions。
 - ~magent-agent-info.el~ ：agent metadata struct 和 helpers。
-- ~magent-agent-builtins.el~ ：7 个内置 agent definitions。
+- ~magent-agent-builtins.el~ 定义默认 agent 和可选的 Codex 子任务配置。
 - ~magent-agent-registry.el~ ：scope-aware hash-table registry 与 project definitions。
 - ~magent-agent-file.el~ ：从 ~.magent/agent/*.md~ 加载 custom agents。
 - ~magent-permission.el~ ：rule-based tool access control，支持 allow/deny/ask 和 glob patterns。
@@ -147,6 +147,7 @@ Invocation 进入 terminal state。修改该层前先读 ~docs/UI_BACKENDS.org~ 
 - *plan* ：规划 agent，限制文件编辑范围。
 - *explore* ：快速代码库探索，只读/搜索/有限 bash。
 - *general* ：child-agent task 的 general-purpose subagent。
+- *codex* 通过 ~magent-codex-enabled~ 启用，在项目会话中执行 Codex 子任务。
 - *compaction* 、 *title* 、 *summary* ：隐藏 utility agents。
 
 Agent modes：
@@ -154,6 +155,8 @@ Agent modes：
 - ~primary~ ：用户可选的 session agent。
 - ~subagent~ ：内部子任务 agent。
 - ~all~ ：可作为 primary 或 subagent。
+
+执行器配置、权限与追问流程见 [[file:AGENT_JOBS.zh.org][子任务指南]]。
 
 ** Permission System
 
@@ -206,11 +209,9 @@ Skills 依次从内置 ~skills/~、用户级 ~~/.agents/skills/~ 与 ~~/.emacs.d
 
 ** Session Scoping
 
-Sessions 是 project-aware：
-
-- 在 project 内：state scoped to that project。
-- 在 project 外：使用 global session fallback。
-- 默认保存到 ~~/.emacs.d/magent/sessions/~ 。
+- Emacs 识别到项目时，以项目根目录作为会话作用域。
+- 项目之外，每个规范化的 TRAMP 目录都有独立的作用域。本机目录共享 ~global~ 作用域。
+- 在 ~magent-session-directory~ 下，项目和 TRAMP 作用域使用 ~projects/<sha1(scope)>/~ 子目录，全局作用域使用 ~global/~ 子目录。
 - ~agent-jobs~ 保存 durable child-agent job metadata、result/error state 和 transcripts。
 
 ** Lazy Initialization
@@ -323,7 +324,7 @@ API。
 ** Agent System
 - *magent-agent.el* — prompt 装配、request-local agent/tool resolution 与 loop startup
 - *magent-agent-info.el* — agent metadata struct 与 helpers
-- *magent-agent-builtins.el* — 7 个 built-in agent definitions
+- *magent-agent-builtins.el* — 默认 agent 和可选的 Codex 子任务配置
 - *magent-agent-registry.el* — scope-aware agent registry 与 project definitions
 - *magent-agent-file.el* — 从 ~.magent/agent/*.md~ 加载 custom agent
 - *magent-permission.el* — 带 glob pattern 的 tool access control
@@ -390,9 +391,10 @@ melpazoid/MELPA recipe 中；所有 bundled Org prompt 也必须在
 
 ** 6. ~magent-session.el~
 
-*复杂原因：* 它负责 project scoping、global fallback、JSON persistence、ledger-driven UI restoration、child-agent job persistence 和 history trimming。
+会话作用域、日志回放、子任务持久化和历史裁剪都会影响前端恢复的会话内容。
 
-*修改建议：* session directory 由 project root SHA1 派生。 ~agent-jobs~ 需要为 child transcript inspection 保持无损。
+项目和 TRAMP 目录的存储路径由规范化作用域的 SHA-1 哈希派生。修改文件头时须保留
+~agent-jobs~ ，以便恢复后查阅子任务记录。
 
 * 开发流程
 

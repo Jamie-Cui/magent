@@ -125,13 +125,13 @@ different rates.
   thread, turns, and items so resume does not need to replay from the
   beginning every time. It is rewritten only when it is missing or the log has
   grown past ~magent-session-log-max-events~.
-- ~<id>.json~: the session header (identity, scope, title, status, child-agent
-  jobs, approval overrides). It is small, and it is the only file session
-  listing reads.
+- ~<id>.json~ holds the session header, including identity, scope, title,
+  saved session options, child-agent jobs, and approval overrides.
+  Listing conversations reads only the headers.
 
-Session schema v7 writes all three:
+These schema 7 excerpts show how one session is split across files. Fields are abbreviated.
 
-#+begin_src json
+#+begin_example
 // <id>.json
 { "id": "...", "schema-version": 7, "scope": "global", "agent-jobs": [] }
 
@@ -140,12 +140,11 @@ Session schema v7 writes all three:
 
 // <id>.snapshot
 { "id": "...", "turns": [ { "items": [ { "...": "..." } ] } ] }
-#+end_src
+#+end_example
 
-Loading requires the exact current schema. Unknown fields, missing nested
-ledger fields, and other schema versions are rejected rather than converted.
-Schema 6 files, which stored ~journal~ and ~snapshot~ inline, are migrated in
-place on first read.
+On first read, Magent migrates schema 6 in place. It writes the log and
+snapshot before replacing the old file with the schema 7 header. The loader
+rejects other versions, unknown fields, and malformed ledger data.
 
 Replay semantics:
 
@@ -170,17 +169,16 @@ leaves events that replay skips by ~last-event-seq~.
 4. ~magent-agent-run-turn~ reuses that turn/user item idempotently instead
    of duplicating the user message.
 5. ~magent-agent-loop~ consumes normalized LLM events.
-6. Text and reasoning deltas update materialized in-progress items in
-   the snapshot without appending one journal event per chunk. Terminal
-   item events carry the final content.
+6. Each assistant text chunk, and each reasoning chunk retained by the
+   session, produces an ~item-content-appended~ event containing the new text.
+   Deferred saves batch these events into the on-disk log.
 7. Tool-call events are accumulated until the provider-neutral
    ~tool-call-batch-end~ event closes the sampling batch.
 8. Tool dispatch starts ~tool~ items, records approval metadata when
    available, and updates those same items to ~completed~ or ~failed~.
-9. Tool output returns a continuation outcome such as ~tool-output~;
-   ~magent-agent-run-turn~ owns the decision to rebuild the prompt from
-   session history and start the next sampling request.  This keeps tool
-   execution separate from turn continuation policy.
+9. The loop records tool results and reports a ~tool-output~ outcome to
+   ~magent-agent-run-turn~. When gptel supplies a native continuation, the
+   turn resumes it with the tool results.
 10. An empty provider completion records ~empty-completion~ metadata and
     fails the turn without another model request.
 11. Assistant completion records an assistant message item and completes
@@ -207,12 +205,10 @@ fails, or is cancelled.  Command-owned turns and workflow steps use the same
 runtime API.  The runtime emits Magent-native observer events;
 ~magent-acp.el~ converts those events to ACP ~session/update~ messages.
 
-~magent-runtime-queue.el~ owns queued/active turn state.  The first
-implementation uses one global active turn at a time.  Each submission captures
-the exact runtime session wrapper plus its canonical request context, so
-cancellation is identity-scoped: cancelling one ACP session removes that
-session's queued work and aborts its active turn without dropping other
-sessions' queued turns.
+~magent-runtime-queue.el~ runs one active turn per session and starts queued
+turns in submission order. Independent sessions can run concurrently, even
+in the same project. Cancelling an ACP session aborts its active turn and
+removes its queued turns. Other sessions continue processing their queues.
 
 This agent-shell + ACP path is the complete conversational UI projection and
 slash-command surface.  Explicit ~M-x~ wrappers enter the same
@@ -251,8 +247,8 @@ areas:
   tool/runtime support is later added. Codex has richer per-tool runtime,
   approval, MCP, and process execution machinery; that is outside this
   workflow goal.
-- Child agents are durable Magent jobs, documented in ~AGENT_JOBS.org~,
-  not Codex app-server threads.
+- The parent session owns each child job. A job using the optional Codex
+  executor also stores its Codex thread ID for follow-ups. See [[file:AGENT_JOBS.org][Child-agent jobs]].
 
 * Backlog / TODO
 
@@ -317,9 +313,9 @@ other routes. A call with no recorded result receives an explicit unknown-result
 notice in replay, preventing a dangling call without claiming it executed.
 Compaction input omits opaque provider items.
 
-Schema v6 already supports arbitrary item types, phases, metadata, and outputs.
-These changes need no format migration. Existing flattened messages remain
-intact with unknown phase; absent historical boundaries cannot be recovered.
+Migration from schema 6 preserves existing message items and their phases.
+Older flattened messages keep an unknown phase wherever the original record
+omitted message boundaries.
 Ordinary empty answers now fail, while direct Action samplers that explicitly
 allow empty results keep that contract. A completed turn means that execution
 ended normally, not that all code or tests succeeded.

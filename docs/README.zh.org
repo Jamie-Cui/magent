@@ -17,9 +17,10 @@
 ** 架构
 
 - [[file:../ARCHITECTURE.zh.html][ARCHITECTURE.zh.org]] ：产品定位、系统边界、模块层次、请求流和扩展模型。
-- [[file:../AGENT_WORKFLOW.zh.html][AGENT_WORKFLOW.zh.org]] ： ~thread -> turn -> item~ 状态机、循环流程、 ~snapshot + journal~ 持久化、UI 投影和 Codex 差异。
-- [[file:../AGENT_JOBS.zh.html][AGENT_JOBS.zh.org]] ：durable child-agent job 生命周期、工具面、持久化、UI 和边界。
-- [[file:../UI_BACKENDS.zh.html][UI_BACKENDS.zh.org]] ：受支持的 agent-shell + ACP 流程，以及 frontend 开发边界。
+- [[file:../AGENT_WORKFLOW.zh.html][Agent 工作流程]] — 轮次调度、流式事件、schema 7 的存储格式与回放。
+- [[file:../AGENT_JOBS.zh.html][子任务指南]] — 启动 Magent 或 Codex 子任务、等待结果，以及向已保存的任务追问。
+- [[file:../UI_BACKENDS.zh.html][前端与会话]] — ACP 请求流程、会话设置、会话分支和内联图片。
+- [[file:../PERFORMANCE_DIAGNOSIS.html][性能诊断（英文）]] — 批量保存流式内容与追加事件日志的实测结果。
 - [[file:../DOCTOR.zh.html][DOCTOR.zh.org]] ：Doctor probe API、信任边界、脱敏、session 和取消。
 - [[file:../PTC_MULTI_MODEL_PLAN.zh.html][PTC_MULTI_MODEL_PLAN.zh.org]] ：PTC、~run_code~ nested executor 和单个 agent loop 内多模型 phase 的详细实施计划。
 - [[file:../PROCESS_DISPLAY_PLAN.zh.html][PROCESS_DISPLAY_PLAN.zh.org]] ：Codex 风格进度正文与工具调用前 assistant 文本续传的详细实施计划。
