@@ -2112,7 +2112,8 @@ The ledger snapshot and event log live in sibling files."
                           :backend backend
                           :model 'parent-model
                           :source 'session)
-                         :temperature 0.42))
+                         :temperature 0.42
+                         :max-tokens 32768))
          (capability-resolution
           (magent-capability-resolution-create
            :prompt "inspect"
@@ -2153,6 +2154,7 @@ The ledger snapshot and event log live in sibling files."
       (should (eq (magent-request-context-backend request-state) backend))
       (should (= (magent-request-context-temperature request-state) 0.42))
       (should (= (magent-request-context-top-p request-state) 0.88))
+      (should (= (magent-request-context-max-tokens request-state) 32768))
       (should (eq (magent-request-context-effort request-state) 'xhigh))
       (should (eq (magent-request-context-thinking request-state) 'disabled))
       (should (equal (magent-request-context-project-root request-state)
@@ -2161,6 +2163,7 @@ The ledger snapshot and event log live in sibling files."
                      '("cap-skill")))
       (should (equal (plist-get metadata :temperature) 0.42))
       (should (equal (plist-get metadata :top-p) 0.88))
+      (should (= (plist-get metadata :max-tokens) 32768))
       (should-not (plist-member metadata :effort))
       (should (eq (plist-get metadata :thinking) 'disabled))
       (should (equal (magent-permission-resolve
@@ -3259,6 +3262,34 @@ The ledger snapshot and event log live in sibling files."
         :callback #'ignore)))
     (should (equal captured-params '(:reasoning (:effort "xhigh")
                                     :include ["reasoning.encrypted_content"])))))
+
+(ert-deftest magent-test-llm-gptel-applies-request-local-max-tokens ()
+  "A sampling request binds max tokens without changing the global default."
+  (require 'magent-sampling-gptel)
+  (let ((backend (gptel-make-openai "max-tokens" :key "key"))
+        (gptel-max-tokens nil)
+        captured-value
+        captured-local-p)
+    (cl-letf (((symbol-function 'gptel-request)
+               (lambda (_prompt &rest kwargs)
+                 (setq captured-value gptel-max-tokens
+                       captured-local-p
+                       (local-variable-p 'gptel-max-tokens))
+                 (funcall (plist-get kwargs :callback)
+                          t
+                          (list :content "ok")))))
+      (magent-sampling-gptel-sample
+       (magent-sampling-request-create
+        :prompt '("hello")
+        :system "sys"
+        :backend backend
+        :model 'gpt-4o-mini
+        :stream t
+        :metadata '(:max-tokens 32768)
+        :callback #'ignore)))
+    (should (= captured-value 32768))
+    (should captured-local-p)
+    (should-not gptel-max-tokens)))
 
 (ert-deftest magent-test-llm-gptel-disables-deepseek-thinking ()
   "DeepSeek thinking disable maps exactly and suppresses reasoning effort."
@@ -4949,6 +4980,7 @@ The ledger snapshot and event log live in sibling files."
        invocation
        (magent-action--make-agent-step
         "Step" "step"
+        :max-tokens 32768
         :effort 'low
         :thinking 'disabled
         :request-context '(:features (workflow) :workflow-step review))
@@ -4961,6 +4993,8 @@ The ledger snapshot and event log live in sibling files."
                    "/tmp/frontend.el"))
       (should (eq (plist-get submitted-args :effort) 'low))
       (should (eq (plist-get submitted-args :thinking) 'disabled))
+      (should (= (plist-get submitted-args :max-tokens) 32768))
+      (should (= (plist-get metadata :max-tokens) 32768))
       (should (eq (plist-get metadata :effort) 'low))
       (should (eq (plist-get metadata :thinking) 'disabled)))
     (should-error
@@ -4969,7 +5003,9 @@ The ledger snapshot and event log live in sibling files."
     (should-error
      (magent-action--make-agent-step "Step" "step" :thinking 'maybe))
     (should-error
-     (magent-action--make-agent-step "Step" "step" :effort 'impossible))))
+     (magent-action--make-agent-step "Step" "step" :effort 'impossible))
+    (should-error
+     (magent-action--make-agent-step "Step" "step" :max-tokens 0))))
 
 (ert-deftest magent-test-action-workflow-fails-closed-after-callback-error ()
   "Test Workflow code that fails after a callback cannot strand invocation."
@@ -6673,6 +6709,7 @@ The ledger snapshot and event log live in sibling files."
                           :model 'parent-model
                           :temperature 0.2
                           :top-p 0.9
+                          :max-tokens 32768
                           :effort 'xhigh
                           :thinking 'disabled
                           :skill-names '("parent-skill")
@@ -6794,6 +6831,7 @@ The ledger snapshot and event log live in sibling files."
                   parent-route))
       (should (= (magent-request-context-temperature child-state) 0.2))
       (should (= (magent-request-context-top-p child-state) 0.9))
+      (should (= (magent-request-context-max-tokens child-state) 32768))
       (should (eq (magent-request-context-effort child-state) 'xhigh))
       (should (eq (magent-request-context-thinking child-state) 'disabled))
       (should (equal (magent-request-context-skill-names child-state)
@@ -14499,8 +14537,9 @@ Without this, every relative tool path resolved against the local Emacs
                #'ignore)
               ((symbol-function 'magent-session-save-deferred-for-session)
                #'ignore))
-      (magent-runtime-submit runtime-session "hello"))
+      (magent-runtime-submit runtime-session "hello" :max-tokens 32768))
     (should (magent-request-context-p captured-context))
+    (should (= (magent-request-context-max-tokens captured-context) 32768))
     (should (eq (magent-request-context-effort captured-context) 'xhigh))
     (should (eq (magent-request-context-thinking captured-context) 'disabled))
     (should (eq (magent-request-context-tool-names captured-context) :all))
@@ -18405,7 +18444,7 @@ A fresh session from disk still replaces the installed session as before."
   "Runtime structs expose the current request and submission contract."
   (require 'magent-agent-loop)
   (should (= (length (magent-lifecycle-events-context-create)) 6))
-  (should (= (length (magent-request-context-create)) 34))
+  (should (= (length (magent-request-context-create)) 35))
   (should (= (length (magent-agent-loop-create)) 23))
   (should (= (length (magent-runtime-submission-create)) 13)))
 
@@ -19213,6 +19252,7 @@ CURL-EXIT simulates that exit code through gptel's real process sentinel."
                    :agent agent
                    :parent-model-route
                    (magent-model-route-create :backend parent :model 'parent)
+                   :max-tokens 32768
                    :effort 'xhigh :thinking 'disabled :temperature 0.8 :top-p 0.9))
          request)
     (cl-letf (((symbol-function 'magent-agent-loop-start)
@@ -19225,7 +19265,10 @@ CURL-EXIT simulates that exit code through gptel's real process sentinel."
     (should (eq 'low (magent-request-context-effort context)))
     (should (eq 'enabled (magent-request-context-thinking context)))
     (should (= 0.25 (magent-request-context-temperature context)))
-    (should-not (magent-request-context-top-p context))))
+    (should-not (magent-request-context-top-p context))
+    (should-not (magent-request-context-max-tokens context))
+    (should-not (plist-member (magent-sampling-request-metadata request)
+                              :max-tokens))))
 
 (ert-deftest magent-test-codex-job-resumes-saved-thread-and-rejects-late-completion ()
   "Spawn, reload and close a Codex job through the ordinary child-job tools."

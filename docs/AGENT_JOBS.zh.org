@@ -65,7 +65,7 @@ Magent 使用 durable child-agent jobs 来支持协作式 agent 工作。它替�
 
 - project root 和 session scope
 - 父请求的模型路由，子 agent 配置可显式指定自己的后端或模型
-- 使用同一路由时继承的 temperature、top-p、reasoning effort 和 thinking mode
+- 使用同一路由时继承的 temperature、top-p、最大输出 token 数、reasoning effort 和 thinking mode
 - active skill names 和 capability context
 - 受 parent 与 child agent 双方约束后的 effective permission profile
 - request depth，用于递归 spawn guard

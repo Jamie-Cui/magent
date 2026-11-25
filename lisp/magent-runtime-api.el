@@ -832,11 +832,13 @@ turn is created when any name is unknown or unavailable."
 
 (cl-defun magent-runtime-submit
     (runtime-session prompt &key context (tools :all) skills agent observer
-                     approval-provider effort thinking turn-metadata on-complete)
+                     approval-provider max-tokens effort thinking turn-metadata
+                     on-complete)
   "Submit PROMPT to RUNTIME-SESSION.
 TOOLS is `:all' or an exact list of tool names.  OBSERVER receives
-request-local Magent-native events.  EFFORT and THINKING are request-local
-sampling overrides; `auto' selects the provider or model default."
+request-local Magent-native events.  MAX-TOKENS, EFFORT, and THINKING are
+request-local sampling overrides; `auto' selects the provider or model default
+for the latter two."
   (unless (magent-runtime-session-p runtime-session)
     (error "Expected runtime session, got: %S" runtime-session))
   (magent-runtime-api--assert-session-available runtime-session)
@@ -876,6 +878,7 @@ sampling overrides; `auto' selects the provider or model default."
              (and model-routing-configured-p
                   (magent-runtime-session-effective-model-route
                    runtime-session effective-agent))
+             :max-tokens (magent-max-tokens-normalize-option max-tokens)
              :effort (or (magent-effort-normalize-option effort)
                          (magent-effort-normalize-option
                           (magent-runtime-session-effort runtime-session)))

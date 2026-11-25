@@ -307,6 +307,14 @@ values are accepted for file-backed and wire-protocol configuration."
   "Return THINKING option as an ACP/frontmatter string."
   (symbol-name (magent-thinking-option-or-auto thinking)))
 
+(defun magent-max-tokens-normalize-option (max-tokens)
+  "Return request-local MAX-TOKENS, or nil when absent.
+MAX-TOKENS must be a positive integer when specified."
+  (unless (or (null max-tokens)
+              (and (integerp max-tokens) (> max-tokens 0)))
+    (error "Invalid Magent max tokens value: %S" max-tokens))
+  max-tokens)
+
 (defcustom magent-bypass-permission nil
   "DANGEROUS: Bypass ordinary Magent tool permission checks.
 When non-nil, exposed tools ignore agent permission rules and user-defined
