@@ -38,6 +38,7 @@
 (defvar gptel-use-tools)
 (defvar gptel-confirm-tool-calls)
 (defvar gptel-include-reasoning)
+(defvar gptel-max-tokens)
 (defvar gptel-temperature)
 (defvar gptel--known-backends)
 (defvar gptel-proxy)
@@ -1658,6 +1659,10 @@ Return the request buffer as the abort handle.  REQUEST must be a
       (when (and (plist-member metadata :temperature)
                  (boundp 'gptel-temperature))
         (setq-local gptel-temperature (plist-get metadata :temperature)))
+      (when-let* ((max-tokens
+                   (magent-max-tokens-normalize-option
+                    (plist-get metadata :max-tokens))))
+        (setq-local gptel-max-tokens max-tokens))
       (let* ((thinking
               (magent-thinking-effective (plist-get metadata :thinking)))
              (sampling-params

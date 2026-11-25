@@ -1637,6 +1637,8 @@ parent and child instead of flattening them to one decision per tool."
                            (magent-request-context-temperature child-context)))
       (top-p . ,(and child-context
                      (magent-request-context-top-p child-context)))
+      (max-tokens . ,(and child-context
+                          (magent-request-context-max-tokens child-context)))
       (effort . ,(and child-context
                      (magent-effort-option-string
                       (magent-request-context-effort child-context))))
@@ -1816,6 +1818,8 @@ CHILD-SESSION holds the native agent ledger and is nil for Codex."
                              (magent-request-context-temperature parent-context))
            :top-p (and parent-context
                        (magent-request-context-top-p parent-context))
+           :max-tokens (and parent-context
+                            (magent-request-context-max-tokens parent-context))
            :effort (and parent-context
                         (magent-request-context-effort parent-context))
            :thinking (and parent-context

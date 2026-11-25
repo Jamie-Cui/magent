@@ -72,7 +72,8 @@ receive the following context from the parent request.
 
 - project root and session scope
 - the parent's model route, unless the child profile specifies its own
-- temperature, top-p, reasoning effort, and thinking mode when sharing the parent route
+- temperature, top-p, maximum output tokens, reasoning effort, and thinking
+  mode when sharing the parent route
 - active skill names and capability context
 - effective permission profile bounded by the parent and child agent
 - request depth for recursive spawn guards

@@ -100,6 +100,7 @@ wins; when all functions return nil, scope is derived from
   backend
   temperature
   top-p
+  max-tokens
   effort
   thinking
   (tool-names :all)

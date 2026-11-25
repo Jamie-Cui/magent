@@ -351,6 +351,10 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                       (inherited-top-p
                        (unless independent-route
                          (magent-request-context-top-p request-state)))
+                      (max-tokens
+                       (unless independent-route
+                         (magent-max-tokens-normalize-option
+                          (magent-request-context-max-tokens request-state))))
                       (inherited-effort
                        (unless independent-route
                          (magent-request-context-effort request-state)))
@@ -392,6 +396,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                        temperature
                        (magent-request-context-top-p request-state)
                        top-p
+                       (magent-request-context-max-tokens request-state)
+                       max-tokens
                        (magent-request-context-effort request-state)
                        effort-option
                        (magent-request-context-thinking request-state)
@@ -819,6 +825,8 @@ The tool calling loop is managed by `magent-agent-loop'.  This function:
                              :metadata (append
                                         (list :temperature temperature
                                               :top-p top-p)
+                                        (when max-tokens
+                                          (list :max-tokens max-tokens))
                                         (when effort
                                           (list :effort effort))
                                         (when thinking

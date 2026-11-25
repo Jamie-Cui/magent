@@ -14,6 +14,8 @@ intentional tagged release is planned as ~v0.2.0~.
 
 ** Added
 
+- Action agent and Answer Steps accept ~:max-tokens~ to set a maximum output
+  token count for their provider requests.
 - ACP inline image prompts. Frontends may send ~image~ content blocks with
   PNG, JPEG, WebP, or GIF payloads; Magent validates and stores them in a
   private content-addressed media directory, records a small ledger reference,

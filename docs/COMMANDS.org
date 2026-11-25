@@ -272,14 +272,16 @@ The managed Step forms are:
 
 - ~magent-workflow-agent-turn~ runs an intermediate model turn and returns its text
   by default. It accepts ~:agent~, ~:skills~, ~:buffers~,
-  ~:append-argument-p~, ~:tools~, ~:effort~, ~:thinking~, ~:request-context~,
-  ~:resource-blocks~, and ~:result~.
+  ~:append-argument-p~, ~:tools~, ~:max-tokens~, ~:effort~, ~:thinking~,
+  ~:request-context~, ~:resource-blocks~, and ~:result~.
 - ~magent-workflow-answer~ accepts the same model options but is terminal. It
   streams the final answer, ends the Invocation, and does not resume forms
 after the Step.
 
 ~:tools~ is the exact provider tool allowlist for that Step, not merely a
 preflight requirement. Unknown or unavailable names fail before submission.
+~:max-tokens~ accepts a positive integer and applies only to that Step's
+provider request; it does not change gptel's global default.
 ~:effort~ accepts ~auto~, ~minimal~, ~low~, ~medium~, ~high~, or ~xhigh~.
 ~:thinking~ accepts ~auto~, ~enabled~, or ~disabled~. These values are frozen
 with that Step's request; explicit ~disabled~ suppresses ~:effort~ and fails
